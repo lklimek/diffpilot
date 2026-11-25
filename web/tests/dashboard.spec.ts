@@ -460,14 +460,24 @@ test.describe("My work (msw)", () => {
   test("Refresh: scan, provisional ranking, then Ranking finished (mock clock)", async ({ page }) => {
     await open(page);
     await pauseClock(page);
+    const startedAt = await page.evaluate(() => Date.now());
+    await page.clock.setFixedTime(startedAt);
+    const stream = page.waitForResponse(
+      (response) => /\/dashboard\/refreshes\/[^/]+\/events$/.test(response.url()) && response.ok(),
+    );
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await settle(page, (quick) => quick(strip(page)).toBeVisible());
-    await page.clock.runFor(5.5 * SCRIPT_STEP_MS);
+    await stream;
+
+    await page.clock.setFixedTime(startedAt + 5 * SCRIPT_STEP_MS);
+    await page.clock.runFor(SCRIPT_STEP_MS);
     await settle(page, async (quick) => {
       await quick(strip(page)).toHaveCount(0);
       await quick(main(page).getByRole("heading", { name: /^Not judged yet/ })).toBeVisible();
     });
-    await page.clock.runFor(2 * SCRIPT_STEP_MS);
+
+    await page.clock.setFixedTime(startedAt + 7 * SCRIPT_STEP_MS);
+    await page.clock.runFor(SCRIPT_STEP_MS);
     await settle(page, (quick) => quick(page.getByText("Ranking finished: 13 items judged.")).toBeVisible());
   });
 

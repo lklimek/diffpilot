@@ -13,7 +13,6 @@ import type {
 import {
   PR,
   carryOvers,
-  commentItemsResponse,
   context,
   decide,
   decideBatch,
@@ -45,7 +44,7 @@ const itemQuestions = () => readStore("questions").filter((q) => q.anchor.kind =
 /** Items with the answers of the Ask chat about each counted in. */
 const itemsWithAsks = () => {
   const answered = itemQuestions().filter((q) => q.state === "answered");
-  return commentItemsResponse().map((i) => ({
+  return listItems().map((i) => ({
     ...i,
     ask_answers:
       i.ask_answers +
@@ -97,8 +96,16 @@ export const reviewLoopHandlers = [
     forPr(() => new HttpResponse(null, { status: 202 })),
   ),
   route(
+    "startCommentAssessment",
+    forPr(() => new HttpResponse(null, { status: 202 })),
+  ),
+  route(
     "listCommentItems",
-    forPr(() => HttpResponse.json(itemsWithAsks())),
+    forPr(({ request }) => {
+      const all = itemsWithAsks();
+      const unseen = new URL(request.url).searchParams.get("imported_unseen") === "true";
+      return HttpResponse.json(unseen ? all.filter((item) => item.imported_decision) : all);
+    }),
   ),
   route(
     "getCommentContext",

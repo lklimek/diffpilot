@@ -1,5 +1,4 @@
-import type { ChangeSizeMark } from "../../../api/generated/types";
-import type { DashboardFactTag } from "../../../api/provisional/dashboardFactFilter";
+import type { ChangeSizeMark, FactTag } from "../../../api/generated/types";
 import { FilterButton, type OnFilter } from "../filter-chips/FilterChips";
 import { sizeFilter, tagFilter } from "../filter-chips/filters";
 import { Tooltip } from "../../tooltip/Tooltip";
@@ -9,7 +8,7 @@ const PILL =
   "inline-block cursor-help rounded border px-1.5 text-[11px] leading-[18px] font-semibold whitespace-nowrap";
 
 /** Deterministic tags from scan facts: one neutral look (no tone on the wire), the fact in the tooltip. */
-export function FactTags({ tags, onFilter }: { tags: DashboardFactTag[]; onFilter?: OnFilter }) {
+export function FactTags({ tags, onFilter }: { tags: FactTag[]; onFilter?: OnFilter }) {
   const look = `${PILL} border-mv-bd bg-surface text-text`;
   return (
     <>

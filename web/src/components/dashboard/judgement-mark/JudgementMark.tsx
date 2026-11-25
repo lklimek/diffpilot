@@ -1,4 +1,4 @@
-import { RANKING_DAILY_LIMIT, type Judgement } from "../../../api/provisional/dashboardJudgement";
+import type { Judgement } from "../../../api/generated/types";
 import { Tooltip } from "../../tooltip/Tooltip";
 import { dayText } from "../common/format";
 import { navigateOnClick, type Navigate } from "../common/navigate";
@@ -28,7 +28,7 @@ export function JudgementMark({
           : "Judgement inputs changed";
     const tip = `${reason} after the LLM judged this${date ? ` on ${date}` : ""}. ${
       onRejudge
-        ? `Click to judge this item again; uses 1 of today’s ${RANKING_DAILY_LIMIT}.`
+        ? `Click to judge this item again; uses one judgement from today’s limit.`
         : "Re-judging individual items is unavailable."
     }`;
     return (

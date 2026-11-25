@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { itemById } from "../../components/dashboard/test-fixtures";
-import { itemJudgement } from "./dashboardJudgement";
+import { itemById } from "../test-fixtures";
+import { itemJudgement } from "./itemJudgement";
 
 describe("legacy judgement", () => {
   const item = itemById("NC-482");
@@ -18,7 +18,6 @@ describe("legacy judgement", () => {
     expect(itemJudgement({ ...item, llm: { ...llm, inherited: true }, score: provisional })).toMatchObject({
       state: "outdated",
       judged_at: llm.judged_at,
-      outdated_because: null,
     });
   });
 

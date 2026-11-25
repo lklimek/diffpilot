@@ -1,9 +1,9 @@
-import type { DashboardItem, DashboardStatusCounts } from "../../../api/provisional/dashboard";
-import { itemJudgement } from "../../../api/provisional/dashboardJudgement";
+import type { WorkItem, StatusCounts } from "../../../api/generated/types";
+import { itemJudgement } from "../common/itemJudgement";
 import { buttonClass } from "../../button/button";
 import { MenuButton, MenuItem } from "../../menu/MenuButton";
 
-export type WorkStatus = "all" | keyof DashboardStatusCounts;
+export type WorkStatus = "all" | keyof StatusCounts;
 
 const LABELS: Record<WorkStatus, string> = {
   all: "All",
@@ -19,7 +19,7 @@ const DESCRIPTIONS: Partial<Record<WorkStatus, string>> = {
   not_live: "Repositories without the GitHub App update with the nightly scan and Refresh.",
 };
 
-export function matchesStatus(item: DashboardItem, status: WorkStatus): boolean {
+export function matchesStatus(item: WorkItem, status: WorkStatus): boolean {
   const judgement = itemJudgement(item);
   switch (status) {
     case "all":
@@ -38,7 +38,7 @@ export function matchesStatus(item: DashboardItem, status: WorkStatus): boolean 
   }
 }
 
-export function getStatusCounts(items: DashboardItem[], excluded: number): DashboardStatusCounts {
+export function getStatusCounts(items: WorkItem[], excluded: number): StatusCounts {
   return {
     outdated: items.filter((item) => matchesStatus(item, "outdated")).length,
     not_judged: items.filter((item) => matchesStatus(item, "not_judged")).length,
@@ -56,7 +56,7 @@ export function StatusFilter({
   onChange,
 }: {
   status: WorkStatus;
-  counts: DashboardStatusCounts;
+  counts: StatusCounts;
   total: number;
   excludedDescription: string;
   descriptions?: Partial<Record<WorkStatus, string>>;

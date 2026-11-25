@@ -1,5 +1,4 @@
-import type { DashboardItem } from "../../../api/provisional/dashboard";
-import type { DashboardFactTag } from "../../../api/provisional/dashboardFactFilter";
+import type { WorkItem, FactTag } from "../../../api/generated/types";
 
 const FIELDS = ["label", "size", "author", "repo"] as const;
 export type FilterField = (typeof FIELDS)[number];
@@ -34,7 +33,7 @@ export const encodeFilters = (filters: readonly Filter[]) =>
     )
     .join(",");
 
-export function tagFilter(tag: DashboardFactTag): FilterValue {
+export function tagFilter(tag: FactTag): FilterValue {
   if (tag.filter) return { field: "label", ...tag.filter };
   const label = tag.text
     .replace(/^(\d+ )(?=unresolved threads?$)/i, "")
@@ -44,7 +43,7 @@ export function tagFilter(tag: DashboardFactTag): FilterValue {
   return { field: "label", key: label.toLowerCase().replaceAll(/\s+/g, "_"), label };
 }
 
-export const repoFilter = (item: DashboardItem): FilterValue | null => {
+export const repoFilter = (item: WorkItem): FilterValue | null => {
   if (!item.repo) return null;
   const label = `${item.repo.owner}/${item.repo.name}`;
   return { field: "repo", key: label.toLowerCase(), label };
@@ -58,7 +57,7 @@ export const authorFilter = (author: string): FilterValue => ({
 
 export const sizeFilter = (size: string): FilterValue => ({ field: "size", key: size, label: size });
 
-export function itemFilters(item: DashboardItem, tags: readonly FilterValue[]): FilterValue[] {
+export function itemFilters(item: WorkItem, tags: readonly FilterValue[]): FilterValue[] {
   const values = [...tags];
   const repo = repoFilter(item);
   if (repo) values.push(repo);
@@ -68,7 +67,7 @@ export function itemFilters(item: DashboardItem, tags: readonly FilterValue[]): 
 }
 
 export function matchesFilters(
-  item: DashboardItem,
+  item: WorkItem,
   filters: readonly Filter[],
   tags: readonly FilterValue[],
 ): boolean {

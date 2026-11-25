@@ -1,11 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router";
-import { ApiError } from "../../api/client";
+import { api, ApiError } from "../../api/client";
 import { routes } from "../../api/generated/routes";
 import type { RepoRef } from "../../api/generated/types";
-import { fetchGitHubWebhook } from "../../api/provisional/githubWebhook";
-import { fetchRepositoryInstallations } from "../../api/provisional/repositoryInstallations";
 import {
   useDashboardSettings,
   useRepoSettings,
@@ -35,8 +33,8 @@ export function GitHubSyncPage({ onDirtyChange }: { onDirtyChange: (dirty: boole
   const settings = useSettings();
   const owners = useSetControlledOwners();
   const webhook = useQuery({
-    queryKey: ["github-webhook-v14"],
-    queryFn: ({ signal }) => fetchGitHubWebhook(signal),
+    queryKey: ["github-webhook"],
+    queryFn: ({ signal }) => api.getGithubWebhook(signal),
   });
   const [dirty, setDirty] = useState({ dashboard: false, owners: false });
   const dashboardDirty = useCallback(
@@ -52,7 +50,7 @@ export function GitHubSyncPage({ onDirtyChange }: { onDirtyChange: (dirty: boole
     <AppInstallationsCard
       installations={settings.data.app_installations}
       signInHref={routes.authLogin.path}
-      webhookUrl={webhook.isSuccess ? (webhook.data?.webhook_url ?? null) : undefined}
+      webhook={webhook.data}
       webhookError={webhook.isError ? messageOf(webhook.error) : undefined}
     />
   ) : (
@@ -113,8 +111,8 @@ export function RepositoriesPage({ onDirtyChange }: { onDirtyChange: (dirty: boo
   const save = useSaveDashboardSettings();
   const settings = useSettings();
   const catalogue = useQuery({
-    queryKey: ["repository-installations-v14"],
-    queryFn: ({ signal }) => fetchRepositoryInstallations(signal),
+    queryKey: ["repository-installations"],
+    queryFn: ({ signal }) => api.getRepositoryInstallations(signal),
   });
   const [params, setParams] = useSearchParams();
   const expanded = params.get("repo");

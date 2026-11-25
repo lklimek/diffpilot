@@ -108,9 +108,13 @@ test("PR page → Comments → the LLM assessment arrives → a decision stores 
   ]);
   await expect(page.getByRole("region", { name: "Review the code" })).toContainText("No analysis yet.");
   await checkScreen(page);
-  expect(sql(stack, "SELECT COUNT(*) FROM assessment_method_runs")).toEqual(["0"]);
+  expect(sql(stack, "SELECT COUNT(*) FROM assessment_passes")).toEqual(["0"]);
 
+  const assessment = page.waitForResponse(
+    (response) => response.request().method() === "POST" && response.url().endsWith(`${API}/comments/assess`),
+  );
   await card.getByRole("link", { name: "Open Comments →" }).click();
+  expect((await assessment).status()).toBe(202);
   await expect(page).toHaveURL(new RegExp(`${COMMENTS_PATH}$`));
   const heading = page.getByRole("heading", {
     level: 1,
@@ -123,17 +127,14 @@ test("PR page → Comments → the LLM assessment arrives → a decision stores 
   const queue = page.getByRole("navigation", { name: "Queue" });
   const queueStatus = queue.getByRole("button", { name: /^Status: / });
   await queueStatus.click();
-  await queue.getByRole("menuitemradio", { name: "Pending or assessing · 12", exact: true }).click();
-  await queue
-    .getByRole("button", { name: new RegExp(`^${ITEM} ${ITEM_TITLE} .*pending or assessing$`) })
-    .click();
+  await queue.getByRole("menuitemradio", { name: /^All · / }).click();
+  await queue.getByRole("button", { name: new RegExp(`^${ITEM} ${ITEM_TITLE}`) }).click();
   const questionTitle = `${ITEM} · ${ITEM_TITLE}`;
-  const pendingQuestion = page.getByRole("article", { name: ITEM, exact: true });
-  await expect(pendingQuestion.getByRole("heading", { name: questionTitle, exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: questionTitle, exact: true })).toBeVisible();
   await checkScreen(page);
 
   // The assessment lands on the open question: the recommendation and the queue's mark.
-  const question = page.getByRole("article", { name: questionTitle, exact: true });
+  const question = page.getByRole("article", { name: new RegExp(`^${ITEM} · `) });
   await expect(question).toBeVisible({ timeout: 60_000 });
   await question.getByRole("button", { name: "LLM assessment", exact: true }).click();
   await expect(question).toContainText("Recommendation: Fix here — Fake recommendation for tests.", {
@@ -149,7 +150,7 @@ test("PR page → Comments → the LLM assessment arrives → a decision stores 
   await queueStatus.click();
   await queue.getByRole("menuitemradio", { name: /^Needs you · 13$/ }).click();
   await expect(
-    queue.getByRole("button", { name: new RegExp(`^${ITEM} ${ITEM_TITLE} .*LLM recommends Fix here$`) }),
+    queue.getByRole("button", { name: new RegExp(`^${ITEM} .*LLM recommends Fix here$`) }),
   ).toBeVisible();
   await checkScreen(page);
 
@@ -183,7 +184,7 @@ test("PR page → Comments → the LLM assessment arrives → a decision stores 
   );
   await form.getByRole("button", { name: "Decide" }).click();
   expect((await decided).status()).toBe(201);
-  await expect(page.getByRole("heading", { name: questionTitle, exact: true })).toHaveCount(0);
+  await expect(question).toHaveCount(0);
   await checkScreen(page);
 
   const [stored] = await decisionLog(page);

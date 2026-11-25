@@ -1,12 +1,6 @@
-import { http, HttpResponse } from "msw";
-import { GITHUB_WEBHOOK_PATH } from "../../api/provisional/githubWebhook";
-import { MONTHLY_TOKEN_USAGE_PATH } from "../../api/provisional/monthlyTokenUsage";
-import {
-  RANKING_USAGE_PATH,
-  RESET_RANKING_USAGE_PATH,
-  type RankingUsage,
-} from "../../api/provisional/rankingUsage";
-import { REPOSITORY_INSTALLATIONS_PATH } from "../../api/provisional/repositoryInstallations";
+import { HttpResponse } from "msw";
+import type { GithubWebhook, RankingUsage, RepositoryInstallations } from "../../api/generated/types";
+import { route } from "./common";
 import { scenario } from "../scenarios";
 
 const ranking: RankingUsage = {
@@ -24,7 +18,7 @@ const unavailable = () =>
   HttpResponse.json({ message: "Settings are temporarily unavailable." }, { status: 503 });
 
 export const settingsV14Handlers = [
-  http.get(RANKING_USAGE_PATH, () =>
+  route("getRankingUsage", () =>
     scenario().settingsV14 === "unavailable"
       ? unavailable()
       : HttpResponse.json(
@@ -32,26 +26,30 @@ export const settingsV14Handlers = [
             (scenario().settingsV14 === "at-limit" ? { ...ranking, sent_today: ranking.daily_cap } : ranking),
         ),
   ),
-  http.post(RESET_RANKING_USAGE_PATH, ({ request }) => {
+  route("resetRankingUsage", ({ request }) => {
     if (!request.headers.get("X-CSRF-Token")) return new HttpResponse(null, { status: 403 });
     if (scenario().settingsV14 === "reset-fails") return unavailable();
     afterReset = { ...ranking, sent_today: 0 };
     return HttpResponse.json(afterReset);
   }),
-  http.get(GITHUB_WEBHOOK_PATH, () =>
+  route("getGithubWebhook", () =>
     scenario().settingsV14 === "unavailable"
       ? unavailable()
-      : HttpResponse.json({
+      : HttpResponse.json<GithubWebhook>({
+          configured: scenario().settingsV14 !== "unconfigured",
+          last_delivery_at: scenario().settingsV14 === "unconfigured" ? null : "2026-11-25T09:00:00Z",
+          dropped_deliveries: 0,
+          refused_connections: 0,
           webhook_url:
             scenario().settingsV14 === "unconfigured"
               ? null
               : "https://webhooks.manago.cloud/diffpilot/github",
         }),
   ),
-  http.get(REPOSITORY_INSTALLATIONS_PATH, () =>
+  route("getRepositoryInstallations", () =>
     scenario().settingsV14 === "unavailable"
       ? unavailable()
-      : HttpResponse.json({
+      : HttpResponse.json<RepositoryInstallations>({
           repositories:
             scenario().settingsV14 === "unconfigured" || scenario().settings?.app_installations?.length === 0
               ? []
@@ -61,19 +59,5 @@ export const settingsV14Handlers = [
                   { repo: { owner: "acme", name: "platform" }, live: false },
                 ],
         }),
-  ),
-  http.get(MONTHLY_TOKEN_USAGE_PATH, () =>
-    HttpResponse.json({
-      this_month:
-        scenario().settingsV14 === "unconfigured"
-          ? null
-          : {
-              input_tokens: 7_100_000,
-              cached_input_tokens: 5_600_000,
-              output_tokens: 310_000,
-              reasoning_output_tokens: null,
-              jobs: 67,
-            },
-    }),
   ),
 ];

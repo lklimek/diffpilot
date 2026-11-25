@@ -55,6 +55,8 @@ test("PR A/B opt-in preserves primary, quota and visible comments; report is rea
   await expect(toggle).not.toBeChecked();
   await expect(toggle).toBeEnabled();
   expect(assessmentWrites).toEqual([
+    { path: "/api/v1/prs/acme/node-client/482/comments/visit", body: null },
+    { path: "/api/v1/prs/acme/node-client/482/comments/assess", body: null },
     {
       path: "/api/v1/settings/comment-assessment",
       body: {

@@ -1,19 +1,12 @@
-import type { ReviewComment } from "../../api/provisional/comments";
+import type { CommentItem } from "../../api/generated/types";
 import { navigateOnClick, type Navigate } from "../dashboard/common/navigate";
 import { duplicatePrimary, followsPrimary } from "./queueStatus";
-import type { CommentItem } from "../../api/generated/types";
 import { GithubMark } from "../github/GithubMark";
 import { isGithubUrl } from "../github/links";
 import { ProvenanceTag } from "../section/ProvenanceTag";
 import { itemId } from "./parts";
 
-export function DuplicateLinks({
-  primary,
-  duplicates,
-}: {
-  primary: CommentItem;
-  duplicates: ReviewComment[];
-}) {
+export function DuplicateLinks({ primary, duplicates }: { primary: CommentItem; duplicates: CommentItem[] }) {
   if (!duplicates.length) return null;
   return (
     <p className="my-1 text-xs">
@@ -45,7 +38,7 @@ export function DuplicateOfLink({
   href,
   onNavigate,
 }: {
-  item: ReviewComment;
+  item: CommentItem;
   href?: string;
   onNavigate?: Navigate;
 }) {

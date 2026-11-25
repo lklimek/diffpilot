@@ -20,10 +20,12 @@ export function CommentsInfo({
 }) {
   const subject = `#${item.number ?? ""} ${item.title}`;
   const tally = item.comments;
+  const unseen = item.imported_unseen ?? 0;
   if (tally && href) {
     const text = `${tally.total} ${tally.total === 1 ? "comment" : "comments"} · ${tally.needs_you} ${
       tally.needs_you === 1 ? "needs" : "need"
     } you`;
+    const importsHref = `${href}?imported_unseen=true`;
     return (
       <>
         <span aria-hidden="true">·</span>
@@ -38,6 +40,18 @@ export function CommentsInfo({
             {text}
           </a>
         </Tooltip>
+        {unseen > 0 && (
+          <>
+            <span aria-hidden="true">·</span>
+            <a
+              href={importsHref}
+              onClick={navigateOnClick(importsHref, onNavigate)}
+              className="text-accent underline"
+            >
+              {unseen} new {unseen === 1 ? "GitHub decision" : "GitHub decisions"}
+            </a>
+          </>
+        )}
       </>
     );
   }

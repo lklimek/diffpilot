@@ -2,7 +2,6 @@
 // pure functions of the screen, tested without rendering.
 import { ApiError } from "../../api/client";
 import type { DashboardSummary, RefreshStatus, SnapshotMeta, WorkItem } from "../../api/generated/types";
-import type { DashboardItem } from "../../api/provisional/dashboard";
 import type { RankingNotice } from "../../components/dashboard/refresh-control/RefreshControl";
 import { commentsPath, prPath } from "../pr/paths";
 import { PRS_PATH } from "../shell/paths";
@@ -126,7 +125,7 @@ export function rankingFeedback(summary: DashboardSummary, snapshotRefresh?: Ref
 }
 
 /** A successful daily-limited ranking left unjudged candidates with open parts out of its queue. */
-export function withLegacyDailyCap(item: DashboardItem): DashboardItem {
+export function withLegacyDailyCap(item: WorkItem): WorkItem {
   const asked = item.score.parts.some(
     ({ status, source }) => status === "estimated" || (status === "pending" && source === "llm"),
   );

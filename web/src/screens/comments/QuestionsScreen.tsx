@@ -1,8 +1,4 @@
 import { useQueryClient } from "@tanstack/react-query";
-import type { ReviewComment } from "../../api/provisional/comments";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router";
-import { ApiError } from "../../api/client";
 import type {
   CommentItem,
   DecideRequest,
@@ -10,6 +6,9 @@ import type {
   DecisionId,
   QueueEntry,
 } from "../../api/generated/types";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router";
+import { ApiError } from "../../api/client";
 import {
   cachedCommentsReview,
   useAssessAgain,
@@ -128,7 +127,7 @@ export function QuestionsScreen() {
   });
   const byNo = useMemo(() => new Map(items.map((i) => [i.no, i])), [items]);
   const duplicates = useMemo(() => {
-    const grouped = new Map<number, ReviewComment[]>();
+    const grouped = new Map<number, CommentItem[]>();
     for (const item of items) {
       const primary = duplicatePrimary(item);
       if (primary == null) continue;

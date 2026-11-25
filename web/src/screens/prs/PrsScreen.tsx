@@ -4,7 +4,6 @@ import { api } from "../../api/client";
 import { useMe, useMyAnalyses } from "../../api/queries";
 import { useWatches } from "../../api/review-loop";
 import type { PrRef } from "../../api/generated/types";
-import { fetchPrHistory, PR_HISTORY_PAGE_SIZE } from "../../api/provisional/prHistory";
 import { useNow } from "../../app/now";
 import { Banner } from "../../components/banner/Banner";
 import { buttonClass } from "../../components/button/button";
@@ -16,6 +15,8 @@ import { Tooltip } from "../../components/tooltip/Tooltip";
 import { ALL_CARRY_OVERS_PATH, parsePrRef, prPath } from "../pr/paths";
 import { MY_WORK_PATH, PRS_PATH } from "../shell/paths";
 import { historyFromLegacy, historyFromServer, historyKey } from "./history";
+
+const PR_HISTORY_PAGE_SIZE = 50;
 
 const FILTERS = [
   { value: "all", name: "All" },
@@ -116,11 +117,12 @@ function History({
   const history = useInfiniteQuery({
     queryKey: ["pr-history"],
     initialPageParam: null as string | null,
-    queryFn: ({ pageParam, signal }) => fetchPrHistory(pageParam, signal),
+    queryFn: ({ pageParam, signal }) =>
+      api.listMyPrs({ limit: PR_HISTORY_PAGE_SIZE, cursor: pageParam ?? undefined }, signal),
     getNextPageParam: (page) => page?.next_cursor ?? undefined,
     retry: false,
   });
-  const fallback = history.data?.pages[0] === null || (history.isError && !history.data);
+  const fallback = history.data?.pages[0] === null;
   const analyses = useMyAnalyses(fallback, 100);
   const watch = useMutation({
     mutationFn: ({ pr, enabled }: { pr: PrRef; enabled: boolean }) =>
@@ -246,7 +248,7 @@ function History({
           onNavigate={go}
         />
       )}
-      {!pending && rows.length === 0 && (
+      {!pending && !history.isError && rows.length === 0 && (
         <p className="rounded-lg border border-border bg-surface p-3 text-sm text-muted">
           {entries.length ? (
             "No pull requests match these filters."

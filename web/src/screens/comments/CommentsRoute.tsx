@@ -6,17 +6,18 @@ import {
 import { AssessmentControls } from "../../components/comments/AssessmentControls";
 import { AssessmentComparisonPanel } from "../../components/comments/AssessmentComparisonReport";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
-import { Outlet, useLocation, useNavigate, useOutletContext, useParams } from "react-router";
+import { Outlet, useLocation, useNavigate, useOutletContext, useParams, useSearchParams } from "react-router";
 import { ApiError } from "../../api/client";
-import type { CommentItem, PrPage, PrRef } from "../../api/generated/types";
-import type { ReviewComment, ReviewCommentsOverview } from "../../api/provisional/comments";
+import type { CommentItem, PrPage, PrRef, CommentsOverview } from "../../api/generated/types";
 import { useMe } from "../../api/queries";
 import {
   useCommentItems,
   useCommentsOverview,
+  useImportedCommentItems,
   usePrPage,
   usePrQuestions,
   useReadComments,
+  useStartCommentAssessment,
   useVisitComments,
   useWatchPr,
 } from "../../api/review-loop";
@@ -24,6 +25,7 @@ import { useNow } from "../../app/now";
 import { usePrTabSubject } from "../../app/tabStatus";
 import { useUserEventNotifications } from "../../app/userEvents";
 import { Banner } from "../../components/banner/Banner";
+import { ImportedDecisions } from "../../components/comments/ImportedDecisions";
 import { AssessmentBanner } from "../../components/comments/AssessmentBanner";
 import { OpenExternal } from "../../components/dashboard/common/OpenExternal";
 import { WatchControl } from "../../components/watch/WatchControl";
@@ -42,8 +44,8 @@ import { commentsPath, prOfParams, prPath } from "../pr/paths";
 /** What every Comments page gets from the layout. */
 export interface CommentsContext {
   pr: PrRef;
-  overview: ReviewCommentsOverview;
-  items: ReviewComment[];
+  overview: CommentsOverview;
+  items: CommentItem[];
   needsYou: number;
   statusHost: RefObject<HTMLDivElement | null>;
   focusQueueStatus: () => void;
@@ -101,22 +103,28 @@ export function CommentsRoute() {
 
 function CommentsVisit({ pr }: { pr: PrRef }) {
   const { pathname } = useLocation();
+  const [search] = useSearchParams();
   const navigate = useNavigate();
   const me = useMe();
   const login = me.data?.user?.login ?? "anonymous";
   const { mutate: recordVisit, isSuccess: visited, error: visitError } = useVisitComments(pr);
+  const entryAssessment = useStartCommentAssessment(pr);
+  const startAssessment = entryAssessment.mutate;
   const entered = useRef(false);
   useEffect(() => {
     if (entered.current) return;
     entered.current = true;
-    recordVisit();
-  }, [recordVisit]);
-  const overview = useCommentsOverview(pr, visited);
+    recordVisit(undefined, { onSuccess: () => startAssessment() });
+  }, [recordVisit, startAssessment]);
+  const ready = visited && (entryAssessment.isSuccess || entryAssessment.isError);
+  const overview = useCommentsOverview(pr, ready);
   // Load items after the initial overview identifies the stored PR.
-  const overviewRead = visited && overview.isFetchedAfterMount;
+  const overviewRead = ready && overview.isFetchedAfterMount;
   const items = useCommentItems(pr, overviewRead);
+  const showImports = search.get("imported_unseen") === "true";
+  const imports = useImportedCommentItems(pr, overviewRead && showImports);
   const page = usePrPage(pr);
-  const read = useReadComments(pr);
+  const read = useReadComments(pr, true);
   const watch = useWatchPr(pr);
   const statusHost = useRef<HTMLDivElement>(null);
   const activeTab = useRef<HTMLAnchorElement>(null);
@@ -149,7 +157,12 @@ function CommentsVisit({ pr }: { pr: PrRef }) {
     [pr.repo.owner, pr.repo.name, pr.number],
   );
   const o = overviewRead ? overview.data : undefined;
-  const needsYou = needsYouCount(o?.counts.undecided ?? 0, o?.queue, commentsByNo(items.data));
+  const needsYou =
+    o?.counts.needs_you ?? needsYouCount(o?.counts.undecided ?? 0, o?.queue, commentsByNo(items.data));
+  const unseen = o?.counts.imported_unseen ?? 0;
+  const importSearch = new URLSearchParams(search);
+  if (showImports) importSearch.delete("imported_unseen");
+  else importSearch.set("imported_unseen", "true");
   const watching = o?.watch === undefined ? page.data?.watch : o.watch;
   const analysis = o?.analysis ?? null;
   const base = analysis ? `/analyses/${encodeURIComponent(analysis)}` : null;
@@ -179,6 +192,11 @@ function CommentsVisit({ pr }: { pr: PrRef }) {
     // A failed later read keeps the page (and what was typed on it) with the last data, and says so.
     return (
       <>
+        {entryAssessment.isError && (
+          <StatusMessage kind="error">
+            Could not start comment assessment. {errorText(entryAssessment.error)}
+          </StatusMessage>
+        )}
         {failed && (
           <div className="mb-3">
             <StatusMessage kind="error">
@@ -247,7 +265,7 @@ function CommentsVisit({ pr }: { pr: PrRef }) {
               ci={page.data?.ci}
               now={now}
               itemId={display}
-              busy={read.isPending}
+              busy={read.isPending || items.isLoading}
               onRead={() => read.mutate()}
             />
             {watching !== undefined && (
@@ -314,6 +332,16 @@ function CommentsVisit({ pr }: { pr: PrRef }) {
                 activeTab.current?.focus();
               }
             }}
+          />
+        )}
+        {o && (unseen > 0 || showImports) && (
+          <ImportedDecisions
+            count={unseen}
+            items={showImports ? imports.data : undefined}
+            error={showImports && imports.isError ? errorText(imports.error) : undefined}
+            expanded={showImports}
+            href={`${pathname}${importSearch.size ? `?${importSearch}` : ""}`}
+            onNavigate={go}
           />
         )}
         <AnalysisPathLinks analysisId={analysis} head={o?.head ?? null}>

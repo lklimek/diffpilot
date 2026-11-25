@@ -1,8 +1,3 @@
-import type { ReviewComment } from "../../api/provisional/comments";
-import { queueStatusLabel, type QueueStatus } from "./queueStatus";
-// The other question kinds of V1 (plan §2.4, §2.6): group, "Decide the rest", PR-level questions, assessment
-// running and the empty queue.
-import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import type {
   CommentItem,
   DecideRest,
@@ -11,6 +6,10 @@ import type {
   GithubRead,
   LeftOutItem,
 } from "../../api/generated/types";
+import { queueStatusLabel, type QueueStatus } from "./queueStatus";
+// The other question kinds of V1 (plan §2.4, §2.6): group, "Decide the rest", PR-level questions, assessment
+// running and the empty queue.
+import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { buttonClass } from "../button/button";
 import { Banner } from "../banner/Banner";
 import { OpenExternal } from "../dashboard/common/OpenExternal";
@@ -75,7 +74,7 @@ const Heading = ({ id, text }: { id: string; text: ReactNode }) => {
 interface GroupCardProps {
   /** Two or more non-gate items with the same recommendation. */
   items: CommentItem[];
-  duplicates?: ReadonlyMap<number, ReviewComment[]>;
+  duplicates?: ReadonlyMap<number, CommentItem[]>;
   position: { index: number; total: number };
   onDecide: (rows: DecisionBatchRow[]) => void;
   /** Takes the item out of the group: it is asked on its own. */

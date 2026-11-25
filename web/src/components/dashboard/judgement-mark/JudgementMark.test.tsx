@@ -15,7 +15,7 @@ describe("JudgementMark", () => {
       />,
     );
     const button = screen.getByRole("button", { name: /outdated · 17 Nov/ });
-    expect(button).toHaveAccessibleDescription(/ranking prompt changed.*1 of today’s 120/i);
+    expect(button).toHaveAccessibleDescription(/ranking prompt changed.*one judgement from today’s limit/i);
     await userEvent.click(button);
     expect(onRejudge).toHaveBeenCalledOnce();
   });

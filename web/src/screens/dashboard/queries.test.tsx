@@ -278,19 +278,25 @@ describe("summaryRefetchInterval (ADR-022)", () => {
       http.get("/api/v1/dashboard", () => {
         reads += 1;
         const state = reads < 3 ? "stale" : "current";
-        return HttpResponse.json({ ...SUMMARY_FIXTURE, plugins: [{ ...plugin, state }] });
+        return HttpResponse.json({
+          ...SUMMARY_FIXTURE,
+          revision: String(reads),
+          plugins: [{ ...plugin, state }],
+        });
       }),
     );
-    renderHook(() => useDashboardSummary(true), { wrapper: wrapper().wrapper });
-    await waitFor(() => expect(reads).toBe(1));
-    await vi.advanceTimersByTimeAsync(PLUGIN_RETRY_MS);
-    await waitFor(() => expect(reads).toBe(2));
-    await vi.advanceTimersByTimeAsync(PLUGIN_RETRY_MS);
-    await waitFor(() => expect(reads).toBe(3));
-    await vi.advanceTimersByTimeAsync(PLUGIN_RETRY_MS * 3);
+    const { result } = renderHook(() => useDashboardSummary(true), { wrapper: wrapper().wrapper });
+    const waitForSummary = (revision: number) =>
+      waitFor(() => expect(result.current.data?.revision).toBe(String(revision)));
+    await waitForSummary(1);
+    for (const revision of [2, 3]) {
+      await act(() => vi.advanceTimersByTimeAsync(PLUGIN_RETRY_MS));
+      await waitForSummary(revision);
+    }
+    await act(() => vi.advanceTimersByTimeAsync(PLUGIN_RETRY_MS * 3));
     expect(reads).toBe(3);
-    await vi.advanceTimersByTimeAsync(SUMMARY_REFETCH_MS);
-    await waitFor(() => expect(reads).toBe(4));
+    await act(() => vi.advanceTimersByTimeAsync(SUMMARY_REFETCH_MS - PLUGIN_RETRY_MS * 3));
+    await waitForSummary(4);
   });
 });
 
@@ -336,11 +342,13 @@ describe("useSaveBrowserTimeZone (R6b)", () => {
     const again = renderHook(
       () => {
         const summary = useDashboardSummary(true);
-        return useSaveBrowserTimeZone(summary.data);
+        const savedZone = useSaveBrowserTimeZone(summary.data);
+        return { summary: summary.data, savedZone };
       },
       { wrapper: wrapper().wrapper },
     );
-    expect(again.result.current).toEqual({ failed: true });
+    expect(again.result.current.savedZone).toEqual({ failed: true });
+    await waitFor(() => expect(again.result.current.summary?.schedule.time_zone).toBeNull());
   });
 
   it("sends nothing when a zone is stored", async () => {
@@ -499,7 +507,7 @@ describe("hidden My work presence", () => {
     server.use(
       http.get("/api/v1/dashboard", () => {
         reads += 1;
-        return HttpResponse.json({ ...SUMMARY_FIXTURE, latest_refresh: SCANNING });
+        return HttpResponse.json({ ...SUMMARY_FIXTURE, revision: String(reads), latest_refresh: SCANNING });
       }),
     );
     const tab = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
@@ -544,7 +552,8 @@ describe("hidden My work presence", () => {
       tab.mockReturnValue("visible");
       document.dispatchEvent(new Event("visibilitychange"));
     });
-    await waitFor(() => expect(reads).toBe(2));
+    await waitFor(() => expect(hook.result.current.data?.revision).toBe("2"));
+    expect(reads).toBe(2);
     hook.unmount();
     tab.mockRestore();
   });

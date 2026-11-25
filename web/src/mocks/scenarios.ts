@@ -22,8 +22,8 @@ import type {
   StageKind,
   ThreadsStatus,
   Tour,
+  LlmActivity,
 } from "../api/generated/types";
-import type { LlmActivity } from "../api/provisional/llmActivity";
 import {
   failedActivity,
   idleActivity,

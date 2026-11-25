@@ -1,5 +1,5 @@
 import type { Ref } from "react";
-import type { DashboardItem } from "../../../api/provisional/dashboard";
+import type { WorkItem } from "../../../api/generated/types";
 import { Tooltip } from "../../tooltip/Tooltip";
 import { LlmLine } from "../common/LlmLine";
 import { OpenExternal, rowOpenLabel } from "../common/OpenExternal";
@@ -17,7 +17,7 @@ import type { OnFilter } from "../filter-chips/FilterChips";
 
 interface AlarmRowProps extends Pick<RowActions, "onWatch" | "watched" | "watching">, WorkJudgementProps {
   /** A P0 item. */
-  item: DashboardItem;
+  item: WorkItem;
   onFilter?: OnFilter;
   snapshotAt?: string | null;
   /** In-app href of a pull request's review (plan §F.1). */

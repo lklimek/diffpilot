@@ -110,7 +110,7 @@ Revoking a token stops it at once. Sign out everywhere revokes every token.
 
 ### Linked logins
 
-- **What:** Other GitHub accounts of yours. Their pull requests, review requests, assigned and mentioning issues count as yours, and their approvals and ownership count as yours.
+- **What:** Other GitHub accounts of yours. Their pull requests, review requests, assigned and mentioning issues count as yours, and their approvals and ownership count as yours. A linked account can use the maintainer-decision v1 marker to leave a proposal for you to confirm.
 - **When used:** Every refresh searches them together with your own login.
 - **Empty or default:** Only your own login is scanned; it is always scanned.
 - **Limits:** Up to 5 GitHub logins (letters, digits, - or _, up to 39); not your own login.

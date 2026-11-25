@@ -1,6 +1,13 @@
 // The only fetch layer of the web app: typed calls to the routes of crates/contracts.
 import { routes, type RouteName } from "./generated/routes";
 import type {
+  GithubWebhook,
+  LlmActivity,
+  PrHistory,
+  PrHistoryQuery,
+  RankingUsage,
+  RepositoryInstallations,
+  StartRefreshRequest,
   AssessmentSettings,
   AssessmentSettingsUpdate,
   AssessmentComparison,
@@ -117,12 +124,9 @@ export function routePath(name: RouteName, params: Record<string, string> = {}):
   });
 }
 
-type ApiRoute = RouteName | { method: "POST"; path: string; auth: "session_csrf" };
-
-const routeSpec = (route: ApiRoute) => (typeof route === "string" ? routes[route] : route);
-
 interface CallOptions {
   params?: Record<string, string>;
+  signal?: AbortSignal;
   query?: Record<string, string | number>;
   body?: unknown;
   headers?: Record<string, string>;
@@ -224,9 +228,9 @@ export interface AnalysisStreamHandlers {
 export function createApiClient(baseUrl = "") {
   let csrfToken: string | null | undefined;
 
-  async function send(name: ApiRoute, options: CallOptions, csrf: string | null): Promise<Response> {
-    const route = routeSpec(name);
-    const path = typeof name === "string" ? routePath(name, options.params) : name.path;
+  async function send(name: RouteName, options: CallOptions, csrf: string | null): Promise<Response> {
+    const route = routes[name];
+    const path = routePath(name, options.params);
     const url = new URL(baseUrl + path, globalThis.location?.origin);
     for (const [key, value] of Object.entries(options.query ?? {})) url.searchParams.set(key, String(value));
     const headers = new Headers({ Accept: "application/json", ...options.headers });
@@ -237,9 +241,11 @@ export function createApiClient(baseUrl = "") {
         method: route.method,
         headers,
         credentials: "same-origin",
+        signal: options.signal,
         body: options.body === undefined ? undefined : JSON.stringify(options.body),
       });
-    } catch {
+    } catch (error) {
+      if (options.signal?.aborted) throw error;
       throw new ApiError(0, "internal", "Cannot reach the diffpilot server. Check the connection and retry.");
     }
   }
@@ -250,8 +256,10 @@ export function createApiClient(baseUrl = "") {
     return new ApiError(response.status, "internal", "The server gave an unexpected answer. Retry later.");
   }
 
-  async function call<T>(name: ApiRoute, options: CallOptions = {}): Promise<T> {
-    const route = routeSpec(name);
+  function call<T>(name: RouteName, options?: CallOptions): Promise<T>;
+  function call<T>(name: RouteName, options: CallOptions, allowAbsent: true): Promise<T | null>;
+  async function call<T>(name: RouteName, options: CallOptions = {}, allowAbsent = false): Promise<T | null> {
+    const route = routes[name];
     const needsCsrf = route.auth === "session_csrf";
     if (needsCsrf && csrfToken === undefined) await getMe();
     let response = await send(name, options, needsCsrf ? (csrfToken ?? null) : null);
@@ -267,11 +275,19 @@ export function createApiClient(baseUrl = "") {
       await new Promise((resolve) => setTimeout(resolve, retryAfterMs(response)));
       response = await send(name, options, needsCsrf ? (csrfToken ?? null) : null);
     }
+    if (
+      allowAbsent &&
+      ([404, 405, 501].includes(response.status) ||
+        (response.ok && response.headers.get("Content-Type")?.includes("text/html")))
+    )
+      return null;
     if (!response.ok) throw await errorOf(response);
     // 204, and the 202 of RC3 and RC6, carry no body.
     const body = await response.text();
     return (body ? JSON.parse(body) : undefined) as T;
   }
+
+  const optional = <T>(name: RouteName, options: CallOptions = {}) => call<T>(name, options, true);
 
   /** A read with `If-None-Match: etag` (none when null): 304 is `unchanged`. */
   async function conditional<T>(
@@ -294,10 +310,8 @@ export function createApiClient(baseUrl = "") {
 
   return {
     getMe,
-    postProvisional: <T>(path: string, body?: unknown) => {
-      if (!path.startsWith("/api/v1/")) throw new Error("Expected an app-relative API path.");
-      return call<T>({ method: "POST", path, auth: "session_csrf" }, { body });
-    },
+    listMyPrs: (query: PrHistoryQuery, signal?: AbortSignal) =>
+      optional<PrHistory>("listMyPrs", { query: definedParams(query), signal }),
     /** Ends the session (`POST /auth/logout`); the CSRF token of the old session is dropped. */
     logout: async (body: LogoutRequest) => {
       await call<void>("authLogout", { body });
@@ -355,6 +369,12 @@ export function createApiClient(baseUrl = "") {
       }
     },
     getSettings: () => call<Settings>("getSettings"),
+    getGithubWebhook: (signal?: AbortSignal) => optional<GithubWebhook>("getGithubWebhook", { signal }),
+    getRepositoryInstallations: (signal?: AbortSignal) =>
+      optional<RepositoryInstallations>("getRepositoryInstallations", { signal }),
+    getLlmActivity: (signal?: AbortSignal) => optional<LlmActivity>("getLlmActivity", { signal }),
+    getRankingUsage: (signal?: AbortSignal) => optional<RankingUsage>("getRankingUsage", { signal }),
+    resetRankingUsage: () => call<RankingUsage>("resetRankingUsage"),
     setLlm: (body: import("./generated/types").ModelChoice) =>
       call<import("./generated/types").LlmSelection>("setLlm", { body }),
     requestFlow: (id: AnalysisId, flow: string) =>
@@ -399,7 +419,9 @@ export function createApiClient(baseUrl = "") {
       call<void>("snoozeDashboardItem", { params: { key }, body: { days } satisfies SnoozeRequest }),
     /** Ends an item's snooze now ("Wake now", R13). */
     wakeDashboardItem: (key: string) => call<void>("wakeDashboardItem", { params: { key } }),
-    startDashboardRefresh: () => call<RefreshStatus>("startDashboardRefresh"),
+    startDashboardRefresh: (body?: StartRefreshRequest) =>
+      call<RefreshStatus>("startDashboardRefresh", { body }),
+    rejudgeDashboardItem: (key: string) => call<void>("rejudgeDashboardItem", { params: { key } }),
     getDashboardRefresh: (id: RefreshId) => call<RefreshStatus>("getDashboardRefresh", { params: { id } }),
     cancelDashboardRefresh: (id: RefreshId) =>
       call<RefreshStatus>("cancelDashboardRefresh", { params: { id } }),
@@ -407,7 +429,8 @@ export function createApiClient(baseUrl = "") {
     setDashboardTimeZone: (body: SetTimeZoneRequest) => call<void>("setDashboardTimeZone", { body }),
     getPrPage: (pr: PrRef) => call<PrPage>("getPrPage", { params: prParams(pr) }),
     getComments: (pr: PrRef) => call<CommentsOverview>("getComments", { params: prParams(pr) }),
-    visitComments: (pr: PrRef) => call<void>("visitComments", { params: prParams(pr) }),
+    visitComments: (pr: PrRef) => optional<void>("visitComments", { params: prParams(pr) }),
+    startCommentAssessment: (pr: PrRef) => optional<void>("startCommentAssessment", { params: prParams(pr) }),
     readComments: (pr: PrRef) => call<void>("readComments", { params: prParams(pr) }),
     listCommentItems: (pr: PrRef, query: ItemsQuery = { state: null, kind: null }) =>
       call<CommentItem[]>("listCommentItems", { params: prParams(pr), query: definedParams(query) }),

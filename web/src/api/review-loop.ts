@@ -10,15 +10,10 @@ import {
   type QueryClient,
 } from "@tanstack/react-query";
 import { api, ApiError } from "./client";
-import {
-  fetchReviewCommentItems,
-  fetchReviewComments,
-  fetchReviewPrPage,
-  type ReviewComment,
-  type ReviewCommentsOverview,
-} from "./provisional/comments";
 import { withoutRetried } from "./questionHistory";
 import type {
+  CommentItem,
+  CommentsOverview,
   AnalysisId,
   AnchoredAskRequest,
   AskQuestion,
@@ -44,8 +39,8 @@ const itemsKey = (pr: PrRef | null) => ["comment-items", ...(pr ? prKey(pr) : []
 
 export function cachedCommentsReview(client: QueryClient, pr: PrRef) {
   return {
-    overview: client.getQueryData<ReviewCommentsOverview>(overviewKey(pr)),
-    items: client.getQueryData<ReviewComment[]>(itemsKey(pr)),
+    overview: client.getQueryData<CommentsOverview>(overviewKey(pr)),
+    items: client.getQueryData<CommentItem[]>(itemsKey(pr)),
   };
 }
 
@@ -55,13 +50,13 @@ export const useAnalysisOnce = (id: AnalysisId) =>
 
 /** The PR page (RC1). */
 export const usePrPage = (pr: PrRef) =>
-  useQuery({ queryKey: ["pr-page", ...prKey(pr)], queryFn: () => fetchReviewPrPage(pr) });
+  useQuery({ queryKey: ["pr-page", ...prKey(pr)], queryFn: () => api.getPrPage(pr) });
 
 /** Comments overview: header, counts, rounds, queue (RC2); read again every minute. */
 export const useCommentsOverview = (pr: PrRef, enabled = true) =>
   useQuery({
     queryKey: overviewKey(pr),
-    queryFn: () => fetchReviewComments(pr),
+    queryFn: () => api.getComments(pr),
     enabled,
     refetchInterval: COMMENTS_POLL_MS,
   });
@@ -70,9 +65,18 @@ export const useCommentsOverview = (pr: PrRef, enabled = true) =>
 export const useCommentItems = (pr: PrRef | null, enabled = true) =>
   useQuery({
     queryKey: itemsKey(pr),
-    queryFn: () => fetchReviewCommentItems(pr!),
+    queryFn: () => api.listCommentItems(pr!),
     refetchInterval: COMMENTS_POLL_MS,
     enabled: pr !== null && enabled,
+  });
+
+/** Standing GitHub imports since the visit preceding this one. */
+export const useImportedCommentItems = (pr: PrRef, enabled: boolean) =>
+  useQuery({
+    queryKey: [...itemsKey(pr), "imported-unseen"],
+    queryFn: () => api.listCommentItems(pr, { state: null, kind: null, imported_unseen: true }),
+    refetchInterval: enabled ? COMMENTS_POLL_MS : false,
+    enabled,
   });
 
 /** The code an item (`C<no>`) discusses, its flows and notes elsewhere (RC5); none without an item. */
@@ -113,7 +117,7 @@ export const PREVIEW_DEBOUNCE_MS = 250;
 export const transientFailure = (error: unknown) =>
   !(error instanceof ApiError) ||
   error.status === 0 ||
-  error.status >= 500 ||
+  (error.status >= 500 && error.status !== 501) ||
   error.status === 408 ||
   error.status === 429;
 
@@ -194,10 +198,35 @@ export function useVisitComments(pr: PrRef) {
   });
 }
 
-/** Read GitHub again (RC3), then everything of the PR. */
-export function useReadComments(pr: PrRef) {
+async function startCommentAssessment(pr: PrRef): Promise<void> {
+  try {
+    await api.startCommentAssessment(pr);
+  } catch (error) {
+    if (!(error instanceof ApiError && error.status === 409 && error.code === "conflict")) throw error;
+  }
+}
+
+/** Start a pass on entry to Comments. */
+export const useStartCommentAssessment = (pr: PrRef) =>
+  useMutation({ mutationFn: () => startCommentAssessment(pr) });
+
+/** Read GitHub again (RC3). Only Comments can request a pass for newly read items. */
+export function useReadComments(pr: PrRef, assessNewItems = false) {
+  const client = useQueryClient();
   const invalidate = useInvalidatePr(pr);
-  return useMutation({ mutationFn: () => api.readComments(pr), onSuccess: invalidate });
+  return useMutation({
+    mutationFn: async () => {
+      const before = assessNewItems ? client.getQueryData<CommentItem[]>(itemsKey(pr)) : undefined;
+      const known = before && new Set(before.map(({ no }) => no));
+      await api.readComments(pr);
+      await invalidate();
+      const fresh = client.getQueryState<CommentItem[]>(itemsKey(pr));
+      if (known && fresh?.status === "success" && fresh.data?.some(({ no }) => !known.has(no))) {
+        await startCommentAssessment(pr);
+        await invalidate();
+      }
+    },
+  });
 }
 
 /** One decision on item `C<no>` (RC8). */

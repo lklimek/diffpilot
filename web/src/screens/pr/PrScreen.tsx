@@ -27,7 +27,8 @@ export function PrScreen() {
   const page = usePrPage(pr);
   const { progressId } = (useLocation().state ?? {}) as { progressId?: AnalysisId };
   usePrTabSubject(pr);
-  const items = useCommentItems(pr, Boolean(page.data));
+  const needsYou = page.data?.comments.counts.needs_you;
+  const items = useCommentItems(pr, Boolean(page.data) && needsYou === undefined);
   const me = useMe();
   const login = me.data?.user?.login ?? null;
   const watch = useWatchPr(pr);
@@ -112,7 +113,9 @@ export function PrScreen() {
               </CollapsibleSection>
               <ProcessCommentsCard
                 summary={data.comments}
-                needsYou={items.data?.filter((item) => commentStatus(item) === "needs_you").length}
+                needsYou={
+                  needsYou ?? items.data?.filter((item) => commentStatus(item) === "needs_you").length
+                }
                 watch={data.watch}
                 watchBusy={watch.isPending}
                 onWatchChange={(on) => watch.mutate(on)}

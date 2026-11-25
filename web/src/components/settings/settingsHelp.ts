@@ -176,7 +176,7 @@ const HELP = {
   linked_logins: {
     section: "GitHub sync",
     title: "Linked logins",
-    what: "Other GitHub accounts of yours. Their pull requests, review requests, assigned and mentioning issues count as yours, and their approvals and ownership count as yours.",
+    what: "Other GitHub accounts of yours. Their pull requests, review requests, assigned and mentioning issues count as yours, and their approvals and ownership count as yours. A linked account can use the maintainer-decision v1 marker to leave a proposal for you to confirm.",
     when: "Every refresh searches them together with your own login.",
     empty: "Only your own login is scanned; it is always scanned.",
     limits: "Up to 5 GitHub logins (letters, digits, - or _, up to 39); not your own login.",

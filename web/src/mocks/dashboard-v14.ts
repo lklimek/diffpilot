@@ -1,10 +1,8 @@
-import type { DashboardItem, MyWorkSummary } from "../api/provisional/dashboard";
-import type { Judgement } from "../api/provisional/dashboardJudgement";
-import type { WorkItem } from "../api/generated/types";
+import type { WorkItem, DashboardSummary, Judgement } from "../api/generated/types";
 
 const REPO_WITHOUT_APP = "docs-site";
 
-export function withDashboardFacts(item: WorkItem, noApp: boolean): DashboardItem {
+export function withDashboardFacts(item: WorkItem, noApp: boolean): WorkItem {
   const review = item.tags.find((tag) => tag.text.startsWith("review requested"));
   const tags = item.tags.map((tag) =>
     tag === review ? { ...tag, filter: { key: "review_requested", label: "review requested" } } : tag,
@@ -14,7 +12,7 @@ export function withDashboardFacts(item: WorkItem, noApp: boolean): DashboardIte
     judged_at: item.llm?.judged_at ?? null,
     outdated_because: null,
   };
-  const info: DashboardItem = { ...item, tags, judgement };
+  const info: WorkItem = { ...item, tags, judgement };
   if (item.repo) info.live = !noApp && item.repo.name !== REPO_WITHOUT_APP;
   if (item.id === "NC-490") info.watched = true;
   if (item.id === "PLAT-1203") {
@@ -45,10 +43,10 @@ export function withDashboardFacts(item: WorkItem, noApp: boolean): DashboardIte
 }
 
 export function dashboardCoverage(
-  items: DashboardItem[],
+  items: WorkItem[],
   excluded: number,
   lastEventAt: string | null,
-): Pick<MyWorkSummary, "live_repositories" | "not_live_repositories" | "last_event_at" | "status_counts"> {
+): Pick<DashboardSummary, "live_repositories" | "not_live_repositories" | "last_event_at" | "status_counts"> {
   const repos = new Map(
     items.flatMap((item) =>
       item.repo ? [[`${item.repo.owner}/${item.repo.name}`, item.live] as const] : [],

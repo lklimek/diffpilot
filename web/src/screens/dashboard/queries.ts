@@ -5,15 +5,7 @@ import { useMutationState } from "@tanstack/react-query";
 import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { ApiError, api } from "../../api/client";
-import {
-  fetchMyWork,
-  fetchMyWorkItems,
-  refreshAndRejudgeOutdated,
-  rejudgeDashboardItem,
-  type DashboardItem,
-  type MyWorkSummary,
-} from "../../api/provisional/dashboard";
-import type { DashboardSummary, PrRef, RefreshId, RefreshStatus } from "../../api/generated/types";
+import type { DashboardSummary, PrRef, RefreshId, RefreshStatus, WorkItem } from "../../api/generated/types";
 
 /** Query key of the summary (R1). */
 export const SUMMARY_KEY = ["dashboard"] as const;
@@ -93,7 +85,7 @@ export function useDashboardSummary(enabled: boolean) {
   return useQuery({
     queryKey: SUMMARY_KEY,
     queryFn: async () => {
-      const summary = await fetchMyWork();
+      const summary = await api.getDashboard();
       notCurrentReads.current = pluginNotCurrent(summary) ? notCurrentReads.current + 1 : 0;
       const kept = client.getQueryData<DashboardSummary>(SUMMARY_KEY)?.latest_refresh;
       return summary.latest_refresh && isOlderStatus(summary.latest_refresh, kept)
@@ -126,7 +118,7 @@ export function useSnapshotRefresh(summary: DashboardSummary | undefined) {
 /** Every item of one revision with the first page's ETag. */
 export interface LoadedItems {
   revision: string;
-  items: DashboardItem[];
+  items: WorkItem[];
   etag: string | null;
 }
 
@@ -138,14 +130,14 @@ export interface LoadedItems {
 export async function loadAllItems(previous: LoadedItems | undefined): Promise<LoadedItems> {
   for (let attempt = 0; ; attempt += 1) {
     try {
-      const first = await fetchMyWorkItems({ limit: ITEM_PAGE_LIMIT }, previous?.etag ?? null);
+      const first = await api.listDashboardItems({ limit: ITEM_PAGE_LIMIT }, previous?.etag ?? null);
       if (first.unchanged) {
         if (previous) return previous;
         throw new ApiError(304, "internal", "The server gave an unexpected answer. Retry later.");
       }
       const items = [...first.body.items];
       for (let cursor = first.body.next_cursor; cursor !== null;) {
-        const page = await fetchMyWorkItems({ limit: ITEM_PAGE_LIMIT, cursor });
+        const page = await api.listDashboardItems({ limit: ITEM_PAGE_LIMIT, cursor });
         if (page.unchanged) throw new ApiError(304, "internal", "The server gave an unexpected answer.");
         items.push(...page.body.items);
         cursor = page.body.next_cursor;
@@ -255,9 +247,9 @@ export function useStartRefresh() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (rejudgeOutdated: boolean) =>
-      rejudgeOutdated ? refreshAndRejudgeOutdated() : api.startDashboardRefresh(),
+      rejudgeOutdated ? api.startDashboardRefresh({ rejudge_outdated: true }) : api.startDashboardRefresh(),
     onSuccess: (status) =>
-      client.setQueryData<MyWorkSummary>(SUMMARY_KEY, (s) => s && { ...s, latest_refresh: status }),
+      client.setQueryData<DashboardSummary>(SUMMARY_KEY, (s) => s && { ...s, latest_refresh: status }),
     onSettled: () => client.invalidateQueries({ queryKey: SUMMARY_KEY }),
   });
 }
@@ -296,7 +288,7 @@ export function useRejudgeItem() {
   const pendingKeys = usePendingKeys("rejudge-item");
   const mutation = useMutation({
     mutationKey: ["rejudge-item"],
-    mutationFn: ({ key }: { key: string }) => rejudgeDashboardItem(key),
+    mutationFn: ({ key }: { key: string }) => api.rejudgeDashboardItem(key),
     onError: setError,
     onSuccess: () => {
       setError(null);

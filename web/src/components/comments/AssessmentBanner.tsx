@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
-import type { CommentAssessmentProgress } from "../../api/provisional/commentAssessment";
+import type { AssessmentProgress } from "../../api/generated/types";
 import { Tooltip } from "../tooltip/Tooltip";
 import { clockText } from "../format/time";
 
-function activeAssessmentText(progress: CommentAssessmentProgress, now: Date): string {
+function activeAssessmentText(progress: AssessmentProgress, now: Date): string {
   const { in_pass, waiting, running, since, limited, assessed, total } = progress;
   return [
     in_pass
@@ -18,7 +18,7 @@ function activeAssessmentText(progress: CommentAssessmentProgress, now: Date): s
     .join(" · ");
 }
 
-export function assessmentText(progress: CommentAssessmentProgress, now: Date): string {
+export function assessmentText(progress: AssessmentProgress, now: Date): string {
   const head = progress.head ? ` at ${progress.head.slice(0, 7)}` : "";
   return (
     activeAssessmentText(progress, now) ||
@@ -27,7 +27,7 @@ export function assessmentText(progress: CommentAssessmentProgress, now: Date): 
 }
 
 interface AssessmentBannerProps {
-  progress: CommentAssessmentProgress;
+  progress: AssessmentProgress;
   head: string;
   prKey: string;
   now: Date;

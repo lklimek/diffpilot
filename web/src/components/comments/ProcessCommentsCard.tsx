@@ -1,6 +1,5 @@
 import { Tooltip } from "../tooltip/Tooltip";
-import type { WatchedPr } from "../../api/generated/types";
-import type { ReviewCommentsSummary } from "../../api/provisional/comments";
+import type { WatchedPr, CommentsSummary } from "../../api/generated/types";
 import { WatchControl } from "../watch/WatchControl";
 import { assessmentText } from "./AssessmentBanner";
 import { buttonClass } from "../button/button";
@@ -10,7 +9,7 @@ import { CollapsibleSection } from "../collapsible/CollapsibleSection";
 import { FactChip, READ_FAILURE } from "./parts";
 
 interface ProcessCommentsCardProps {
-  summary: ReviewCommentsSummary;
+  summary: CommentsSummary;
   needsYou?: number;
   watch?: WatchedPr | null;
   watchBusy?: boolean;

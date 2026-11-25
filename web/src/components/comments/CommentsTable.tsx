@@ -1,7 +1,6 @@
 import { Tooltip } from "../tooltip/Tooltip";
 import { useId, useState } from "react";
 import type { CommentItem, DecisionBatchRow, DecisionVia } from "../../api/generated/types";
-import type { ReviewComment } from "../../api/provisional/comments";
 import { GithubDecision } from "./GithubDecision";
 import { commentStatus } from "./queueStatus";
 import { buttonClass } from "../button/button";
@@ -58,7 +57,7 @@ interface CommentsTableProps {
   /** PR number and purpose for the line above the table. */
   prNumber: number;
   purpose: string | null;
-  items: ReviewComment[];
+  items: CommentItem[];
   /** The pull request's head now: an assessment of another commit names that commit. */
   prHead: string;
   /** Ask answers per item (live). */
@@ -86,7 +85,7 @@ const TD = "border-b border-border px-2 py-1.5 align-top";
 export function CommentsTable(props: CommentsTableProps) {
   const { items, now } = props;
   const missingId = useId();
-  const isOpen = (i: ReviewComment) => ["needs_you", "not_assessed"].includes(commentStatus(i));
+  const isOpen = (i: CommentItem) => ["needs_you", "not_assessed"].includes(commentStatus(i));
   const open = items.filter((i) => isOpen(i) && i.kind !== "pr_question");
   const closed = items.filter((i) => !isOpen(i) && i.state !== "assessing" && i.kind !== "pr_question");
   const [rows, setRows] = useState<Record<string, Row>>({});

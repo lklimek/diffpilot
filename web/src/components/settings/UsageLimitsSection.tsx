@@ -4,10 +4,10 @@ import type {
   AssessmentQuota,
   CredentialStatus,
   LlmCallOutcome,
+  RankingUsage,
   UsageTotals,
   UsageWindows,
 } from "../../api/generated/types";
-import type { RankingUsage } from "../../api/provisional/rankingUsage";
 import { buttonClass } from "../button/button";
 import { dateTimeText } from "../format/time";
 import { useAction } from "../inspector/action";
@@ -59,8 +59,6 @@ export function UsageLimitsSection({
   quotaError,
   tokens,
   tokensError,
-  month,
-  monthError,
   codex,
   now,
   lastCall,
@@ -73,8 +71,6 @@ export function UsageLimitsSection({
   quotaError?: string;
   tokens?: UsageWindows | null;
   tokensError?: string;
-  month?: UsageTotals | null;
-  monthError?: string;
   codex?: CredentialStatus;
   now: Date;
   lastCall?: LlmCallOutcome | null;
@@ -185,29 +181,27 @@ export function UsageLimitsSection({
         </Tile>
         <Tile title="Tokens">
           {tokensError ? (
-            <p role="alert">Could not load today&apos;s and last 7 days&apos; token usage. {tokensError}</p>
+            <p role="alert">Could not load token usage. {tokensError}</p>
           ) : (
             (
               [
-                ["Today", tokens?.today],
-                ["Last 7 days", tokens?.last_7_days],
+                ["Today", tokens?.today, tokens],
+                ["Last 7 days", tokens?.last_7_days, tokens],
+                [
+                  "This month",
+                  tokens?.this_month,
+                  tokens === undefined ? undefined : (tokens?.this_month ?? null),
+                ],
               ] as const
-            ).map(([label, usage]) =>
+            ).map(([label, usage, fallback]) =>
               usage?.jobs ? (
                 <UsageLine key={label} label={label} usage={usage} />
               ) : (
                 <p key={label}>
-                  {label}: {tokenUsageFallback(tokens)}
+                  {label}: {tokenUsageFallback(fallback)}
                 </p>
               ),
             )
-          )}
-          {monthError ? (
-            <p role="alert">Could not load monthly token usage. {monthError}</p>
-          ) : month?.jobs ? (
-            <UsageLine label="This month" usage={month} />
-          ) : (
-            <p role="status">This month: {tokenUsageFallback(month)}</p>
           )}
         </Tile>
         <Tile title="Codex plan">
