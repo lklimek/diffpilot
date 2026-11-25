@@ -22,6 +22,12 @@ pub const LISTEN_ADDR: &str = "SR_LISTEN_ADDR";
 pub const RUNNER_LISTEN_ADDR: &str = "SR_RUNNER_LISTEN_ADDR";
 /// Address for GitHub App deliveries.
 pub const WEBHOOK_LISTEN_ADDR: &str = "SR_WEBHOOK_LISTEN_ADDR";
+/// Shared secret for authenticating GitHub App deliveries.
+pub const GITHUB_WEBHOOK_SECRET: &str = "SR_GITHUB_WEBHOOK_SECRET";
+/// Previous webhook secret, accepted while rotating the current secret.
+pub const GITHUB_WEBHOOK_SECRET_PREVIOUS: &str = "SR_GITHUB_WEBHOOK_SECRET_PREVIOUS";
+/// Public webhook endpoint, displayed in Settings.
+pub const GITHUB_WEBHOOK_URL: &str = "SR_GITHUB_WEBHOOK_URL";
 /// Comma-separated IP addresses or networks of reverse proxies whose forwarding headers are trusted.
 pub const TRUSTED_PROXIES: &str = "SR_TRUSTED_PROXIES";
 /// Directory for the SQLite database and the bare mirrors.
@@ -95,6 +101,12 @@ pub struct Config {
     pub runner_listen_addr: SocketAddr,
     /// GitHub webhook-only listen address (default `127.0.0.1:3002`).
     pub webhook_listen_addr: SocketAddr,
+    /// Current GitHub App webhook secret.
+    pub github_webhook_secret: Option<SecretString>,
+    /// Previous GitHub App webhook secret during rotation.
+    pub github_webhook_secret_previous: Option<SecretString>,
+    /// Public webhook endpoint shown in Settings.
+    pub github_webhook_url: Option<Url>,
     /// GitHub logins allowed to sign in to the default tenant; at least one, unique ignoring ASCII case.
     pub allowed_logins: Vec<String>,
     /// Explicit trusted relays, independent of tenant membership or bot status.
@@ -304,6 +316,15 @@ pub enum ConfigError {
         /// What is wrong.
         problem: &'static str,
     },
+    /// A configured webhook secret is too short.
+    #[error("environment variable {key} must contain at least 32 characters")]
+    WebhookSecretLength {
+        /// Variable name.
+        key: &'static str,
+    },
+    /// The displayed webhook URL must use HTTPS.
+    #[error("environment variable SR_GITHUB_WEBHOOK_URL must be an HTTPS URL")]
+    WebhookUrlScheme,
     /// The secret key does not decode to 32 bytes.
     #[error("environment variable {key} must decode to exactly 32 bytes, got {len}")]
     SecretKeyLength {
@@ -324,7 +345,7 @@ impl Config {
         })
     }
 
-    /// Reads the configuration through `lookup`; values are trimmed and empty values count as unset.
+    /// Reads configuration through `lookup`. Webhook secrets are validated and kept byte-for-byte.
     pub fn from_lookup<F>(lookup: F) -> Result<Self, ConfigError>
     where
         F: Fn(&'static str) -> Result<Option<String>, ConfigError>,
@@ -333,6 +354,16 @@ impl Config {
             Ok(lookup(key)?
                 .map(|value| value.trim().to_owned())
                 .filter(|value| !value.is_empty()))
+        };
+        let webhook_secret = |key| {
+            lookup(key)?
+                .map(|value| {
+                    if value.chars().take(32).count() < 32 {
+                        return Err(ConfigError::WebhookSecretLength { key });
+                    }
+                    Ok(SecretString::from(value))
+                })
+                .transpose()
         };
         let require = |key| get(key)?.ok_or(ConfigError::Missing { key });
         let secret = |key, file_key| -> Result<String, ConfigError> {
@@ -401,6 +432,17 @@ impl Config {
             listen_addr,
             runner_listen_addr,
             webhook_listen_addr,
+            github_webhook_secret: webhook_secret(GITHUB_WEBHOOK_SECRET)?,
+            github_webhook_secret_previous: webhook_secret(GITHUB_WEBHOOK_SECRET_PREVIOUS)?,
+            github_webhook_url: get(GITHUB_WEBHOOK_URL)?
+                .map(|value| {
+                    let url = parse_http_url(GITHUB_WEBHOOK_URL, &value)?;
+                    if url.scheme() != "https" {
+                        return Err(ConfigError::WebhookUrlScheme);
+                    }
+                    Ok(url)
+                })
+                .transpose()?,
             trusted_proxies,
             data_dir: PathBuf::from(or_default(DATA_DIR, DEFAULT_DATA_DIR)?),
             secret_key: parse_secret_key(&secret(SECRET_KEY, SECRET_KEY_FILE)?)?,
@@ -656,6 +698,61 @@ pub(crate) mod tests {
     /// A valid configuration for tests of other modules.
     pub(crate) fn test_config() -> Config {
         parse(&required_env()).expect("required test environment is valid")
+    }
+
+    #[test]
+    fn optional_webhook_configuration_validates_length_and_https() {
+        let mut env = required_env();
+        let bare = parse(&env).unwrap();
+        assert!(bare.github_webhook_secret.is_none());
+        assert!(bare.github_webhook_url.is_none());
+        for key in [GITHUB_WEBHOOK_SECRET, GITHUB_WEBHOOK_SECRET_PREVIOUS] {
+            for short in [String::new(), "x".repeat(31)] {
+                env.insert(key, short);
+                assert!(
+                    matches!(parse(&env), Err(ConfigError::WebhookSecretLength { key: actual }) if key == actual)
+                );
+            }
+            env.insert(key, "s".repeat(32));
+        }
+        env.insert(GITHUB_WEBHOOK_URL, "http://example.test/hook".to_owned());
+        assert!(matches!(parse(&env), Err(ConfigError::WebhookUrlScheme)));
+        env.insert(GITHUB_WEBHOOK_URL, "https://example.test/hook".to_owned());
+        let config = parse(&env).unwrap();
+        assert_eq!(
+            config.github_webhook_secret.unwrap().expose_secret(),
+            "s".repeat(32)
+        );
+        assert_eq!(
+            config
+                .github_webhook_secret_previous
+                .unwrap()
+                .expose_secret(),
+            "s".repeat(32)
+        );
+        assert_eq!(config.github_webhook_url.unwrap().path(), "/hook");
+    }
+
+    #[test]
+    fn no_tenant_policy_env_vars() {
+        let env = required_env();
+        let webhook_keys = std::cell::RefCell::new(Vec::new());
+        Config::from_lookup(|key| {
+            if key.contains("WEBHOOK") {
+                webhook_keys.borrow_mut().push(key);
+            }
+            Ok(env.get(key).cloned())
+        })
+        .unwrap();
+        assert_eq!(
+            webhook_keys.into_inner(),
+            [
+                WEBHOOK_LISTEN_ADDR,
+                GITHUB_WEBHOOK_SECRET,
+                GITHUB_WEBHOOK_SECRET_PREVIOUS,
+                GITHUB_WEBHOOK_URL,
+            ]
+        );
     }
 
     #[test]

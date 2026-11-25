@@ -71,6 +71,10 @@ toml_edit = { version = "0.25.19", default-features = false, features = ["parse"
 # Tests
 tower = { version = "0.5.3", features = ["util"] }
 http-body-util = "0.1.5"
+http-body = "1.1.0"
+hyper = "1.12.0"
+hyper-util = "0.1.21"
+hex = "0.4.3"
 wiremock = "0.6.5"
 proptest = "1.12.0"
 insta = { version = "1.49.0", features = ["json"] }

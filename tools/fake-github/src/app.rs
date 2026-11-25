@@ -246,6 +246,7 @@ fn public_key(file: &FilePath) -> Result<DecodingKey, StartError> {
 pub(crate) fn routes(app: Arc<App>) -> Router {
     Router::new()
         .route("/repos/{owner}/{repo}/installation", get(installation))
+        .route("/app/installations", get(installations))
         .route("/app/installations/{id}/access_tokens", post(access_token))
         .route("/installation/token", delete(revoke))
         .route("/_fake/app-credentials", get(credentials))
@@ -258,6 +259,17 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
         .to_str()
         .ok()?
         .strip_prefix("Bearer ")
+}
+
+async fn installations(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if let Some(refusal) = app.refuse(&headers) {
+        return refusal;
+    }
+    let mut body = Vec::with_capacity(app.installation.len() + 2);
+    body.push(b'[');
+    body.extend_from_slice(&app.installation);
+    body.push(b']');
+    json_body(StatusCode::OK, Bytes::from(body))
 }
 
 async fn installation(

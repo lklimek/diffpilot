@@ -322,3 +322,28 @@ async fn move_head(
     graphql.move_head(request.sha);
     StatusCode::NO_CONTENT
 }
+
+/// Builds a GitHub App delivery signed over the exact bytes supplied by the caller.
+pub fn signed_webhook(
+    uri: &str,
+    app_id: u64,
+    event: &str,
+    id: uuid::Uuid,
+    body: &[u8],
+    secret: &[u8],
+) -> Result<axum::http::Request<Bytes>, axum::http::Error> {
+    let key = aws_lc_rs::hmac::Key::new(aws_lc_rs::hmac::HMAC_SHA256, secret);
+    let signature = aws_lc_rs::hmac::sign(&key, body);
+    axum::http::Request::post(uri)
+        .header(CONTENT_TYPE, "application/json")
+        .header(axum::http::header::CONTENT_LENGTH, body.len())
+        .header("x-github-event", event)
+        .header("x-github-delivery", id.to_string())
+        .header("x-github-hook-installation-target-type", "integration")
+        .header("x-github-hook-installation-target-id", app_id)
+        .header(
+            "x-hub-signature-256",
+            format!("sha256={}", hex::encode(signature)),
+        )
+        .body(Bytes::copy_from_slice(body))
+}

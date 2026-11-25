@@ -162,6 +162,8 @@ async fn run(dotenv: Result<PathBuf, dotenvy::Error>) -> Result<(), StartError> 
         // The listeners may already be gone; nothing to notify then.
         let _ = stop.send(true);
     });
+    let hooks = server::webhooks::Webhooks::new(state.db.clone(), state.config.clone());
+    let _webhook_worker = hooks.spawn(stopped.clone());
     let public = axum::serve(
         public,
         api::router(state.clone()).into_make_service_with_connect_info::<SocketAddr>(),
@@ -169,13 +171,11 @@ async fn run(dotenv: Result<PathBuf, dotenvy::Error>) -> Result<(), StartError> 
     .with_graceful_shutdown(stop_requested(stopped.clone()));
     let runner = axum::serve(runner, api::runner_router(state))
         .with_graceful_shutdown(stop_requested(stopped.clone()));
-    let webhook =
-        axum::serve(webhook, api::webhook_router()).with_graceful_shutdown(stop_requested(stopped));
-    tokio::try_join!(
-        public.into_future(),
-        runner.into_future(),
-        webhook.into_future()
-    )
+    let webhook = server::webhooks::serve(webhook, api::webhook_router(hooks), stopped);
+    tokio::try_join!(public.into_future(), runner.into_future(), async {
+        webhook.await;
+        Ok(())
+    })
     .map_err(StartError::Serve)?;
     Ok(())
 }

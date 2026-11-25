@@ -1,14 +1,14 @@
 //! HTTP routes on the public, runner and webhook listeners.
 
-use axum::http::{HeaderValue, StatusCode};
+use axum::http::HeaderValue;
 use axum::middleware::{from_fn_with_state, map_response};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use contracts::api::error::{ApiError, ApiErrorCode};
 use contracts::routes::{
-    GET_GITHUB_WEBHOOK, GET_LLM_ACTIVITY, GET_RANKING_USAGE, GET_REPOSITORY_INSTALLATIONS,
-    GITHUB_WEBHOOK, LIST_MY_PRS, REJUDGE_DASHBOARD_ITEM, RESET_RANKING_USAGE,
+    GET_LLM_ACTIVITY, GET_RANKING_USAGE, GET_REPOSITORY_INSTALLATIONS, LIST_MY_PRS,
+    REJUDGE_DASHBOARD_ITEM, RESET_RANKING_USAGE,
 };
 
 use crate::auth::{Session, SessionCsrf, TokenGate, access_tokens};
@@ -29,6 +29,7 @@ pub mod events;
 pub mod feedback;
 pub mod files;
 pub mod flow_work;
+mod github_app;
 pub mod health;
 pub mod lines;
 pub mod notifications;
@@ -67,6 +68,7 @@ pub fn router(state: AppState) -> Router {
         .merge(feedback::routes())
         .merge(files::routes())
         .merge(health::routes())
+        .merge(github_app::routes())
         .merge(lines::routes())
         .merge(notifications::routes())
         .merge(pr::routes())
@@ -101,19 +103,12 @@ pub fn runner_router(state: AppState) -> Router {
     Router::new().merge(runner::routes()).with_state(state)
 }
 
-/// Builds the router for the dedicated GitHub webhook listener.
-pub fn webhook_router() -> Router {
-    Router::new().route(
-        GITHUB_WEBHOOK.path,
-        post(|| async { not_implemented() }).fallback(|| async { StatusCode::NOT_FOUND }),
-    )
-}
+pub use crate::webhooks::router as webhook_router;
 
 fn reserved_routes() -> Router<AppState> {
     let read = get(|_: Session| async { not_implemented() });
     let write = post(|_: SessionCsrf| async { not_implemented() });
     Router::new()
-        .route(GET_GITHUB_WEBHOOK.path, read.clone())
         .route(GET_REPOSITORY_INSTALLATIONS.path, read.clone())
         .route(GET_LLM_ACTIVITY.path, read.clone())
         .route(GET_RANKING_USAGE.path, read.clone())
@@ -139,7 +134,7 @@ mod tests {
     use std::time::Duration;
 
     use axum::body::Body;
-    use axum::http::Request;
+    use axum::http::{Request, StatusCode};
     use contracts::ids::AnalysisId;
     use contracts::routes::{ANALYSIS_EVENTS, GET_ANALYSIS, HEALTHZ};
     use db::repo::DEFAULT_TENANT;
@@ -277,8 +272,8 @@ mod tests {
 
         let state = test_state().await;
         let public = router(state.clone());
-        let runner = runner_router(state);
-        let webhook = webhook_router();
+        let runner = runner_router(state.clone());
+        let webhook = webhook_router(crate::webhooks::Webhooks::new(state.db, state.config));
         for app in [public, runner] {
             for method in ["GET", "POST", "HEAD"] {
                 for path in ["/webhooks", "/webhooks/github", "/webhooks/no-such-route"] {
@@ -323,7 +318,11 @@ mod tests {
                 .expect("request");
             assert_eq!(
                 status_of(webhook.clone(), request).await,
-                StatusCode::NOT_FOUND,
+                if path == GITHUB_WEBHOOK.path {
+                    StatusCode::METHOD_NOT_ALLOWED
+                } else {
+                    StatusCode::NOT_FOUND
+                },
                 "{method} {path}"
             );
         }
@@ -335,7 +334,7 @@ mod tests {
             )
             .await
             .expect("infallible");
-        assert_not_implemented(response).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     async fn assert_not_implemented(response: Response) {
@@ -360,7 +359,6 @@ mod tests {
             ("GET", "/api/v1/llm/activity"),
             ("GET", "/api/v1/settings/ranking-usage"),
             ("GET", "/api/v1/settings/repository-installations"),
-            ("GET", "/api/v1/settings/github-webhook"),
             ("GET", "/api/v1/me/prs"),
             ("POST", "/api/v1/settings/ranking-usage/reset"),
             ("POST", "/api/v1/dashboard/items/acme~repo~pr~1/rejudge"),

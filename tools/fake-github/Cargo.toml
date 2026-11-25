@@ -7,6 +7,9 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+aws-lc-rs.workspace = true
+hex.workspace = true
+uuid.workspace = true
 contracts.workspace = true
 jsonwebtoken.workspace = true
 axum.workspace = true
@@ -24,7 +27,6 @@ tracing-subscriber.workspace = true
 url.workspace = true
 
 [dev-dependencies]
-aws-lc-rs.workspace = true
 reqwest = { workspace = true, features = ["form", "query"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
