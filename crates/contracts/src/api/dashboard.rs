@@ -197,7 +197,7 @@ pub enum RefreshTrigger {
     Manual,
     /// The daily schedule.
     Scheduled,
-    /// My work was open and the newest refresh was old (plan §M).
+    /// Legacy trigger recorded by v1.3 while My work was open.
     Automatic,
 }
 

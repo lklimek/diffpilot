@@ -248,14 +248,18 @@ impl Github<'_> {
                 if !tracked.bind(&mut tx).await? {
                     return Ok(Outcome::NotAllowed);
                 }
-                (changes, None)
+                (serde_json::to_string(changes)?, None)
             }
             Admitted::Installation(installation, update) => {
-                let Some(capped) = installations::apply(&mut tx, installation, update, now).await?
+                let Some(applied) =
+                    installations::apply(&mut tx, installation, update, now).await?
                 else {
                     return Ok(Outcome::NotAllowed);
                 };
-                (&[][..], capped.then_some(DeliveryError::InstallationCap))
+                (
+                    applied.removed,
+                    applied.capped.then_some(DeliveryError::InstallationCap),
+                )
             }
         };
         let state = if error.is_some() { "done" } else { "pending" };
@@ -268,7 +272,7 @@ impl Github<'_> {
                  received_at = excluded.received_at, attempts = 0, error = excluded.error",
         )
         .bind(id).bind(delivery.hash).bind(delivery.event).bind(delivery.action).bind(delivery.installation_id)
-        .bind(serde_json::to_string(changes)?).bind(state).bind(ts(now)).bind(error.map(|_| ts(now)))
+        .bind(changes).bind(state).bind(ts(now)).bind(error.map(|_| ts(now)))
         .bind(error.map(|code| code.to_string()))
         .execute(&mut *tx).await?;
         tx.commit().await?;
@@ -332,8 +336,11 @@ impl Github<'_> {
 
     /// Oldest eligible delivery. For a pending retry, processed_at stores its next eligible time.
     pub async fn next_pending(&self, now: Timestamp) -> Result<Option<PendingDelivery>, DbError> {
+        // Coverage is applied at receipt. Removed repositories only fence in-flight REST lookups.
         let row: Option<(String, String, i64, String)> = sqlx::query_as(
-            "SELECT delivery_id, changes, attempts, received_at FROM github_deliveries
+            "SELECT delivery_id,
+                    CASE WHEN event = 'installation_repositories' AND action = 'removed' THEN '[]' ELSE changes END,
+                    attempts, received_at FROM github_deliveries
              WHERE state = 'pending' AND received_at >= ? AND (processed_at IS NULL OR processed_at <= ?)
              ORDER BY received_at, rowid LIMIT 1",
         ).bind(ts(now - RESUME_WINDOW)).bind(ts(now)).fetch_optional(self.pool).await?;
@@ -431,8 +438,14 @@ impl Github<'_> {
                     "INSERT INTO app_repositories (owner, name, installation_id, suspended, checked_at)
                      SELECT ?1, ?2, ?3, ?4, ?5
                      WHERE NOT EXISTS (
-                       SELECT 1 FROM github_deliveries WHERE installation_id = ?3
-                         AND event IN ('installation', 'installation_repositories') AND received_at >= ?5
+                       SELECT 1 FROM github_deliveries d
+                       WHERE d.installation_id = ?3 AND d.received_at >= ?5 AND d.state IN ('pending', 'done', 'failed')
+                         AND ((d.event = 'installation' AND d.action IN ('deleted', 'suspend', 'unsuspend'))
+                           OR (d.event = 'installation_repositories' AND d.action = 'removed' AND EXISTS (
+                               SELECT 1 FROM json_each(d.changes) removed
+                               WHERE (removed.value ->> '$.name.owner') = ?1 COLLATE NOCASE
+                                 AND (removed.value ->> '$.name.name') = ?2 COLLATE NOCASE
+                           )))
                      )
                      AND (EXISTS (SELECT 1 FROM app_repositories WHERE owner = ?1 AND name = ?2)
                           OR (SELECT COUNT(*) FROM app_repositories) < ?6)

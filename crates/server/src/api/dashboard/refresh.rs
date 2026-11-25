@@ -214,7 +214,7 @@ async fn current_view(
         &state.plugins.overlay(state.dashboard.now()),
     );
     let live = installations::live(state, &scope.tenant_id).await?;
-    view.apply_installations(&snapshot, &live);
+    view.apply_installations(&live);
     Ok(Some((
         snapshot::revision(&record, &snapshot, &view),
         snapshot,

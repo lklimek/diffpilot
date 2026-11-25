@@ -671,7 +671,7 @@ impl Dashboard<'_> {
 
     /// R2 and the schedule, in one write transaction: a refresh of the user in `ranking` is superseded
     /// ([`Dashboard::finish_ranking`] with `cancelled`), then a new one starts in `scanning`; a `scanning` one
-    /// blocks ([`StartOutcome::ScanRunning`]). An automatic start is also blocked by a ranking. Deletes the user's older refreshes beyond [`REFRESHES_KEPT`], never
+    /// blocks ([`StartOutcome::ScanRunning`]). Deletes the user's older refreshes beyond [`REFRESHES_KEPT`], never
     /// the one holding the current snapshot nor one started in the last 24 hours that judged something (the daily
     /// cap counts it).
     pub async fn start_refresh(
@@ -692,9 +692,8 @@ impl Dashboard<'_> {
         .await?;
         let mut superseded = None;
         if let Some((id, state)) = live {
-            if trigger == RefreshTrigger::Automatic
-                || parse_wire::<RefreshState>(&state, "dashboard_refreshes.state")?
-                    == RefreshState::Scanning
+            if parse_wire::<RefreshState>(&state, "dashboard_refreshes.state")?
+                == RefreshState::Scanning
             {
                 return Ok(StartOutcome::ScanRunning);
             }
@@ -2479,30 +2478,6 @@ mod tests {
             );
             assert_eq!(live(&db, "u1").await, [(new.id, RefreshState::Scanning)]);
         }
-    }
-
-    #[tokio::test]
-    async fn automatic_start_cannot_supersede_a_ranking_restarted_after_its_precheck() {
-        let db = db().await;
-        let dash = db.dashboard();
-        let id = finished(&db, "u1", 0, RankingState::Cancelled).await;
-        let before = dash
-            .latest_refresh(T, "u1")
-            .await
-            .expect("precheck")
-            .expect("refresh");
-        assert_eq!(before.state, RefreshState::Finished);
-        dash.restart_ranking(T, "u1", id).await.expect("rank again");
-        let restarted = record(&db, "u1", id).await;
-        assert_eq!(restarted.state, RefreshState::Ranking);
-        assert_eq!(
-            dash.start_refresh(T, "u1", RefreshTrigger::Automatic, at(30))
-                .await
-                .expect("start"),
-            StartOutcome::ScanRunning
-        );
-        assert_eq!(record(&db, "u1", id).await, restarted);
-        assert_eq!(live(&db, "u1").await, [(id, RefreshState::Ranking)]);
     }
 
     #[tokio::test]

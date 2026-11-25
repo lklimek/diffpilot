@@ -8,7 +8,6 @@
 //! token pair kept for the schedule. A run a restart interrupted is recorded `failed` at start-up and does not count
 //! for its date, so the day's catch-up decides again.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use contracts::api::dashboard::{
@@ -53,9 +52,6 @@ const NO_PAIR: &str = "Sign in again to keep the daily refresh running.";
 const FAILED_ON_SERVER: &str = "The automatic refresh failed on the server.";
 /// Reason of a run a restart interrupted; such a record does not count for its date (see [`counted_run_date`]).
 pub(crate) const INTERRUPTED: &str = "The automatic refresh was interrupted by a server restart.";
-
-/// Set once the process's scheduler runs.
-static SPAWNED: AtomicBool = AtomicBool::new(false);
 
 /// A user's daily refresh time in their time zone.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -167,11 +163,11 @@ pub fn offset(user_id: &str) -> SignedDuration {
     SignedDuration::from_mins(i64::from(first % STAGGER_MINUTES))
 }
 
-/// Starts the process's scheduler; `false` (and nothing started) when one already runs.
+/// Starts this application's scheduler; `false` (and nothing started) when one already runs.
 pub fn spawn(state: AppState) -> bool {
-    if SPAWNED.swap(true, Ordering::SeqCst) {
+    if !state.dashboard.claim_scheduler() {
         tracing::warn!(
-            "the dashboard scheduler already runs in this process; a second one was not started"
+            "the dashboard scheduler already runs for this application; a second one was not started"
         );
         return false;
     }
@@ -194,7 +190,7 @@ pub(crate) enum Tick {
 /// The scheduler loop: recovers interrupted runs, then evaluates, sleeps until the next start (at most [`TICK`]),
 /// and stops with the server. A failed or panicking evaluation is logged and retried after [`TICK`]. Watched pull
 /// requests (ADR-023 Watch) are evaluated in the same loop, at most once per [`TICK`].
-pub(super) async fn run(state: AppState) {
+async fn run(state: AppState) {
     let mut stopping = state.stopping.subscribe();
     tracing::info!("dashboard scheduler started");
     tokio::spawn(super::installations::run(state.clone(), TICK));

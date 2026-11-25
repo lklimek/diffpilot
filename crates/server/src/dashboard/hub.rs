@@ -5,6 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -80,6 +81,7 @@ struct Inner {
     stopped: broadcast::Sender<RefreshId>,
     /// Scheduled runs given up for a user's local date after a failure the run record could not hold.
     given_up: Mutex<HashSet<(String, Date)>>,
+    scheduler_started: AtomicBool,
     // None is the batch itself. Pull-request ids share one database across users.
     tally_warnings: Mutex<HashMap<Option<i64>, tokio::time::Instant>>,
     readers: Readers,
@@ -216,10 +218,15 @@ impl DashboardHub {
                 events: broadcast::channel(EVENTS_CAPACITY).0,
                 stopped: broadcast::channel(EVENTS_CAPACITY).0,
                 given_up: Mutex::default(),
+                scheduler_started: AtomicBool::default(),
                 tally_warnings: Mutex::default(),
                 readers: Readers::default(),
             }),
         }
+    }
+
+    pub(super) fn claim_scheduler(&self) -> bool {
+        !self.inner.scheduler_started.swap(true, Ordering::SeqCst)
     }
 
     /// The current time.

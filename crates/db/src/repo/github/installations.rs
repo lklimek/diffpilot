@@ -15,6 +15,20 @@ use crate::repo::jobs::ts;
 
 pub(super) const UPDATE_CAP: i64 = 500;
 
+pub(super) struct Applied {
+    pub(super) capped: bool,
+    pub(super) removed: String,
+}
+
+impl Applied {
+    fn coverage(capped: bool) -> Self {
+        Self {
+            capped,
+            removed: "[]".to_owned(),
+        }
+    }
+}
+
 pub(super) enum Prepared<'a> {
     Add(Vec<Tracked<'a>>),
     Remove(Vec<Repository>),
@@ -48,20 +62,43 @@ pub(super) async fn prepare<'a>(
             .bind(installation)
             .bind(serde_json::to_string(repos)?)
             .bind(UPDATE_CAP + 1)
-            .fetch_all(conn)
+            .fetch_all(&mut *conn)
             .await?;
-            if matched.is_empty() {
+            let mut removed: Vec<_> = matched
+                .into_iter()
+                .map(|(owner, name, id)| Repository {
+                    name: RepoRef { owner, name },
+                    id,
+                })
+                .collect();
+            // A removal can race a lookup before the repository's first row exists.
+            if removed.len() as i64 <= UPDATE_CAP {
+                let mut names: HashSet<_> = removed
+                    .iter()
+                    .map(|repo| {
+                        (
+                            repo.name.owner.to_ascii_lowercase(),
+                            repo.name.name.to_ascii_lowercase(),
+                        )
+                    })
+                    .collect();
+                for tracked in tracking::resolve(conn, repos, UPDATE_CAP + 1).await? {
+                    let repo = tracked.repo;
+                    if names.insert((
+                        repo.name.owner.to_ascii_lowercase(),
+                        repo.name.name.to_ascii_lowercase(),
+                    )) {
+                        removed.push(repo.clone());
+                    }
+                    if removed.len() as i64 > UPDATE_CAP {
+                        break;
+                    }
+                }
+            }
+            if removed.is_empty() {
                 return Ok(None);
             }
-            Prepared::Remove(
-                matched
-                    .into_iter()
-                    .map(|(owner, name, id)| Repository {
-                        name: RepoRef { owner, name },
-                        id,
-                    })
-                    .collect(),
-            )
+            Prepared::Remove(removed)
         }
         InstallationUpdate::Delete | InstallationUpdate::Suspend(_) => {
             if !known(conn, installation).await? {
@@ -85,13 +122,13 @@ pub(super) async fn known(conn: &mut SqliteConnection, installation: i64) -> Res
     .await?)
 }
 
-/// Returns whether an admitted update reached a repository cap.
+/// Applies coverage and records removal hints used to fence in-flight REST lookups.
 pub(super) async fn apply(
     conn: &mut SqliteConnection,
     installation: i64,
     update: Prepared<'_>,
     now: Timestamp,
-) -> Result<Option<bool>, DbError> {
+) -> Result<Option<Applied>, DbError> {
     match update {
         Prepared::Add(tracked) => {
             let mut repos = Vec::new();
@@ -144,11 +181,14 @@ pub(super) async fn apply(
                  ON CONFLICT(repository_id) DO UPDATE SET owner = excluded.owner, name = excluded.name,
                    installation_id = excluded.installation_id, suspended = excluded.suspended, checked_at = excluded.checked_at",
             ).bind(offered).bind(installation).bind(ts(now)).bind(INSTALLATION_CAP).execute(conn).await?;
-            Ok(Some(capped || applied.rows_affected() < repos.len() as u64))
+            Ok(Some(Applied::coverage(
+                capped || applied.rows_affected() < repos.len() as u64,
+            )))
         }
         Prepared::Remove(mut repos) => {
             let capped = repos.len() as i64 > UPDATE_CAP;
             repos.truncate(UPDATE_CAP as usize);
+            let removed = serde_json::to_string(&repos)?;
             sqlx::query(
                 "DELETE FROM app_repositories AS ar WHERE installation_id = ?1 AND EXISTS (
                    SELECT 1 FROM json_each(?2) removed
@@ -158,22 +198,22 @@ pub(super) async fn apply(
                  )",
             )
             .bind(installation)
-            .bind(serde_json::to_string(&repos)?)
+            .bind(&removed)
             .execute(conn)
             .await?;
-            Ok(Some(capped))
+            Ok(Some(Applied { capped, removed }))
         }
         Prepared::Delete => {
             sqlx::query("DELETE FROM app_repositories WHERE installation_id = ?")
                 .bind(installation)
                 .execute(conn)
                 .await?;
-            Ok(Some(false))
+            Ok(Some(Applied::coverage(false)))
         }
         Prepared::Suspend(suspended) => {
             sqlx::query("UPDATE app_repositories SET suspended = ?, checked_at = ? WHERE installation_id = ?")
                 .bind(suspended).bind(ts(now)).bind(installation).execute(conn).await?;
-            Ok(Some(false))
+            Ok(Some(Applied::coverage(false)))
         }
     }
 }

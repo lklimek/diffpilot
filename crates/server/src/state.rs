@@ -47,6 +47,14 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Starts application tasks after startup recovery.
+    pub fn spawn_background(&self) {
+        crate::dashboard::schedule::spawn(self.clone());
+        crate::dashboard::plugin::spawn(self.clone());
+        crate::review_loop::feed::spawn(self.clone());
+        crate::review_loop::notify::spawn(self.clone());
+    }
+
     /// The state with the database queue as executor, its followers publishing to the state's progress hub.
     pub fn with_queue(config: Config, db: Db) -> Self {
         let progress = ProgressHub::default();

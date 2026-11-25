@@ -79,9 +79,8 @@ export const summaryRefetchInterval = (summary: DashboardSummary | undefined, no
 
 /**
  * The user's dashboard summary; disabled while signed out. A latest refresh older than the shown one is kept. It is
- * read again every minute (visible tabs only), which keeps My work open on the server (plan §M) and plug-in
- * statements current, and brings a new revision or an automatic scan to the page; sooner while a plug-in is not
- * current yet, so a returning reader sees its statements within seconds (`summaryRefetchInterval`).
+ * read again every minute in visible tabs to pick up snapshot and plug-in changes. While a plug-in is not current,
+ * the summary is read sooner so a returning reader sees its statements within seconds (`summaryRefetchInterval`).
  */
 export function useDashboardSummary(enabled: boolean) {
   const client = useQueryClient();

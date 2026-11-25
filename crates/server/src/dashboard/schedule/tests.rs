@@ -303,7 +303,7 @@ async fn a_panicking_evaluation_is_contained() {
 }
 
 #[tokio::test]
-async fn one_scheduler_per_process() {
+async fn one_scheduler_per_application() {
     let state = AppState::with_queue(test_config(), Db::in_memory().await.expect("db"));
     assert!(spawn(state.clone()));
     assert!(!spawn(state.clone()), "a second scheduler is refused");

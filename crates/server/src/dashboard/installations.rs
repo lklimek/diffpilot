@@ -1,6 +1,6 @@
 //! Synchronizes and projects coverage of tracked repositories (ADR-026).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use contracts::api::settings::RepositoryInstallation;
@@ -8,13 +8,14 @@ use contracts::common::RepoRef;
 use contracts::time::Timestamp;
 use db::error::DbError;
 use futures::{StreamExt, stream};
-use jiff::{civil::Date, tz::TimeZone};
+use jiff::{SignedDuration, civil::Date, tz::TimeZone};
 
 use crate::github::app_token::{AppTokenError, InstallationLookup};
 use crate::state::AppState;
 
 const LOOKUPS_PER_TICK: usize = 100;
 const CONCURRENT_LOOKUPS: usize = 4;
+const LOOKUP_BACKOFF: SignedDuration = SignedDuration::from_mins(5);
 
 /// Case-insensitive identity used by the installation map.
 pub(crate) fn key(repo: &RepoRef) -> RepoRef {
@@ -62,6 +63,7 @@ pub(crate) async fn live(state: &AppState, tenant: &str) -> Result<HashSet<RepoR
 struct Sync {
     day: Option<Date>,
     checked: HashSet<RepoRef>,
+    retry_after: HashMap<RepoRef, Timestamp>,
 }
 
 impl Sync {
@@ -80,10 +82,15 @@ impl Sync {
             .map(|row| key(&row.repo))
             .collect::<HashSet<_>>();
         self.checked.retain(|repo| present.contains(repo));
+        self.retry_after
+            .retain(|repo, retry| present.contains(repo) && *retry > now);
         let pending: Vec<_> = tracked
             .into_iter()
             .map(|row| row.repo)
-            .filter(|repo| !self.checked.contains(&key(repo)))
+            .filter(|repo| {
+                let key = key(repo);
+                !self.checked.contains(&key) && !self.retry_after.contains_key(&key)
+            })
             .take(LOOKUPS_PER_TICK)
             .collect();
         if pending.is_empty() {
@@ -92,6 +99,8 @@ impl Sync {
         let lookup = match InstallationLookup::new(&state.config.github, now).await {
             Ok(lookup) => lookup,
             Err(error) => {
+                self.retry_after
+                    .extend(pending.iter().map(|repo| (key(repo), now + LOOKUP_BACKOFF)));
                 tracing::warn!(%error, "GitHub App repository installation sync could not start");
                 return Ok(());
             }
@@ -122,14 +131,15 @@ impl Sync {
                 Ok(found) => {
                     github
                         .record_installation_lookup(&repo, found, started)
-                        .await?
+                        .await?;
+                    self.checked.insert(key(&repo));
                 }
                 Err(error) => {
+                    self.retry_after.insert(key(&repo), now + LOOKUP_BACKOFF);
                     failed += 1;
                     last_error = Some(error);
                 }
             }
-            self.checked.insert(key(&repo));
         }
         if let Some(error) = last_error {
             tracing::warn!(failed, %error, "some GitHub App repository installation lookups failed");
@@ -173,12 +183,9 @@ mod tests {
     use crate::config::tests::test_config;
     use crate::github::app_token::tests::{github_config, write_key};
 
-    #[tokio::test]
-    async fn installation_sync_checks_new_repos_and_reconciles_existing_ones_nightly() {
-        let server = MockServer::start().await;
-        let tmp = tempfile::tempdir().expect("fixture");
+    async fn sync_world(server: &MockServer, key_dir: &std::path::Path) -> AppState {
         let mut config = test_config();
-        config.github = github_config(&server, write_key(tmp.path()));
+        config.github = github_config(server, write_key(key_dir));
         let state = AppState::with_queue(config, Db::in_memory().await.expect("db"));
         state
             .db
@@ -196,6 +203,80 @@ mod tests {
             )
             .await
             .expect("member");
+        state
+    }
+
+    #[tokio::test]
+    async fn failed_installation_lookup_retries_after_backoff() {
+        let server = MockServer::start().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let state = sync_world(&server, tmp.path()).await;
+        let repo = RepoRef {
+            owner: "acme".to_owned(),
+            name: "retry".to_owned(),
+        };
+        let now = "2026-11-25T12:00:00Z".parse::<Timestamp>().unwrap();
+        let settings = DashboardSettings {
+            repositories: vec![RepositoryRule {
+                repo: repo.clone(),
+                alias: None,
+                watch_issues: false,
+                ownership_policy: None,
+                branch_patterns: vec![],
+                ignored_checks: vec![],
+            }],
+            ..DashboardSettings::default()
+        };
+        state
+            .db
+            .dashboard()
+            .save_settings(DEFAULT_TENANT, "u1", &settings, now)
+            .await
+            .unwrap();
+        let endpoint = "/api/repos/acme/retry/installation";
+        Mock::given(method("GET"))
+            .and(path(endpoint))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut sync = Sync::default();
+        sync.tick(&state, now).await.unwrap();
+        sync.tick(&state, now + SignedDuration::from_mins(1))
+            .await
+            .unwrap();
+        server.verify().await;
+        server.reset().await;
+        Mock::given(method("GET"))
+            .and(path(endpoint))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 42})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        sync.tick(&state, now + SignedDuration::from_mins(5))
+            .await
+            .unwrap();
+        assert!(
+            state
+                .db
+                .github()
+                .repository_installations(Some(DEFAULT_TENANT))
+                .await
+                .unwrap()
+                .iter()
+                .any(|row| row.repo == repo && row.live)
+        );
+        sync.tick(&state, now + SignedDuration::from_mins(10))
+            .await
+            .unwrap();
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn installation_sync_checks_new_repos_and_reconciles_existing_ones_nightly() {
+        let server = MockServer::start().await;
+        let tmp = tempfile::tempdir().expect("fixture");
+        let state = sync_world(&server, tmp.path()).await;
         let db = state.db.github();
         let repo = |name: &str| RepoRef {
             owner: "acme".to_owned(),

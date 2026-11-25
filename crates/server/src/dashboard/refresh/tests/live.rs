@@ -50,9 +50,21 @@ async fn no_scan_or_fact_check_while_my_work_open() {
             .save_settings(DEFAULT_TENANT, "u1", &disabled, now())
             .await
             .expect("schedule disabled");
+        let fake = crate::test_support::pr_hygiene::FakePrHygiene::start(
+            "2026-11-18T09:00:00Z",
+            Vec::new(),
+        )
+        .await;
+        super::plugin::with_plugin(&mut w, &fake, Default::default());
+        let key_dir = tempfile::tempdir().unwrap();
+        Arc::get_mut(&mut w.state.config)
+            .unwrap()
+            .github
+            .private_key_file = key_dir.path().join("absent.pem");
         let count = w.gate.requests();
-        let scheduler = tokio::spawn(crate::dashboard::schedule::run(w.state.clone()));
+        w.state.spawn_background();
         w.summary(ALICE).await;
+        assert!(!w.state.plugins.active_users().is_empty());
         tokio::time::sleep(Duration::from_millis(250)).await;
         let after = w
             .summary(ALICE)
@@ -61,7 +73,6 @@ async fn no_scan_or_fact_check_while_my_work_open() {
             .map(|status| status.id);
         let requests = w.gate.requests();
         w.state.stopping.send(true).expect("stop scheduler");
-        scheduler.await.expect("scheduler");
         assert_eq!(after, before, "opening My work must not start a scan");
         assert_eq!(requests, count, "opening My work must not read GitHub");
     }
@@ -210,5 +221,54 @@ async fn repository_installations_lists_rules_and_app_repos() {
             .await
             .status,
         StatusCode::UNAUTHORIZED,
+    );
+}
+
+#[tokio::test]
+async fn repository_counts_exclude_unlisted_and_snoozed_repositories() {
+    let mut w = world().await;
+    Arc::get_mut(&mut w.state.config)
+        .unwrap()
+        .github_webhook_secret = Some(SecretString::from("test webhook secret at least 32 bytes"));
+    w.refreshed().await;
+    let live = repo("acme", "node-client");
+    installed(&w.state.db, live.clone(), 42, now()).await;
+    let items = w.items("?limit=100").await.items;
+    let visible: std::collections::HashSet<_> =
+        items.iter().filter_map(|item| item.repo.clone()).collect();
+    let (id, mut snapshot) = super::plugin::stored(&w).await;
+    let template = snapshot
+        .pull_requests
+        .iter()
+        .find(|pr| pr.facts.repo == live)
+        .unwrap();
+    let mut excluded = template.clone();
+    excluded.facts.repo = repo("acme", "excluded-only");
+    excluded.facts.author = Some("dependabot[bot]".to_owned());
+    snapshot.pull_requests.push(excluded);
+    super::plugin::write(&w, id, &snapshot).await;
+
+    for item in items
+        .iter()
+        .filter(|item| item.repo.as_ref() == Some(&live))
+    {
+        w.state
+            .db
+            .dashboard()
+            .snooze(
+                DEFAULT_TENANT,
+                "u1",
+                &item.key,
+                now(),
+                now() + SignedDuration::from_hours(1),
+            )
+            .await
+            .unwrap();
+    }
+    let summary = w.summary(ALICE).await;
+    assert_eq!(summary.live_repositories, Some(0));
+    assert_eq!(
+        summary.not_live_repositories,
+        Some(u32::try_from(visible.len() - 1).unwrap())
     );
 }

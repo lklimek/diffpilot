@@ -1,9 +1,9 @@
-//! Watch (ADR-023, plan §2.8, RW1–RW2): the scheduler probes watched pull requests without an active App
-//! installation every [`PROBE_INTERVAL`] with the watcher's own token, one alias-batched GraphQL query
+//! Watch (ADR-023, plan §2.8, RW1–RW2): the scheduler probes watched pull requests without live webhook
+//! updates every [`PROBE_INTERVAL`] with the watcher's own token, one alias-batched GraphQL query
 //! per [`PROBE_BATCH`] pull requests; only a pull request whose probe values changed is read in full. A change makes
 //! an automatic assessment pass due: it waits while thepastaclaw reviews the pull request (at most
 //! [`BOT_ROUND_WAIT`]), then goes through [`assess::request_pass`] (one pass per pull request, spacing, daily cap). A
-//! plug-in change signal probes its watched pull requests without the App at once. A pass that leaves undecided questions writes one
+//! plug-in change signal probes its watched pull requests without live updates at once. A pass that leaves undecided questions writes one
 //! `questions_ready` user event per round and watcher; delivering it is the notification task's work. A user whose
 //! GitHub rate limit is used up is not probed until GitHub's reset or retry time.
 
@@ -269,7 +269,7 @@ pub(crate) async fn tick_at(state: &AppState, now: Timestamp) -> Result<(), DbEr
                     .is_none_or(|at| now.duration_since(at) >= PROBE_INTERVAL)
         })
         .collect();
-    for (user, list) in by_user(&without_installation(state, &due).await?) {
+    for (user, list) in by_user(&without_live_updates(state, &due).await?) {
         if !waits_for_limit(user, now) {
             probe(state, user, &list, now).await;
         }
@@ -277,28 +277,20 @@ pub(crate) async fn tick_at(state: &AppState, now: Timestamp) -> Result<(), DbEr
     settle_all(state, None, now).await
 }
 
-async fn without_installation<'a>(
+async fn without_live_updates<'a>(
     state: &AppState,
     watches: &[&'a WatchRecord],
 ) -> Result<Vec<&'a WatchRecord>, DbError> {
     let mut covered = HashMap::new();
     let mut due = Vec::new();
     for &watch in watches {
-        let installed = match covered.entry(watch.tenant_id.as_str()) {
+        let live = match covered.entry(watch.tenant_id.as_str()) {
             std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-            std::collections::hash_map::Entry::Vacant(entry) => entry.insert(
-                state
-                    .db
-                    .github()
-                    .repository_installations(Some(watch.tenant_id.as_str()))
-                    .await?
-                    .into_iter()
-                    .filter(|row| row.live)
-                    .map(|row| installations::key(&row.repo))
-                    .collect::<HashSet<_>>(),
-            ),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(installations::live(state, watch.tenant_id.as_str()).await?)
+            }
         };
-        if !installed.contains(&installations::key(&watch.pr.repo)) {
+        if !live.contains(&installations::key(&watch.pr.repo)) {
             due.push(watch);
         }
     }
@@ -306,7 +298,7 @@ async fn without_installation<'a>(
 }
 
 /// A plug-in change signal (a PR Hygiene change mark, thepastaclaw's round end): the watched pull requests among
-/// `changed` without the App are probed at once, and all changed watches are settled.
+/// `changed` without live updates are probed at once, and all changed watches are settled.
 pub async fn plugin_changed(state: &AppState, changed: &HashSet<PrKey>) {
     let watches = match state.db.review_loop().live_watches().await {
         Ok(watches) => watches,
@@ -323,7 +315,7 @@ pub async fn plugin_changed(state: &AppState, changed: &HashSet<PrKey>) {
         return;
     }
     let now = Timestamp::now();
-    match without_installation(state, &hit).await {
+    match without_live_updates(state, &hit).await {
         Ok(watches) => {
             for (user, list) in by_user(&watches) {
                 if !waits_for_limit(user, now) {
