@@ -344,3 +344,58 @@ async fn name_rule_does_not_move_to_new_repository_after_transfer() {
             .unwrap()
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn parallel_receipts_of_one_body_queue_exactly_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open(&dir.path().join("dedupe.db")).await.unwrap();
+    let hash = "c".repeat(64);
+    let shared_id = Uuid::new_v4();
+    for same_guid in [false, true] {
+        let hash = if same_guid {
+            "d".repeat(64)
+        } else {
+            hash.clone()
+        };
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..16 {
+            let db = db.clone();
+            let hash = hash.clone();
+            let id = if same_guid { shared_id } else { Uuid::new_v4() };
+            tasks.spawn(async move {
+                let delivery = NewDelivery {
+                    id,
+                    hash: &hash,
+                    event: "ping",
+                    action: None,
+                    installation_id: None,
+                    effect: Effect::Ignore,
+                };
+                db.github()
+                    .record(&delivery, Timestamp::now())
+                    .await
+                    .unwrap()
+            });
+        }
+        let outcomes = tasks.join_all().await;
+        assert_eq!(
+            outcomes.iter().filter(|o| **o == Outcome::Ignored).count(),
+            1,
+            "same_guid={same_guid}: {outcomes:?}"
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|o| **o == Outcome::Duplicate)
+                .count(),
+            15
+        );
+        let rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM github_deliveries WHERE body_sha256 = ?")
+                .bind(&hash)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(rows, 1);
+    }
+}
