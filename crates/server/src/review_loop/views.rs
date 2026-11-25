@@ -540,7 +540,7 @@ fn badge_of(
         .into_iter()
         .map(|item| item.no)
         .collect();
-    let mut review_items = loaded.items.iter().filter(|item| {
+    let review_items = loaded.items.iter().filter(|item| {
         waiting.contains(&item.no)
             && item.kind != CommentItemKind::PrQuestion
             && item.author_kind != AuthorKind::Bot
@@ -551,9 +551,17 @@ fn badge_of(
             .filter(|item| !loaded.assessments.contains_key(&item.no))
             .count(),
     );
-    let reassessing_human_review = pass.is_some_and(|pass| {
-        pass.state == PassState::Running && review_items.any(|item| sent_in(item, pass))
-    });
+    let reassessing_human_review =
+        pass.filter(|pass| pass.state == PassState::Running)
+            .map_or(0, |pass| {
+                count(
+                    review_items
+                        .filter(|item| {
+                            loaded.assessments.contains_key(&item.no) && sent_in(item, pass)
+                        })
+                        .count(),
+                )
+            });
     badge::badge(&BadgeInputs {
         open: snapshot.is_none_or(|snapshot| snapshot.state == "OPEN"),
         read_failed: loaded.row.read_failure.is_some() || snapshot.is_none(),
