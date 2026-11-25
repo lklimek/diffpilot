@@ -5,12 +5,12 @@ const heading = (page: import("@playwright/test").Page) =>
   page.locator("main h2:not([data-column-title])").first();
 
 test("PR URL → PR context → flow 1 introduction → step 1 via j", async ({ page }) => {
-  await page.goto("/review");
+  await page.goto("/prs");
   await page.getByLabel("GitHub pull request URL").fill("https://github.com/acme/node-client/pull/482");
-  await page.getByRole("button", { name: "Check" }).click();
+  await page.getByRole("button", { name: "Open", exact: true }).click();
   await page.getByRole("button", { name: "Start analysis", exact: true }).click();
   await expect(page).toHaveURL(/\/pr\/acme\/node-client\/482$/);
-  await page.getByRole("link", { name: "Open", exact: true }).click();
+  await page.getByRole("link", { name: "Open review", exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}#pr_context$`));
   await expect(heading(page)).toHaveText("PR context: acme/node-client #482");
 
@@ -50,7 +50,7 @@ test("Previous / Next walk the sequence; after a flow's last step comes the next
 });
 
 test("j / k are ignored while typing in a field", async ({ page }) => {
-  await page.goto("/review");
+  await page.goto("/prs");
   const field = page.getByLabel("GitHub pull request URL");
   await field.fill("j");
   await field.press("j");
@@ -325,10 +325,10 @@ test("every top-bar control explains itself in a tooltip", async ({ page }) => {
   await openTour(page);
   const banner = page.getByRole("banner").first();
   await expect(
-    banner.getByRole("link", { name: /^Pull request #482 on GitHub/ }),
+    banner.getByRole("link", { name: "Open acme/node-client#482 on GitHub, new tab" }),
   ).toHaveAccessibleDescription(/GitHub/);
   await expect(banner.getByRole("link", { name: "acme/node-client #482" })).toHaveAccessibleDescription(
-    /PR context/,
+    "acme/node-client #482",
   );
   await expect(banner.getByRole("button", { name: "View: Flows" })).toHaveAccessibleDescription(/Files/);
   // The chip (link or span) carries the tooltip; its text may sit in an inner truncating span.

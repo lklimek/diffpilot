@@ -5,7 +5,7 @@ import { AppNav } from "./AppNav";
 import { ShellTopBar } from "./ShellTopBar";
 import { UserMenu } from "./UserMenu";
 
-const HREFS = { "my-work": "/", review: "/review", watching: "/watching", settings: "/settings" };
+const HREFS = { "my-work": "/", prs: "/prs", settings: "/settings" };
 
 describe("AppNav", () => {
   beforeEach(() => window.localStorage.clear());
@@ -16,7 +16,7 @@ describe("AppNav", () => {
     expect(myWork).toHaveAttribute("aria-current", "page");
     expect(myWork).toHaveAttribute("href", "/");
     expect(myWork).toHaveTextContent("14");
-    expect(screen.getByRole("link", { name: "Review a PR" })).not.toHaveAttribute("aria-current");
+    expect(screen.getByRole("link", { name: "Pull requests" })).not.toHaveAttribute("aria-current");
   });
 
   it("navigates in the app on a plain click", () => {
@@ -27,21 +27,21 @@ describe("AppNav", () => {
   });
 
   it("collapses to icons with accessible names and remembers it", async () => {
-    const { unmount } = render(<AppNav current="review" hrefs={HREFS} myWorkCount={3} />);
+    const { unmount } = render(<AppNav current="prs" hrefs={HREFS} myWorkCount={3} />);
     await userEvent.click(screen.getByRole("button", { name: "Collapse navigation" }));
-    expect(screen.getByRole("link", { name: "Review a PR" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "Pull requests" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("button", { name: "Expand navigation" })).toHaveAttribute(
       "aria-expanded",
       "false",
     );
     unmount();
-    render(<AppNav current="review" hrefs={HREFS} myWorkCount={3} />);
+    render(<AppNav current="prs" hrefs={HREFS} myWorkCount={3} />);
     expect(screen.getByRole("button", { name: "Expand navigation" })).toBeInTheDocument();
   });
 
   it("explains each entry in a tooltip on focus", () => {
     render(<AppNav current={null} hrefs={HREFS} myWorkCount={null} />);
-    fireEvent.focus(screen.getByRole("link", { name: "Review a PR" }));
+    fireEvent.focus(screen.getByRole("link", { name: "Pull requests" }));
     expect(screen.getByRole("tooltip")).toHaveTextContent("Open a pull request by URL");
   });
 });

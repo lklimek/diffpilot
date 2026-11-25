@@ -133,7 +133,7 @@ test("the breadcrumb switches views and keeps the place; s goes back", async ({ 
   const crumbs = page.getByRole("navigation", { name: "Breadcrumb" });
   await expect(crumbs.getByRole("link", { name: "diffpilot" })).toHaveAttribute("href", "/");
   await crumbs.getByRole("button", { name: "View: Files" }).click();
-  await crumbs.getByRole("link", { name: "Flows" }).click();
+  await crumbs.getByRole("menuitemradio", { name: "Flows" }).click();
   await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}#f1\\.5$`));
   await expect(page.getByRole("main").locator("h2:not([data-column-title])").first()).toContainText(
     "Retry allowed?",

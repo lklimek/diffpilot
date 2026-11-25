@@ -4,8 +4,8 @@ import { Navigate, Outlet, useLocation, useOutletContext } from "react-router";
 import { useMe } from "../../api/queries";
 import type { AppSection } from "../../components/app-shell/AppNav";
 import { useUserEventNotifications } from "../../app/userEvents";
-import { ALL_CARRY_OVERS_PATH, WATCHING_PATH } from "../pr/paths";
-import { MY_WORK_PATH, REVIEW_START_PATH, SETTINGS_HELP_PATH, SETTINGS_PAGES, SETTINGS_PATH } from "./paths";
+import { ALL_CARRY_OVERS_PATH } from "../pr/paths";
+import { MY_WORK_PATH, PRS_PATH, SETTINGS_HELP_PATH, SETTINGS_PAGES, SETTINGS_PATH } from "./paths";
 import { ShellLayout } from "./ShellLayout";
 import { useSessionSignOut } from "./useSessionSignOut";
 import { ShellUserMenu } from "./ShellUserMenu";
@@ -23,19 +23,18 @@ export interface ShellSlots {
 
 const PAGES: Record<string, { section: AppSection; crumb: string }> = {
   [MY_WORK_PATH]: { section: "my-work", crumb: "My work" },
-  [REVIEW_START_PATH]: { section: "review", crumb: "Review a PR" },
+  [PRS_PATH]: { section: "prs", crumb: "Pull requests" },
   [SETTINGS_PATH]: { section: "settings", crumb: "Settings" },
   [SETTINGS_HELP_PATH]: { section: "settings", crumb: "Settings guide" },
-  [WATCHING_PATH]: { section: "watching", crumb: "Watched PRs" },
-  [ALL_CARRY_OVERS_PATH]: { section: "watching", crumb: "Carry-overs" },
+  [ALL_CARRY_OVERS_PATH]: { section: "prs", crumb: "Carry-overs" },
 };
 
-/** Layout route of `/`, `/review` and `/settings` (plan §F.2): the shell stays while its pages change. */
+/** Layout route of `/`, `/prs` and `/settings` (plan §F.2): the shell stays while its pages change. */
 export function ShellRoute() {
   const { pathname } = useLocation();
   const login = useMe().data?.user?.login ?? null;
   useUserEventNotifications();
-  // The router matches `/review/` as `/review`.
+  // The router matches `/prs/` as `/prs`.
   const path = pathname.replace(/(.)\/+$/, "$1");
   const settingsPage = SETTINGS_PAGES.find(({ href }) => href === path);
   const page = settingsPage
@@ -79,13 +78,12 @@ export function ShellActions({ children }: { children: ReactNode }) {
 }
 
 /**
- * `/`: My work; with `pr` or `login_error` in the query (old deep links, the OAuth error redirect) the review start
- * page with the same query.
+ * `/`: My work, with fallbacks for old PR deep links and OAuth errors.
  */
 export function StartRoute() {
   const { search } = useLocation();
   const query = new URLSearchParams(search);
-  if (query.has("pr") || query.has("login_error"))
-    return <Navigate to={{ pathname: REVIEW_START_PATH, search }} replace />;
+  if (query.has("pr")) return <Navigate to={{ pathname: "/review", search }} replace />;
+  if (query.has("login_error")) return <Navigate to={{ pathname: PRS_PATH, search }} replace />;
   return <DashboardScreen />;
 }

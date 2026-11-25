@@ -55,7 +55,7 @@ export function EmptyWork({
             onClick={navigateOnClick(reviewStartHref, onNavigate)}
             className={buttonClass("plain")}
           >
-            Review a PR by URL
+            Open a pull request by URL
           </a>
         </Tooltip>
       </p>

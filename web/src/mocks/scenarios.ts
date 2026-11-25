@@ -95,6 +95,8 @@ interface Scenario {
   me?: () => MeResponse;
   /** `GET /api/v1/analyses` answer (Recent reviews). */
   myAnalyses?: () => MyAnalyses;
+  legacyPrHistory?: boolean;
+  emptyPrHistory?: boolean;
   /** Changes to the `pr/resolve` answer of the fixture PR. */
   resolve?: (seed: ResolvePrResponse) => ResolvePrResponse;
   /** The analysis stays in this state (no scripted run after Start analysis). */
@@ -576,6 +578,8 @@ const SCENARIOS = {
     progress: (state) => waitingProgress("this_analysis", state),
   },
   "signed-out": { me: () => ({ user: null, csrf_token: null }) },
+  "legacy-pr-history": { legacyPrHistory: true },
+  "empty-pr-history": { emptyPrHistory: true },
   "no-reviews": { myAnalyses: () => ({ analyses: [] }) },
   "viewed-refused": { viewedError: "github_refused" },
   // Another Viewed change of this user and analysis is still being saved.

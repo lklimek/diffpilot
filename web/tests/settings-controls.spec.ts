@@ -50,10 +50,10 @@ test("pause and resume retain progress; cancellation explains loss before confir
   await expect(page.getByText(/Paused by alice/)).toHaveCount(0);
 });
 
-test("Home offers Resume for a user pause", async ({ page }) => {
-  await page.goto("/review?scenario=user-paused");
+test("The PR panel offers Resume for a user pause", async ({ page }) => {
+  await page.goto("/prs?scenario=user-paused");
   await analyze(page);
   await expect(page.getByText(/Resume when you want/)).toBeVisible();
   await page.getByRole("button", { name: "Resume", exact: true }).click();
-  await expect(page).toHaveURL(/\/pr\/acme\/node-client\/482$/);
+  await expect(page).toHaveURL(/\/pr\/acme\/node-client\/482(?:\?|$)/);
 });

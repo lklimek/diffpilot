@@ -2,13 +2,11 @@ import type { ReactNode } from "react";
 import { useNavigate } from "react-router";
 import { AppNav, type AppSection, type AppNavChild } from "../../components/app-shell/AppNav";
 import { ShellTopBar } from "../../components/app-shell/ShellTopBar";
-import { MY_WORK_PATH, REVIEW_START_PATH, SETTINGS_PATH } from "./paths";
-import { WATCHING_PATH } from "../pr/paths";
+import { MY_WORK_PATH, PRS_PATH, SETTINGS_PATH } from "./paths";
 
 const HREFS: Record<AppSection, string> = {
   "my-work": MY_WORK_PATH,
-  review: REVIEW_START_PATH,
-  watching: WATCHING_PATH,
+  prs: PRS_PATH,
   settings: SETTINGS_PATH,
 };
 
@@ -28,7 +26,7 @@ interface ShellLayoutProps {
 }
 
 /**
- * The navigation shell (plan §F.2): slim top bar, left navigation and the main region of `/`, `/review` and
+ * The navigation shell (plan §F.2): slim top bar, left navigation and the main region of `/`, `/prs` and
  * `/settings` (`ShellRoute`).
  */
 export function ShellLayout({

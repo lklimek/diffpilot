@@ -19,7 +19,7 @@ for (const colorScheme of ["light", "dark"] as const) {
     await page.goto("/?dashboard=mywork-details");
     const row = page.locator('li[data-item="acme~node-client~pr~482"]');
     const comments = row.getByRole("link", { name: "Comments of NC-482", exact: true });
-    const review = row.getByRole("link", { name: /^Open review of / });
+    const review = row.getByRole("link", { name: /^Review pull request / });
     await expect(comments).toHaveAttribute("href", "/pr/acme/node-client/482/comments");
     expect((await comments.boundingBox())!.y).toBeGreaterThan((await review.boundingBox())!.y);
     await comments.focus();

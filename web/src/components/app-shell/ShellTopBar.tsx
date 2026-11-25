@@ -32,20 +32,27 @@ export function ShellTopBar({
       >
         Skip to content
       </a>
-      <Tooltip tip="diffpilot start page: your GitHub work">
-        <a
-          href={homeHref}
-          onClick={navigateOnClick(homeHref, onNavigate)}
-          className="text-[15px] font-bold text-text no-underline"
-        >
-          diff<span className="text-accent">pilot</span>
-        </a>
-      </Tooltip>
-      {crumb && (
-        <span aria-hidden className="hidden text-[13px] text-muted sm:inline">
-          / {crumb}
-        </span>
-      )}
+      <nav aria-label="Breadcrumb" className="flex items-center gap-1.5">
+        <Tooltip tip="diffpilot start page: your GitHub work">
+          <a
+            href={homeHref}
+            onClick={navigateOnClick(homeHref, onNavigate)}
+            className="text-[15px] font-bold text-text no-underline"
+          >
+            diff<span className="text-accent">pilot</span>
+          </a>
+        </Tooltip>
+        {crumb && (
+          <>
+            <span aria-hidden className="hidden text-muted sm:inline">
+              ›
+            </span>
+            <span aria-current="page" className="sr-only text-[13px] text-muted sm:not-sr-only">
+              {crumb}
+            </span>
+          </>
+        )}
+      </nav>
       <span className="flex-1" />
       {children}
       {userMenu}

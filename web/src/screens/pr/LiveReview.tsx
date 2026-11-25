@@ -1,4 +1,4 @@
-import { useNavigate } from "react-router";
+import type { ReactNode } from "react";
 import { ApiError } from "../../api/client";
 import type { AnalysisId } from "../../api/generated/types";
 import {
@@ -10,34 +10,31 @@ import {
   useRetryAnalysis,
 } from "../../api/queries";
 import { useNow } from "../../app/now";
-import { analysisActivity, usePrTabSubject, useTabActivity } from "../../app/tabStatus";
+import { analysisActivity, useTabActivity } from "../../app/tabStatus";
 import { useProgressNotifications } from "../../app/workNotifications";
-import { buttonClass } from "../../components/button/button";
 import { LanguageTag } from "../../components/language-tag/LanguageTag";
 import { AnalysisProgress } from "../../components/progress/AnalysisProgress";
 import { StatusMessage } from "../../components/status/StatusMessage";
-import { Tooltip } from "../../components/tooltip/Tooltip";
-import type { HomeState } from "../home/HomeScreen";
-import { REVIEW_START_PATH } from "../shell/paths";
 
 const errorText = (error: unknown) =>
   error instanceof ApiError ? error.message : "Something went wrong. Try again.";
 
-/**
- * The live progress of the PR's analysis (the old progress page's content). The reader's own Cancel returns to
- * Review a PR; an analysis found cancelled stays on the PR page with "Check and start".
- */
-export function LiveReview({ analysisId }: { analysisId: AnalysisId }) {
+/** Live analysis progress and controls on the PR page. */
+export function LiveReview({
+  analysisId,
+  cancelledAction,
+}: {
+  analysisId: AnalysisId;
+  cancelledAction?: ReactNode;
+}) {
   const live = useAnalysisLive(analysisId);
   const cancel = useCancelAnalysis();
   const retry = useRetryAnalysis();
   const pause = usePauseAnalysis();
   const resume = useResumeAnalysis();
   const work = useFlowWork(analysisId);
-  const navigate = useNavigate();
   const summary = live.summary;
   useTabActivity("analysis", summary ? analysisActivity(summary.state) : null);
-  usePrTabSubject(summary?.pr);
   useProgressNotifications(summary);
   const now = useNow();
 
@@ -45,22 +42,12 @@ export function LiveReview({ analysisId }: { analysisId: AnalysisId }) {
   if (live.error !== undefined) return <StatusMessage kind="error">{errorText(live.error)}</StatusMessage>;
   if (!summary) return <StatusMessage kind="loading">Connecting…</StatusMessage>;
   if (summary.state.state === "cancelled") {
-    const start = `${REVIEW_START_PATH}?pr=${encodeURIComponent(summary.pr.html_url)}`;
     return (
       <>
-        <p>Analysis cancelled.</p>
-        <Tooltip tip="Opens Review a PR with this pull request: check it and start a new analysis.">
-          <a
-            href={start}
-            onClick={(event) => {
-              event.preventDefault();
-              void navigate(start);
-            }}
-            className={buttonClass("primary")}
-          >
-            Check and start
-          </a>
-        </Tooltip>
+        <p id="pr-analysis-cancelled" role="status">
+          Analysis cancelled. Its partial results were discarded.
+        </p>
+        {cancelledAction}
       </>
     );
   }
@@ -87,14 +74,7 @@ export function LiveReview({ analysisId }: { analysisId: AnalysisId }) {
         onBackground={(enabled) => work.background.mutate(enabled)}
         onPause={() => pause.mutate(analysisId)}
         onResume={() => resume.mutate(analysisId)}
-        onCancel={() =>
-          cancel.mutate(analysisId, {
-            onSuccess: (cancelled) => {
-              const state: HomeState = { cancelledPrUrl: cancelled.pr.html_url };
-              void navigate(REVIEW_START_PATH, { replace: true, state });
-            },
-          })
-        }
+        onCancel={() => cancel.mutate(analysisId)}
         onRetry={() => retry.mutate(analysisId)}
         activity={
           live.lastSignalAt !== undefined

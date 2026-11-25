@@ -1,6 +1,6 @@
 import { expect, test } from "./fixtures";
 import { ANALYSIS_ID } from "./support";
-import { PR_URL, analyze, expectAccessible, startAnalysis } from "./screens-support";
+import { analyze, expectAccessible, startAnalysis } from "./screens-support";
 
 const usage = "LLM usage so far: 1.2 M input (0.9 M cached), 45 k output tokens in 7 jobs";
 
@@ -22,26 +22,22 @@ test("usage appears in progress, PR-context facts and Settings with its provider
 });
 
 test("large PR warns in the check card and starts only on Start analysis anyway", async ({ page }) => {
-  await page.goto("/review?scenario=large-pr");
+  await page.goto("/prs?scenario=large-pr");
   await analyze(page);
   await expect(page.getByRole("note")).toContainText("Large PR: 27 081 changed lines in 371 files.");
   await expect(page.getByRole("note")).toContainText("rough estimate from changed lines in recent runs");
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  // Nothing has started yet; an edited URL clears the card, so its warning and Start never apply to another PR.
-  await expect(page).toHaveURL(/\/review\?scenario=large-pr$/);
-  const field = page.getByLabel("GitHub pull request URL");
-  await field.fill("https://github.com/acme/other/pull/1");
-  await expect(page.getByRole("note")).toHaveCount(0);
-  await expect(page.getByRole("region", { name: "Pull request check" })).toHaveCount(0);
-  await field.fill(PR_URL);
-  await expect(page.getByRole("region", { name: "Pull request check" })).toHaveCount(0);
-  await analyze(page);
+  await expect(page).toHaveURL("/pr/acme/node-client/482?scenario=large-pr");
+  await expect(page.getByRole("region", { name: "Analysis progress" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Start analysis anyway" })).toHaveAccessibleDescription(
+    /27 081 changed lines/,
+  );
   await startAnalysis(page, "Start analysis anyway");
-  await expect(page).toHaveURL(/\/pr\/acme\/node-client\/482$/);
+  await expect(page).toHaveURL("/pr/acme/node-client/482?scenario=large-pr");
 });
 
 test("without history the large-PR note makes no timing claim", async ({ page }) => {
-  await page.goto("/review?scenario=large-pr-no-history");
+  await page.goto("/prs?scenario=large-pr-no-history");
   await analyze(page);
   await expect(page.getByRole("note")).toContainText("No time estimate yet.");
   await expect(page.getByRole("note")).not.toContainText("Based on recent runs");

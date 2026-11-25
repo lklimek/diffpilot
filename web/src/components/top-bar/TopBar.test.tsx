@@ -28,10 +28,8 @@ describe("TopBar", () => {
       />,
     );
     const banner = screen.getByRole("banner");
-    const prLink = within(banner).getByRole("link", { name: "#482 (opens on GitHub in a new tab)" });
-    expect(
-      within(banner).getByRole("link", { name: "acme/node-client (opens on GitHub in a new tab)" }),
-    ).toHaveAttribute("href", "https://github.com/acme/node-client");
+    const prLink = within(banner).getByRole("link", { name: "Open acme/node-client#482 on GitHub, new tab" });
+    expect(within(banner).getByRole("link", { name: "Pull requests" })).toHaveAttribute("href", "/prs");
     expect(prLink).toHaveAttribute("href", "https://github.com/acme/node-client/pull/482");
     expect(prLink).toHaveAttribute("target", "_blank");
     expect(prLink).toHaveAttribute("rel", expect.stringContaining("noopener"));
@@ -84,34 +82,37 @@ describe("TopBar", () => {
       flowsHref: "/analyses/a",
       filesHref: "/analyses/a/files",
       depsHref: "/analyses/a/deps",
-      prContextHref: "/analyses/a#pr_context",
+      prPageHref: "/pr/acme/node-client/482",
       onNavigate,
     };
     render(<TopBar pr={tour.analysis.pr} view={view} progress={{ reviewed: 1, total: 5 }} />);
     const crumbs = screen.getByRole("navigation", { name: "Breadcrumb" });
     expect(within(crumbs).getByRole("link", { name: "diffpilot" })).toHaveAttribute("href", "/");
     const repo = within(crumbs).getByRole("link", { name: "acme/node-client #482" });
-    expect(repo).toHaveAttribute("href", "/analyses/a#pr_context");
-    expect(repo).toHaveAccessibleDescription(/PR context/);
+    expect(repo).toHaveAttribute("href", "/pr/acme/node-client/482");
+    expect(repo).toHaveAccessibleDescription(/acme\/node-client #482/);
     const github = within(crumbs).getByRole("link", {
-      name: "Pull request #482 on GitHub (opens on GitHub in a new tab)",
+      name: "Open acme/node-client#482 on GitHub, new tab",
     });
     expect(github).toHaveAttribute("href", "https://github.com/acme/node-client/pull/482");
     expect(github).toHaveAttribute("target", "_blank");
     await userEvent.click(repo);
-    expect(onNavigate).toHaveBeenLastCalledWith("/analyses/a#pr_context");
+    expect(onNavigate).toHaveBeenLastCalledWith("/pr/acme/node-client/482");
     const menu = within(crumbs).getByRole("button", { name: "View: Files" });
     expect(menu).toHaveAttribute("aria-expanded", "false");
     await userEvent.click(menu);
     expect(menu).toHaveAttribute("aria-expanded", "true");
-    expect(within(crumbs).getByRole("link", { name: "Files" })).toHaveAttribute("aria-current", "page");
-    const flows = within(crumbs).getByRole("link", { name: "Flows" });
-    expect(flows).not.toHaveAttribute("aria-current");
+    expect(within(crumbs).getByRole("menuitemradio", { name: "Files" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    const flows = within(crumbs).getByRole("menuitemradio", { name: "Flows" });
+    expect(flows).toHaveAttribute("aria-checked", "false");
     await userEvent.click(flows);
     expect(onNavigate).toHaveBeenLastCalledWith("/analyses/a");
     expect(menu).toHaveAttribute("aria-expanded", "false");
     await userEvent.click(menu);
-    await userEvent.click(within(crumbs).getByRole("link", { name: "Dependencies" }));
+    await userEvent.click(within(crumbs).getByRole("menuitemradio", { name: "Dependencies" }));
     expect(onNavigate).toHaveBeenLastCalledWith("/analyses/a/deps");
     await userEvent.click(menu);
     await userEvent.keyboard("{Escape}");
@@ -126,19 +127,21 @@ describe("TopBar", () => {
       flowsHref: "/analyses/a",
       filesHref: "/analyses/a/files",
       depsHref: "/analyses/a/deps",
-      prContextHref: "/analyses/a#pr_context",
+      prPageHref: "/pr/acme/node-client/482",
       onNavigate: vi.fn(),
     };
     render(<TopBar pr={tour.analysis.pr} view={view} />);
     const menu = screen.getByRole("button", { name: "View: Dependencies" });
     expect(menu).toHaveAccessibleDescription(/Dependencies \(crates this pull request changes/);
     await userEvent.click(menu);
-    const links = within(screen.getByRole("navigation", { name: "Breadcrumb" })).getAllByRole("link");
+    const links = within(screen.getByRole("navigation", { name: "Breadcrumb" })).getAllByRole(
+      "menuitemradio",
+    );
     expect(links.slice(-3).map((l) => l.textContent)).toEqual(["Flows", "Files", "✓Dependencies"]);
     expect(
-      within(screen.getByRole("navigation", { name: "Breadcrumb" })).getByRole("link", {
+      within(screen.getByRole("navigation", { name: "Breadcrumb" })).getByRole("menuitemradio", {
         name: "Dependencies",
       }),
-    ).toHaveAttribute("aria-current", "page");
+    ).toHaveAttribute("aria-checked", "true");
   });
 });

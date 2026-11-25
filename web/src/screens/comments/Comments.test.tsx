@@ -27,11 +27,11 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("V0 PR page (US1, US19)", () => {
-  it("shows Review a PR and Process PR comments; Watch toggles", async () => {
+  it("shows Review the code and Process PR comments; Watch toggles", async () => {
     renderRoute(PR);
     expect(await screen.findByRole("heading", { level: 1, name: /acme\/node-client #482/ })).toBeVisible();
     expect(screen.getByText(/^by octo-dev · base/)).toBeVisible();
-    expect(screen.getByRole("button", { name: "Review a PR" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "Review the code" })).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("button", { name: "Process PR comments" })).toHaveAttribute(
       "aria-expanded",
       "true",
@@ -47,14 +47,11 @@ describe("V0 PR page (US1, US19)", () => {
     expectTrustWording(text());
   });
 
-  it("without an analysis: No analysis yet · Check and start", async () => {
+  it("without an analysis: No analysis yet · Start analysis", async () => {
     setScenario("comments-no-analysis");
     renderRoute(PR);
     expect(await screen.findByText("No analysis yet.")).toBeVisible();
-    expect(screen.getByRole("link", { name: "Check and start" })).toHaveAttribute(
-      "href",
-      `/review?pr=${encodeURIComponent("https://github.com/acme/node-client/pull/482")}`,
-    );
+    expect(screen.getByRole("button", { name: "Start analysis" })).toBeEnabled();
   });
 });
 
@@ -161,7 +158,7 @@ describe("V1 Questions (US3, US4, US11)", () => {
     );
     expect(await within(chat).findByText("Why out of scope?")).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "View: Comments" }));
-    expect(screen.getByRole("link", { name: /Flows/ })).toHaveTextContent("Needs an analysis");
+    expect(screen.getByRole("menuitemradio", { name: /Flows/ })).toHaveTextContent("Needs an analysis");
   });
 
   it("GitHub read failure: the last read and the failure in plain words", async () => {
@@ -217,13 +214,16 @@ describe("V4–V6 and Settings → Notifications", () => {
     expect(await screen.findByRole("heading", { name: "Carry-overs on all pull requests" })).toBeVisible();
   });
 
-  it("watched list unwatches", async () => {
+  it("the watched filter opens in Pull requests and can stop a watch", async () => {
     renderRoute("/watching");
-    expect(await screen.findByRole("heading", { name: "Watched pull requests" })).toBeVisible();
-    expect(screen.getByRole("link", { name: /Watched PRs/ })).toHaveAttribute("aria-current", "page");
-    await userEvent.click(await screen.findByRole("button", { name: "Unwatch acme/node-client #482" }));
+    expect(await screen.findByRole("heading", { name: "Pull requests" })).toBeVisible();
+    expect(await screen.findByRole("button", { name: "Watched" })).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "More actions for acme/node-client #482" }),
+    );
+    await userEvent.click(screen.getByRole("menuitem", { name: "Stop watching" }));
     await waitFor(() =>
-      expect(screen.queryByRole("button", { name: "Unwatch acme/node-client #482" })).toBeNull(),
+      expect(screen.queryByRole("button", { name: "More actions for acme/node-client #482" })).toBeNull(),
     );
   });
 

@@ -1,76 +1,66 @@
-import { useId, useState, type Ref } from "react";
-import { busyTip, buttonClass } from "../button/button";
-import { assignRef } from "../inspector/action";
+import { useId, useRef, useState } from "react";
+import { buttonClass } from "../button/button";
 import { Tooltip } from "../tooltip/Tooltip";
 
-interface PrUrlFormProps {
-  /** Value the field starts with. */
-  initialUrl?: string;
-  /** A request is running: Check is unavailable (aria-disabled, its tip says why). */
-  busy: boolean;
-  /** The check of the URL is the running request: shown on the field and the button. */
-  checking?: boolean;
-  /** The URL field, e.g. to return the focus to it. */
-  inputRef?: Ref<HTMLInputElement>;
-  /** Called with the trimmed URL. */
-  onSubmit: (url: string) => void;
-  /** Called with the trimmed URL on every edit. */
-  onChange?: (url: string) => void;
-}
-
-/** The one input of Home: GitHub PR URL with an example, and Check (a lookup; it starts nothing). */
 export function PrUrlForm({
   initialUrl = "",
-  busy,
-  checking = false,
-  inputRef,
-  onSubmit,
-  onChange,
-}: PrUrlFormProps) {
+  initialError = false,
+  onOpen,
+}: {
+  initialUrl?: string;
+  initialError?: boolean;
+  onOpen: (value: string) => boolean;
+}) {
   const id = useId();
-  const [url, setUrl] = useState(initialUrl);
+  const input = useRef<HTMLInputElement>(null);
+  const [value, setValue] = useState(initialUrl);
+  const [invalid, setInvalid] = useState(initialError);
+
   return (
     <form
+      aria-labelledby={`${id}-heading`}
+      className="min-w-0 rounded-lg border border-border bg-surface p-3"
       onSubmit={(event) => {
         event.preventDefault();
-        if (!busy) onSubmit(url.trim());
+        if (!onOpen(value)) {
+          setInvalid(true);
+          input.current?.focus();
+        }
       }}
     >
-      <label htmlFor={id} className="mb-1 block text-xs font-semibold">
-        GitHub pull request URL
-      </label>
-      <div className="flex gap-2">
+      <h2 id={`${id}-heading`} className="mb-2 text-base font-semibold">
+        Open a pull request
+      </h2>
+      <div className="flex flex-wrap items-start gap-2">
+        <label htmlFor={id} className="sr-only">
+          GitHub pull request URL
+        </label>
         <input
-          ref={(el) => assignRef(inputRef, el)}
           id={id}
-          type="url"
-          required
-          autoComplete="off"
-          value={url}
-          aria-busy={checking || undefined}
+          ref={input}
+          type="text"
+          inputMode="url"
+          value={value}
+          aria-invalid={invalid || undefined}
+          aria-describedby={invalid ? `${id}-error` : undefined}
           onChange={(event) => {
-            setUrl(event.target.value);
-            onChange?.(event.target.value.trim());
+            setValue(event.target.value);
+            setInvalid(false);
           }}
-          aria-describedby={`${id}-help`}
-          className={`min-w-0 flex-1 rounded-md border bg-surface px-2.5 py-1.5 font-mono ${
-            checking ? "border-accent motion-safe:animate-pulse" : "border-muted"
-          }`}
+          placeholder="https://github.com/owner/repo/pull/123 or owner/repo#123"
+          className="min-h-8 w-full min-w-0 rounded border border-muted bg-surface px-2 py-1 sm:w-auto sm:flex-1"
         />
-        <Tooltip
-          tip={busyTip(
-            "Looks the pull request up: any existing analysis, and a size warning for a large one. Nothing starts until you press Start analysis.",
-            busy,
-          )}
-        >
-          <button type="submit" aria-disabled={busy || undefined} className={buttonClass("primary")}>
-            {checking ? "Checking…" : "Check"}
+        <Tooltip tip="Opens the pull request page, where you can start analysis or process comments.">
+          <button type="submit" className={buttonClass("primary")}>
+            Open
           </button>
         </Tooltip>
       </div>
-      <p id={`${id}-help`} className="mt-1 text-xs text-muted">
-        Example: https://github.com/owner/repo/pull/123
-      </p>
+      {invalid && (
+        <p id={`${id}-error`} role="alert" className="mt-2 text-sm text-high [overflow-wrap:anywhere]">
+          Enter a GitHub pull request link like https://github.com/owner/repo/pull/123 or owner/repo#123.
+        </p>
+      )}
     </form>
   );
 }

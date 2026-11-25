@@ -135,7 +135,7 @@ test("classic diff of a step: d toggles the base → head view of the file", asy
   await expect(diff).toHaveCount(0);
 });
 
-test("resume where left off: the tick and the last viewed block survive a reload and Home", async ({
+test("resume where left off: the tick and the last viewed block survive a a reload and reopening the PR", async ({
   page,
 }) => {
   const id = await finishedReview(page);
@@ -151,12 +151,12 @@ test("resume where left off: the tick and the last viewed block survive a reload
   await expect(heading(page)).toContainText("Default timeout");
   await expect(ticked).toBeVisible();
 
-  await page.goto("/review");
+  await page.goto("/prs");
   await checkPr(page);
   const found = page.getByRole("status").filter({ hasText: "Analysis found." });
   await expect(found).toContainText("Your ticks, answers and last viewed block are kept");
   await checkScreen(page);
-  await found.getByRole("link", { name: "Open", exact: true }).click();
+  await found.getByRole("link", { name: "Open review", exact: true }).click();
   await expect(heading(page)).toContainText("Default timeout");
   await expect(ticked).toBeVisible();
   await checkScreen(page);

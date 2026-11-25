@@ -44,6 +44,8 @@ function Tree({ view, onNavigate = vi.fn() }: { view: DependencyView; onNavigate
       open={open}
       onToggle={(key, value) => setOpen((o) => ({ ...o, [key]: value }))}
       links={links(onNavigate)}
+      showUnchanged
+      targetCrate={null}
     />
   );
 }
@@ -310,7 +312,16 @@ describe("DependencyTree (repository → crate → facts and notes, disclosure b
 
   it("onToggle receives the level's key and its new state", async () => {
     const onToggle = vi.fn();
-    render(<DependencyTree view={mockDependenciesMulti()} open={{}} onToggle={onToggle} links={links()} />);
+    render(
+      <DependencyTree
+        view={mockDependenciesMulti()}
+        open={{}}
+        onToggle={onToggle}
+        links={links()}
+        showUnchanged
+        targetCrate={null}
+      />,
+    );
     await userEvent.click(screen.getByRole("button", { name: /^acme\/node-client/ }));
     expect(onToggle).toHaveBeenCalledWith("this", false);
     await userEvent.click(screen.getByRole("button", { name: /^node-client/ }));
@@ -335,7 +346,7 @@ describe("DependencyTree (repository → crate → facts and notes, disclosure b
     await userEvent.click(screen.getByRole("button", { name: /^acme\/node-sdk/ }));
     const crate = screen.getByRole("button", { name: /^rpc-types/ });
     expect(crate).toHaveTextContent("rpc-types 0.3.1");
-    expect(crate).toHaveTextContent("used by node-client");
+    expect(crate.closest("li")).toHaveTextContent("Used by node-client");
     expect(crate).toHaveTextContent("1 conversion added for its types");
     await userEvent.click(crate);
     const row = crate.closest("li")!;

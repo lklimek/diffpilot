@@ -46,22 +46,37 @@ export async function signIn(page: Page, login = "alice"): Promise<void> {
   expect((await status.json()).state).toBe("linked");
 }
 
-/**
- * Pastes the PR URL on the review start page (`/review`, opened unless shown) and presses Check: the result card
- * opens; nothing starts.
- */
-export async function checkPr(page: Page): Promise<void> {
-  if (new URL(page.url()).pathname !== "/review") await page.goto("/review");
-  await page.getByLabel("GitHub pull request URL").fill(PR_URL);
-  await page.getByRole("button", { name: "Check" }).click();
-  await expect(page.getByRole("region", { name: "Pull request check" })).toBeVisible();
-}
-
-/** The fixture PR's PR page (review-workflow-plan §3.1 V0): Review a PR shows its latest analysis's progress. */
+/** The fixture PR page. */
 export const PR_PAGE_PATH = "/pr/acme/node-client/482";
 
+/** Opens the PR by URL and waits for its read-only check. */
+export async function checkPr(page: Page): Promise<void> {
+  if (new URL(page.url()).pathname !== "/prs") await page.goto("/prs");
+  const started: string[] = [];
+  const track = (request: import("@playwright/test").Request) => {
+    if (request.method() === "POST" && new URL(request.url()).pathname === "/api/v1/analyses")
+      started.push(request.url());
+  };
+  page.on("request", track);
+  try {
+    await page.getByLabel("GitHub pull request URL").fill(PR_URL);
+    await page.getByRole("button", { name: "Open", exact: true }).click();
+    await expect(page).toHaveURL(PR_PAGE_PATH);
+    const panel = page.getByRole("region", { name: "Review the code" });
+    await expect(
+      panel
+        .getByRole("button", { name: /^Start analysis/ })
+        .or(panel.getByRole("link", { name: "Open review", exact: true }))
+        .or(panel.getByRole("region", { name: "Analysis progress" })),
+    ).toBeVisible();
+    expect(started, "opening the PR should not start analysis").toEqual([]);
+  } finally {
+    page.off("request", track);
+  }
+}
+
 /**
- * Presses the check card's Start analysis (or Start analysis anyway) and returns the new analysis id
+ * Presses Start analysis on the PR page and returns the new analysis id
  * (the PR page open, showing that analysis's progress).
  */
 export async function startAnalysis(page: Page): Promise<string> {
@@ -70,8 +85,8 @@ export async function startAnalysis(page: Page): Promise<string> {
       response.request().method() === "POST" && new URL(response.url()).pathname === "/api/v1/analyses",
   );
   await page
-    .getByRole("region", { name: "Pull request check" })
-    .getByRole("button", { name: /^Start analysis( anyway)?$/ })
+    .getByRole("region", { name: "Review the code" })
+    .getByRole("button", { name: /^Start analysis( of the new head)?( anyway)?$/ })
     .click();
   const response = await created;
   expect(response.status(), await response.text()).toBe(201);
@@ -85,7 +100,7 @@ export async function startAnalysis(page: Page): Promise<string> {
   return id;
 }
 
-/** Checks the PR on the review start page and starts its analysis: returns the new analysis id (PR page open). */
+/** Opens the PR from Pull requests and starts its analysis: returns the new analysis id (PR page open). */
 export async function analyze(page: Page): Promise<string> {
   await checkPr(page);
   return startAnalysis(page);
@@ -134,10 +149,10 @@ export async function waitForState(page: Page, id: string, wanted: string, timeo
 export async function finishedReview(page: Page): Promise<string> {
   await signIn(page);
   await checkPr(page);
-  const card = page.getByRole("region", { name: "Pull request check" });
+  const card = page.getByRole("region", { name: "Review the code" });
   // An existing analysis may or may not have been opened by this user before.
-  const resume = card.getByRole("link", { name: "Open", exact: true });
-  const start = card.getByRole("button", { name: /^Start analysis( anyway)?$/ });
+  const resume = card.getByRole("link", { name: "Open review", exact: true });
+  const start = card.getByRole("button", { name: /^Start analysis( of the new head)?( anyway)?$/ });
   await expect(resume.or(start).first()).toBeVisible();
   if (await resume.isVisible()) {
     await resume.click();
@@ -145,7 +160,7 @@ export async function finishedReview(page: Page): Promise<string> {
     const id = await startAnalysis(page);
     await analyseAllRemainingFlows(page);
     await waitForState(page, id, "finished");
-    await page.getByRole("link", { name: "Open", exact: true }).click();
+    await page.getByRole("link", { name: "Open review", exact: true }).click();
   }
   await expect(page).toHaveURL(/\/analyses\/[0-9a-f-]+$/);
   await navTo(page, /^PR context$/);
@@ -241,7 +256,7 @@ export interface RequiredTip {
 
 const REVIEW = 'nav[aria-label="Flows and steps"]';
 const PROGRESS = 'section[aria-label="Analysis progress"]';
-const HOME = 'form:has(input[type="url"])';
+const PR_OPENER = 'form:has(input[inputmode="url"])';
 const USER_MENU = 'header button[aria-haspopup="dialog"]';
 const USER_PANEL = 'header [role="dialog"][aria-label$=": account and LLM activity"]';
 
@@ -345,11 +360,11 @@ export const REQUIRED_TIPS: RequiredTip[] = [
     min: 1,
   },
   {
-    screen: HOME,
+    screen: PR_OPENER,
     label: "GitHub pull request URL",
-    what: "Check",
-    selector: `${HOME} button[type="submit"]`,
-    name: "^Check$",
+    what: "Open pull request",
+    selector: `${PR_OPENER} button[type="submit"]`,
+    name: "^Open$",
     min: 1,
   },
 ];

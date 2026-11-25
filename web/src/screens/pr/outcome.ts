@@ -1,8 +1,8 @@
-// What Home offers after resolving a PR URL (brief §4.1).
+// What the PR panel offers after resolving a PR URL (brief §4.1).
 import type { AnalysisSummary, ResolvePrResponse } from "../../api/generated/types";
 
-/** Home's answer to a resolved PR. */
-export type HomeOutcome =
+/** The panel’s answer to a resolved PR. */
+export type ReviewOutcome =
   | { kind: "analyze" }
   | { kind: "resume"; analysis: AnalysisSummary }
   | { kind: "in_progress"; analysis: AnalysisSummary }
@@ -10,7 +10,7 @@ export type HomeOutcome =
   | { kind: "head_moved"; analysis: AnalysisSummary };
 
 /** No analysis (or a cancelled one): offer Start analysis; head moved: offer a fresh one; else resume the analysis. */
-export function homeOutcome(resolved: ResolvePrResponse): HomeOutcome {
+export function reviewOutcome(resolved: ResolvePrResponse): ReviewOutcome {
   const { analysis } = resolved;
   if (!analysis || analysis.state.state === "cancelled") return { kind: "analyze" };
   if (resolved.head_moved) return { kind: "head_moved", analysis };

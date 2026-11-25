@@ -36,7 +36,7 @@ test("after a failed LLM call the status is a plain sentence with its time; Retr
   await expect(lastCall).toContainText("No LLM call yet.");
   await checkScreen(page);
 
-  await page.goto("/review");
+  await page.goto("/prs");
   const id = await analyze(page);
   await waitForState(page, id, "failed");
   await page.goto("/settings/llm");

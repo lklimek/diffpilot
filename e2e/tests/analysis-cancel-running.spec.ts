@@ -4,7 +4,8 @@ import {
   analyseAllRemainingFlows,
   analyze,
   checkScreen,
-  PR_URL,
+  PR_PAGE_PATH,
+  startAnalysis,
   runnerEvents,
   signIn,
   sql,
@@ -60,7 +61,7 @@ test("cancel after a stored flow while the next flow runs: job stopped, results 
     "The agent's session for this pull request is kept. Pause keeps everything.",
   );
   await page.getByRole("button", { name: "Confirm cancel", exact: true }).click();
-  await expect(page).toHaveURL(/\/review$/);
+  await expect(page).toHaveURL(PR_PAGE_PATH);
   await waitForState(page, id, "cancelled", 20_000);
   const cancelledAt = Date.now();
   await checkScreen(page);
@@ -84,8 +85,8 @@ test("cancel after a stored flow while the next flow runs: job stopped, results 
   expect(prSession("thread_id")).toEqual(thread);
 
   // Analyse again: a new analysis that runs to the end with the retained PR session.
-  await expect(page.getByLabel("GitHub pull request URL")).toHaveValue(PR_URL);
-  const fresh = await analyze(page);
+  await expect(page.getByText(/Analysis cancelled\./)).toBeVisible();
+  const fresh = await startAnalysis(page);
   expect(fresh).not.toBe(id);
   await analyseAllRemainingFlows(page);
   await waitForState(page, fresh, "finished");

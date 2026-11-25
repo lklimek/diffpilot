@@ -106,7 +106,7 @@ test("PR page → Comments → the LLM assessment arrives → a decision stores 
     "Assessment pending or running · 0 of 12 comments assessed",
     "3 (thepastaclaw)",
   ]);
-  await expect(page.getByRole("region", { name: "Review a PR" })).toContainText("No analysis yet.");
+  await expect(page.getByRole("region", { name: "Review the code" })).toContainText("No analysis yet.");
   await checkScreen(page);
 
   await card.getByRole("link", { name: "Open Comments →" }).click();

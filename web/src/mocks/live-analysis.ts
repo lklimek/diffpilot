@@ -1,6 +1,6 @@
 // The fixture analysis as the mocks' server holds it: create, cancel and retry change it, a scripted run moves it
 // planning → running k of n → finished, and every change is published to the open event streams.
-import type { AnalysisState, AnalysisSummary } from "../api/generated/types";
+import type { AnalysisState, AnalysisSummary, PrSummary } from "../api/generated/types";
 import { seedNow } from "./fixtures";
 import { flowStage, scenario } from "./scenarios";
 
@@ -33,11 +33,15 @@ export function liveAnalysis(): AnalysisSummary {
   return progress ? { ...summary, progress: progress(summary.state) } : summary;
 }
 
+/** Whether an analysis has changed since the fixture was loaded. */
+export const hasLiveChanges = () => stored !== null;
+
 /** Publishes a new state. */
-export function setLiveState(state: AnalysisState): AnalysisSummary {
+export function setLiveState(state: AnalysisState, pr?: PrSummary): AnalysisSummary {
   const terminal = ["finished", "failed", "cancelled"].includes(state.state);
   stored = {
     ...liveAnalysis(),
+    ...(pr ? { pr } : {}),
     state,
     ...(state.state === "cancelled" ? { review_ready: false } : {}),
     finished_at: terminal ? new Date().toISOString() : null,

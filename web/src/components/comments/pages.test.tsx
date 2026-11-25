@@ -12,7 +12,6 @@ import {
   prPage,
   resetChannels,
   resetReviewLoop,
-  watches,
 } from "../../mocks/review-loop";
 import { CollapsibleSection } from "../collapsible/CollapsibleSection";
 import { NotificationChannelCard } from "../settings/NotificationChannelCard";
@@ -21,7 +20,6 @@ import { DecisionLog } from "./DecisionLog";
 import { ProcessCommentsCard } from "./ProcessCommentsCard";
 import { RoundsTable } from "./RoundsTable";
 import { StateBadge } from "./StateBadge";
-import { WatchedList } from "./WatchedList";
 
 const NOW = new Date("2026-11-18T09:27:00Z");
 const PR = { repo: { owner: "acme", name: "node-client" }, number: 482 };
@@ -101,32 +99,6 @@ describe("ProcessCommentsCard (V0)", () => {
     expect(screen.getByRole("status")).toHaveTextContent(
       "GitHub could not be read (GitHub did not answer as expected). Nothing was read from GitHub yet.",
     );
-  });
-});
-
-describe("WatchedList (V6)", () => {
-  it("lists watches with state badges and Unwatch; an ended watch says so", async () => {
-    const onUnwatch = vi.fn();
-    render(
-      <WatchedList
-        list={watches()}
-        prHref={() => "/pr/x"}
-        onNavigate={vi.fn()}
-        onUnwatch={onUnwatch}
-        busy={false}
-        now={NOW}
-      />,
-    );
-    expect(screen.getByText(/4 of 20 watched/)).toBeVisible();
-    expect(screen.getByText(/Assessments charged to you in the last 24 hours: 7 of 80/)).toBeVisible();
-    expect(screen.getByText("Waiting for bot round")).toBeVisible();
-    expect(screen.getByText(/watching ended/)).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "Unwatch acme/wire-codec #77" }));
-    expect(onUnwatch).toHaveBeenCalledWith({ repo: { owner: "acme", name: "wire-codec" }, number: 77 });
-    expect(
-      screen.getByRole("link", { name: "Open acme/wire-codec #77 on GitHub (new tab)" }),
-    ).toHaveAttribute("href", "https://github.com/acme/wire-codec/pull/77");
-    expectTrustWording(text());
   });
 });
 

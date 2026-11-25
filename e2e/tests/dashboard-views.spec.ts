@@ -124,7 +124,7 @@ test("the kind toggles are remembered over a reload", async ({ page }) => {
 test("Recent reviews on the review start page lists the user's analysis", async ({ page }) => {
   await signIn(page);
   const id = await analyze(page);
-  await page.goto("/review");
+  await page.goto("/prs");
   const recent = page.getByRole("region", { name: "Recent reviews" });
   const link = recent.getByRole("link", { name: /^acme\/node-client #482\b/ });
   await expect(link).toHaveCount(1);

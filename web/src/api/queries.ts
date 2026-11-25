@@ -29,8 +29,8 @@ import { reviewStates } from "./review-state";
 export const useMe = () => useQuery({ queryKey: ["me"], queryFn: api.getMe });
 
 /** The reader's own analyses, the latest per PR, newest first (Recent reviews); disabled while signed out. */
-export const useMyAnalyses = (enabled: boolean) =>
-  useQuery({ queryKey: ["my-analyses"], queryFn: () => api.listMyAnalyses(), enabled });
+export const useMyAnalyses = (enabled: boolean, limit?: number) =>
+  useQuery({ queryKey: ["my-analyses", limit], queryFn: () => api.listMyAnalyses({ limit }), enabled });
 
 /** The review-ready analysis's tour, including pending flow placeholders. */
 export const useTour = (id: AnalysisId) =>
@@ -301,7 +301,9 @@ export const useCommentActions = (id: AnalysisId) => {
 };
 
 /** Resolves a PR URL: the PR now, its latest analysis, head moved, commenting available. */
-export const useResolvePr = () => useMutation({ mutationFn: (url: string) => api.resolvePr({ url }) });
+export const prCheckKey = (url: string) => ["pr-check", url] as const;
+export const useResolvePr = (url: string) =>
+  useQuery({ queryKey: prCheckKey(url), queryFn: () => api.resolvePr({ url }), retry: false });
 
 /** Requests a fresh analysis of a PR at the head the user saw. */
 export const useCreateAnalysis = () => useMutation({ mutationFn: api.createAnalysis });

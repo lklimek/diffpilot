@@ -6,7 +6,7 @@ import { useEffect } from "react";
 import { useNavigate } from "react-router";
 import { api } from "../api/client";
 import type { UserEvent } from "../api/generated/types";
-import { commentsPath } from "../screens/pr/paths";
+import { prPath } from "../screens/pr/paths";
 import { notifyWorkDone, useNotifySetting, type WorkEvent } from "./workNotifications";
 
 /** The notification of a user event; its key is the event id, so every tab shows it once. */
@@ -15,7 +15,7 @@ export function userEventNotice(event: UserEvent): WorkEvent {
     key: `user-event:${event.id}`,
     title: "diffpilot",
     body: event.text,
-    path: event.pr ? commentsPath(event.pr) : SETTINGS_NOTIFICATIONS_PATH,
+    path: event.pr ? prPath(event.pr) : SETTINGS_NOTIFICATIONS_PATH,
   };
 }
 

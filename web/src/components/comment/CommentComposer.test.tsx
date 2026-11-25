@@ -229,7 +229,7 @@ describe("CommentComposer", () => {
       "/review?pr=https%3A%2F%2Fgithub.com%2Facme%2Fnode-client%2Fpull%2F482",
     );
     expect(link).toHaveAccessibleDescription(
-      "Opens Review a PR with this pull request checked; Start analysis there analyses its new head. Ticks are not carried over.",
+      "Opens the pull request page. Start analysis of the new head starts a fresh analysis; ticks stay with the old one.",
     );
   });
 

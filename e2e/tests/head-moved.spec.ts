@@ -1,10 +1,9 @@
-// Journey (c)/(e): the PR head moves after the analysis — a comment answers pr_head_changed, Home shows the moved
+// Journey (c)/(e): the PR head moves after the analysis — a comment answers pr_head_changed, the PR page shows the moved
 // head with Start analysis, the new analysis starts without ticks, and Ask on the superseded analysis is still answered
 // (the PR keeps its session).
 import { type Page } from "@playwright/test";
 import {
   analyseAllRemainingFlows,
-  checkPr,
   checkScreen,
   finishedReview,
   heading,
@@ -55,10 +54,10 @@ test("head moved: comment refused with pr_head_changed, Start analysis, the supe
   expect(await pending(page, old)).toEqual([]);
   await checkScreen(page);
 
-  await page.goto("/review");
-  await checkPr(page);
+  await inspector(page).getByRole("link", { name: "Analyse the new head" }).click();
+  await expect(page).toHaveURL("/pr/acme/node-client/482");
   const banner = page.getByRole("alert").filter({ hasText: "The PR has moved." });
-  await expect(banner).toContainText(`This analysis is for 52d2da1; the PR is now at ${moved.slice(0, 7)}.`);
+  await expect(banner).toContainText(`Analysis of 52d2da1; the PR is now at ${moved.slice(0, 7)}.`);
   await expect(banner.getByRole("link", { name: "Open the old analysis" })).toHaveAttribute(
     "href",
     `/analyses/${old}`,
@@ -68,7 +67,7 @@ test("head moved: comment refused with pr_head_changed, Start analysis, the supe
   expect(fresh).not.toBe(old);
   await analyseAllRemainingFlows(page);
   await waitForState(page, fresh, "finished");
-  await page.getByRole("link", { name: "Open", exact: true }).click();
+  await page.getByRole("link", { name: "Open review", exact: true }).click();
   await expect(page.getByRole("banner")).toContainText(moved.slice(0, 7));
   await openStep(page, 1, 2);
   await expect(nav(page).getByRole("button", { name: /^Step 2: .*, reviewed$/ })).toHaveCount(0);

@@ -3,7 +3,6 @@ import { FlowWork } from "../../components/progress/FlowWork";
 import { isIdle } from "../../components/progress/idle";
 import { RemarkPill } from "../../components/remark-pills/RemarkPills";
 import { FlagMarker } from "../../components/flag/FlagMarker";
-import { REVIEW_START_PATH } from "../shell/paths";
 import { flagComment } from "../../components/comment/prefill";
 import { flagTarget, remarkTarget, summariseRemarks } from "../../components/remark-pills/remarks";
 import { useSectionState } from "../../components/inspector/sectionState";
@@ -84,7 +83,7 @@ import {
   blockFromHash,
   evidenceFromHash,
 } from "./sequence";
-import { commentsPath } from "../pr/paths";
+import { commentsPath, prPath } from "../pr/paths";
 import { useNow } from "../../app/now";
 import { FlowsMenu } from "./FlowsMenu";
 import { Workspace } from "./Workspace";
@@ -972,7 +971,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
           filesHref,
           depsHref: `/analyses/${analysisId}/deps`,
           commentsHref: commentsPath(tour.analysis.pr),
-          prContextHref: `/analyses/${analysisId}#${blockFragment(PR_CONTEXT)}`,
+          prPageHref: prPath(tour.analysis.pr),
           onNavigate: (href) => void navigate(href),
         }}
       />
@@ -1035,7 +1034,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
             unresolved={unresolved}
             onUnresolvedChange={setUnresolved}
             drafts={drafts}
-            reanalyseHref={`${REVIEW_START_PATH}?pr=${encodeURIComponent(tour.analysis.pr.html_url)}`}
+            reanalyseHref={prPath(tour.analysis.pr)}
             sections={sections}
             commentRef={commentRef}
             onAskLine={ctx.onAskLine}
