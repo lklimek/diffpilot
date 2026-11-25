@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 import userEvent from "@testing-library/user-event";
@@ -62,9 +62,7 @@ describe("Ask chat in the review (proposal AC1, AC4, AC6, AC8, AC11)", () => {
     await act(() =>
       router.navigate(`/analyses/${ID}/files#lines?file=src/rpc/client.rs&side=head&line=100&end=102`),
     );
-    await waitFor(() =>
-      expect(panel).toHaveTextContent(/About:\s*Files src\/rpc\/client\.rs:100–102 flow 1 · step 6/),
-    );
+    await waitFor(() => expect(panel).toHaveTextContent(/About:\s*Step 1\.6 · client\.rs 100–102/));
     expect(chat()).toBe(panel);
     expect(within(panel).getByRole("textbox", { name: "Your question" })).toHaveValue("draft");
     // A reload keeps it open (remembered per browser).
@@ -85,9 +83,9 @@ describe("Ask chat in the review (proposal AC1, AC4, AC6, AC8, AC11)", () => {
       await user().click(within(copy).getByRole("button", { name: /^Open in chat/ }));
       const thread = chat().querySelector<HTMLElement>("[data-thread]")!;
       expect(thread).toHaveTextContent("Does the node deduplicate broadcast_tx by transaction id?");
-      await user().click(within(thread).getByRole("button", { name: "Ask a follow-up" }));
+      await user().click(within(thread).getByRole("button", { name: "Follow up on Q1" }));
       await user().type(
-        within(thread).getByRole("textbox", { name: /^Follow-up in this thread/ }),
+        within(thread).getByRole("textbox", { name: /^Follow-up to Q1/ }),
         "And on a retry?{Enter}",
       );
       await waitFor(() => expect(seen.bodies).toHaveLength(1));
@@ -104,7 +102,7 @@ describe("Ask chat in the review (proposal AC1, AC4, AC6, AC8, AC11)", () => {
     }
   });
 
-  it("the launcher counts answers that arrived while the chat was hidden; opening marks them seen", async () => {
+  it("the launcher counts answers that arrived while the chat was hidden until they are in view", async () => {
     setScenario("ask-thread");
     await openTour("#f1.2");
     expect(launcher()).toHaveAccessibleName(
@@ -124,9 +122,30 @@ describe("Ask chat in the review (proposal AC1, AC4, AC6, AC8, AC11)", () => {
     act(() => FakeEventSource.latest().emit({ event: "question", question: answered }));
     await waitFor(() => expect(launcher()).toHaveAccessibleName(/^Ask 1 new answer: open your private chat/));
     await user().click(launcher());
-    expect(chat().querySelector('[data-thread="t4"]')).toHaveTextContent(/^new/);
+    const last = () => chat().querySelector<HTMLElement>('[data-thread="t4"]')!;
+    expect(within(last()).getByText("new", { exact: true })).toBeVisible();
+    await user().click(within(chat()).getByRole("button", { name: "Hide the Ask chat" }));
+    expect(launcher()).toHaveAccessibleName(/^Ask 1 new answer: open your private chat/);
+    await user().click(launcher());
+    const conversation = within(chat()).getByRole("region", { name: "Conversation, oldest first" });
+    conversation.getBoundingClientRect = () => ({ top: 0, bottom: 200 }) as DOMRect;
+    const outcome = last().querySelector<HTMLElement>("[data-ask-outcome]")!;
+    outcome.getBoundingClientRect = () => ({ top: 20, bottom: 80, height: 60 }) as DOMRect;
+    fireEvent.scroll(conversation);
     await user().click(within(chat()).getByRole("button", { name: "Hide the Ask chat" }));
     expect(launcher()).toHaveAccessibleName(/^Ask: open your private chat about this PR$/);
+  });
+
+  it("announces a lost answer stream under the header and keeps the draft", async () => {
+    await openTour("#f1.2");
+    await user().keyboard("a");
+    const field = within(chat()).getByRole("textbox", { name: "Your question" });
+    await user().type(field, "Draft");
+    act(() => FakeEventSource.latest().fail());
+    expect(within(chat()).getByRole("status")).toHaveTextContent(
+      "The connection that delivers answers was lost.",
+    );
+    expect(field).toHaveValue("Draft");
   });
 
   it("a flow introduction is the subject once the flow is analysed; before that, the whole PR", async () => {
@@ -138,7 +157,7 @@ describe("Ask chat in the review (proposal AC1, AC4, AC6, AC8, AC11)", () => {
     setScenario(null);
     await openTour("#f2");
     await user().click(within(screen.getByRole("main")).getByRole("button", { name: "Ask about this flow" }));
-    expect(chat()).toHaveTextContent(/About:\s*Flows\s*flow 2 · /);
+    expect(chat()).toHaveTextContent(/About:\s*Flow 2/);
   });
 
   it("Ask again on a failed first question asks it again as a first question, which replaces the failed one", async () => {

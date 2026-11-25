@@ -39,7 +39,7 @@ function AskAgain({ onAskAgain }: Required<Pick<AnswerProps, "onAskAgain">>) {
           type="button"
           aria-disabled={action.busy || undefined}
           onClick={() => !action.busy && void action.run(() => onAskAgain())}
-          className="cursor-pointer rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-text aria-disabled:cursor-wait aria-disabled:opacity-60"
+          className="min-h-6 cursor-pointer rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-text aria-disabled:cursor-wait aria-disabled:opacity-60"
         >
           {action.busy ? "Asking…" : "Ask again"}
         </button>
@@ -175,7 +175,7 @@ export function Answer({
       return (
         <p className="flex flex-wrap items-baseline gap-2 text-high">
           No answer: {question.failure ?? "the job failed."}
-          {question.mine === true && onAskAgain && <AskAgain onAskAgain={onAskAgain} />}
+          {question.mine !== false && onAskAgain && <AskAgain onAskAgain={onAskAgain} />}
         </p>
       );
     case "answered": {

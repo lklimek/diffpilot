@@ -19,6 +19,7 @@ import { useTourNotifications } from "../../app/workNotifications";
 import { routes } from "../../api/generated/routes";
 import type {
   AnalysisId,
+  Annotation,
   AnchoredAskRequest,
   AskAnchor,
   AskQuestion,
@@ -43,6 +44,8 @@ import { AskLauncher } from "../../components/ask/chat/AskLauncher";
 import {
   commentSubject,
   linesOf,
+  quoteRemark,
+  remarkQuote,
   subjectOf,
   threadsOf,
   unreadOf,
@@ -50,6 +53,7 @@ import {
   type ItemNumbers,
   type Subject,
 } from "../../components/ask/chat/model";
+import { growField } from "../../components/inspector/action";
 import { answerComment } from "../../components/comment/prefill";
 import { filesHash } from "../../components/files/model";
 import { commentsPath, itemPath } from "../pr/paths";
@@ -71,13 +75,20 @@ export interface AnswerDraft {
   text: string;
 }
 
+interface OpenAsk {
+  anchor?: AskAnchor;
+  thread?: QuestionId;
+  /** The remark to quote in the draft, using the supplied anchor. */
+  remark?: Annotation;
+}
+
 /** The chat as screens see it. */
 export interface AskChatControl {
   /** Where the reader is (the composer's subject while it follows); null outside a place. */
   place: AskAnchor | null;
   setPlace: (place: AskAnchor | null) => void;
   /** Opens the chat about the place (or `anchor`), or at a thread; focuses its field. Nothing is sent. */
-  open: (options?: { anchor?: AskAnchor; thread?: QuestionId }) => void;
+  open: (options?: OpenAsk) => void;
   setActions: (actions: ChatActions) => void;
   /** Says something politely to screen readers (e.g. where "Use as review comment" moved the review). */
   announce: (text: string) => void;
@@ -123,10 +134,19 @@ const write = (storage: () => Storage, key: string, value: unknown) => {
 const local = () => window.localStorage;
 const session = () => window.sessionStorage;
 
+const GEOMETRY_KEY = "diffpilot.ask.geometry";
+interface QuestionDraft {
+  text: string;
+  remarkAnchor?: AskAnchor;
+}
+const EMPTY_DRAFT: QuestionDraft = { text: "" };
+
 interface Remembered extends ChatSize {
   open: boolean;
 }
 const FIRST: Remembered = { open: false, width: null, height: null, full: false };
+const readGeometry = ({ width, height, full }: ChatSize): ChatSize =>
+  read(local, GEOMETRY_KEY, { width, height, full });
 
 /** Where a comment item opens: its question in Comments, or Comments when its number is not known. */
 const commentLink = (pr: PrRef, item: string, numbers: ItemNumbers) => {
@@ -277,7 +297,9 @@ function ChatShell({ source, children }: { source: ChatSource; children: ReactNo
   const seenKey = `diffpilot.askChat.seen.${login}.${source.key}`;
   const repliesKey = `diffpilot.askChat.replies.${login}.${source.key}`;
   const [remembered, setRemembered] = useState(() => read(local, layoutKey, FIRST));
-  const [draft, setDraft] = useState(() => read(session, draftKey, { text: "" }).text);
+  const [geometry, setGeometry] = useState(() => readGeometry(remembered));
+  const [draftState, setDraft] = useState(() => read(session, draftKey, EMPTY_DRAFT));
+  const { text: draft, remarkAnchor } = draftState;
   const [replies, setReplies] = useState(() => read<Record<QuestionId, string>>(session, repliesKey, {}));
   // The subject: the place, unless × chose the whole PR; an Ask button's own subject until the place changes.
   const [wholePr, setWholePr] = useState(false);
@@ -297,14 +319,16 @@ function ChatShell({ source, children }: { source: ChatSource; children: ReactNo
   const [readFor, setReadFor] = useState(login);
   if (readFor !== login) {
     setReadFor(login);
-    setRemembered(read(local, layoutKey, FIRST));
-    setDraft(read(session, draftKey, { text: "" }).text);
+    const layout = read(local, layoutKey, FIRST);
+    setRemembered(layout);
+    setGeometry(readGeometry(layout));
+    setDraft(read(session, draftKey, EMPTY_DRAFT));
     setReplies(read<Record<QuestionId, string>>(session, repliesKey, {}));
     const stored = read<{ ids: QuestionId[] | null }>(local, seenKey, { ids: null }).ids;
     setSeen(stored ? new Set(stored) : null);
   } else if (seen === null && questions.isSuccess && me.isSuccess) setSeen(new Set(unreadOf(all, new Set())));
-  const unread = remembered.open ? [] : unreadOf(all, seen ?? new Set());
-  // Threads with news, marked when the chat opens.
+  const unread = unreadOf(all, seen ?? new Set());
+  // Keep the new marker visible for this opening even after the answer enters the viewport.
   const [marked, setMarked] = useState<ReadonlySet<QuestionId>>(new Set());
 
   // Arrivals are announced politely; the list itself is not live.
@@ -329,24 +353,43 @@ function ChatShell({ source, children }: { source: ChatSource; children: ReactNo
     setRemembered(next);
     write(local, layoutKey, next);
   };
-  const markSeen = () => {
-    const ids = new Set(unreadOf(all, new Set()));
-    setSeen(ids);
-    write(local, seenKey, { ids: [...ids] });
+  useEffect(() => {
+    if (seen) write(local, seenKey, { ids: [...seen] });
+  }, [seen, seenKey]);
+  useEffect(() => {
+    write(session, draftKey, draft ? draftState : null);
+  }, [draftState, draft, draftKey]);
+  useEffect(() => {
+    write(session, repliesKey, Object.keys(replies).length ? replies : null);
+  }, [replies, repliesKey]);
+  const markSeen = (ids: QuestionId[]) => {
+    if (!seen || ids.every((id) => seen.has(id))) return;
+    setSeen((current) => new Set([...(current ?? []), ...ids]));
+    setMarked((current) => new Set([...current, ...ids]));
   };
-  const show = (thread?: QuestionId) => {
+  const rememberGeometry = (next: ChatSize) => {
+    setGeometry(next);
+    write(local, GEOMETRY_KEY, next);
+  };
+  const show = (thread?: QuestionId, caret?: number) => {
     const active = document.activeElement as HTMLElement | null;
     if (!remembered.open || !active?.closest("[data-ask-chat]"))
       opener.current =
         active && active !== document.body && !active.closest("[data-ask-chat]") ? active : null;
     if (!remembered.open) setMarked(new Set(unread));
-    markSeen();
     remember({ ...remembered, open: true });
     if (thread) setFocusThread((f) => ({ id: thread, nonce: (f?.nonce ?? 0) + 1 }));
-    else requestAnimationFrame(() => field.current?.focus());
+    else {
+      setFocusThread(null);
+      requestAnimationFrame(() => {
+        const input = field.current;
+        input?.focus();
+        if (caret !== undefined) input?.setSelectionRange(caret, caret);
+        growField(input);
+      });
+    }
   };
   const hide = () => {
-    markSeen();
     setMarked(new Set());
     remember({ ...remembered, open: false });
     const back = opener.current;
@@ -356,10 +399,18 @@ function ChatShell({ source, children }: { source: ChatSource; children: ReactNo
   };
 
   // `a`, an Ask button or Open in chat: the place (or the button's own subject) becomes the subject again.
-  const open = (options: { anchor?: AskAnchor; thread?: QuestionId } = {}) => {
+  const open = (options: OpenAsk = {}) => {
     setWholePr(false);
     setChosen(options.anchor ? { anchor: options.anchor, at: placeKey } : null);
-    show(options.thread);
+    if (options.remark && options.anchor) {
+      const quote = quoteRemark(options.remark);
+      const text = draft.replace(remarkQuote, "");
+      setDraft({ text: quote + text, remarkAnchor: options.anchor });
+      show(undefined, quote.length);
+    } else {
+      if (options.anchor && remarkAnchor) setDraft({ text: draft });
+      show(options.thread);
+    }
   };
   // Said aloud and shown in the chat for a few seconds.
   const [status, setStatus] = useState<{ text: string } | null>(null);
@@ -385,13 +436,11 @@ function ChatShell({ source, children }: { source: ChatSource; children: ReactNo
 
   const subject: AskAnchor = wholePr
     ? { kind: "pr" }
-    : chosen && chosen.at === placeKey
-      ? chosen.anchor
-      : (place ?? { kind: "pr" });
+    : (remarkAnchor ?? (chosen && chosen.at === placeKey ? chosen.anchor : (place ?? { kind: "pr" })));
 
   // Where the chat is drawn: measured from the columns, again on resize and when the dock grows.
   const [box, setBox] = useState(() =>
-    chatGeometry({ width: 1600, height: 900 }, null, null, null, remembered),
+    chatGeometry({ width: 1600, height: 900 }, null, null, null, geometry),
   );
   useLayoutEffect(() => {
     const measure = () => {
@@ -405,7 +454,7 @@ function ChatShell({ source, children }: { source: ChatSource; children: ReactNo
         rect("[data-workspace]"),
         rect('[data-column="inspector"]'),
         rect("[data-inspector] [data-dock]")?.top ?? null,
-        remembered,
+        geometry,
       );
       setBox((old) => (JSON.stringify(old) === JSON.stringify(next) ? old : next));
       const inspectorHidden = (rect('[data-column="inspector"]')?.width ?? 0) < (2 * next.minWidth) / 3;
@@ -415,7 +464,7 @@ function ChatShell({ source, children }: { source: ChatSource; children: ReactNo
       document.documentElement.style.setProperty(
         "--ask-chat-pad",
         remembered.open
-          ? inspectorHidden
+          ? inspectorHidden && (next.narrow || !geometry.position)
             ? `${next.height + 24}px`
             : "0px"
           : inspectorHidden
@@ -460,7 +509,7 @@ function ChatShell({ source, children }: { source: ChatSource; children: ReactNo
       document.documentElement.style.removeProperty("--ask-chat-pad");
       document.documentElement.style.removeProperty("--ask-launcher-pad");
     };
-  }, [remembered]);
+  }, [geometry, remembered.open]);
 
   const { describe, commenting } = source;
   if (!describe) return <Context.Provider value={control}>{children}</Context.Provider>;
@@ -470,7 +519,7 @@ function ChatShell({ source, children }: { source: ChatSource; children: ReactNo
     <Context.Provider value={control}>
       {children}
       {source.activity}
-      <p className="sr-only" aria-live="polite">
+      <p className="sr-only" role="status">
         {announcement}
       </p>
       {remembered.open ? (
@@ -481,17 +530,21 @@ function ChatShell({ source, children }: { source: ChatSource; children: ReactNo
           following={!wholePr}
           placeWhat={place ? describe(place).what : null}
           draft={draft}
-          onDraft={(text) => {
-            setDraft(text);
-            write(session, draftKey, text ? { text } : null);
-          }}
+          onDraft={(edit) =>
+            setDraft((current) => {
+              const text = typeof edit === "string" ? edit : edit(current.text);
+              return text ? { ...current, text } : EMPTY_DRAFT;
+            })
+          }
           replyDrafts={replies}
-          onReplyDraft={(root, text) => {
-            const next = { ...replies, [root]: text };
-            if (!text) delete next[root];
-            setReplies(next);
-            write(session, repliesKey, Object.keys(next).length ? next : null);
-          }}
+          onReplyDraft={(root, edit) =>
+            setReplies((current) => {
+              const text = typeof edit === "string" ? edit : edit(current[root] ?? "");
+              const next = { ...current, [root]: text };
+              if (!text) delete next[root];
+              return next;
+            })
+          }
           signInHref={routes.authLogin.path}
           status={status?.text ?? null}
           onSend={(text) => send({ text, anchor: subject })}
@@ -501,7 +554,10 @@ function ChatShell({ source, children }: { source: ChatSource; children: ReactNo
           onAskAgain={(q) =>
             send({ text: q.text, anchor: q.anchor, ...(q.parent_id ? { parent_id: q.parent_id } : {}) })
           }
-          onUnanchor={() => setWholePr(true)}
+          onUnanchor={() => {
+            if (remarkAnchor) setDraft({ text: draft });
+            setWholePr(true);
+          }}
           wholePrUnavailable={source.wholePrUnavailable}
           onUsePlace={() => {
             setWholePr(false);
@@ -534,11 +590,12 @@ function ChatShell({ source, children }: { source: ChatSource; children: ReactNo
               : undefined
           }
           onHide={hide}
-          size={remembered}
+          size={geometry}
           geometry={box}
-          onSize={(size) => remember({ ...remembered, ...size })}
+          onSize={rememberGeometry}
           about={source.about}
-          unread={marked}
+          unread={new Set([...marked, ...unread])}
+          onSeen={markSeen}
           focusThread={focusThread}
           inputRef={field}
           notice={source.notice}

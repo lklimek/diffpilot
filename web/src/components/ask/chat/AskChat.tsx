@@ -1,51 +1,23 @@
-import {
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type KeyboardEvent,
-  type PointerEvent,
-  type Ref,
-} from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type Ref, type SetStateAction } from "react";
 import type { AskAnchor, AskQuestion, Evidence, QuestionId } from "../../../api/generated/types";
-import { HEAD_BUTTON, busyTip } from "../../button/button";
-import { clockText } from "../../format/time";
+import { busyTip } from "../../button/button";
 import { Kbd } from "../../help/Kbd";
 import { assignRef, growField, useAction } from "../../inspector/action";
 import { Tooltip } from "../../tooltip/Tooltip";
-import { Answer } from "../Answer";
-import { hasLines, type ChatThread, type Subject } from "./model";
+import { remarkLines, remarkQuote, type ChatThread, type Subject } from "./model";
+import { AskThread, NotSent, notSent, sends } from "./AskThread";
+import { AskWindowHeader, CornerHandle, SizeHandle } from "./AskWindow";
 
-// The server's message says what to do; a hint is added only to a retryable failure whose message has none.
-const RETRY_LATER = new Set(["unavailable", "rate_limited"]);
-function notSent(message: string, code: string | null): string {
-  if (/try again|retry/i.test(message)) return `Not sent: ${message}`;
-  if (code !== null && RETRY_LATER.has(code)) return `Not sent: ${message} Try again in a moment.`;
-  return code === null || code === "internal" ? `Not sent: ${message} Try again.` : `Not sent: ${message}`;
-}
-
-/** Why a question was not sent; a lost sign-in gets the "Sign in again" link (the text is kept). */
-function NotSent({ id, text, signIn }: { id?: string; text: string; signIn?: string }) {
-  return (
-    <p id={id} role="alert" className="m-0 mt-1 flex flex-wrap items-baseline gap-x-2 text-[12px] text-high">
-      {text}
-      {signIn && (
-        <Tooltip tip="Opens the GitHub sign-in; your text stays here and nothing is sent.">
-          <a href={signIn} className="font-semibold text-accent underline">
-            Sign in again
-          </a>
-        </Tooltip>
-      )}
-    </p>
-  );
-}
+export type ChatCorner = "bottom-right" | "bottom-left" | "top-right" | "top-left";
+export type ChatPosition = ChatCorner | { right: number; bottom: number };
 
 /** The chat's remembered size: null = the default; `full` = the whole height above the dock. */
 export interface ChatSize {
   width: number | null;
   height: number | null;
   full: boolean;
+  phoneFull?: boolean;
+  position?: ChatPosition;
 }
 
 /** Where the panel is drawn (px from the window's right and bottom edge), its size and the size limits. */
@@ -75,11 +47,11 @@ export interface AskChatProps {
   /** "this step", "these lines"…: where the reader is, offered while the subject is the whole PR by choice. */
   placeWhat: string | null;
   draft: string;
-  onDraft: (text: string) => void;
+  onDraft: (text: SetStateAction<string>) => void;
   /** Follow-up drafts by thread (the first question's id); kept by the caller across Hide and reload. */
   replyDrafts: Readonly<Record<QuestionId, string>>;
-  onReplyDraft: (root: QuestionId, text: string) => void;
-  /** A fixed current time (ms) for the time since asking (tests); it ticks by itself without one. */
+  onReplyDraft: (root: QuestionId, text: SetStateAction<string>) => void;
+  /** A fixed clock for observed state transitions (tests). */
   now?: number;
   /** A short note about what just happened (e.g. where "Use as review comment" moved the review); said aloud by the caller. */
   status?: string | null;
@@ -111,258 +83,17 @@ export interface AskChatProps {
   unread: ReadonlySet<QuestionId>;
   /** A thread to scroll to and focus ("Open in chat"); `nonce` repeats it. */
   focusThread: { id: QuestionId; nonce: number } | null;
+  /** Records an unread outcome that entered the conversation viewport. */
+  onSeen?: (ids: QuestionId[]) => void;
   inputRef?: Ref<HTMLTextAreaElement>;
   /** A problem with the answers (e.g. the lost answer stream), said above the conversation. */
   notice?: string | null;
 }
 
-const BUTTON =
-  "min-h-6 cursor-pointer rounded-md border border-border bg-surface px-2 text-[12px] text-text hover:border-accent aria-disabled:cursor-wait aria-disabled:opacity-60";
 const PRIMARY =
   "min-h-8 cursor-pointer rounded-md border border-accent bg-accent px-3 text-[13px] font-semibold text-on-accent aria-disabled:cursor-wait aria-disabled:opacity-60";
 // Within this many px of the end the reader counts as following the newest entry.
 const FOLLOW_PX = 24;
-const KEY_PX = 20;
-
-const sends = (event: KeyboardEvent<HTMLTextAreaElement>) =>
-  event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing;
-
-/** A subject as chip text: view, code, words. */
-function SubjectText({ anchor, describe }: { anchor: AskAnchor } & Pick<AskChatProps, "describe">) {
-  const s = describe(anchor);
-  return (
-    <>
-      {s.view && <span className="text-[10px] font-bold tracking-wide text-muted uppercase">{s.view}</span>}{" "}
-      {s.code && <code className="text-[11px] text-text [overflow-wrap:anywhere]">{s.code}</code>}{" "}
-      {s.text && <span>{s.text}</span>}
-    </>
-  );
-}
-
-function Question({
-  question,
-  root,
-  describe,
-  onGoto,
-}: { question: AskQuestion; root: boolean } & Pick<AskChatProps, "describe" | "onGoto">) {
-  return (
-    <div className="flex min-w-0 flex-col items-end gap-0.5">
-      <div className="flex max-w-full flex-wrap items-center justify-end gap-1.5 text-[11.5px] text-muted">
-        {root ? (
-          <Tooltip tip={describe(question.anchor).tip}>
-            <button
-              type="button"
-              onClick={() => onGoto(question.anchor)}
-              className="inline-flex min-h-6 max-w-full cursor-pointer flex-wrap items-baseline gap-1 rounded-[10px] border border-border bg-surface px-2 text-left text-[11.5px] text-accent hover:border-accent hover:underline"
-            >
-              <SubjectText anchor={question.anchor} describe={describe} />
-            </button>
-          </Tooltip>
-        ) : (
-          <Tooltip tip="Asked in this thread: the LLM had its earlier questions and answers.">
-            <span tabIndex={0}>Follow-up</span>
-          </Tooltip>
-        )}
-        <span>Asked by you · {clockText(question.created_at)}</span>
-      </div>
-      <p
-        data-question
-        className="m-0 max-w-9/10 rounded-[10px_10px_2px_10px] border border-accent bg-accent-bg px-2.5 py-1.5 text-[13px] whitespace-pre-wrap [overflow-wrap:anywhere]"
-      >
-        {question.text}
-      </p>
-    </div>
-  );
-}
-
-function Reply({
-  root,
-  draft,
-  onDraft,
-  onReply,
-  onClose,
-  signInHref,
-}: {
-  root: AskQuestion;
-  draft: string;
-  onDraft: (text: string) => void;
-  onReply: AskChatProps["onReply"];
-  onClose: (sent: boolean) => void;
-  signInHref: string;
-}) {
-  const id = useId();
-  const action = useAction();
-  const field = useRef<HTMLTextAreaElement>(null);
-  const [empty, setEmpty] = useState(false);
-  useEffect(() => {
-    field.current?.focus();
-    growField(field.current);
-  }, []);
-  const send = async () => {
-    if (!draft.trim()) return setEmpty(true);
-    if (await action.run(() => onReply(root, draft.trim()))) {
-      onDraft("");
-      onClose(true);
-    }
-  };
-  const error = empty ? "Write a follow-up first." : action.error && notSent(action.error, action.code);
-  return (
-    <form
-      data-reply
-      noValidate
-      onSubmit={(event) => {
-        event.preventDefault();
-        void send();
-      }}
-      className="ml-3.5 grid gap-1 border-l-2 border-accent py-0.5 pl-2.5"
-    >
-      <label htmlFor={id} className="text-[12px] font-semibold">
-        Follow-up in this thread{" "}
-        <span className="font-normal text-muted">· the LLM gets this thread’s questions and answers</span>
-      </label>
-      <div className="flex items-end gap-1.5">
-        <textarea
-          id={id}
-          ref={field}
-          rows={1}
-          value={draft}
-          placeholder="Ask a follow-up…"
-          onChange={(event) => {
-            onDraft(event.target.value);
-            setEmpty(false);
-            growField(event.target);
-          }}
-          onKeyDown={(event) => {
-            if (!sends(event)) return;
-            event.preventDefault();
-            void send();
-          }}
-          className="min-h-8 flex-1 resize-none rounded-md border border-border bg-surface px-2 py-1 text-[13px]"
-        />
-        <Tooltip
-          tip={busyTip("Sends the follow-up. It keeps this thread’s subject and context.", action.busy)}
-        >
-          <button type="submit" aria-disabled={action.busy || undefined} className={BUTTON}>
-            Send
-          </button>
-        </Tooltip>
-        <Tooltip tip="Closes the field (Esc); your text is kept.">
-          <button type="button" onClick={() => onClose(false)} className={BUTTON}>
-            Cancel
-          </button>
-        </Tooltip>
-      </div>
-      {error && (
-        <NotSent text={error} signIn={action.code === "unauthenticated" && !empty ? signInHref : undefined} />
-      )}
-    </form>
-  );
-}
-
-/** One separator of the panel's size: drag, arrow keys, Home / End, Enter or double-click resets. */
-function SizeHandle({
-  dimension,
-  geometry,
-  size,
-  onSize,
-}: { dimension: "width" | "height" } & Pick<AskChatProps, "geometry" | "size" | "onSize">) {
-  const start = useRef<{ x: number; y: number; value: number } | null>(null);
-  const height = dimension === "height";
-  const [min, max, now] = height
-    ? [geometry.minHeight, geometry.maxHeight, geometry.height]
-    : [geometry.minWidth, geometry.maxWidth, geometry.width];
-  const set = (value: number | null) =>
-    onSize(
-      height
-        ? { ...size, height: value === null ? null : Math.round(value), full: false }
-        : { ...size, width: value === null ? null : Math.round(value) },
-    );
-  return (
-    <div
-      role="separator"
-      aria-orientation={height ? "horizontal" : "vertical"}
-      tabIndex={0}
-      aria-label={
-        height
-          ? "Chat height: drag, or use the up and down arrow keys; Home and End go to the limits; Enter or double-click resets"
-          : "Chat width: drag, or use the left and right arrow keys; Home and End go to the limits; Enter or double-click resets"
-      }
-      aria-valuemin={Math.round(min)}
-      aria-valuemax={Math.round(max)}
-      aria-valuenow={Math.round(now)}
-      onPointerDown={(event: PointerEvent<HTMLDivElement>) => {
-        start.current = { x: event.clientX, y: event.clientY, value: now };
-        event.currentTarget.setPointerCapture?.(event.pointerId);
-        event.preventDefault();
-      }}
-      onPointerMove={(event: PointerEvent<HTMLDivElement>) => {
-        const from = start.current;
-        if (!from) return;
-        set(from.value + (height ? from.y - event.clientY : from.x - event.clientX));
-      }}
-      onPointerUp={() => (start.current = null)}
-      onPointerCancel={() => (start.current = null)}
-      onDoubleClick={() => set(null)}
-      onKeyDown={(event) => {
-        const grow = height ? "ArrowUp" : "ArrowLeft";
-        const shrink = height ? "ArrowDown" : "ArrowRight";
-        const next =
-          event.key === grow
-            ? now + KEY_PX
-            : event.key === shrink
-              ? now - KEY_PX
-              : event.key === "Home"
-                ? min
-                : event.key === "End"
-                  ? max
-                  : event.key === "Enter"
-                    ? null
-                    : undefined;
-        if (next === undefined) return;
-        event.preventDefault();
-        set(next === null ? null : Math.min(max, Math.max(min, next)));
-      }}
-      className={`absolute z-[2] touch-none rounded bg-transparent hover:bg-accent focus-visible:bg-accent ${
-        height ? "inset-x-3.5 -top-1 h-2 cursor-ns-resize" : "inset-y-3.5 -left-1 w-2 cursor-ew-resize"
-      }`}
-    />
-  );
-}
-
-/** The top-left corner: drags width and height together (the separators are its keyboard alternative). */
-function CornerHandle({ geometry, size, onSize }: Pick<AskChatProps, "geometry" | "size" | "onSize">) {
-  const start = useRef<{ x: number; y: number; width: number; height: number } | null>(null);
-  const clamp = (value: number, min: number, max: number) => Math.round(Math.min(max, Math.max(min, value)));
-  return (
-    <div
-      data-resize-corner
-      aria-hidden="true"
-      onPointerDown={(event: PointerEvent<HTMLDivElement>) => {
-        start.current = {
-          x: event.clientX,
-          y: event.clientY,
-          width: geometry.width,
-          height: geometry.height,
-        };
-        event.currentTarget.setPointerCapture?.(event.pointerId);
-        event.preventDefault();
-      }}
-      onPointerMove={(event: PointerEvent<HTMLDivElement>) => {
-        const from = start.current;
-        if (!from) return;
-        onSize({
-          ...size,
-          width: clamp(from.width + from.x - event.clientX, geometry.minWidth, geometry.maxWidth),
-          height: clamp(from.height + from.y - event.clientY, geometry.minHeight, geometry.maxHeight),
-          full: false,
-        });
-      }}
-      onPointerUp={() => (start.current = null)}
-      onPointerCancel={() => (start.current = null)}
-      className="absolute -top-1 -left-1 z-[3] size-3.5 cursor-nwse-resize touch-none rounded-tl-[10px] hover:bg-accent"
-    />
-  );
-}
 
 /**
  * The floating Ask chat (proposal AC2–AC10): one private conversation per analysis and user, threads oldest first
@@ -377,65 +108,119 @@ export function AskChat(props: AskChatProps) {
   const list = useRef<HTMLDivElement>(null);
   const field = useRef<HTMLTextAreaElement>(null);
   const following_ = useRef(true);
-  const count = useRef(0);
+  const lastThread = useRef<QuestionId | undefined>(undefined);
   const action = useAction();
   const [empty, setEmpty] = useState(false);
   const [wholePrRefused, setWholePrRefused] = useState(false);
   const [replyFor, setReplyFor] = useState<QuestionId | null>(null);
-  const replyButtons = useRef(new Map<QuestionId, HTMLButtonElement>());
+  const [disclosed, setDisclosed] = useState<Partial<Record<QuestionId, boolean>>>({});
+  const [focusRequest, setFocusRequest] = useState<AskChatProps["focusThread"]>(null);
+  if (props.focusThread !== focusRequest) {
+    setFocusRequest(props.focusThread);
+    if (props.focusThread) setDisclosed({ ...disclosed, [props.focusThread.id]: true });
+  }
   const threadItems = useRef(new Map<QuestionId, HTMLLIElement>());
   const s = describe(subject);
-  const all = threads.flatMap((t) => [t.root, ...t.followUps]);
-  const total = all.length;
-  // Questions are answered one at a time: a pending one waits behind any earlier one still waiting.
-  const waiting = all.filter((q) => q.state === "pending" || q.state === "answering");
-  const queued = (q: AskQuestion) =>
-    q.state === "pending" &&
-    waiting.some((w) => w.id !== q.id && Date.parse(w.created_at) < Date.parse(q.created_at));
+  const remark = remarkLines(draft, subject);
+  const cards = threads.map(({ root, followUps }, index) => ({
+    root,
+    followUps,
+    number: `Q${index + 1}`,
+    questions: [root, ...followUps],
+  }));
+  const all = cards.flatMap((card) => card.questions.map((question) => ({ card, question })));
+  const newestThread = cards.at(-1)?.root.id;
+  const ordered = [...all].sort(
+    (a, b) => Date.parse(a.question.created_at) - Date.parse(b.question.created_at),
+  );
+  const firstActive =
+    ordered.find(({ question }) => question.state === "answering") ??
+    ordered.find(({ question }) => question.state === "pending");
 
-  // An outcome that arrives while the chat is open: "↓ New answer" until its thread is in view (AC5).
-  const states = Object.fromEntries(all.map((q) => [q.id, q.state]));
+  // Track state changes seen in this window. The server only sends the time the question was asked.
+  const states = Object.fromEntries(all.map(({ question }) => [question.id, question.state]));
   const [known, setKnown] = useState(states);
-  const [arrived, setArrived] = useState<QuestionId | null>(null);
+  const [arrival, setArrival] = useState<{ root: QuestionId; id: QuestionId } | null>(null);
+  const pastStates = useRef<Record<QuestionId, string>>({});
+  const [starts, setStarts] = useState<Record<QuestionId, number>>({});
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      const next = Object.fromEntries(
+        threads.flatMap(({ root, followUps }) =>
+          [root, ...followUps].map((question) => [question.id, question.state]),
+        ),
+      );
+      const began = Object.keys(next).filter(
+        (id) => pastStates.current[id] === "pending" && next[id] === "answering",
+      );
+      pastStates.current = next;
+      if (!began.length) return;
+      const now = props.now ?? Date.now();
+      setStarts((previous) => ({ ...previous, ...Object.fromEntries(began.map((id) => [id, now])) }));
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [threads, props.now]);
   if (JSON.stringify(states) !== JSON.stringify(known)) {
-    const got = all.find(
-      (q) =>
+    const outcomes = all.filter(
+      ({ question: q }) =>
         known[q.id] !== undefined &&
         known[q.id] !== q.state &&
         (q.state === "answered" || q.state === "failed"),
     );
+    const last = outcomes.at(-1);
+    if (last) {
+      setArrival({ root: last.card.root.id, id: last.question.id });
+      setDisclosed(
+        Object.fromEntries(
+          Object.entries(disclosed).filter(([id]) => !outcomes.some(({ card }) => card.root.id === id)),
+        ),
+      );
+    }
     setKnown(states);
-    if (got) setArrived(threads.find((t) => t.root.id === got.id || t.followUps.includes(got))!.root.id);
   }
-  const inView = (id: QuestionId) => {
-    const item = threadItems.current.get(id);
+  const outcomeOf = ({ root, id }: NonNullable<typeof arrival>) => {
+    const card = threadItems.current.get(root);
+    return Array.from(card?.querySelectorAll<HTMLElement>("[data-ask-outcome]") ?? []).find(
+      (element) => element.dataset.askOutcome === id,
+    );
+  };
+  const inView = (target: NonNullable<typeof arrival>) => {
+    const at = outcomeOf(target)?.getBoundingClientRect();
     const box = list.current?.getBoundingClientRect();
-    if (!item || !box || box.height === 0) return true;
-    const at = item.getBoundingClientRect();
-    return at.top < box.bottom && at.bottom > box.top;
+    return Boolean(at?.height && box && at.top < box.bottom && at.bottom > box.top);
+  };
+
+  const markVisible = () => {
+    if (arrival && inView(arrival)) setArrival(null);
+    if (!props.onSeen || !props.unread.size) return;
+    const visible = all.flatMap(({ card, question }) =>
+      props.unread.has(question.id) && inView({ root: card.root.id, id: question.id }) ? [question.id] : [],
+    );
+    if (visible.length) props.onSeen(visible);
   };
 
   // Follows the newest entry unless the reader scrolled up; a question just sent always shows.
   useLayoutEffect(() => {
     const element = list.current;
-    const added = total > count.current;
-    count.current = total;
+    const added = newestThread !== lastThread.current;
+    lastThread.current = newestThread;
     if (element && (added || following_.current)) element.scrollTop = element.scrollHeight;
-    if (!arrived) return;
-    const frame = requestAnimationFrame(() => inView(arrived) && setArrived(null));
+    if (!arrival && !props.unread.size) return;
+    const frame = requestAnimationFrame(markVisible);
     return () => cancelAnimationFrame(frame);
   });
   const focusId = props.focusThread?.id;
   const focusNonce = props.focusThread?.nonce;
   useEffect(() => {
     if (!focusId) return;
+    following_.current = false;
     const item = threadItems.current.get(focusId);
     item?.scrollIntoView?.({ block: "start" });
     item?.focus({ preventScroll: true });
   }, [focusId, focusNonce]);
 
   const send = async () => {
-    if (!draft.trim()) {
+    if (!draft.replace(remarkQuote, "").trim()) {
       setEmpty(true);
       field.current?.focus();
       return;
@@ -446,13 +231,16 @@ export function AskChat(props: AskChatProps) {
       return;
     }
     if (await action.run(() => props.onSend(draft.trim()))) {
-      onDraft("");
+      onDraft((current) => (current === draft ? "" : current));
       requestAnimationFrame(() => growField(field.current));
     }
   };
   const closeReply = (id: QuestionId) => {
-    setReplyFor(null);
-    requestAnimationFrame(() => replyButtons.current.get(id)?.focus());
+    const item = threadItems.current.get(id);
+    if (item?.contains(document.activeElement)) {
+      requestAnimationFrame(() => item.querySelector<HTMLButtonElement>("[data-reply-button]")?.focus());
+    }
+    setReplyFor((current) => (current === id ? null : current));
   };
   const error = empty
     ? "Write a question first."
@@ -477,41 +265,21 @@ export function AskChat(props: AskChatProps) {
       }}
       style={
         geometry.narrow
-          ? { left: 8, right: 8, bottom: geometry.bottom, height: geometry.height }
+          ? { left: 0, right: 0, bottom: 0, height: geometry.height }
           : { right: geometry.right, bottom: geometry.bottom, width: geometry.width, height: geometry.height }
       }
-      className="fixed z-40 flex flex-col rounded-[10px] border border-accent bg-surface text-[13px] text-text shadow-lg"
+      className={`fixed z-40 flex flex-col border border-accent bg-surface text-[13px] text-text shadow-lg ${geometry.narrow ? "rounded-t-[10px]" : "rounded-[10px]"}`}
     >
-      <div className="flex min-w-0 flex-none items-center gap-1.5 rounded-t-[10px] border-b border-border bg-surface-2 py-1 pr-2 pl-3">
-        <h2 id={titleId} className="m-0 text-[13.5px] font-bold whitespace-nowrap">
-          Ask
-        </h2>
-        <Tooltip
-          tip="Only you see this conversation. Answers are LLM analysis, not checked; the agent was told not to run code."
-          className="min-w-0 flex-1"
-        >
-          <span id={aboutId} tabIndex={0} className="block truncate text-[11.5px] text-muted">
-            {props.about} · answers are LLM analysis
-          </span>
-        </Tooltip>
-        <Tooltip tip="Use the full height beside the code; click again for your previous size">
-          <button
-            type="button"
-            aria-pressed={size.full}
-            onClick={() => onSize({ ...size, full: !size.full })}
-            className={`${HEAD_BUTTON} aria-pressed:border-accent aria-pressed:bg-accent-bg`}
-          >
-            Full height
-          </button>
-        </Tooltip>
-        <Tooltip tip="Hide the chat (Esc). Your draft and answers are kept; the Ask button or a brings it back.">
-          <button type="button" aria-label="Hide the Ask chat" onClick={props.onHide} className={HEAD_BUTTON}>
-            Hide
-          </button>
-        </Tooltip>
-      </div>
+      <AskWindowHeader
+        {...{ titleId, aboutId, geometry, size, onSize }}
+        about={props.about}
+        onHide={props.onHide}
+      />
       {props.notice && (
-        <p role="status" className="m-0 flex-none border-b border-border bg-med-bg px-3 py-1 text-[12px]">
+        <p
+          role="status"
+          className="m-0 flex-none border-b border-border bg-med-bg px-3 py-1 text-[12px] before:mr-1 before:content-['⚠']"
+        >
           {props.notice}
         </p>
       )}
@@ -523,7 +291,7 @@ export function AskChat(props: AskChatProps) {
         onScroll={(event) => {
           const e = event.currentTarget;
           following_.current = e.scrollTop + e.clientHeight >= e.scrollHeight - FOLLOW_PX;
-          if (arrived && inView(arrived)) setArrived(null);
+          markVisible();
         }}
         className="min-h-0 flex-1 overflow-auto overscroll-contain px-3 py-2.5"
       >
@@ -537,72 +305,50 @@ export function AskChat(props: AskChatProps) {
               question keeps where it was asked; click that to go back there.
             </p>
             <p className="m-0">
-              Under an answer, <em>Ask a follow-up</em> continues the thread: the LLM keeps its context.
+              Only you see this conversation. Answers are LLM analysis. Follow up inside a card to keep the
+              thread’s context.
             </p>
           </div>
         ) : (
           <ol aria-label="Your questions, oldest first" className="m-0 grid list-none gap-4 p-0">
-            {threads.map(({ root, followUps }) => {
-              const fresh = [root, ...followUps].some((q) => props.unread.has(q.id));
+            {cards.map(({ root, followUps, number, questions }, index) => {
+              const fresh = questions.some((q) => props.unread.has(q.id) || q.id === arrival?.id);
+              const replyOpen = replyFor === root.id;
+              const expanded =
+                replyOpen ||
+                (disclosed[root.id] ??
+                  (index === cards.length - 1 || fresh || questions.some((q) => q.state !== "answered")));
               return (
-                <li
+                <AskThread
                   key={root.id}
-                  data-thread={root.id}
-                  tabIndex={-1}
-                  ref={(element) => {
+                  root={root}
+                  followUps={followUps}
+                  number={number}
+                  fresh={fresh}
+                  expanded={expanded}
+                  replyOpen={replyOpen}
+                  onToggle={() => {
+                    if (replyOpen) setReplyFor(null);
+                    setDisclosed({ ...disclosed, [root.id]: !expanded });
+                  }}
+                  register={(element) => {
                     if (element) threadItems.current.set(root.id, element);
                     else threadItems.current.delete(root.id);
                   }}
-                  aria-label={`Question: ${root.text}`}
-                  className="grid scroll-m-2 gap-1.5 rounded-lg p-0.5 focus-visible:outline-3 focus-visible:outline-focus"
-                >
-                  {fresh && (
-                    <span className="justify-self-end rounded-sm bg-accent px-1.5 text-[10px] font-bold text-on-accent">
-                      new
-                    </span>
-                  )}
-                  <Question question={root} root describe={describe} onGoto={props.onGoto} />
-                  <ChatAnswer question={root} anchor={root.anchor} queued={queued(root)} {...props} />
-                  {followUps.length > 0 && (
-                    <ol
-                      aria-label="Follow-ups"
-                      className="mt-0.5 ml-3.5 grid list-none gap-2.5 border-l-2 border-border p-0 pl-2.5"
-                    >
-                      {followUps.map((f) => (
-                        <li key={f.id} className="grid gap-1.5">
-                          <Question question={f} root={false} describe={describe} onGoto={props.onGoto} />
-                          <ChatAnswer question={f} anchor={root.anchor} queued={queued(f)} {...props} />
-                        </li>
-                      ))}
-                    </ol>
-                  )}
-                  {replyFor === root.id ? (
-                    <Reply
-                      root={root}
-                      draft={props.replyDrafts[root.id] ?? ""}
-                      onDraft={(text) => props.onReplyDraft(root.id, text)}
-                      onReply={props.onReply}
-                      onClose={() => closeReply(root.id)}
-                      signInHref={props.signInHref}
-                    />
-                  ) : (
-                    <div className="ml-3.5 pl-2.5">
-                      <Tooltip tip="Asks in this thread: the LLM gets this question with its answers and follow-ups, and the same subject.">
-                        <button
-                          type="button"
-                          ref={(element) => {
-                            if (element) replyButtons.current.set(root.id, element);
-                            else replyButtons.current.delete(root.id);
-                          }}
-                          onClick={() => setReplyFor(root.id)}
-                          className={BUTTON}
-                        >
-                          Ask a follow-up
-                        </button>
-                      </Tooltip>
-                    </div>
-                  )}
-                </li>
+                  answeringSince={(q) => starts[q.id]}
+                  waitsFor={(q) => (firstActive?.question.id === q.id ? undefined : firstActive?.card.number)}
+                  describe={describe}
+                  onGoto={props.onGoto}
+                  onAskAgain={props.onAskAgain}
+                  onEvidence={props.onEvidence}
+                  onUseAsComment={props.onUseAsComment}
+                  signInHref={props.signInHref}
+                  replyDraft={props.replyDrafts[root.id] ?? ""}
+                  onReplyDraft={(text) => props.onReplyDraft(root.id, text)}
+                  onReply={props.onReply}
+                  onOpenReply={() => setReplyFor(root.id)}
+                  onCloseReply={() => closeReply(root.id)}
+                />
               );
             })}
           </ol>
@@ -616,7 +362,7 @@ export function AskChat(props: AskChatProps) {
           {props.status}
         </p>
       )}
-      {arrived && (
+      {arrival && (
         <div className="relative h-0 flex-none">
           <Tooltip
             tip="Scrolls to the answer that arrived out of view"
@@ -625,10 +371,12 @@ export function AskChat(props: AskChatProps) {
             <button
               type="button"
               onClick={() => {
-                const item = threadItems.current.get(arrived);
-                item?.scrollIntoView?.({ block: "nearest" });
+                following_.current = false;
+                const item = threadItems.current.get(arrival.root);
+                (outcomeOf(arrival) ?? item)?.scrollIntoView?.({ block: "nearest" });
                 item?.focus({ preventScroll: true });
-                setArrived(null);
+                props.onSeen?.([arrival.id]);
+                setArrival(null);
               }}
               className="cursor-pointer rounded-full border border-accent bg-accent px-3 py-0.5 text-[12px] font-semibold text-on-accent shadow"
             >
@@ -638,6 +386,7 @@ export function AskChat(props: AskChatProps) {
         </div>
       )}
       <form
+        aria-labelledby={`${fieldId}-label`}
         noValidate
         onSubmit={(event) => {
           event.preventDefault();
@@ -646,12 +395,22 @@ export function AskChat(props: AskChatProps) {
         className="flex-none rounded-b-[10px] border-t border-border bg-surface-2 px-2.5 py-2"
       >
         <div className="mb-1 flex min-w-0 flex-wrap items-center gap-1.5 text-[12px]">
+          <span id={`${fieldId}-label`} className="font-semibold">
+            New question
+          </span>
           <span className="text-muted">About:</span>
           {following && subject.kind !== "pr" ? (
             <span className="inline-flex max-w-full min-w-0 items-center gap-0.5 rounded-[10px] border border-accent bg-accent-bg pl-2">
-              <Tooltip tip="Your question will be about this place. It follows where you are in the review; × asks about the whole PR instead.">
+              <Tooltip
+                tip={
+                  remark
+                    ? s.tip
+                    : "Your question will be about this place. It follows where you are in the review; × asks about the whole PR instead."
+                }
+              >
                 <span tabIndex={0} className="[overflow-wrap:anywhere]">
-                  <SubjectText anchor={subject} describe={describe} />
+                  {remark && "Remark · "}
+                  {s.text}
                 </span>
               </Tooltip>
               <Tooltip tip={props.wholePrUnavailable ?? "Ask about the whole PR instead"}>
@@ -687,7 +446,7 @@ export function AskChat(props: AskChatProps) {
                       props.onUsePlace();
                       field.current?.focus();
                     }}
-                    className="cursor-pointer border-0 bg-transparent p-0 text-accent underline"
+                    className="min-h-6 cursor-pointer border-0 bg-transparent p-0 text-accent underline"
                   >
                     about {placeWhat} instead
                   </button>
@@ -721,7 +480,7 @@ export function AskChat(props: AskChatProps) {
               event.preventDefault();
               void send();
             }}
-            className="max-h-40 min-h-[34px] flex-1 resize-none rounded-md border border-border bg-surface px-2 py-1.5 text-[13px]"
+            className={`min-h-[34px] flex-1 resize-none rounded-md border border-border bg-surface px-2 py-1.5 text-[13px] ${geometry.narrow ? "max-h-[20dvh]" : "max-h-40"}`}
           />
           <Tooltip
             tip={busyTip(
@@ -753,32 +512,5 @@ export function AskChat(props: AskChatProps) {
         </>
       )}
     </section>
-  );
-}
-
-/** The state or answer of a question; follow-ups take the thread's subject for "Use as review comment". */
-function ChatAnswer({
-  question,
-  anchor,
-  queued,
-  now,
-  onAskAgain,
-  onEvidence,
-  onUseAsComment,
-}: { question: AskQuestion; anchor: AskAnchor; queued: boolean } & Pick<
-  AskChatProps,
-  "now" | "onAskAgain" | "onEvidence" | "onUseAsComment"
->) {
-  return (
-    <div className="max-w-24/25 min-w-0 text-[13px]">
-      <Answer
-        question={question}
-        queued={queued}
-        now={now}
-        onAskAgain={() => onAskAgain(question)}
-        onEvidence={onEvidence}
-        onUseAsComment={onUseAsComment && hasLines(anchor) ? () => onUseAsComment(question) : undefined}
-      />
-    </div>
   );
 }

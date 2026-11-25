@@ -78,6 +78,7 @@ interface InspectorPaneProps {
   commentRef: RefObject<HTMLTextAreaElement | null>;
   /** "Ask about this line" from a code line of the step. */
   onAskLine?: (target: CommentTarget) => void;
+  onAskRemark?: (annotation: Annotation) => void;
   /** "Use as review comment" on a flag of the step; absent while commenting is unavailable. */
   onFlagAsComment?: (flag: Annotation) => void;
   /** Draft text for the comment composer ("Use as review comment"); `onCommentPrefilled` once it is in. */
@@ -215,6 +216,7 @@ export function InspectorPane(props: InspectorPaneProps) {
     <Inspector
       sections={props.sections}
       onFlagAsComment={props.onFlagAsComment}
+      onAskRemark={props.onAskRemark}
       questions={here}
       tour={tour}
       block={block}

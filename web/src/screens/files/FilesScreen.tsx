@@ -589,6 +589,14 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
     return () => document.removeEventListener("keydown", onKey);
   });
 
+  const askRemark = (remark: Annotation) => {
+    const facts = ownerOf.get(remark.id)?.step.facts;
+    if (facts)
+      chat.open({
+        anchor: { kind: "lines", path: facts.file, side: facts.side, range: remark.range },
+        remark,
+      });
+  };
   const ctx: CodeContext = {
     hideContextChanges,
     analysisId,
@@ -609,6 +617,7 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
     onEditComment: comments.edit,
     onDeleteComment: comments.remove,
     onShowInInspector: showInInspector,
+    onAskRemark: askRemark,
   };
 
   // Ask: the subject's lines, with their step when every changed line lies in one step (A4).
@@ -777,6 +786,7 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
     diff,
     onEvidence,
     onFlagAsComment,
+    onAskRemark: askRemark,
     onFlag: (flag) => showInInspector({ kind: "annotation", id: flag.id }),
   };
   const panel =

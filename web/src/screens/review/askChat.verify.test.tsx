@@ -125,7 +125,9 @@ describe("Ask chat fix round 1 (Marvin verification)", () => {
       ),
     );
     await user().keyboard("a");
-    await user().click(within(await thread("t2")).getByRole("button", { name: "Use as review comment" }));
+    const card = within(await thread("t2"));
+    await user().click(card.getByRole("button", { name: "Show Q2" }));
+    await user().click(card.getByRole("button", { name: "Use as review comment" }));
     await waitFor(() => expect(router.state.location.hash).toBe("#f1.2"));
     await new Promise((resolve) => setTimeout(resolve, 200));
     const composer = screen.queryByRole("textbox", { name: /^Comment on / });
