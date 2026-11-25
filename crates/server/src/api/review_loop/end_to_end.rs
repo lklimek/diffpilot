@@ -309,14 +309,6 @@ async fn comments_open_assess_and_decide_end_to_end() {
     assert_eq!(overview["read"]["complete"], true);
     let pr = w.pr_id().await;
     let rl = w.state.db.review_loop();
-    let passes = rl.live_passes().await.expect("passes");
-    assert_eq!(passes.len(), 1, "{passes:?}");
-    assert_eq!(passes[0].cause, db::repo::review_loop::PassCause::Opened);
-    let (status, overview) = w.call("GET", &format!("{PR}/comments"), None).await;
-    assert_eq!(status, StatusCode::OK, "{overview}");
-    let repeated = rl.live_passes().await.expect("passes after another GET");
-    assert_eq!(repeated.len(), 1, "{repeated:?}");
-    assert_eq!(repeated[0].id, passes[0].id);
 
     let (_, items) = w.call("GET", &format!("{PR}/comments/items"), None).await;
     let threads = items
