@@ -29,6 +29,8 @@ Automatic re-judging of changed items spent the daily cap (120) on items whose r
    `Content-Length` checked before the body is read, body ≤ 4 MiB (route-level limit), load shedding at 8 concurrent
    requests with an 8 s timeout, exactly one `X-Hub-Signature-256` (`sha256=` + 64 hex), HMAC-SHA256 over the raw
    body in constant time **before** parsing, then the hook target must be this App; 401 without detail on failure.
+   Every answer sent before the body is consumed (404, 4xx header checks, 503) first reads and discards the body up
+   to 4 MiB within the body timeout; otherwise the reverse proxy sees a reset and returns 502 (observed 2026-11-25).
 3. **Trust:** **the WAF and source IPs are not authentication** (GitHub's hook ranges deliver any user's webhooks to
    any URL). The App `claudbot` is public, so a valid signature proves only "GitHub, our App"; deliveries are
    processed only when its repository is **tracked by at least one tenant** (owner 2026-11-25): its owner is in a
