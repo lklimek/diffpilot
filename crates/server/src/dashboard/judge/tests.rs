@@ -9,7 +9,9 @@ use contracts::api::dashboard::{
 };
 use contracts::common::RepoRef;
 use contracts::ids::RefreshId;
-use contracts::job::result::{JobOutcome, JobResult};
+use contracts::job::result::{
+    JobFailureKind, JobOutcome, JobResult, LlmCallOutcome, LlmCallStatus, Usage,
+};
 use contracts::job::spec::JobPriority;
 use contracts::job::state::JobState;
 use db::repo::dashboard::{JudgeCounts, SendCaps, SendReservation, StartOutcome};
@@ -320,6 +322,7 @@ impl Harness {
         let run = RankRun {
             scope: scope(user),
             refresh_id: id,
+            mode: RankMode::Scan,
             attempt: 0,
         };
         self.state
@@ -412,6 +415,16 @@ impl Harness {
     }
 
     async fn complete(&self, job: &JobRecord, outcome: JobOutcome) {
+        self.complete_with_usage(job, outcome, None, None).await;
+    }
+
+    async fn complete_with_usage(
+        &self,
+        job: &JobRecord,
+        outcome: JobOutcome,
+        usage: Option<Usage>,
+        llm_call: Option<LlmCallOutcome>,
+    ) {
         self.db()
             .jobs()
             .complete(
@@ -422,9 +435,9 @@ impl Harness {
                     attempt: job.attempt,
                     outcome,
                     session: None,
-                    usage: None,
+                    usage,
                     skills_commit: None,
-                    llm_call: None,
+                    llm_call,
                 },
                 Timestamp::now(),
             )
@@ -1068,12 +1081,16 @@ async fn sent_earlier(h: &Harness, user: &str, sent: u32) {
             user,
             id,
             0,
-            sent,
+            JudgeSend {
+                job_id: JobId::new_random(),
+                items: sent,
+                sent_at: h.state.dashboard.now(),
+                day_start: day_start(h.state.dashboard.now(), &TimeZone::UTC),
+            },
             SendCaps {
-                per_refresh: sent,
+                per_refresh: Some(sent),
                 per_day: DAILY_CAP,
             },
-            h.state.dashboard.now(),
         )
         .await
         .expect("reserve");
@@ -1691,6 +1708,7 @@ async fn unclaimed_judge_job_ends_the_ranking() {
     let run = RankRun {
         scope: scope("u1"),
         refresh_id: id,
+        mode: RankMode::Scan,
         attempt: 0,
     };
     let long_ago = tokio::time::Instant::now()
@@ -1703,14 +1721,18 @@ async fn unclaimed_judge_job_ends_the_ranking() {
         live: RankingState::Running,
         zone: jiff::tz::TimeZone::UTC,
         language: LlmLanguage::En,
-        day: now(),
+        left_provisional_keys: Vec::new(),
         unclaimed_since: Some(long_ago),
         provisional: None,
     };
     let input = JudgeWorkInput {
         items: vec![candidates(&snap, LlmLanguage::En)[0].item.clone()],
     };
-    let job = ranking.submit(1, 0, &input).await.expect("submit").job_id;
+    let job = ranking
+        .submit(JobId::new_random(), 1, 0, &input)
+        .await
+        .expect("submit")
+        .job_id;
     // Paused for the usage limit: the wait does not count, and starts again after the pause.
     h.db()
         .llm_credentials()
@@ -1751,6 +1773,7 @@ async fn ask_container_does_not_suppress_the_unclaimed_judge_limit() {
     let run = RankRun {
         scope: scope("u1"),
         refresh_id: id,
+        mode: RankMode::Scan,
         attempt: 0,
     };
     let long_ago = tokio::time::Instant::now()
@@ -1763,14 +1786,18 @@ async fn ask_container_does_not_suppress_the_unclaimed_judge_limit() {
         live: RankingState::Running,
         zone: jiff::tz::TimeZone::UTC,
         language: LlmLanguage::En,
-        day: now(),
+        left_provisional_keys: Vec::new(),
         unclaimed_since: Some(long_ago),
         provisional: None,
     };
     let input = JudgeWorkInput {
         items: vec![candidates(&snap, LlmLanguage::En)[0].item.clone()],
     };
-    let job = ranking.submit(1, 0, &input).await.expect("submit").job_id;
+    let job = ranking
+        .submit(JobId::new_random(), 1, 0, &input)
+        .await
+        .expect("submit")
+        .job_id;
     let analysis = db::repo::analyses::testing::seed_analysis(h.db())
         .await
         .expect("analysis");
@@ -1861,6 +1888,7 @@ async fn stale_attempt_results_are_dropped() {
     let run = RankRun {
         scope: scope("u1"),
         refresh_id: id,
+        mode: RankMode::Scan,
         attempt: 0,
     };
     let old = tokio::spawn(JudgeRanker.rank(h.state.clone(), run));
@@ -1910,6 +1938,7 @@ async fn stale_attempt_writes_neither_notes_nor_judgements() {
     let run = RankRun {
         scope: scope("u1"),
         refresh_id: id,
+        mode: RankMode::Scan,
         attempt: 0,
     };
     let mut old = Ranking {
@@ -1919,7 +1948,7 @@ async fn stale_attempt_writes_neither_notes_nor_judgements() {
         live: RankingState::Running,
         zone: jiff::tz::TimeZone::UTC,
         language: LlmLanguage::En,
-        day: now(),
+        left_provisional_keys: Vec::new(),
         unclaimed_since: None,
         provisional: None,
     };
@@ -1960,7 +1989,11 @@ async fn stale_attempt_writes_neither_notes_nor_judgements() {
     let input = JudgeWorkInput {
         items: vec![queued.item.clone()],
     };
-    let job = old.submit(1, 0, &input).await.expect("submit").job_id;
+    let job = old
+        .submit(JobId::new_random(), 1, 0, &input)
+        .await
+        .expect("submit")
+        .job_id;
     let result = JobResult {
         assessment: None,
         report: None,
@@ -2284,6 +2317,281 @@ async fn a_retry_beyond_the_cap_is_not_sent() {
             .is_some_and(|m| m.starts_with("8 items could not be judged (")),
         "{ranking:?}"
     );
+}
+
+#[tokio::test]
+async fn pending_ranking_has_only_the_daily_cap() {
+    let h = harness().await;
+    sent_earlier(&h, "u1", DAILY_CAP - REFRESH_CAP - 1).await;
+    let id = h.stored("u1", &snapshot(prs(3), vec![], vec![])).await;
+    let sent_at = h.state.dashboard.now();
+    assert_eq!(
+        h.db()
+            .dashboard()
+            .reserve_sends(
+                DEFAULT_TENANT,
+                "u1",
+                id,
+                0,
+                JudgeSend {
+                    job_id: JobId::new_random(),
+                    items: REFRESH_CAP,
+                    sent_at,
+                    day_start: day_start(sent_at, &TimeZone::UTC),
+                },
+                SendCaps {
+                    per_refresh: Some(REFRESH_CAP),
+                    per_day: DAILY_CAP
+                },
+            )
+            .await
+            .expect("reserve"),
+        SendReservation::Reserved
+    );
+    let run = RankRun {
+        scope: scope("u1"),
+        refresh_id: id,
+        attempt: 0,
+        mode: RankMode::Pending,
+    };
+    h.state
+        .dashboard
+        .spawn(id, JudgeRanker.rank(h.state.clone(), run));
+    assert_eq!(
+        h.serve_until_ended("u1", id, |input| succeeded(neutral(input)))
+            .await,
+        (1, 1)
+    );
+    assert_eq!(h.ranked("u1", id).await.left_provisional, 2);
+}
+
+fn worker_lost() -> JobOutcome {
+    JobOutcome::Failed {
+        kind: JobFailureKind::WorkerLost,
+        message: "The worker disconnected.".to_owned(),
+    }
+}
+
+#[tokio::test]
+async fn failed_before_provider_batches_do_not_reduce_room() {
+    let h = harness().await;
+    let snap = snapshot(prs(8), vec![], vec![]);
+    for _ in 0..5 {
+        let id = h.rank("u1", &snap).await;
+        for generation in 0..=RETRIES {
+            let job = h.claim().await;
+            assert_eq!(job.generation, generation);
+            let usage = (generation != 0).then(Usage::default);
+            h.complete_with_usage(&job, worker_lost(), usage, None)
+                .await;
+        }
+        h.ranked("u1", id).await;
+    }
+    let next = h.stored("u1", &snap).await;
+    let sent = h
+        .db()
+        .dashboard()
+        .sent_totals(
+            DEFAULT_TENANT,
+            "u1",
+            next,
+            now() - SignedDuration::from_hours(1),
+        )
+        .await
+        .expect("totals");
+    assert_eq!(DAILY_CAP - sent.day, 120);
+}
+
+#[tokio::test]
+async fn job_with_tokens_keeps_counting() {
+    let h = harness().await;
+    let id = h.rank("u1", &snapshot(prs(8), vec![], vec![])).await;
+    for (usage, llm_call) in [
+        (
+            Some(Usage {
+                input_tokens: 1,
+                ..Usage::default()
+            }),
+            None,
+        ),
+        (
+            None,
+            Some(LlmCallOutcome {
+                at: now(),
+                status: LlmCallStatus::Working,
+            }),
+        ),
+        (None, None),
+    ] {
+        let job = h.claim().await;
+        h.complete_with_usage(&job, worker_lost(), usage, llm_call)
+            .await;
+    }
+    h.ranked("u1", id).await;
+    let sent = h
+        .db()
+        .dashboard()
+        .sent_totals(
+            DEFAULT_TENANT,
+            "u1",
+            id,
+            now() - SignedDuration::from_hours(1),
+        )
+        .await
+        .expect("totals");
+    assert_eq!(
+        sent.day, 16,
+        "tokens and a provider call independently keep a send counted"
+    );
+    assert_eq!(sent.refresh, 24, "the refresh cap counts every send");
+}
+
+async fn ranking_usage_request(
+    h: &Harness,
+    user: &str,
+    reset: bool,
+    csrf: bool,
+) -> axum::response::Response {
+    use axum::body::Body;
+    use axum::http::Request;
+    use contracts::routes::{GET_RANKING_USAGE, RESET_RANKING_USAGE};
+    use db::repo::sessions::NewSession;
+    use tower::ServiceExt;
+
+    let token = format!("ranking-usage-{user}-{}", Uuid::new_v4());
+    let now = Timestamp::now();
+    h.db()
+        .sessions()
+        .create(
+            &NewSession {
+                token_hash: &crate::secrets::sha256(token.as_bytes()),
+                tenant_id: DEFAULT_TENANT,
+                user_id: user,
+                csrf_token: "csrf",
+                expires_at: now + SignedDuration::from_hours(1),
+            },
+            now,
+        )
+        .await
+        .expect("session");
+    let mut request = if reset {
+        Request::post(RESET_RANKING_USAGE.path)
+    } else {
+        Request::get(GET_RANKING_USAGE.path)
+    };
+    request = request.header("cookie", format!("__Host-sr_session={token}"));
+    if csrf {
+        request = request.header("x-csrf-token", "csrf");
+    }
+    crate::api::router(h.state.clone())
+        .oneshot(request.body(Body::empty()).expect("request"))
+        .await
+        .expect("response")
+}
+
+async fn ranking_usage_body(response: axum::response::Response) -> serde_json::Value {
+    use http_body_util::BodyExt;
+
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    serde_json::from_slice(&body).expect("usage")
+}
+
+#[tokio::test]
+async fn reset_counts_from_reset_time_and_logs() {
+    use tracing::instrument::WithSubscriber;
+
+    let h = harness().await;
+    sent_earlier(&h, "u2", 7).await;
+    let id = h.rank("u1", &snapshot(prs(16), vec![], vec![])).await;
+    let first = h.claim().await;
+    assert_eq!(
+        ranking_usage_body(ranking_usage_request(&h, "u1", false, false).await).await["sent_today"],
+        8
+    );
+    assert_eq!(
+        ranking_usage_request(&h, "u1", true, false).await.status(),
+        axum::http::StatusCode::FORBIDDEN
+    );
+    let log = tempfile::NamedTempFile::new().expect("log");
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(log.reopen().expect("writer"))
+        .finish();
+    let response = ranking_usage_request(&h, "u1", true, true)
+        .with_subscriber(subscriber)
+        .await;
+    assert_eq!(ranking_usage_body(response).await["sent_today"], 0);
+    let log = std::fs::read_to_string(log.path()).expect("reset log");
+    assert!(
+        log.lines().any(|line| {
+            line.contains("INFO")
+                && line.contains("dashboard ranking usage reset")
+                && line.contains("user_id=u1")
+                && line.contains("sent_before=8")
+        }),
+        "{log}"
+    );
+    assert_eq!(
+        ranking_usage_body(ranking_usage_request(&h, "u2", false, false).await).await["sent_today"],
+        7
+    );
+    let input = JudgeWorkInput::from_prompt(&first.spec.prompt).expect("judge input");
+    h.complete(&first, succeeded(neutral(&input))).await;
+    h.serve(|input| succeeded(neutral(input))).await;
+    h.ranked("u1", id).await;
+    assert_eq!(
+        ranking_usage_body(ranking_usage_request(&h, "u1", false, false).await).await["sent_today"],
+        8
+    );
+}
+
+#[tokio::test]
+async fn usage_resets_at_local_midnight() {
+    let mut h = harness().await;
+    let at = "2026-03-29T00:10:00Z".parse().expect("time");
+    h.state.dashboard = DashboardHub::testing(
+        Clock::starting_at(at),
+        SCAN_LIMIT,
+        Arc::new(JudgeRanker),
+        Duration::ZERO,
+    );
+    let usage = ranking_usage_body(ranking_usage_request(&h, "u1", false, false).await).await;
+    assert_eq!(
+        usage,
+        json!({
+            "sent_today": 0,
+            "daily_cap": 120,
+            "per_refresh_cap": 48,
+            "resets_at": "2026-03-30T00:00:00Z",
+            "left_provisional": 0,
+        })
+    );
+    h.db()
+        .dashboard()
+        .save_settings(
+            DEFAULT_TENANT,
+            "u1",
+            &DashboardSettings {
+                time_zone: Some("Europe/Warsaw".to_owned()),
+                ..DashboardSettings::default()
+            },
+            at,
+        )
+        .await
+        .expect("settings");
+    sent_earlier(&h, "u1", DAILY_CAP).await;
+    let id = h.rank("u1", &snapshot(prs(3), vec![], vec![])).await;
+    h.ranked("u1", id).await;
+    let usage = ranking_usage_body(ranking_usage_request(&h, "u1", false, false).await).await;
+    assert_eq!(usage["resets_at"], "2026-03-29T22:00:00Z");
+    assert_eq!(usage["sent_today"], DAILY_CAP);
+    assert_eq!(usage["left_provisional"], 3);
 }
 
 /// A plug-in that states whose move one pull request is (K15 W3b), always fresh.

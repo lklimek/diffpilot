@@ -1347,12 +1347,16 @@ mod ranked {
                 "u1",
                 refresh.id,
                 0,
-                DAILY_CAP,
+                db::repo::dashboard::JudgeSend {
+                    job_id: contracts::ids::JobId::new_random(),
+                    items: DAILY_CAP,
+                    sent_at: utc(2026, 11, 18, 4, 1),
+                    day_start: utc(2026, 11, 18, 0, 0),
+                },
                 db::repo::dashboard::SendCaps {
-                    per_refresh: DAILY_CAP,
+                    per_refresh: Some(DAILY_CAP),
                     per_day: DAILY_CAP,
                 },
-                utc(2026, 11, 18, 4, 1),
             )
             .await
             .expect("reserve");

@@ -29,7 +29,7 @@ use jiff::SignedDuration;
 use jiff::tz::TimeZone;
 
 use self::progress::Progress;
-use self::rank::RankRun;
+use self::rank::{RankMode, RankRun};
 use self::scan::ScanInput;
 use super::score::ScoreRules;
 use super::{settings, snapshot, snooze};
@@ -226,6 +226,7 @@ pub async fn rank_again(
         scope: scope.clone(),
         refresh_id: id,
         attempt: record.ranking_attempt,
+        mode: RankMode::Scan,
     };
     let status = status_of(&record);
     state.dashboard.publish(status.clone());
@@ -419,6 +420,7 @@ async fn run(state: AppState, scope: Scope, id: RefreshId, trigger: RefreshTrigg
                 scope: scope.clone(),
                 refresh_id: id,
                 attempt: 0,
+                mode: RankMode::Scan,
             };
             state.dashboard.ranker().rank(state.clone(), run).await;
         }
