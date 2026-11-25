@@ -24,7 +24,7 @@ use jiff::SignedDuration;
 use sha2::{Digest, Sha256};
 
 use crate::auth::{Session, UserTokenError, user_access_token, user_token_rejected};
-use crate::github::graphql::{GraphqlError, GraphqlErrorType};
+use crate::github::graphql::{GraphqlError, GraphqlErrorType, ReadBudget};
 use crate::github::review_loop::{self as reads, ReadError};
 use crate::github::{checks, mirror, rest};
 use crate::state::AppState;
@@ -76,6 +76,9 @@ pub enum LoopError {
     /// "Read GitHub again" within [`MIN_REREAD`] of the last read.
     #[error("the pull request was read moments ago")]
     TooSoon,
+    /// An event read has to wait for its GitHub budget.
+    #[error("GitHub webhook read budget reached")]
+    EventBudget(std::time::Duration),
     /// These items (`C<no>`) changed since the revisions named.
     #[error("items changed since the decision was prepared")]
     ItemChanged(Vec<u32>),
@@ -218,6 +221,17 @@ pub(crate) async fn read_if_due(
     pr: &PrRef,
     force: bool,
 ) -> Result<Read, LoopError> {
+    read_if_due_with_budget(state, tenant, user, pr, force, None).await
+}
+
+async fn read_if_due_with_budget(
+    state: &AppState,
+    tenant: &str,
+    user: &str,
+    pr: &PrRef,
+    force: bool,
+    budget: Option<ReadBudget<'_>>,
+) -> Result<Read, LoopError> {
     if !rest::is_valid_repo(&pr.repo) || pr.number == 0 {
         return Err(LoopError::NotFound);
     }
@@ -245,7 +259,7 @@ pub(crate) async fn read_if_due(
             return Ok(skipped(handle));
         }
     }
-    read_now(state, tenant, user, pr).await
+    read_now(state, tenant, user, pr, budget).await
 }
 
 fn failure_of(error: &ReadError) -> ReadFailure {
@@ -290,6 +304,7 @@ async fn read_now(
     tenant: &str,
     user: &str,
     pr: &PrRef,
+    budget: Option<ReadBudget<'_>>,
 ) -> Result<Read, LoopError> {
     let token = match user_access_token(state, user).await {
         Ok(token) => token,
@@ -299,8 +314,11 @@ async fn read_now(
         Err(error) => return Err(error.into()),
     };
     let config = &state.config.github;
-    let read = match reads::read(config, &token, pr).await {
+    let read = match reads::read(config, &token, pr, budget).await {
         Ok(read) => read,
+        Err(ReadError::Graphql(GraphqlError::EventBudget(delay))) => {
+            return Err(LoopError::EventBudget(delay));
+        }
         Err(ReadError::NotFound) => return Err(LoopError::NotFound),
         Err(ReadError::Graphql(error)) if error.kind() == Some(GraphqlErrorType::NotFound) => {
             return Err(LoopError::NotFound);

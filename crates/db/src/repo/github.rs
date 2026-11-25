@@ -152,7 +152,9 @@ pub struct PendingDelivery {
     pub changes: Vec<WebhookChange>,
     /// Dispatch failures in this attempt series.
     pub attempts: i64,
-    received_at: String,
+    /// When the original delivery entered the durable queue.
+    pub received_at: Timestamp,
+    received_at_raw: String,
 }
 
 /// Closed set of stored processing errors.
@@ -348,7 +350,7 @@ impl Github<'_> {
         self.next_pending_excluding(now, &[]).await
     }
 
-    /// Oldest eligible delivery not held by one of the worker's open coalescing windows.
+    /// Delivery waiting the longest since it became eligible, excluding open coalescing windows.
     pub async fn next_pending_excluding(
         &self,
         now: Timestamp,
@@ -361,7 +363,7 @@ impl Github<'_> {
                     attempts, received_at FROM github_deliveries
              WHERE state = 'pending' AND received_at >= ? AND (processed_at IS NULL OR processed_at <= ?)
                AND delivery_id NOT IN (SELECT value FROM json_each(?))
-             ORDER BY received_at, rowid LIMIT 1",
+             ORDER BY COALESCE(processed_at, received_at), rowid LIMIT 1",
         ).bind(ts(now - RESUME_WINDOW)).bind(ts(now)).bind(serde_json::to_string(held)?)
          .fetch_optional(self.pool).await?;
         row.map(|(id, changes, attempts, received_at)| {
@@ -371,7 +373,8 @@ impl Github<'_> {
                 })?,
                 changes: serde_json::from_str(&changes)?,
                 attempts,
-                received_at,
+                received_at: parse_ts(&received_at, "received_at")?,
+                received_at_raw: received_at,
             })
         })
         .transpose()
@@ -395,6 +398,13 @@ impl Github<'_> {
     /// Completes a delivery unless redelivery replaced the worker's attempt.
     pub async fn finish(&self, delivery: &PendingDelivery, now: Timestamp) -> Result<(), DbError> {
         self.update_pending(delivery, "done", None, now).await?;
+        Ok(())
+    }
+
+    /// Returns an unfinished delivery to the durable queue without consuming a failure retry.
+    pub async fn defer(&self, delivery: &PendingDelivery, until: Timestamp) -> Result<(), DbError> {
+        self.update_pending(delivery, "pending", None, until)
+            .await?;
         Ok(())
     }
 
@@ -427,7 +437,7 @@ impl Github<'_> {
              WHERE delivery_id = ? AND received_at = ? AND attempts = ? AND state = 'pending'",
         )
         .bind(state).bind(error.map(|code| code.to_string())).bind(ts(at)).bind(i64::from(error.is_some()))
-        .bind(delivery.id.to_string()).bind(&delivery.received_at).bind(delivery.attempts)
+        .bind(delivery.id.to_string()).bind(&delivery.received_at_raw).bind(delivery.attempts)
         .execute(self.pool).await?;
         Ok(result.rows_affected() != 0)
     }

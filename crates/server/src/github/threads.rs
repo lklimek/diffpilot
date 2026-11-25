@@ -152,6 +152,7 @@ pub async fn fetch(
         pr,
         REVIEW_THREADS,
         MAX_PAGES,
+        None,
         |data: Data| {
             data.repository
                 .and_then(|repository| repository.pull_request)

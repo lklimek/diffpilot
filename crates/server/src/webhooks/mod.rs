@@ -6,6 +6,9 @@ mod drain;
 mod receive;
 mod worker;
 
+#[cfg(test)]
+pub(crate) use worker::work_step;
+
 use std::collections::{BTreeMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};

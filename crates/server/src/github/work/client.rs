@@ -535,13 +535,13 @@ impl<T: TokenSource> WorkClient<T> {
         if !document.trim_start().starts_with("query") {
             return Err(WorkError::NotAQuery);
         }
-        let wall = Timestamp::now();
-        let mut spend = if let Some((budget, now)) = &self.event_budget {
-            let mut spend = budget.0.lock().await;
-            if !spend.permits(*now, wall, estimate) {
-                return Err(WorkError::EventBudget);
-            }
-            Some((spend, *now))
+        let charge = if let Some((budget, now)) = &self.event_budget {
+            Some(
+                budget
+                    .reserve(*now, Timestamp::now(), estimate)
+                    .await
+                    .map_err(|_| WorkError::EventBudget)?,
+            )
         } else {
             None
         };
@@ -563,13 +563,13 @@ impl<T: TokenSource> WorkClient<T> {
             }
             Err(error) => (Err(error), None, None),
         };
-        if let Some((spend, now)) = spend.as_mut() {
+        if let Some(charge) = charge {
             let rate = envelope
                 .as_ref()
                 .ok()
                 .and_then(|answer| answer.data.as_ref())
                 .and_then(|data| data.get("rateLimit"));
-            spend.record(*now, wall, estimate, rate, remaining, reset);
+            charge.record(rate, remaining, reset);
         }
         let envelope = envelope?;
         let kinds: Vec<String> = envelope

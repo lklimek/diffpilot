@@ -28,6 +28,7 @@ use super::observe::Snapshot;
 use super::{Loaded, LoopError, PrHandle, ReadOutcome, queue};
 use crate::auth::{Session, UserTokenError};
 use crate::dashboard::{installations, plugin::PrKey};
+use crate::github::graphql::ReadBudget;
 use crate::github::work::{EventBudget, UserTokens, WorkClient, WorkError};
 use crate::state::AppState;
 
@@ -515,15 +516,9 @@ async fn probe(
             "some watched pull requests were not probed; another probe can retry"
         );
     }
-    let full_read_wait = match trigger {
-        ProbeTrigger::Poll => Duration::ZERO,
-        ProbeTrigger::Webhook {
-            budget, instant, ..
-        } => budget.blocked_for(instant, now).await,
-    };
     let mut complete = answers.failed.is_empty();
     for (watch, value) in answers.resolved {
-        match observe(state, watch, value, now, trigger, full_read_wait).await {
+        match observe(state, watch, value, now, trigger).await {
             Ok(Some(delay)) => return ProbeOutcome::Deferred(delay),
             Ok(None) => (),
             Err(error) => {
@@ -596,7 +591,6 @@ async fn observe(
     value: Value,
     now: Timestamp,
     trigger: ProbeTrigger<'_>,
-    full_read_wait: Duration,
 ) -> Result<Option<Duration>, WatchError> {
     let rl = state.db.review_loop();
     let (user, pr) = (watch.user_id.as_str(), watch.pull_request_id);
@@ -635,11 +629,24 @@ async fn observe(
     let changed = stored.as_ref() != Some(&probe);
     // Editing a review or resolving a thread may leave all probe values unchanged.
     if changed || matches!(trigger, ProbeTrigger::Webhook { review: true, .. }) {
-        if !full_read_wait.is_zero() {
-            return Ok(Some(full_read_wait));
-        }
-        let read = match super::read_if_due(state, &watch.tenant_id, user, &watch.pr, true).await {
+        let budget = match trigger {
+            ProbeTrigger::Poll => None,
+            ProbeTrigger::Webhook {
+                budget, instant, ..
+            } => Some(ReadBudget { budget, instant }),
+        };
+        let read = match super::read_if_due_with_budget(
+            state,
+            &watch.tenant_id,
+            user,
+            &watch.pr,
+            true,
+            budget,
+        )
+        .await
+        {
             Ok(read) => read.outcome,
+            Err(LoopError::EventBudget(delay)) => return Ok(Some(delay)),
             Err(LoopError::TooSoon) => {
                 tracing::debug!(
                     pr,

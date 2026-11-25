@@ -919,3 +919,55 @@ async fn dashboard_fanout_matches_repository_ids_in_each_tenant() {
         ["default".into(), "other".into()].into()
     );
 }
+
+#[tokio::test]
+async fn deferred_delivery_yields_to_earlier_eligible_work() {
+    let db = test_db().await;
+    let github = db.github();
+    let now = Timestamp::now();
+    let later = now + SignedDuration::from_secs(30);
+    let repository = repo(7, "acme", "node-client");
+    let change = WebhookChange {
+        kind: ChangeKind::PullRequest,
+        repository: repository.clone(),
+        head_repository: None,
+        number: Some(1),
+        head_sha: None,
+        action: None,
+        installation_id: None,
+        base_repository: None,
+        candidate_login: None,
+    };
+    let queue = async |id: Uuid, at: Timestamp| {
+        let hash = id.simple().to_string().repeat(2);
+        github
+            .record(
+                &NewDelivery {
+                    id,
+                    hash: &hash,
+                    event: "pull_request",
+                    action: None,
+                    installation_id: None,
+                    effect: Effect::Signal(&repository, std::slice::from_ref(&change)),
+                },
+                at,
+            )
+            .await
+            .unwrap();
+    };
+
+    let first = Uuid::new_v4();
+    queue(first, now).await;
+    let pending = github.next_pending(now).await.unwrap().unwrap();
+    github.defer(&pending, later).await.unwrap();
+    assert!(github.next_pending(now).await.unwrap().is_none());
+
+    let second = Uuid::new_v4();
+    queue(second, now + SignedDuration::from_secs(10)).await;
+    let eligible = github.next_pending(later).await.unwrap().unwrap();
+    assert_eq!(eligible.id, second);
+    github.finish(&eligible, later).await.unwrap();
+    let resumed = github.next_pending(later).await.unwrap().unwrap();
+    assert_eq!((resumed.id, resumed.attempts), (first, 0));
+    assert_eq!(resumed.changes[0].number, Some(1));
+}

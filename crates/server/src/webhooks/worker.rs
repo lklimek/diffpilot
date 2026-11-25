@@ -54,7 +54,8 @@ async fn work(hooks: &Webhooks, state: &AppState) {
     }
 }
 
-async fn work_step(
+/// Flushes due windows and admits at most one durable delivery.
+pub(crate) async fn work_step(
     state: &AppState,
     dispatch: &mut Dispatcher,
 ) -> Result<Option<Duration>, DbError> {

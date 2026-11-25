@@ -6,6 +6,7 @@ use std::time::Duration;
 use contracts::time::Timestamp;
 use db::error::DbError;
 use db::repo::github::{ChangeKind, DeliveryError, PendingDelivery};
+use jiff::SignedDuration;
 use tokio::time::Instant;
 use uuid::Uuid;
 
@@ -19,12 +20,11 @@ use crate::state::AppState;
 
 const WINDOW: Duration = Duration::from_secs(10);
 const SCAN_RECHECK: Duration = Duration::from_secs(2);
-// Covers an hourly limit reset and one probe interval while bounding time in flight.
-const WATCH_DEFERRAL_LIMIT: Duration = Duration::from_secs(65 * 60);
+// Covers an hourly limit reset and one probe interval.
+const WATCH_DEFERRAL_LIMIT: SignedDuration = SignedDuration::from_mins(65);
 pub(super) const MAX_HELD: usize = 256;
 
 struct Window<T> {
-    opened: Instant,
     due: Instant,
     deliveries: Vec<Uuid>,
     work: T,
@@ -33,7 +33,6 @@ struct Window<T> {
 impl<T: Default> Window<T> {
     fn new(now: Instant) -> Self {
         Self {
-            opened: now,
             due: now + WINDOW,
             deliveries: Vec::new(),
             work: T::default(),
@@ -53,9 +52,30 @@ struct Held {
     delivery: PendingDelivery,
     remaining: usize,
     failed: bool,
+    retry_at: Option<Timestamp>,
 }
 
-/// Single consumer's coalescing state. The Queue row remains pending until every routed window finishes.
+enum WindowOutcome {
+    Complete,
+    Failed,
+    Deferred {
+        now: Timestamp,
+        delay: Duration,
+        max_age: SignedDuration,
+    },
+}
+
+impl WindowOutcome {
+    fn from_result<T, E>(result: Result<T, E>) -> Self {
+        if result.is_ok() {
+            Self::Complete
+        } else {
+            Self::Failed
+        }
+    }
+}
+
+/// Single consumer's coalescing state. Deferred work returns to the durable queue with its original hints.
 #[derive(Default)]
 pub(crate) struct Dispatcher {
     users: BTreeMap<Scope, Window<event::EventItems>>,
@@ -145,6 +165,7 @@ impl Dispatcher {
                 delivery,
                 remaining,
                 failed: false,
+                retry_at: None,
             },
         );
         Ok(())
@@ -164,27 +185,27 @@ impl Dispatcher {
             .map(|(scope, _)| scope.clone())
             .collect();
         for scope in scopes {
-            if let Some(mut window) = self.users.remove(&scope) {
+            if let Some(window) = self.users.remove(&scope) {
                 let budget = self
                     .budgets
                     .entry(scope.user_id.clone())
                     .or_default()
                     .clone();
-                match event::reread_items(
-                    state,
-                    &scope,
-                    &window.work,
-                    budget,
-                    now + started.elapsed(),
-                )
-                .await
-                {
-                    Ok(event::EventRead::Scanning) => {
-                        window.due = now + started.elapsed() + SCAN_RECHECK;
-                        self.users.insert(scope, window);
-                    }
-                    result => self.finished(window.deliveries, result.is_err()),
-                }
+                let instant = now + started.elapsed();
+                let outcome =
+                    match event::reread_items(state, &scope, &window.work, budget, instant).await {
+                        Ok(event::EventRead::Scanning) => WindowOutcome::Deferred {
+                            now: wall
+                                + SignedDuration::try_from(started.elapsed()).unwrap_or_default(),
+                            delay: SCAN_RECHECK,
+                            max_age: SignedDuration::try_from(
+                                state.dashboard.scan_limit().saturating_add(WINDOW),
+                            )
+                            .unwrap_or(WATCH_DEFERRAL_LIMIT),
+                        },
+                        result => WindowOutcome::from_result(result),
+                    };
+                self.finished(window.deliveries, outcome);
             }
         }
 
@@ -195,23 +216,27 @@ impl Dispatcher {
             .map(|(pr, _)| *pr)
             .collect();
         for pr in prs {
-            if let Some(mut window) = self.watches.remove(&pr) {
+            if let Some(window) = self.watches.remove(&pr) {
                 let elapsed = started.elapsed();
-                let at =
-                    jiff::SignedDuration::try_from(elapsed).map_or(wall, |elapsed| wall + elapsed);
-                let instant = now + elapsed;
-                let deadline = window.opened + WATCH_DEFERRAL_LIMIT;
-                match watch::event_probe(state, pr, at, window.work, &mut self.budgets, instant)
-                    .await
+                let at = wall + SignedDuration::try_from(elapsed).unwrap_or_default();
+                let outcome = match watch::event_probe(
+                    state,
+                    pr,
+                    at,
+                    window.work,
+                    &mut self.budgets,
+                    now + elapsed,
+                )
+                .await
                 {
-                    Ok(Some(delay)) if instant < deadline => {
-                        window.due =
-                            instant + delay.min(deadline.saturating_duration_since(instant));
-                        self.watches.insert(pr, window);
-                    }
-                    Ok(None) => self.finished(window.deliveries, false),
-                    _ => self.finished(window.deliveries, true),
-                }
+                    Ok(Some(delay)) => WindowOutcome::Deferred {
+                        now: at,
+                        delay,
+                        max_age: WATCH_DEFERRAL_LIMIT,
+                    },
+                    result => WindowOutcome::from_result(result),
+                };
+                self.finished(window.deliveries, outcome);
             }
         }
         let completed: Vec<_> = self
@@ -220,25 +245,55 @@ impl Dispatcher {
             .filter(|(_, held)| held.remaining == 0)
             .map(|(id, _)| *id)
             .collect();
+        let at = wall + SignedDuration::try_from(started.elapsed()).unwrap_or_default();
         for id in completed {
             if let Some(held) = self.held.get(&id) {
-                let outcome = if held.failed {
-                    Err(DeliveryError::Dispatch)
+                if let Some(retry_at) = held.retry_at {
+                    state.db.github().defer(&held.delivery, retry_at).await?;
                 } else {
-                    Ok(())
-                };
-                worker::complete(&state.db, &held.delivery, outcome, Timestamp::now()).await?;
+                    let outcome = if held.failed {
+                        Err(DeliveryError::Dispatch)
+                    } else {
+                        Ok(())
+                    };
+                    worker::complete(&state.db, &held.delivery, outcome, at).await?;
+                }
                 self.held.remove(&id);
             }
         }
         Ok(())
     }
 
-    fn finished(&mut self, deliveries: Vec<Uuid>, failed: bool) {
+    fn finished(&mut self, deliveries: Vec<Uuid>, outcome: WindowOutcome) {
         for id in deliveries {
             if let Some(held) = self.held.get_mut(&id) {
                 held.remaining -= 1;
-                held.failed |= failed;
+                match outcome {
+                    WindowOutcome::Complete => (),
+                    WindowOutcome::Failed => held.failed = true,
+                    WindowOutcome::Deferred {
+                        now,
+                        delay,
+                        max_age,
+                    } => {
+                        if let Some(deadline) = held
+                            .delivery
+                            .received_at
+                            .checked_add(max_age)
+                            .filter(|deadline| *deadline > now)
+                        {
+                            let retry = SignedDuration::try_from(delay)
+                                .ok()
+                                .and_then(|delay| now.checked_add(delay))
+                                .map_or(deadline, |retry| retry.min(deadline));
+                            // Re-evaluate all destinations when the first one becomes eligible.
+                            held.retry_at =
+                                Some(held.retry_at.map_or(retry, |previous| previous.min(retry)));
+                        } else {
+                            held.failed = true;
+                        }
+                    }
+                }
             }
         }
     }

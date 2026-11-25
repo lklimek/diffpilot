@@ -78,7 +78,9 @@ impl ApiErrorSource for ReviewLoopApiError {
                 LoopError::NotFound => ApiErrorCode::NotFound,
                 LoopError::PrivateRepository => ApiErrorCode::PrivateRepository,
                 LoopError::Token(error) => error.code(),
-                LoopError::Unreadable(ReadFailure::RateLimited) => ApiErrorCode::GithubRateLimited,
+                LoopError::Unreadable(ReadFailure::RateLimited) | LoopError::EventBudget(_) => {
+                    ApiErrorCode::GithubRateLimited
+                }
                 LoopError::Unreadable(ReadFailure::SignInRequired) => ApiErrorCode::Unauthenticated,
                 LoopError::Unreadable(ReadFailure::Unavailable) => ApiErrorCode::GithubUnavailable,
                 LoopError::TooSoon => ApiErrorCode::RateLimited,
@@ -116,9 +118,11 @@ impl ApiErrorSource for ReviewLoopApiError {
                     "The repository is private; diffpilot supports public repositories.",
                 ),
                 LoopError::Token(error) => error.public_message(),
-                LoopError::Unreadable(ReadFailure::RateLimited) => Cow::Borrowed(
-                    "GitHub's rate limit is used up; the pull request could not be read. Try again later.",
-                ),
+                LoopError::Unreadable(ReadFailure::RateLimited) | LoopError::EventBudget(_) => {
+                    Cow::Borrowed(
+                        "GitHub's rate limit is used up; the pull request could not be read. Try again later.",
+                    )
+                }
                 LoopError::Unreadable(ReadFailure::SignInRequired) => {
                     Cow::Borrowed("Your GitHub sign-in has ended. Sign in again.")
                 }

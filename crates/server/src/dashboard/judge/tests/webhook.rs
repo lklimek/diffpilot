@@ -16,6 +16,7 @@ struct Github {
     cost: u32,
     remaining: u32,
     throttle_once: Arc<Mutex<Option<Timestamp>>>,
+    review_page_cost: Arc<Mutex<Option<u32>>>,
 }
 
 async fn answer(State(github): State<Github>, Json(body): Json<Value>) -> (HeaderMap, Json<Value>) {
@@ -35,6 +36,13 @@ async fn answer(State(github): State<Github>, Json(body): Json<Value>) -> (Heade
         );
     }
     if !document.contains("a0: repository") {
+        let cost = *github.review_page_cost.lock().unwrap();
+        if let Some(cost) = cost {
+            return (
+                headers,
+                Json(review_answer(document, &body["variables"], cost)),
+            );
+        }
         return (
             headers,
             Json(json!({"errors": [{"type": "NOT_FOUND", "message": "no review fixture"}]})),
@@ -85,6 +93,40 @@ async fn answer(State(github): State<Github>, Json(body): Json<Value>) -> (Heade
     (headers, Json(json!({"data": data})))
 }
 
+fn review_answer(document: &str, variables: &Value, cost: u32) -> Value {
+    let mut repository = json!({"databaseId": 99, "isPrivate": false});
+    let mut rate_cost = cost;
+    if document.contains("databaseId isPrivate") {
+        rate_cost -= 1;
+        repository["pullRequest"] = json!({
+            "title": "Watched", "body": "", "url": "https://github.com/acme/wallet-ui/pull/2",
+            "state": "OPEN", "isDraft": false, "author": {"login": "bob"},
+            "baseRefName": "main", "baseRefOid": "b".repeat(40), "headRefOid": "a".repeat(40),
+            "reviewDecision": null,
+        });
+    } else {
+        let name = if document.contains("reviewThreads(first:") {
+            "reviewThreads"
+        } else if document.contains("reviews(first:") {
+            "reviews"
+        } else {
+            assert!(document.contains("comments(first:"));
+            "comments"
+        };
+        let next = name == "reviewThreads" && variables["after"].is_null();
+        repository["pullRequest"][name] = json!({
+            "nodes": [], "pageInfo": {"hasNextPage": next, "endCursor": next.then_some("thread-page-2")}
+        });
+    }
+    let mut data = json!({"repository": repository});
+    if document.contains("rateLimit") {
+        data["rateLimit"] = json!({
+            "cost": rate_cost, "remaining": 4000, "resetAt": "2099-01-01T00:00:00Z"
+        });
+    }
+    json!({"data": data})
+}
+
 async fn setup(reviewer: &'static str, cost: u32, remaining: u32) -> (Harness, Github) {
     let github = Github {
         queries: Arc::default(),
@@ -92,6 +134,7 @@ async fn setup(reviewer: &'static str, cost: u32, remaining: u32) -> (Harness, G
         cost,
         remaining,
         throttle_once: Arc::default(),
+        review_page_cost: Arc::default(),
     };
     let app = Router::new()
         .route("/graphql", post(answer))
@@ -187,7 +230,7 @@ fn candidate(number: u32) -> WebhookChange {
     change
 }
 
-async fn enqueue(h: &Harness, dispatcher: &mut Dispatcher, at: Instant, change: WebhookChange) {
+async fn record(h: &Harness, at: Timestamp, change: &WebhookChange) -> Uuid {
     let id = Uuid::new_v4();
     let hash = id.simple().to_string().repeat(2);
     let github = h.db().github();
@@ -199,18 +242,39 @@ async fn enqueue(h: &Harness, dispatcher: &mut Dispatcher, at: Instant, change: 
                 event: "pull_request",
                 action: change.action.as_deref(),
                 installation_id: Some(42),
-                effect: Effect::Signal(&change.repository, std::slice::from_ref(&change)),
+                effect: Effect::Signal(&change.repository, std::slice::from_ref(change)),
             },
-            now(),
+            at,
         )
         .await
         .unwrap();
+    id
+}
+
+async fn enqueue(h: &Harness, dispatcher: &mut Dispatcher, at: Instant, change: WebhookChange) {
+    let wall = Timestamp::now();
+    record(h, wall, &change).await;
+    let github = h.db().github();
     let delivery = github
-        .next_pending_excluding(now(), &dispatcher.in_flight())
+        .next_pending_excluding(wall, &dispatcher.in_flight())
         .await
         .unwrap()
         .unwrap();
     dispatcher.enqueue(&h.state, delivery, at).await.unwrap();
+}
+
+async fn intake_ready(h: &Harness, d: &mut Dispatcher, at: Instant, wall: Timestamp) -> usize {
+    let github = h.db().github();
+    let mut count = 0;
+    while let Some(delivery) = github
+        .next_pending_excluding(wall, &d.in_flight())
+        .await
+        .unwrap()
+    {
+        d.enqueue(&h.state, delivery, at).await.unwrap();
+        count += 1;
+    }
+    count
 }
 
 async fn flush(h: &Harness, dispatcher: &mut Dispatcher, at: Instant) {
@@ -639,10 +703,20 @@ async fn watched_pr_probe_at_most_once_per_minute() {
         .unwrap();
         assert_eq!(github.queries.lock().unwrap().len(), 1);
     }
+    assert_eq!(
+        intake_ready(
+            &h,
+            &mut d,
+            start + Duration::from_secs(71),
+            wall + SignedDuration::from_secs(71)
+        )
+        .await,
+        1
+    );
     d.flush(
         &h.state,
-        start + Duration::from_secs(71),
-        wall + SignedDuration::from_secs(71),
+        start + Duration::from_secs(81),
+        wall + SignedDuration::from_secs(81),
     )
     .await
     .unwrap();
@@ -696,12 +770,7 @@ async fn event_item_waits_behind_dedicated_rejudge() {
 #[tokio::test]
 async fn event_during_scan_rereads_the_replacement_snapshot() {
     let (h, github) = setup("alice", 1, 4000).await;
-    seed(
-        &h,
-        "u1",
-        &snapshot(vec![pr(1, "Before scan")], vec![], vec![]),
-    )
-    .await;
+    seed(&h, "u1", &snapshot(prs(2), vec![], vec![])).await;
     let dashboard = h.db().dashboard();
     let StartOutcome::Started { refresh, .. } = dashboard
         .start_refresh(
@@ -717,32 +786,59 @@ async fn event_during_scan_rereads_the_replacement_snapshot() {
     };
     let mut d = Dispatcher::default();
     let at = Instant::now();
-    enqueue(
-        &h,
-        &mut d,
-        at,
-        signal(ChangeKind::PullRequest, repo("wallet-ui"), Some(1)),
-    )
-    .await;
-    flush(&h, &mut d, at + WINDOW).await;
+    let wall = Timestamp::now();
+    for number in [1, 2] {
+        enqueue(
+            &h,
+            &mut d,
+            at,
+            signal(ChangeKind::PullRequest, repo("wallet-ui"), Some(number)),
+        )
+        .await;
+    }
+    d.flush(&h.state, at + WINDOW, wall + SignedDuration::from_secs(10))
+        .await
+        .unwrap();
     assert!(github.queries.lock().unwrap().is_empty());
-    assert!(h.db().github().next_pending(now()).await.unwrap().is_some());
+    assert!(d.in_flight().is_empty());
+    assert!(h.db().github().next_retry(wall).await.unwrap().is_some());
     dashboard
         .store_snapshot(
             DEFAULT_TENANT,
             "u1",
             refresh.id,
-            &snapshot(vec![pr(1, "Scan read before event")], vec![], vec![]),
+            &snapshot(prs(2), vec![], vec![]),
             now(),
         )
         .await
         .unwrap();
-    flush(&h, &mut d, at + WINDOW * 2).await;
-    assert_eq!(
-        read(&h, "u1").await.pull_requests[0].facts.title,
-        "Changed pull request 1"
+    // Recover both original hints with a fresh worker after the scan has replaced its snapshot.
+    let mut d = Dispatcher::default();
+    let resumed = wall + SignedDuration::from_secs(20);
+    assert_eq!(intake_ready(&h, &mut d, at + WINDOW * 2, resumed).await, 2);
+    d.flush(
+        &h.state,
+        at + WINDOW * 3,
+        resumed + SignedDuration::from_secs(10),
+    )
+    .await
+    .unwrap();
+    let stored = read(&h, "u1").await;
+    assert_eq!(stored.pull_requests.len(), 2);
+    for pr in stored.pull_requests {
+        assert_eq!(
+            pr.facts.title,
+            format!("Changed pull request {}", pr.facts.number)
+        );
+    }
+    assert!(
+        h.db()
+            .github()
+            .next_pending(resumed)
+            .await
+            .unwrap()
+            .is_none()
     );
-    assert!(h.db().github().next_pending(now()).await.unwrap().is_none());
 }
 
 #[tokio::test]
@@ -839,13 +935,25 @@ async fn watch_windows_survive_rate_limit_until_reset() {
         )
         .await
         .unwrap();
-        assert_eq!(d.in_flight().len(), number as usize);
+        assert!(d.in_flight().is_empty());
+        let clock = wall + SignedDuration::from_secs(offset as i64 + 10);
+        assert!(h.db().github().next_pending(clock).await.unwrap().is_none());
         assert_eq!(github.queries.lock().unwrap().len(), 1);
     }
+    assert_eq!(
+        intake_ready(
+            &h,
+            &mut d,
+            at + Duration::from_secs(91),
+            wall + SignedDuration::from_secs(91)
+        )
+        .await,
+        2
+    );
     d.flush(
         &h.state,
-        at + Duration::from_secs(91),
-        wall + SignedDuration::from_secs(91),
+        at + Duration::from_secs(101),
+        wall + SignedDuration::from_secs(101),
     )
     .await
     .unwrap();
@@ -922,23 +1030,230 @@ async fn watch_probe_charges_shared_budget_and_gates_the_full_read() {
         );
 
         if remaining < 1000 {
-            assert_eq!(
-                d.in_flight().len(),
-                1,
-                "the deferred review delivery was dropped"
-            );
-            d.flush(
-                &h.state,
-                at + Duration::from_secs(3960),
-                wall + SignedDuration::from_secs(3960),
-            )
-            .await
-            .unwrap();
-            assert!(d.in_flight().is_empty(), "the deferral must be bounded");
             assert!(
-                h.db().github().next_retry(now()).await.unwrap().is_some(),
+                d.in_flight().is_empty(),
+                "waiting for the floor cannot occupy intake"
+            );
+            let late = wall + SignedDuration::from_secs(3960);
+            let instant = at + Duration::from_secs(3960);
+            assert_eq!(intake_ready(&h, &mut d, instant, late).await, 1);
+            let expired = late + SignedDuration::from_secs(10);
+            d.flush(&h.state, instant + WINDOW, expired).await.unwrap();
+            assert!(d.in_flight().is_empty(), "the deferral must be bounded");
+            let retry = h
+                .db()
+                .github()
+                .next_pending(expired + SignedDuration::from_secs(11))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                retry.attempts, 1,
                 "the delivery should enter the durable retry ladder"
             );
         }
     }
+}
+
+#[tokio::test]
+async fn deferred_watch_burst_does_not_block_other_deliveries() {
+    let (h, github) = setup("alice", 1, 4000).await;
+    let wall = Timestamp::now();
+    let start = Instant::now();
+    watch_pr(&h, 2, &["u1"], wall).await;
+    seed(&h, "u2", &snapshot(vec![pr(3, "Before")], vec![], vec![])).await;
+    *github.throttle_once.lock().unwrap() = Some(wall + SignedDuration::from_hours(1));
+
+    let watch = signal(ChangeKind::PullRequestReview, repo("wallet-ui"), Some(2));
+    let dashboard = signal(ChangeKind::PullRequest, repo("wallet-ui"), Some(3));
+    record(&h, wall, &watch).await;
+    let mut d = Dispatcher::default();
+    assert_eq!(
+        crate::webhooks::work_step(&h.state, &mut d).await.unwrap(),
+        Some(Duration::ZERO)
+    );
+    d.flush(
+        &h.state,
+        start + WINDOW * 2,
+        wall + SignedDuration::from_secs(20),
+    )
+    .await
+    .unwrap();
+    for _ in 0..300 {
+        record(&h, wall, &watch).await;
+    }
+    let unrelated = record(&h, wall, &dashboard).await;
+
+    for seconds in [30, 50, 70] {
+        for _ in 0..301 {
+            if crate::webhooks::work_step(&h.state, &mut d).await.unwrap() != Some(Duration::ZERO) {
+                break;
+            }
+        }
+        d.flush(
+            &h.state,
+            start + Duration::from_secs(seconds),
+            wall + SignedDuration::from_secs(seconds as i64),
+        )
+        .await
+        .unwrap();
+    }
+
+    assert_eq!(
+        read(&h, "u2").await.pull_requests[0].facts.title,
+        "Changed pull request 3"
+    );
+    assert!(!d.in_flight().contains(&unrelated));
+    let queries = github.queries.lock().unwrap();
+    assert_eq!(
+        queries
+            .iter()
+            .filter(|query| query.contains("reviewThreads { totalCount }"))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn scan_hold_releases_intake_and_expires_at_deadline() {
+    let (h, github) = setup("alice", 1, 4000).await;
+    seed(&h, "u1", &snapshot(prs(1), vec![], vec![])).await;
+    let dashboard = h.db().dashboard();
+    let StartOutcome::Started { .. } = dashboard
+        .start_refresh(
+            DEFAULT_TENANT,
+            "u1",
+            RefreshTrigger::Manual,
+            now() + SignedDuration::from_secs(1),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("expected scanning refresh")
+    };
+    let wall = Timestamp::now();
+    let start = Instant::now();
+    let id = record(
+        &h,
+        wall,
+        &signal(ChangeKind::PullRequest, repo("wallet-ui"), Some(1)),
+    )
+    .await;
+    let mut d = Dispatcher::default();
+    assert_eq!(
+        crate::webhooks::work_step(&h.state, &mut d).await.unwrap(),
+        Some(Duration::ZERO)
+    );
+    d.flush(
+        &h.state,
+        start + WINDOW * 2,
+        wall + SignedDuration::from_secs(20),
+    )
+    .await
+    .unwrap();
+    assert!(
+        d.in_flight().is_empty(),
+        "a running scan cannot occupy intake"
+    );
+    let late = wall + SignedDuration::from_mins(6);
+    assert_eq!(
+        intake_ready(&h, &mut d, start + Duration::from_secs(360), late).await,
+        1
+    );
+    let expired = late + SignedDuration::from_secs(10);
+    d.flush(&h.state, start + Duration::from_secs(370), expired)
+        .await
+        .unwrap();
+    assert!(
+        d.in_flight().is_empty(),
+        "the scan hold must stop pinning intake"
+    );
+    let ready = h
+        .db()
+        .github()
+        .next_pending(expired + SignedDuration::from_secs(11))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((ready.id, ready.attempts), (id, 1));
+    assert!(github.queries.lock().unwrap().is_empty());
+    assert_eq!(
+        dashboard
+            .latest_refresh(DEFAULT_TENANT, "u1")
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        RefreshState::Scanning
+    );
+}
+
+#[tokio::test]
+async fn full_watch_read_charges_every_graphql_page_to_the_shared_budget() {
+    let (h, github) = setup("alice", 1, 4000).await;
+    seed(&h, "u1", &snapshot(prs(1), vec![], vec![])).await;
+    let wall = Timestamp::now();
+    watch_pr(&h, 2, &["u1"], wall).await;
+    *github.review_page_cost.lock().unwrap() = Some(200);
+    let mut d = Dispatcher::default();
+    let at = Instant::now();
+    enqueue(
+        &h,
+        &mut d,
+        at,
+        signal(ChangeKind::PullRequestReview, repo("wallet-ui"), Some(2)),
+    )
+    .await;
+    flush(&h, &mut d, at + WINDOW).await;
+    assert_eq!(
+        github.queries.lock().unwrap().len(),
+        6,
+        "probe, facts and four connection pages"
+    );
+    enqueue(
+        &h,
+        &mut d,
+        at + WINDOW,
+        signal(ChangeKind::PullRequest, repo("wallet-ui"), Some(1)),
+    )
+    .await;
+    flush(&h, &mut d, at + WINDOW * 2).await;
+    assert_eq!(
+        github.queries.lock().unwrap().len(),
+        6,
+        "the Watch read spent the user's remaining event budget"
+    );
+    assert_eq!(
+        read(&h, "u1").await.pull_requests[0].facts.title,
+        "feat(ui): screen 1"
+    );
+}
+
+#[tokio::test]
+async fn full_watch_read_parks_before_fetching_a_page_over_budget() {
+    let (h, github) = setup("alice", 1, 4000).await;
+    let wall = Timestamp::now();
+    watch_pr(&h, 2, &["u1"], wall).await;
+    *github.review_page_cost.lock().unwrap() = Some(500);
+    let mut d = Dispatcher::default();
+    let at = Instant::now();
+    enqueue(
+        &h,
+        &mut d,
+        at,
+        signal(ChangeKind::PullRequestReview, repo("wallet-ui"), Some(2)),
+    )
+    .await;
+    flush(&h, &mut d, at + WINDOW).await;
+    {
+        let queries = github.queries.lock().unwrap();
+        assert_eq!(
+            queries.len(),
+            3,
+            "probe, facts and only the first thread page"
+        );
+        assert!(queries[1..].iter().all(|query| query.contains("rateLimit")));
+    }
+    assert!(d.in_flight().is_empty());
+    assert!(h.db().github().next_retry(wall).await.unwrap().is_some());
 }
