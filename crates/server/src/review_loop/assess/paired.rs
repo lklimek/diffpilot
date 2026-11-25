@@ -95,6 +95,7 @@ pub(super) async fn admit(
         native: native.clone(),
         standing: Default::default(),
         fingerprints: Default::default(),
+        purpose_fingerprint: None,
     };
     frozen
         .ids(state, review.pull_request_id, pr, snapshot)
@@ -344,8 +345,9 @@ pub(super) async fn run(
                 summary.head_sha = pass.input.head.clone();
                 summary.base_sha = pass.input.base.clone();
                 let mut code = super::CodeReader::new(state, &summary);
-                let purpose =
-                    super::purpose_hash(&frozen.native.title, frozen.native.description.as_deref());
+                let purpose = frozen.purpose_fingerprint.clone().unwrap_or_else(|| {
+                    super::purpose_hash(&frozen.native.title, frozen.native.description.as_deref())
+                });
                 for write in &mut writes {
                     if let Some(observed) = &write.observed {
                         write.fingerprint = super::fingerprint_fields(

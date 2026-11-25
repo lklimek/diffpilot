@@ -784,6 +784,11 @@ fn native_rows(
             }
             _ => None,
         };
+        let description = if card.recommendation.reason.is_empty() {
+            card.necessity.reason.clone()
+        } else {
+            card.recommendation.reason.clone()
+        };
         writes.push(PrimaryPoint {
             carry: None,
             key,
@@ -793,7 +798,7 @@ fn native_rows(
             source: binding,
             duplicate: None,
             assessment: Some(card),
-            description: None,
+            description: Some(description),
             fingerprint: frozen
                 .sent
                 .iter()

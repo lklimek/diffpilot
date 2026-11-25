@@ -601,6 +601,7 @@ async fn host_gone_and_status_items_are_not_offered_for_reuse() {
         native: golden_input(),
         standing: Default::default(),
         fingerprints: Default::default(),
+        purpose_fingerprint: None,
     };
     frozen
         .ids(&f.state, PR, &summary(HEAD), None)

@@ -22,6 +22,8 @@ pub(super) struct Frozen {
     pub standing: std::collections::BTreeMap<String, FrozenDecision>,
     #[serde(default)]
     pub fingerprints: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub purpose_fingerprint: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -80,7 +82,15 @@ impl Frozen {
         let decisions = state.db.review_loop().pr_decisions(pr).await?;
         let standing = crate::review_loop::standing(&decisions);
         let mut code = super::CodeReader::new(state, summary);
-        let purpose = super::purpose_hash(&self.native.title, self.native.description.as_deref());
+        let description = snapshot
+            .and_then(|s| s.description.as_deref())
+            .and_then(super::clean::description);
+        let purpose = super::purpose_hash(
+            &self.native.title,
+            description
+                .as_deref()
+                .or(self.native.description.as_deref()),
+        );
         for item in &self.items {
             if item.status_comment
                 || item.kind == CommentItemKind::PrQuestion
@@ -173,6 +183,7 @@ impl Frozen {
                 decision,
             });
         }
+        self.purpose_fingerprint = Some(purpose);
         Ok(())
     }
 }

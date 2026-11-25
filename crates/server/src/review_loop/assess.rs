@@ -169,7 +169,7 @@ pub async fn request_pass(
     pr: i64,
     reason: PassReason,
 ) -> Result<PassQueued, AssessError> {
-    request(state, pr, reason, false, None).await
+    request(state, pr, reason, None, None).await
 }
 
 /// [`request_pass`] of an on-demand pass caused by `user`, who is charged with it: on-demand passes count toward
@@ -180,16 +180,15 @@ pub async fn request_pass_for(
     reason: PassReason,
     user: &str,
 ) -> Result<PassQueued, AssessError> {
-    request(state, pr, reason, false, Some(user)).await
+    request(state, pr, reason, None, Some(user)).await
 }
 
-/// [`request_pass`]; `continuation` (the rest of a detection after a pass) skips the spacing, never the cap; `by`
-/// is the user charged with an on-demand pass.
+/// A continuation skips spacing, preserves the interrupted batch across questions and still counts toward the cap.
 async fn request(
     state: &AppState,
     pr: i64,
     reason: PassReason,
-    continuation: bool,
+    continuation: Option<PassId>,
     by: Option<&str>,
 ) -> Result<PassQueued, AssessError> {
     let db = &state.db;
@@ -224,7 +223,7 @@ async fn request(
         },
         // Decided before any code is read: the watch task holds its detection lock meanwhile. Watchers hear of
         // questions on-demand passes assessed when those passes end (`watch::pass_ended`).
-        PassReason::Watch => match charged_watcher(state, pr, now, continuation).await? {
+        PassReason::Watch => match charged_watcher(state, pr, now, continuation.is_some()).await? {
             Charge::To(user) => (Some(user), None),
             Charge::Spaced => return Ok(PassQueued::Spaced),
             Charge::DailyLimit => return Ok(PassQueued::DailyLimit),
@@ -413,7 +412,7 @@ async fn request(
     }
     let id = match db
         .review_loop()
-        .start_pass(&record.tenant_id, &pass, now)
+        .start_pass_with_continuation(&record.tenant_id, &pass, now, continuation)
         .await?
     {
         PassStart::Started(id) => id,
@@ -1092,7 +1091,51 @@ async fn end_failed(state: &AppState, pass: PassId) -> Result<(), AssessError> {
         Ok(()) | Err(DbError::Conflict) => {}
         Err(error) => return Err(error.into()),
     }
-    ask::fail_pass_question(state, &record, ask::SERVER_ERROR).await
+    ask::fail_pass_question(state, &record, ask::SERVER_ERROR).await?;
+    if record.resume_after_question.is_some() {
+        next(state, &record, false).await;
+    }
+    Ok(())
+}
+
+/// The trigger to reuse when continuing a regular assessment batch.
+fn continuation_reason(cause: PassCause) -> Option<PassReason> {
+    match cause {
+        PassCause::Watch => Some(PassReason::Watch),
+        PassCause::Opened => Some(PassReason::Opened),
+        PassCause::Read => Some(PassReason::NewComments),
+        PassCause::Question | PassCause::AssessAgain => None,
+    }
+}
+
+async fn advance(
+    state: &AppState,
+    record: &PassRecord,
+    made_progress: bool,
+) -> Result<PassQueued, AssessError> {
+    let pr = record.pull_request_id;
+    let origin;
+    let batch = if let Some(id) = record.resume_after_question {
+        origin = state.db.review_loop().pass(id).await?;
+        if origin.pull_request_id != pr
+            || origin.state != db::repo::review_loop::PassState::Finished
+        {
+            return Err(DbError::Conflict.into());
+        }
+        Some(&origin)
+    } else {
+        made_progress.then_some(record)
+    };
+    let rest =
+        batch.and_then(|batch| continuation_reason(batch.cause).map(|reason| (batch, reason)));
+    let handoff = rest.map(|(batch, _)| batch.id);
+    let ask = request(state, pr, PassReason::Ask, handoff, None).await?;
+    match (ask, rest) {
+        (PassQueued::Skipped, Some((batch, reason))) => {
+            request(state, pr, reason, handoff, batch.user_id.as_deref()).await
+        }
+        _ => Ok(ask),
+    }
 }
 
 /// Questions take priority. A batch that assessed an item can continue immediately within the daily cap.
@@ -1101,21 +1144,7 @@ async fn next(state: &AppState, record: &PassRecord, made_progress: bool) {
     if let Err(error) = super::watch::pass_ended(state, record).await {
         tracing::warn!(pr, error = ?error, "the end of an automatic assessment pass could not be recorded on its watches");
     }
-    let rest = match record.cause {
-        PassCause::Watch => Some(PassReason::Watch),
-        PassCause::Opened => Some(PassReason::Opened),
-        PassCause::Read => Some(PassReason::NewComments),
-        PassCause::Question | PassCause::AssessAgain => None,
-    }
-    .filter(|_| made_progress);
-    let outcome = match request(state, pr, PassReason::Ask, true, None).await {
-        Ok(PassQueued::Skipped) => match rest {
-            Some(reason) => request(state, pr, reason, true, record.user_id.as_deref()).await,
-            None => Ok(PassQueued::Skipped),
-        },
-        other => other,
-    };
-    match outcome {
+    match advance(state, record, made_progress).await {
         Ok(queued) => tracing::debug!(pr, ?queued, "next comment assessment pass requested"),
         Err(error) => {
             tracing::warn!(pr, error = ?error, "the next comment assessment pass could not be requested")

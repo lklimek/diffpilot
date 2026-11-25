@@ -170,8 +170,10 @@ pub struct BadgeInputs {
     pub failed_effects: u32,
     /// Undecided questions.
     pub needs_you: u32,
-    /// Open non-bot review points still awaiting assessment.
+    /// Open non-bot review points without a stored assessment.
     pub pending_human_review: u32,
+    /// A running pass includes an open non-bot review point.
+    pub reassessing_human_review: bool,
     /// Decisions with open or claimed effects.
     pub executing: u32,
     /// thepastaclaw reviews or queues this PR (plug-in, or its gate comment).
@@ -253,7 +255,7 @@ pub fn badge(inputs: &BadgeInputs) -> PrBadgeView {
         view.badge = Some(PrBadge::WaitingForBotRound);
         return view;
     }
-    let mut ready = view.missing.is_empty();
+    let mut ready = view.missing.is_empty() && !inputs.reassessing_human_review;
     if inputs.pending_human_review > 0 {
         view.facts.push(plural(
             inputs.pending_human_review,
@@ -864,9 +866,9 @@ mod tests {
         };
         let view = || super::super::views::badge(&state, handle.clone(), &work);
         let queued = view().await.unwrap();
-        assert_eq!(queued.badge, None);
+        assert_eq!(queued.badge, Some(PrBadge::ReadyToMerge));
         assert!(
-            queued
+            !queued
                 .facts
                 .contains(&"1 review item not assessed yet".to_owned())
         );
@@ -874,7 +876,7 @@ mod tests {
         let during = view().await.unwrap();
         assert_eq!(during.badge, None);
         assert!(
-            during
+            !during
                 .facts
                 .contains(&"1 review item not assessed yet".to_owned())
         );

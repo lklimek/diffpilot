@@ -539,9 +539,26 @@ async fn comments_entry_post_queues_pass() {
         w.call("POST", &uri, None).await,
         (StatusCode::ACCEPTED, Value::Null)
     );
+    let payer = contracts::ids::UserId("u1".into());
+    let usage = w
+        .state
+        .db
+        .assessments()
+        .quota(&payer, Timestamp::now())
+        .await
+        .unwrap();
     let (status, body) = w.call("POST", &uri, None).await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body["code"], "conflict");
+    assert_eq!(
+        w.state
+            .db
+            .assessments()
+            .quota(&payer, Timestamp::now())
+            .await
+            .unwrap(),
+        usage
+    );
     let passes = w.state.db.review_loop().live_passes().await.unwrap();
     assert_eq!(passes.len(), 1);
     let pass = &passes[0];
@@ -550,6 +567,78 @@ async fn comments_entry_post_queues_pass() {
     let job = w.state.db.jobs().get(pass.job_id.unwrap()).await.unwrap();
     assert_eq!(job.spec.kind, contracts::agent::JobKind::VerifyComments);
     assert_eq!(job.analysis_id, None);
+}
+
+#[tokio::test]
+async fn comments_assessment_reports_daily_cap_and_missing_credential() {
+    use crate::review_loop::assess::DAILY_PASSES_PER_USER;
+    let w = world().await;
+    let payer = contracts::ids::UserId("u1".into());
+    let uri = format!("{PR}/comments/assess");
+    let now = Timestamp::now();
+    db::repo::assessments::testing::usage(&w.state.db, &payer, now, DAILY_PASSES_PER_USER)
+        .await
+        .unwrap();
+    let quota = w.state.db.assessments().quota(&payer, now).await.unwrap();
+    let (status, body) = w.call("POST", &uri, None).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert_eq!(
+        body,
+        json!({"code": "assessment_daily_limit", "resets_at": quota.resets_at})
+    );
+
+    db::repo::assessments::testing::usage(&w.state.db, &payer, now, 0)
+        .await
+        .unwrap();
+    w.state
+        .db
+        .llm_credentials()
+        .remove_status("u1")
+        .await
+        .unwrap();
+    let (status, body) = w.call("POST", &uri, None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "credential_missing");
+    let rl = w.state.db.review_loop();
+    assert!(rl.latest_pass(w.pr_id().await).await.unwrap().is_none());
+    assert_eq!(
+        w.state
+            .db
+            .assessments()
+            .quota(&payer, now)
+            .await
+            .unwrap()
+            .remaining,
+        DAILY_PASSES_PER_USER
+    );
+}
+
+#[tokio::test]
+async fn comments_assessment_cannot_use_another_tenants_read() {
+    let mut w = world().await;
+    w.get(PR).await;
+    let foreign_pr = w.pr_id().await;
+    db::repo::analyses::testing::seed_tenant(&w.state.db, "other")
+        .await
+        .unwrap();
+    w.cookie = session_cookie(&w.state, "other").await;
+    w.server.reset().await;
+    Mock::given(method("POST"))
+        .and(path("/api/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data":{"repository":null}})))
+        .mount(&w.server)
+        .await;
+    let (status, body) = w.call("POST", &format!("{PR}/comments/assess"), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert!(
+        w.state
+            .db
+            .review_loop()
+            .latest_pass(foreign_pr)
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -621,6 +710,48 @@ async fn item_outside_live_pass_is_queued() {
         assert_eq!(progress["in_pass"], running);
         assert_eq!(progress["waiting"], waiting);
         assert!(progress["since"].is_string());
+    }
+}
+
+#[tokio::test]
+async fn single_item_passes_do_not_queue_other_items() {
+    use db::repo::review_loop::{NewPass, PassCause, PassStart, SentItem};
+    let w = world().await;
+    let first = w.item(L2).await;
+    let other = w.item(L6).await;
+    assert_eq!(other["assessment_state"]["reason"], "not_run");
+    let pr = w.pr_id().await;
+    for cause in [PassCause::AssessAgain, PassCause::Question] {
+        let rl = w.state.db.review_loop();
+        let PassStart::Started(pass) = rl
+            .start_pass(
+                DEFAULT_TENANT,
+                &NewPass {
+                    pull_request_id: pr,
+                    user_id: Some("u1".into()),
+                    cause,
+                    head: contracts::ids::CommitSha(crate::test_support::github::HEAD.into()),
+                    sent: vec![SentItem {
+                        item: serde_json::from_value(first["id"].clone()).unwrap(),
+                        no: first["no"].as_u64().unwrap().try_into().unwrap(),
+                        fingerprint: "fixture".into(),
+                    }],
+                    question: None,
+                },
+                Timestamp::now(),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("pass is live")
+        };
+        assert_eq!(w.item(L2).await["assessment_state"]["state"], "running");
+        assert_eq!(
+            w.item(L6).await["assessment_state"],
+            other["assessment_state"]
+        );
+        assert_eq!(w.get(PR).await["comments"]["assessment"]["waiting"], 0);
+        rl.finish_pass(pass, false, Timestamp::now()).await.unwrap();
     }
 }
 
@@ -726,7 +857,7 @@ async fn llm_title_first_sentence_cut() {
     })
     .await
     .unwrap();
-    assert_eq!(w.item(L2).await["llm_title"], expected);
+    assert_eq!(w.item(L2).await["llm_title"], format!("{expected}…"));
 }
 
 #[tokio::test]

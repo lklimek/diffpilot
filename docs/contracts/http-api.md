@@ -883,7 +883,9 @@ Fixtures: `fixtures/review-loop/` (spike S13-1).
 - **Assessment:** RC1, RC2, RC3 and RC4 can refresh the stored GitHub read. They never start LLM work. Browser
   clients call `startCommentAssessment` (C20) on entry to Comments and after a manual GitHub refresh that found new
   items. Items in the live pass input show `running`; other eligible items waiting for a subsequent pass show
-  `queued`.
+  `queued`. An item title uses the first sentence of the host report's description, or the validated recommendation
+  reason from PromptV4 (its necessity reason when the recommendation has no public text). It uses at most
+  90 characters including an ellipsis when shortened.
 - **Who decides (T22).** Decisions, batches, re-reads, re-assessments, watches and channel settings need a session
   with CSRF; a token gets 403 `token_not_accepted`. `RouteAuth::TokenOnly(TokenScope::ReviewLoopExecute)` (named
   `token_review_loop_execute` in `routes.ts`) marks RF3–RF5: a personal access token with the scope

@@ -19,7 +19,9 @@ use contracts::common::{AnnotationType, LineRange, LineSide, PrRef};
 use contracts::ids::{AnalysisId, CarryEventId, CommentItemId, CommitSha, StepId};
 use contracts::time::Timestamp;
 use db::error::DbError;
-use db::repo::review_loop::{ItemRecord, PassRecord, PassState, StoredDecision, WatchRecord};
+use db::repo::review_loop::{
+    ItemRecord, PassCause, PassRecord, PassState, StoredDecision, WatchRecord,
+};
 
 use super::badge::{self, BadgeInputs, MyWork};
 use super::observe::Snapshot;
@@ -78,6 +80,11 @@ fn assessment_state(
     if live.is_some_and(|pass| sent_in(record, pass)) {
         AssessmentState::Running
     } else if let Some(pass) = live
+        && matches!(
+            pass.cause,
+            PassCause::Opened | PassCause::Read | PassCause::Watch
+        )
+        && pass.may_continue
         && waits(record)
         && assessment.is_none_or(|stored| {
             let head = loaded
@@ -221,26 +228,37 @@ fn item_view(
 }
 
 fn llm_title(description: &str) -> String {
+    const ABBREVIATIONS: &[&str] = &["e.g.", "i.e.", "vs.", "etc.", "cf."];
     let text = description.split_whitespace().collect::<Vec<_>>().join(" ");
     let first = text
         .match_indices(['.', '!', '?'])
         .find_map(|(index, mark)| {
             let end = index + mark.len();
-            text[end..].starts_with(' ').then_some(&text[..end])
+            let sentence = &text[..end];
+            let last = sentence
+                .rsplit(' ')
+                .next()
+                .unwrap_or_default()
+                .trim_start_matches(['(', '[', '"', '\'', '`']);
+            let abbreviated = mark == "."
+                && ABBREVIATIONS
+                    .iter()
+                    .any(|word| last.eq_ignore_ascii_case(word));
+            (text[end..].starts_with(' ') && !abbreviated).then_some(sentence)
         })
         .unwrap_or(&text);
-    let Some((end, next)) = first.char_indices().nth(90) else {
+    if first.chars().count() <= 90 {
         return first.to_owned();
-    };
-    let prefix = &first[..end];
-    if next.is_whitespace() {
-        prefix.to_owned()
+    }
+    let prefix: String = first.chars().take(89).collect();
+    let cut = if first[prefix.len()..].starts_with(' ') {
+        prefix.as_str()
     } else {
         prefix
             .rsplit_once(' ')
-            .map_or(prefix, |(whole, _)| whole)
-            .to_owned()
-    }
+            .map_or(prefix.as_str(), |(whole, _)| whole)
+    };
+    format!("{cut}…")
 }
 
 /// RC4: the items with the reader's Ask answer counts.
@@ -522,6 +540,20 @@ fn badge_of(
         .into_iter()
         .map(|item| item.no)
         .collect();
+    let mut review_items = loaded.items.iter().filter(|item| {
+        waiting.contains(&item.no)
+            && item.kind != CommentItemKind::PrQuestion
+            && item.author_kind != AuthorKind::Bot
+    });
+    let pending_human_review = count(
+        review_items
+            .clone()
+            .filter(|item| !loaded.assessments.contains_key(&item.no))
+            .count(),
+    );
+    let reassessing_human_review = pass.is_some_and(|pass| {
+        pass.state == PassState::Running && review_items.any(|item| sent_in(item, pass))
+    });
     badge::badge(&BadgeInputs {
         open: snapshot.is_none_or(|snapshot| snapshot.state == "OPEN"),
         read_failed: loaded.row.read_failure.is_some() || snapshot.is_none(),
@@ -540,18 +572,8 @@ fn badge_of(
         unresolved_threads: snapshot.map_or(0, |snapshot| snapshot.unresolved_threads),
         failed_effects: standing.values().map(|s| failed(s)).sum(),
         needs_you,
-        pending_human_review: count(
-            loaded
-                .items
-                .iter()
-                .filter(|item| {
-                    waiting.contains(&item.no)
-                        && item.kind != CommentItemKind::PrQuestion
-                        && item.author_kind != AuthorKind::Bot
-                        && assessment_state(loaded, item, pass, false) != AssessmentState::Assessed
-                })
-                .count(),
-        ),
+        pending_human_review,
+        reassessing_human_review,
         executing: count(standing.values().filter(|s| effects_open(s)).count()),
         bot_round: super::bot_round_running(state, pr, snapshot),
         changes_requested: snapshot.map_or_else(Vec::new, |s| s.changes_requested_by.clone()),
@@ -1243,6 +1265,21 @@ mod notes_tests {
         assert_eq!(
             llm_title("`item.path` is unchecked!\nA second sentence explains why."),
             "`item.path` is unchecked!"
+        );
+    }
+
+    #[test]
+    fn llm_title_keeps_abbreviations_and_marks_truncation() {
+        let sentence = "Use retries, e.g. for 503, i.e. transient errors, vs. validation failures etc. before returning.";
+        let title = "Use retries, e.g. for 503, i.e. transient errors, vs. validation failures etc. before…";
+        assert_eq!(llm_title(&format!("{sentence} Another sentence.")), title);
+        let exact = "Ł".repeat(90);
+        assert_eq!(llm_title(&exact), exact);
+        let too_long = "Ł".repeat(91);
+        assert_eq!(llm_title(&too_long), format!("{}…", "Ł".repeat(89)));
+        assert_eq!(
+            llm_title("Use exponential backoff, e.g. for 503. The logs explain why."),
+            "Use exponential backoff, e.g. for 503."
         );
     }
 
