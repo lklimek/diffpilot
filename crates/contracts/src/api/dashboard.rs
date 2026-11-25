@@ -15,6 +15,22 @@ use crate::ids::{AnalysisId, CommitSha, RefreshId};
 /// Response of `GET /api/v1/dashboard`: the user's dashboard without its items.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct DashboardSummary {
+    /// Counts of distinct judgement and sync states.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub status_counts: Option<StatusCounts>,
+    /// Repositories updated by GitHub App webhooks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub live_repositories: Option<u32>,
+    /// Repositories refreshed by manual and scheduled scans.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub not_live_repositories: Option<u32>,
+    /// Latest GitHub event applied to this dashboard.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub last_event_at: Option<Timestamp>,
     /// Unanswered, unhidden mentions, oldest first; independent of the ranking.
     #[serde(default)]
     pub mentions: Vec<Mention>,
@@ -29,13 +45,105 @@ pub struct DashboardSummary {
     pub snapshot: Option<SnapshotMeta>,
     /// The daily automatic refresh.
     pub schedule: ScheduleStatus,
-    /// Items of the snapshot whose judgement came from an older ranking prompt (re-judged within the caps).
+    /// Items judged against an older prompt. Superseded by `status_counts`.
     pub older_prompt_judgements: u32,
     /// Configured dashboard plug-ins (ADR-022); absent when none is configured. While one is listed, the browser
     /// reads the summary again every minute.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(as = "Option<Vec<PluginStatus>>", optional)]
     pub plugins: Vec<PluginStatus>,
+}
+
+/// Dashboard item counts for the judgement and repository filters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct StatusCounts {
+    /// Items judged against older facts or an older prompt, including those being re-judged.
+    pub outdated: u32,
+    /// Items never judged, including queued and capped items.
+    pub not_judged: u32,
+    /// Items in repositories without live webhook updates.
+    pub not_live: u32,
+    /// Items excluded by the reader's rules.
+    pub excluded: u32,
+}
+
+/// Optional body of `POST /api/v1/dashboard/refreshes`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct StartRefreshRequest {
+    /// Request new judgements for outdated items within the refresh's caps.
+    #[serde(default)]
+    pub rejudge_outdated: bool,
+}
+
+/// Judgement state and its evidence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct Judgement {
+    /// State of the item's judgement.
+    pub state: JudgementState,
+    /// When the existing judgement was made.
+    pub judged_at: Option<Timestamp>,
+    /// Which input to the existing judgement changed.
+    pub outdated_because: Option<OutdatedBecause>,
+}
+
+/// Whether an item has a current judgement or is waiting for one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum JudgementState {
+    /// The judged facts and prompt are current.
+    Current,
+    /// The facts or prompt changed since the judgement.
+    Outdated,
+    /// A live ranking can judge this previously unjudged item.
+    Queued,
+    /// A re-judgement is requested and a ranking is live.
+    Judging,
+    /// No judgement was made.
+    NotJudged,
+    /// The latest ranking left the item unjudged at a cap.
+    Capped,
+}
+
+/// Input that made an existing judgement outdated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum OutdatedBecause {
+    /// One or more judged facts changed.
+    FactsChanged,
+    /// The ranking prompt changed.
+    PromptChanged,
+}
+
+/// Position and dependent pull requests of an item in a stack.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct Stack {
+    /// Position of the pull request.
+    pub position: StackPosition,
+    /// Number of pull requests in the stack.
+    pub size: u32,
+    /// Numbers of dependent pull requests.
+    pub dependents: Vec<u32>,
+}
+
+/// Position of a pull request in a stack.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum StackPosition {
+    /// Base of the stack.
+    Bottom,
+    /// With a parent and dependents.
+    Middle,
+    /// Tip of the stack.
+    Top,
+}
+
+/// Selects items with a deterministic fact.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct FactFilter {
+    /// Stable key for the fact kind and its value where applicable.
+    pub key: String,
+    /// Label shown in the filter menu.
+    pub label: String,
 }
 
 /// A configured dashboard plug-in: an external source of statements about pull requests (ADR-022).
@@ -333,11 +441,6 @@ pub struct SnapshotMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub exclusions: Option<Exclusions>,
-    /// When the listed pull requests' facts (CI, reviews, merge state) were last checked against GitHub after the scan,
-    /// while My work was open (plan §M); absent when none was since the scan or the server restarted since.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub facts_checked_at: Option<Timestamp>,
 }
 
 /// Most excluded items listed by `GET /api/v1/dashboard?excluded=true`; the counts cover all.
@@ -692,6 +795,22 @@ pub enum ItemKind {
 /// One ranked item.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct WorkItem {
+    /// Judgement state when this item can be judged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub judgement: Option<Judgement>,
+    /// Whether GitHub App webhooks update this repository.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub live: Option<bool>,
+    /// Position of this pull request within a stack.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub stack: Option<Stack>,
+    /// Base branch matching a configured or built-in release pattern.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub release_base: Option<String>,
     /// Display alias, e.g. `PLAT-1187` or `TODO-3fa91c2e`.
     pub id: String,
     /// Stable, unique, URL-safe key.
@@ -793,6 +912,10 @@ pub struct ChangeSizeMark {
 /// A deterministic tag from scan facts.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct FactTag {
+    /// Filter for items with this fact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub filter: Option<FactFilter>,
     /// Short text.
     pub text: String,
     /// Tooltip with the underlying fact.
@@ -954,6 +1077,7 @@ pub struct ItemText {
     /// When it was judged.
     pub judged_at: Timestamp,
     /// Carried over from before the item changed.
+    /// Superseded by `WorkItem.judgement`.
     pub inherited: bool,
     /// Keys of items the LLM merged into this one (chosen only from server-suggested pairs).
     pub also_keys: Vec<ItemKey>,

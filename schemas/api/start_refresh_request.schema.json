@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "StartRefreshRequest",
+  "description": "Optional body of `POST /api/v1/dashboard/refreshes`.",
+  "type": "object",
+  "properties": {
+    "rejudge_outdated": {
+      "description": "Request new judgements for outdated items within the refresh's caps.",
+      "type": "boolean",
+      "default": false
+    }
+  }
+}

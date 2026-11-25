@@ -92,6 +92,11 @@ pub(crate) fn item_view(
             .map(|item| item.no)
     });
     CommentItem {
+        status_comment: false,
+        imported_decision: None,
+        import_proposal: None,
+        llm_title: None,
+        decision_follows_primary: false,
         point: record
             .quote
             .as_ref()
@@ -229,6 +234,9 @@ fn count(n: usize) -> u32 {
 fn counts(loaded: &Loaded, waiting: usize) -> CommentCounts {
     let standing = loaded.standing();
     CommentCounts {
+        needs_you: None,
+        needs_you_gates: None,
+        imported_unseen: None,
         unresolved_threads: loaded
             .snapshot
             .as_ref()
@@ -282,6 +290,9 @@ fn progress(loaded: &Loaded, pass: Option<&PassRecord>, limited: bool) -> Assess
         .max_by_key(|stored| stored.assessment.assessed_at);
     let running = pass_live(pass);
     AssessmentProgress {
+        in_pass: None,
+        waiting: None,
+        since: None,
         running,
         assessed: count(assessed),
         total: count(needing.len()),
@@ -469,6 +480,7 @@ pub async fn overview(
         .carry_events(&session.tenant_id, Some(loaded.handle.id), None, u32::MAX)
         .await?;
     Ok(CommentsOverview {
+        watch: None,
         pr: loaded.handle.pr.clone(),
         title: snapshot.title.clone(),
         url: if snapshot.url.is_empty() {

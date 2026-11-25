@@ -57,7 +57,7 @@ export function dashboardCoverage(
   return {
     live_repositories: [...repos.values()].filter((live) => live === true).length,
     not_live_repositories: [...repos.values()].filter((live) => live === false).length,
-    last_event_at: lastEventAt,
+    last_event_at: lastEventAt ?? undefined,
     status_counts: {
       outdated: items.filter(({ judgement }) => judgement?.state === "outdated").length,
       not_judged: items.filter(

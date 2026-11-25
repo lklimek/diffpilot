@@ -285,3 +285,15 @@ line; the reference line and the footer are the only additions. The default foot
 When the agent's GitHub account may not resolve threads (`FORBIDDEN`), `resolve` exits 8 and prints the one command
 to rerun with elevated rights, so a run needs at most one approval; GitHub's rate limit (HTTP 429, a rate-limit
 message or `Retry-After`) exits 4 with how long to wait instead.
+
+## v1.4 dashboard and Comments
+
+- Prefer `WorkItem.judgement` and `DashboardSummary.status_counts` when present. The dashboard keeps
+  `ItemText.inherited` and `older_prompt_judgements` for existing agent consumers. A judgement can be outdated
+  because its facts or prompt changed.
+- Use `CommentCounts.needs_you` and `needs_you_gates` for the actionable queue and its gated subset. The dashboard
+  exposes the same count as `CommentTally.needs_you` once the shared calculation lands. `undecided` retains its
+  existing meaning. Check the assessment state for `queued` and `running` when interpreting an item.
+- The new repository coverage read lists repositories tracked by the reader's tenant. The activity read
+  exposes peer jobs in the reader's tenant with only kind and a response-local id. `GET /api/v1/me/prs` is a
+  reader-specific history. The new reads return 501 `not_implemented` in B1. See [HTTP API](http-api.md#v14-dashboard-comments-and-activity).

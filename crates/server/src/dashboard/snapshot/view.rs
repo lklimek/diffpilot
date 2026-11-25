@@ -50,13 +50,11 @@ pub struct View {
 
 impl View {
     /// `SnapshotMeta` of the snapshot held by `record`; the excluded items are listed only when `list_excluded`.
-    /// `checked` is the last fact check of this snapshot (plan §M): `facts_checked_at` when later than the scan.
     pub fn meta(
         &self,
         snapshot: &Snapshot,
         record: &RefreshRecord,
         list_excluded: bool,
-        checked: Option<Timestamp>,
     ) -> SnapshotMeta {
         let exclusions = Exclusions {
             items: self.exclusions.items.clone().filter(|_| list_excluded),
@@ -79,7 +77,6 @@ impl View {
             unreachable: snapshot.unreachable.clone(),
             checked: snapshot.checked,
             exclusions: Some(exclusions),
-            facts_checked_at: checked.filter(|at| *at > snapshot.scanned_at),
         }
     }
 }
@@ -372,6 +369,7 @@ fn count(counts: &mut ItemCounts, item: &Scored) {
 
 fn tag(text: impl Into<String>, tip: impl Into<String>) -> FactTag {
     FactTag {
+        filter: None,
         text: text.into(),
         tip: tip.into(),
     }
@@ -461,6 +459,10 @@ fn work_item(
         };
     ViewItem {
         item: WorkItem {
+            judgement: None,
+            live: None,
+            stack: None,
+            release_base: None,
             id: scored.id,
             key: scored.key,
             kind: scored.kind,

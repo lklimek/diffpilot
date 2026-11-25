@@ -888,3 +888,24 @@ fn ranking_outcomes_include_cancelled() {
         json!("cancelled")
     );
 }
+
+#[test]
+fn phase_b_dashboard_fields_are_backward_readable() {
+    use contracts::api::dashboard::{Judgement, JudgementState, SnapshotMeta, StartRefreshRequest};
+
+    let mut old = json_file("api/summary.json")["snapshot"].clone();
+    old["facts_checked_at"] = json!("2026-11-18T10:00:00Z");
+    let old: SnapshotMeta = serde_json::from_value(old).unwrap();
+    assert!(
+        serde_json::to_value(old)
+            .unwrap()
+            .get("facts_checked_at")
+            .is_none()
+    );
+    let request: StartRefreshRequest = serde_json::from_value(json!({})).unwrap();
+    assert!(!request.rejudge_outdated);
+    let judgement: Judgement = serde_json::from_value(json!({"state": "outdated"})).unwrap();
+    assert_eq!(judgement.state, JudgementState::Outdated);
+    assert_eq!(judgement.judged_at, None);
+    assert_eq!(judgement.outdated_because, None);
+}

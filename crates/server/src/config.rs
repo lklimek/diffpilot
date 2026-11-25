@@ -20,6 +20,8 @@ pub const ALLOWED_LOGINS: &str = "SR_ALLOWED_LOGINS";
 pub const LISTEN_ADDR: &str = "SR_LISTEN_ADDR";
 /// Address the runner-only listener (`/runner/v1/*`) listens on; never exposed through the reverse proxy.
 pub const RUNNER_LISTEN_ADDR: &str = "SR_RUNNER_LISTEN_ADDR";
+/// Address for GitHub App deliveries.
+pub const WEBHOOK_LISTEN_ADDR: &str = "SR_WEBHOOK_LISTEN_ADDR";
 /// Comma-separated IP addresses or networks of reverse proxies whose forwarding headers are trusted.
 pub const TRUSTED_PROXIES: &str = "SR_TRUSTED_PROXIES";
 /// Directory for the SQLite database and the bare mirrors.
@@ -71,6 +73,8 @@ const DEFAULT_LISTEN_ADDR: SocketAddr =
     SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 3000);
 const DEFAULT_RUNNER_LISTEN_ADDR: SocketAddr =
     SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 3001);
+const DEFAULT_WEBHOOK_LISTEN_ADDR: SocketAddr =
+    SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 3002);
 const DEFAULT_DATA_DIR: &str = "data";
 const DEFAULT_GITHUB_API_URL: &str = "https://api.github.com";
 const DEFAULT_GITHUB_WEB_URL: &str = "https://github.com";
@@ -89,6 +93,8 @@ pub struct Config {
     pub listen_addr: SocketAddr,
     /// Runner-only listen address (default `0.0.0.0:3001`); serves only the runner protocol.
     pub runner_listen_addr: SocketAddr,
+    /// GitHub webhook-only listen address (default `127.0.0.1:3002`).
+    pub webhook_listen_addr: SocketAddr,
     /// GitHub logins allowed to sign in to the default tenant; at least one, unique ignoring ASCII case.
     pub allowed_logins: Vec<String>,
     /// Explicit trusted relays, independent of tenant membership or bot status.
@@ -351,15 +357,34 @@ impl Config {
         };
         let listen_addr = socket_addr(LISTEN_ADDR, DEFAULT_LISTEN_ADDR)?;
         let runner_listen_addr = socket_addr(RUNNER_LISTEN_ADDR, DEFAULT_RUNNER_LISTEN_ADDR)?;
-        if listen_addr.port() == runner_listen_addr.port()
-            && (listen_addr.ip() == runner_listen_addr.ip()
-                || listen_addr.ip().is_unspecified()
-                || runner_listen_addr.ip().is_unspecified())
-        {
-            return Err(ConfigError::ListenersCollide {
-                key: RUNNER_LISTEN_ADDR,
-                other: LISTEN_ADDR,
-            });
+        let webhook_listen_addr = socket_addr(WEBHOOK_LISTEN_ADDR, DEFAULT_WEBHOOK_LISTEN_ADDR)?;
+        for (key, addr, other, other_addr) in [
+            (
+                RUNNER_LISTEN_ADDR,
+                runner_listen_addr,
+                LISTEN_ADDR,
+                listen_addr,
+            ),
+            (
+                WEBHOOK_LISTEN_ADDR,
+                webhook_listen_addr,
+                LISTEN_ADDR,
+                listen_addr,
+            ),
+            (
+                WEBHOOK_LISTEN_ADDR,
+                webhook_listen_addr,
+                RUNNER_LISTEN_ADDR,
+                runner_listen_addr,
+            ),
+        ] {
+            if addr.port() == other_addr.port()
+                && (addr.ip() == other_addr.ip()
+                    || addr.ip().is_unspecified()
+                    || other_addr.ip().is_unspecified())
+            {
+                return Err(ConfigError::ListenersCollide { key, other });
+            }
         }
         let trusted_proxies = match get(TRUSTED_PROXIES)? {
             Some(value) => parse_trusted_proxies(&value)?,
@@ -375,6 +400,7 @@ impl Config {
                 .unwrap_or_default(),
             listen_addr,
             runner_listen_addr,
+            webhook_listen_addr,
             trusted_proxies,
             data_dir: PathBuf::from(or_default(DATA_DIR, DEFAULT_DATA_DIR)?),
             secret_key: parse_secret_key(&secret(SECRET_KEY, SECRET_KEY_FILE)?)?,
@@ -1066,6 +1092,44 @@ pub(crate) mod tests {
         env.insert(LISTEN_ADDR, "127.0.0.1:3000".to_owned());
         env.insert(RUNNER_LISTEN_ADDR, "10.0.0.2:3000".to_owned());
         assert!(parse(&env).is_ok(), "same port on different addresses");
+    }
+
+    #[test]
+    fn webhook_listener_address_is_separate_and_configurable() {
+        let mut env = required_env();
+        assert_eq!(
+            parse(&env).unwrap().webhook_listen_addr,
+            "127.0.0.1:3002".parse().unwrap()
+        );
+        env.insert(WEBHOOK_LISTEN_ADDR, "127.0.0.1:4321".to_owned());
+        assert_eq!(
+            parse(&env).unwrap().webhook_listen_addr,
+            "127.0.0.1:4321".parse().unwrap()
+        );
+        env.insert(WEBHOOK_LISTEN_ADDR, "127.0.0.1:3000".to_owned());
+        assert!(matches!(
+            parse(&env),
+            Err(ConfigError::ListenersCollide {
+                key: WEBHOOK_LISTEN_ADDR,
+                other: LISTEN_ADDR
+            })
+        ));
+        env.insert(WEBHOOK_LISTEN_ADDR, "127.0.0.1:3001".to_owned());
+        assert!(matches!(
+            parse(&env),
+            Err(ConfigError::ListenersCollide {
+                key: WEBHOOK_LISTEN_ADDR,
+                other: RUNNER_LISTEN_ADDR
+            })
+        ));
+        env.insert(WEBHOOK_LISTEN_ADDR, "invalid".to_owned());
+        assert!(matches!(
+            parse(&env),
+            Err(ConfigError::InvalidSocketAddr {
+                key: WEBHOOK_LISTEN_ADDR,
+                ..
+            })
+        ));
     }
 
     #[test]

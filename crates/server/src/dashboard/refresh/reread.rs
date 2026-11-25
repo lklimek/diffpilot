@@ -84,7 +84,7 @@ pub(crate) async fn reread(
 }
 
 /// The fact check (plan §M F3): probes at most [`PROBE_LIMIT`] of the snapshot's pull requests and re-reads at most
-/// [`REREAD_LIMIT`] whose change mark moved; only a complete, successful check advances `facts_checked_at`.
+/// [`REREAD_LIMIT`] whose change mark moved; only a complete, successful check advances the last check time.
 pub(crate) async fn check(state: &AppState, scope: &Scope) -> Result<Reread, RereadError> {
     read_again(state, scope, None).await
 }

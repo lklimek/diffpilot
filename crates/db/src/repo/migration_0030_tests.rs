@@ -56,6 +56,12 @@ const CLEANED: &[&str] = &[
     "working_sessions",
 ];
 const NEW: &[&str] = &[
+    "app_repositories",
+    "comment_decision_origins",
+    "dashboard_ranking_resets",
+    "dashboard_sends",
+    "github_deliveries",
+    "pr_page_openings",
     "analytic_threads",
     "assessment_attempt_usage",
     "assessment_comparison_items",
@@ -225,7 +231,7 @@ async fn migration_0030_cleans_populated_0029_and_preserves_identity_and_setting
     assert_eq!(
         tables(&db.pool).await,
         expected,
-        "classify every post-0030 table"
+        "classify every table after startup migrations"
     );
     assert_clean(&db).await;
     db.pool.close().await;

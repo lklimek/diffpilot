@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PrHistoryQuery",
+  "description": "Query of `GET /api/v1/me/prs`.",
+  "type": "object",
+  "properties": {
+    "limit": {
+      "description": "Most rows to return.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0
+    },
+    "cursor": {
+      "description": "Opaque cursor issued by the previous page.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

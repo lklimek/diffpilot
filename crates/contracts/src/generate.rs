@@ -19,14 +19,15 @@ use crate::api::comments::{
 };
 use crate::api::dashboard::{
     DashboardEvent, DashboardSettings, DashboardSettingsView, DashboardSummary, ItemPage,
-    ItemQuery, RefreshStatus, SetTimeZoneRequest, SnoozeRequest, SummaryQuery,
+    ItemQuery, RefreshStatus, SetTimeZoneRequest, SnoozeRequest, StartRefreshRequest, SummaryQuery,
 };
 use crate::api::deps::DependencyView;
 use crate::api::error::{ApiError, LoginError};
 use crate::api::events::AnalysisEvent;
 use crate::api::feedback::{Feedback, FeedbackRequest};
 use crate::api::files::{FilesResponse, SetViewedRequest};
-use crate::api::pr::{ResolvePrRequest, ResolvePrResponse};
+use crate::api::llm::LlmActivity;
+use crate::api::pr::{PrHistory, PrHistoryQuery, ResolvePrRequest, ResolvePrResponse};
 use crate::api::questions::{AnchoredAskRequest, AskQuestion, AskRequest};
 use crate::api::review::ReviewState;
 use crate::api::review_loop::{
@@ -38,8 +39,8 @@ use crate::api::review_loop::{
     UserStreamEvent, WatchList, WebhookPayload,
 };
 use crate::api::settings::{
-    RepoSettings, SetAskEffortRequest, SetControlledOwnersRequest, SetJudgeEffortRequest,
-    SetLanguageRequest, Settings,
+    GithubWebhook, RankingUsage, RepoSettings, RepositoryInstallations, SetAskEffortRequest,
+    SetControlledOwnersRequest, SetJudgeEffortRequest, SetLanguageRequest, Settings,
 };
 use crate::api::tour::Tour;
 use crate::routes::{self, Listener, ROUTES, Route};
@@ -98,6 +99,16 @@ pub const API_SCHEMAS: &[ApiSchema] = &[
     api_schema::<ApiError>("api_error", &[]),
     api_schema::<MeResponse>("me_response", &[routes::GET_ME]),
     api_schema::<DashboardSummary>("dashboard_summary", &[routes::GET_DASHBOARD]),
+    api_schema::<StartRefreshRequest>("start_refresh_request", &[]),
+    api_schema::<RepositoryInstallations>(
+        "repository_installations",
+        &[routes::GET_REPOSITORY_INSTALLATIONS],
+    ),
+    api_schema::<GithubWebhook>("github_webhook", &[routes::GET_GITHUB_WEBHOOK]),
+    api_schema::<LlmActivity>("llm_activity", &[routes::GET_LLM_ACTIVITY]),
+    api_schema::<RankingUsage>("ranking_usage", &[routes::GET_RANKING_USAGE]),
+    api_schema::<PrHistory>("pr_history", &[routes::LIST_MY_PRS]),
+    api_schema::<PrHistoryQuery>("pr_history_query", &[]),
     api_schema::<ItemQuery>("item_query", &[]),
     api_schema::<SummaryQuery>("summary_query", &[]),
     api_schema::<ItemPage>("item_page", &[routes::LIST_DASHBOARD_ITEMS]),
@@ -365,6 +376,13 @@ fn typescript_types() -> Result<String, GenerateError> {
     collector.visit::<SetJudgeEffortRequest>();
     collector.visit::<SetAskEffortRequest>();
     collector.visit::<DashboardSummary>();
+    collector.visit::<StartRefreshRequest>();
+    collector.visit::<RepositoryInstallations>();
+    collector.visit::<GithubWebhook>();
+    collector.visit::<LlmActivity>();
+    collector.visit::<RankingUsage>();
+    collector.visit::<PrHistory>();
+    collector.visit::<PrHistoryQuery>();
     collector.visit::<ItemQuery>();
     collector.visit::<SummaryQuery>();
     collector.visit::<ItemPage>();

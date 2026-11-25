@@ -882,6 +882,11 @@
           "const": "not_rendered"
         },
         {
+          "description": "The route is reserved for a feature that is not available yet.",
+          "type": "string",
+          "const": "not_implemented"
+        },
+        {
           "description": "GitHub did not answer as expected.",
           "type": "string",
           "const": "github_unavailable"
@@ -2254,6 +2259,17 @@
         "range": {
           "description": "Step lines on that side.",
           "$ref": "#/$defs/LineRange"
+        },
+        "leading_context": {
+          "description": "Doc comments and attributes directly above the step’s first item, as found by the technology plugin.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LineRange"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "github_url": {
           "description": "GitHub link to the lines at the head commit (base commit for a base-side step).",

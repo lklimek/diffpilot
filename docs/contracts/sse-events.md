@@ -94,6 +94,10 @@ Plan `docs/review-workflow-plan.md` §2.8, §5 (ADR-023). Types in `crates/contr
   older than the connection, so a browser never notifies twice), and `heartbeat {at}`. The browser shows user events
   as notifications when its per-browser toggle is on. Heartbeats and token re-checks as for dashboard streams; the
   stream ends when the server stops.
+  The v1.4 `llm_activity {activity}` event carries the same reader-scoped snapshot as `GET /api/v1/llm/activity`.
+  Job state changes will trigger snapshots at most once a second per stream. Other jobs in the reader's tenant
+  carry only their kind and a response-local opaque id. The reader's pause and last call remain private. B1
+  registers the event type. [Phase B activity contract](../v1.4-phase-b-plan.md#8-llm-activity-c7)
 - `GET /api/v1/decision-feed/events` (RF2, `read`, query `FeedQuery`): `FeedEvent` tagged by `event`:
   `decision_available {decision, pr, fetch}` when a decision within the subscriber's capabilities becomes
   claimable (also when its open effects shrink so that it newly fits them), `decision_cancelled {decision, pr}` when it leaves the feed (superseded or claimed by another agent),

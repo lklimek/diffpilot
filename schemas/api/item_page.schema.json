@@ -188,6 +188,42 @@
       "description": "One ranked item.",
       "type": "object",
       "properties": {
+        "judgement": {
+          "description": "Judgement state when this item can be judged.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Judgement"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "live": {
+          "description": "Whether GitHub App webhooks update this repository.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "stack": {
+          "description": "Position of this pull request within a stack.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Stack"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "release_base": {
+          "description": "Base branch matching a configured or built-in release pattern.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "id": {
           "description": "Display alias, e.g. `PLAT-1187` or `TODO-3fa91c2e`.",
           "type": "string"
@@ -333,6 +369,138 @@
         "score"
       ]
     },
+    "Judgement": {
+      "description": "Judgement state and its evidence.",
+      "type": "object",
+      "properties": {
+        "state": {
+          "description": "State of the item's judgement.",
+          "$ref": "#/$defs/JudgementState"
+        },
+        "judged_at": {
+          "description": "When the existing judgement was made.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "outdated_because": {
+          "description": "Which input to the existing judgement changed.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OutdatedBecause"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "state"
+      ]
+    },
+    "JudgementState": {
+      "description": "Whether an item has a current judgement or is waiting for one.",
+      "oneOf": [
+        {
+          "description": "The judged facts and prompt are current.",
+          "type": "string",
+          "const": "current"
+        },
+        {
+          "description": "The facts or prompt changed since the judgement.",
+          "type": "string",
+          "const": "outdated"
+        },
+        {
+          "description": "A live ranking can judge this previously unjudged item.",
+          "type": "string",
+          "const": "queued"
+        },
+        {
+          "description": "A re-judgement is requested and a ranking is live.",
+          "type": "string",
+          "const": "judging"
+        },
+        {
+          "description": "No judgement was made.",
+          "type": "string",
+          "const": "not_judged"
+        },
+        {
+          "description": "The latest ranking left the item unjudged at a cap.",
+          "type": "string",
+          "const": "capped"
+        }
+      ]
+    },
+    "OutdatedBecause": {
+      "description": "Input that made an existing judgement outdated.",
+      "oneOf": [
+        {
+          "description": "One or more judged facts changed.",
+          "type": "string",
+          "const": "facts_changed"
+        },
+        {
+          "description": "The ranking prompt changed.",
+          "type": "string",
+          "const": "prompt_changed"
+        }
+      ]
+    },
+    "Stack": {
+      "description": "Position and dependent pull requests of an item in a stack.",
+      "type": "object",
+      "properties": {
+        "position": {
+          "description": "Position of the pull request.",
+          "$ref": "#/$defs/StackPosition"
+        },
+        "size": {
+          "description": "Number of pull requests in the stack.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "dependents": {
+          "description": "Numbers of dependent pull requests.",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          }
+        }
+      },
+      "required": [
+        "position",
+        "size",
+        "dependents"
+      ]
+    },
+    "StackPosition": {
+      "description": "Position of a pull request in a stack.",
+      "oneOf": [
+        {
+          "description": "Base of the stack.",
+          "type": "string",
+          "const": "bottom"
+        },
+        {
+          "description": "With a parent and dependents.",
+          "type": "string",
+          "const": "middle"
+        },
+        {
+          "description": "Tip of the stack.",
+          "type": "string",
+          "const": "top"
+        }
+      ]
+    },
     "ItemKind": {
       "description": "Kind of a work item.",
       "oneOf": [
@@ -357,6 +525,17 @@
       "description": "A deterministic tag from scan facts.",
       "type": "object",
       "properties": {
+        "filter": {
+          "description": "Filter for items with this fact.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FactFilter"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "text": {
           "description": "Short text.",
           "type": "string"
@@ -369,6 +548,24 @@
       "required": [
         "text",
         "tip"
+      ]
+    },
+    "FactFilter": {
+      "description": "Selects items with a deterministic fact.",
+      "type": "object",
+      "properties": {
+        "key": {
+          "description": "Stable key for the fact kind and its value where applicable.",
+          "type": "string"
+        },
+        "label": {
+          "description": "Label shown in the filter menu.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "label"
       ]
     },
     "ChangeSizeMark": {
@@ -704,7 +901,7 @@
           "format": "date-time"
         },
         "inherited": {
-          "description": "Carried over from before the item changed.",
+          "description": "Carried over from before the item changed.\nSuperseded by `WorkItem.judgement`.",
           "type": "boolean"
         },
         "also_keys": {

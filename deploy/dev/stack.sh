@@ -45,6 +45,7 @@
 #                SR_ALLOWED_LOGINS         alice
 #                SR_LISTEN_ADDR            127.0.0.1:<public port>
 #                SR_RUNNER_LISTEN_ADDR     = SR_DEV_RUNNER_LISTEN_ADDR (runner protocol only)
+#                SR_WEBHOOK_LISTEN_ADDR    127.0.0.1:<webhook port>
 #                SR_DATA_DIR               <state>/server (SQLite database, bare mirrors)
 #                SR_SECRET_KEY             random 32 bytes, base64 (token encryption at rest)
 #                SR_RUNNER_SECRET          random hex, shared with the runner
@@ -153,8 +154,8 @@ state="${SR_DEV_STATE_DIR:-$(mktemp -d /data/tmp/diffpilot-dev.XXXXXX)}"
 state="$(mkdir -p "$state" && cd "$state" && pwd)"
 mkdir -p "$state/logs" "$state/home" "$state/server" "$state/runner"
 chmod 700 "$state"
-read -r free_public github_port runner_port memcan_port gateway_port < <(python3 -c 'import socket
-socks = [socket.socket() for _ in range(5)]
+read -r free_public github_port runner_port memcan_port gateway_port webhook_port < <(python3 -c 'import socket
+socks = [socket.socket() for _ in range(6)]
 for s in socks:
     s.bind(("127.0.0.1", 0))
 print(*(s.getsockname()[1] for s in socks))')
@@ -187,6 +188,7 @@ server_env=(
   SR_ALLOWED_LOGINS="$login"
   SR_LISTEN_ADDR="127.0.0.1:$public_port"
   SR_RUNNER_LISTEN_ADDR="$runner_addr"
+  SR_WEBHOOK_LISTEN_ADDR="127.0.0.1:$webhook_port"
   SR_DATA_DIR="$state/server"
   SR_SECRET_KEY="$secret_key"
   SR_RUNNER_SECRET="$runner_secret"

@@ -85,7 +85,7 @@ pub mod testing {
             .max_connections(1)
             .connect_with(options)
             .await?;
-        super::migrate(&pool, super::MIGRATIONS.len() - 1).await?;
+        super::migrate(&pool, super::migration_count_through(29)).await?;
         sqlx::raw_sql(include_str!("../../tests/fixtures/pre_0030.sql"))
             .execute(&pool)
             .await?;
@@ -142,7 +142,7 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The schema migrations in order, as `(version, description, SQL)`: the initial schema, then additive
 /// changes that upgrade an existing database in place.
-const MIGRATIONS: [(i64, &str, &str); 27] = [
+const MIGRATIONS: [(i64, &str, &str); 31] = [
     (1, "init", include_str!("../../migrations/0001_init.sql")),
     (
         2,
@@ -274,6 +274,26 @@ const MIGRATIONS: [(i64, &str, &str); 27] = [
         "v13_containers",
         include_str!("../../migrations/0030_v13_containers.sql"),
     ),
+    (
+        31,
+        "github_webhooks",
+        include_str!("../../migrations/0031_github_webhooks.sql"),
+    ),
+    (
+        32,
+        "ranking_v14",
+        include_str!("../../migrations/0032_ranking_v14.sql"),
+    ),
+    (
+        33,
+        "review_loop_v14",
+        include_str!("../../migrations/0033_review_loop_v14.sql"),
+    ),
+    (
+        34,
+        "pr_history",
+        include_str!("../../migrations/0034_pr_history.sql"),
+    ),
 ];
 
 /// Starts a transaction that may write: `BEGIN IMMEDIATE` takes the write lock at once and waits on the busy
@@ -296,6 +316,11 @@ pub(crate) async fn read_tx(pool: &SqlitePool) -> Result<Transaction<'static, Sq
     )]
     let tx = pool.begin_with("BEGIN DEFERRED").await?;
     Ok(tx)
+}
+
+#[cfg(any(test, feature = "test-util"))]
+fn migration_count_through(version: i64) -> usize {
+    MIGRATIONS.partition_point(|(number, ..)| *number <= version)
 }
 
 /// Applies the first `count` of [`MIGRATIONS`] that the database does not have yet.

@@ -233,6 +233,17 @@
               "type": "null"
             }
           ]
+        },
+        "this_month": {
+          "description": "From the start of the server-local calendar month through now.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UsageTotals"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },

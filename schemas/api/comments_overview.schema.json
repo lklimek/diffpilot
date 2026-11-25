@@ -4,6 +4,17 @@
   "description": "Response of RC2.",
   "type": "object",
   "properties": {
+    "watch": {
+      "description": "The reader’s watch for this pull request.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WatchedPr"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "pr": {
       "description": "Pull request.",
       "$ref": "#/$defs/PrRef"
@@ -82,6 +93,67 @@
     "badge"
   ],
   "$defs": {
+    "WatchedPr": {
+      "description": "A watched pull request (RW2, V6).",
+      "type": "object",
+      "properties": {
+        "pr": {
+          "description": "Pull request.",
+          "$ref": "#/$defs/PrRef"
+        },
+        "title": {
+          "description": "Title.",
+          "type": "string"
+        },
+        "since": {
+          "description": "Watching since.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "last_probe_at": {
+          "description": "Last probe.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "last_auto_pass": {
+          "description": "Latest automatic assessment.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AutoPass"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "description": "State.",
+          "$ref": "#/$defs/WatchState"
+        },
+        "ended_at": {
+          "description": "When the watch ended (merged or closed).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "badge": {
+          "description": "State badge.",
+          "$ref": "#/$defs/PrBadgeView"
+        }
+      },
+      "required": [
+        "pr",
+        "title",
+        "since",
+        "state",
+        "badge"
+      ]
+    },
     "PrRef": {
       "description": "A pull request of a repository.",
       "type": "object",
@@ -118,6 +190,127 @@
       "required": [
         "owner",
         "name"
+      ]
+    },
+    "AutoPass": {
+      "description": "The latest automatic assessment.",
+      "type": "object",
+      "properties": {
+        "at": {
+          "description": "When it ended.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "questions": {
+          "description": "Questions waiting for a decision when it ended.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "at",
+        "questions"
+      ]
+    },
+    "WatchState": {
+      "description": "State of a watch. Open enum.",
+      "oneOf": [
+        {
+          "description": "Probed on schedule.",
+          "type": "string",
+          "const": "active"
+        },
+        {
+          "description": "A pass waits for the bot's round to end.",
+          "type": "string",
+          "const": "waiting_for_bot_round"
+        },
+        {
+          "description": "An assessment job is queued or running.",
+          "type": "string",
+          "const": "job_running"
+        },
+        {
+          "description": "Today's automatic assessment limit is reached.",
+          "type": "string",
+          "const": "limit_reached"
+        },
+        {
+          "description": "No GitHub token pair: \"sign in again\".",
+          "type": "string",
+          "const": "paused"
+        },
+        {
+          "description": "The PR was merged or closed; watching ended.",
+          "type": "string",
+          "const": "ended"
+        }
+      ]
+    },
+    "PrBadgeView": {
+      "description": "The badge with the facts behind it (tooltip).",
+      "type": "object",
+      "properties": {
+        "badge": {
+          "description": "Badge; null when none applies or inputs are unknown.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PrBadge"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "facts": {
+          "description": "Facts diffpilot read that select it.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "missing": {
+          "description": "Inputs not known (no B5 while any is listed).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "facts",
+        "missing"
+      ]
+    },
+    "PrBadge": {
+      "description": "PR state badge (plan §3.9 B1–B5); first match wins.",
+      "oneOf": [
+        {
+          "description": "B1.",
+          "type": "string",
+          "const": "blocked_failing"
+        },
+        {
+          "description": "B2.",
+          "type": "string",
+          "const": "questions_waiting"
+        },
+        {
+          "description": "B3.",
+          "type": "string",
+          "const": "executing"
+        },
+        {
+          "description": "B4.",
+          "type": "string",
+          "const": "waiting_for_bot_round"
+        },
+        {
+          "description": "B5.",
+          "type": "string",
+          "const": "ready_to_merge"
+        }
       ]
     },
     "CommitSha": {
@@ -209,6 +402,33 @@
       "description": "Item counts of a PR.",
       "type": "object",
       "properties": {
+        "needs_you": {
+          "description": "Items in the Needs you queue.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "needs_you_gates": {
+          "description": "Gated items in the Needs you queue.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "imported_unseen": {
+          "description": "Items with a decision imported since this reader last visited Comments.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
         "unresolved_threads": {
           "description": "Unresolved threads on GitHub (fact).",
           "type": "integer",
@@ -425,6 +645,32 @@
       "description": "Assessment progress of a PR (\"LLM assessment running: 4 of 9 comments\").",
       "type": "object",
       "properties": {
+        "in_pass": {
+          "description": "Items in the live pass input.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "waiting": {
+          "description": "Items waiting for the next pass.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "since": {
+          "description": "When the live pass started.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
         "running": {
           "description": "A pass is queued or running.",
           "type": "boolean"
@@ -538,71 +784,6 @@
           "description": "7. Group.",
           "type": "string",
           "const": "group"
-        }
-      ]
-    },
-    "PrBadgeView": {
-      "description": "The badge with the facts behind it (tooltip).",
-      "type": "object",
-      "properties": {
-        "badge": {
-          "description": "Badge; null when none applies or inputs are unknown.",
-          "anyOf": [
-            {
-              "$ref": "#/$defs/PrBadge"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "facts": {
-          "description": "Facts diffpilot read that select it.",
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "missing": {
-          "description": "Inputs not known (no B5 while any is listed).",
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        }
-      },
-      "required": [
-        "facts",
-        "missing"
-      ]
-    },
-    "PrBadge": {
-      "description": "PR state badge (plan §3.9 B1–B5); first match wins.",
-      "oneOf": [
-        {
-          "description": "B1.",
-          "type": "string",
-          "const": "blocked_failing"
-        },
-        {
-          "description": "B2.",
-          "type": "string",
-          "const": "questions_waiting"
-        },
-        {
-          "description": "B3.",
-          "type": "string",
-          "const": "executing"
-        },
-        {
-          "description": "B4.",
-          "type": "string",
-          "const": "waiting_for_bot_round"
-        },
-        {
-          "description": "B5.",
-          "type": "string",
-          "const": "ready_to_merge"
         }
       ]
     },

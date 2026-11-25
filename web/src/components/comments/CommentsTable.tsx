@@ -29,6 +29,8 @@ const VIA: Record<DecisionVia, string> = {
   group: "in a group",
   bulk: "via decide the rest",
   table: "in the table",
+  imported_github: "imported from GitHub",
+  follows_primary: "follows primary",
   carried: "carried",
 };
 

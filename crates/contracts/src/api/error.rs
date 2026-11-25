@@ -49,6 +49,8 @@ pub enum ApiErrorCode {
     RangeTooLarge,
     /// The file is not rendered (generated material).
     NotRendered,
+    /// The route is reserved for a feature that is not available yet.
+    NotImplemented,
     /// GitHub did not answer as expected.
     GithubUnavailable,
     /// An internal error.
@@ -91,7 +93,7 @@ pub enum ApiErrorCode {
 
 impl ApiErrorCode {
     /// Every code.
-    pub const ALL: [ApiErrorCode; 35] = [
+    pub const ALL: [ApiErrorCode; 36] = [
         Self::Configuration,
         Self::Unauthenticated,
         Self::LoginNotAllowed,
@@ -110,6 +112,7 @@ impl ApiErrorCode {
         Self::NotRendered,
         Self::GithubUnavailable,
         Self::Internal,
+        Self::NotImplemented,
         Self::Unavailable,
         Self::RefreshRunning,
         Self::GithubRateLimited,
@@ -161,6 +164,7 @@ impl ApiErrorCode {
             | Self::SecretRequired => 422,
             Self::GithubRateLimited | Self::RateLimited => 429,
             Self::Internal | Self::Configuration => 500,
+            Self::NotImplemented => 501,
             Self::GithubUnavailable => 502,
             Self::Unavailable => 503,
         }

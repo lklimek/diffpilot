@@ -1,5 +1,6 @@
 // TODO(v1.4 phase B): replace with generated contract type (plan C7)
 import type { LlmCallOutcome } from "../generated/types";
+import { provisionalRouteAbsent } from "./settingsResponse";
 
 export const LLM_ACTIVITY_PATH = "/api/v1/llm/activity";
 
@@ -28,8 +29,7 @@ export async function fetchLlmActivity(signal?: AbortSignal): Promise<LlmActivit
     credentials: "same-origin",
     signal,
   });
-  if (response.status === 404 || response.status === 405) return null;
+  if (provisionalRouteAbsent(response)) return null;
   if (!response.ok) throw new Error("Job activity unavailable.");
-  if (response.headers.get("Content-Type")?.includes("text/html")) return null;
   return (await response.json()) as LlmActivity;
 }
