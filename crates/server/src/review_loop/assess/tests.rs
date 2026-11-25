@@ -163,6 +163,7 @@ fn observed(key: &str) -> ObservedItem {
         stable_key: key.to_owned(),
         author: "thepastaclaw".to_owned(),
         author_kind: AuthorKind::Bot,
+        status_comment: false,
         url: None,
         location: Some(ItemLocation {
             path: "src/rpc/client.rs".to_owned(),
@@ -1624,6 +1625,7 @@ async fn assess_again_sends_its_item_although_unchanged() {
         stable_key: "pr:3:merge".to_owned(),
         author: "diffpilot".to_owned(),
         author_kind: AuthorKind::Diffpilot,
+        status_comment: false,
         url: None,
         location: None,
         title: "Merge now, or another round?".to_owned(),

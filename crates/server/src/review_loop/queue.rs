@@ -2,11 +2,11 @@
 //! recommendation (resolved review-body items in one group), and the "Decide the rest per recommendation" selection.
 //! Pure. Gate items are never grouped and never decided in bulk (RQ4, RQ5).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use contracts::api::review_loop::{
-    DecideRequest, DecisionKind, ItemState, LeftOutItem, LeftOutReason, QueueEntry, QueueReason,
-    Recommendation,
+    AssessmentState, CommentItemKind, DecideRequest, DecisionKind, ItemState, LeftOutItem,
+    LeftOutReason, QueueEntry, QueueReason, Recommendation,
 };
 
 use super::effects::PrQuestion;
@@ -64,6 +64,88 @@ pub fn waiting(items: &[QueueItem]) -> Vec<&QueueItem> {
             None => true,
         })
         .collect()
+}
+
+/// The facts used to classify an item in the Comments list.
+pub(super) struct StatusItem {
+    pub no: u32,
+    pub kind: CommentItemKind,
+    pub state: ItemState,
+    pub assessment_state: AssessmentState,
+    pub status_comment: bool,
+    pub imported: bool,
+    pub duplicate_of: Option<u32>,
+    pub decision_follows_primary: bool,
+    pub gone: bool,
+    pub gated: bool,
+}
+
+/// The Comments list status, in N1 precedence order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(serde::Deserialize), serde(rename_all = "snake_case"))]
+enum CommentStatus {
+    StatusComments,
+    Decided,
+    Duplicates,
+    All,
+    NeedsYou,
+    Waiting,
+    Assessing,
+    NotAssessed,
+}
+
+fn comment_status(item: &StatusItem) -> CommentStatus {
+    let linked = item.duplicate_of.is_some_and(|no| no != item.no);
+    let awaits = !item.gone
+        && matches!(
+            item.state,
+            ItemState::Undecided | ItemState::Reopened | ItemState::AskedBack
+        );
+    if item.status_comment {
+        CommentStatus::StatusComments
+    } else if item.imported || item.state == ItemState::Outside {
+        CommentStatus::Decided
+    } else if linked && item.decision_follows_primary && !item.gated {
+        CommentStatus::Duplicates
+    } else if matches!(
+        item.state,
+        ItemState::Decided | ItemState::Executing | ItemState::Done | ItemState::Repeat
+    ) {
+        CommentStatus::Decided
+    } else if item.gone {
+        CommentStatus::All
+    } else if linked && (awaits || (item.gated && item.state == ItemState::Assessing)) {
+        CommentStatus::NeedsYou
+    } else if item.assessment_state == AssessmentState::Queued {
+        CommentStatus::Waiting
+    } else if item.assessment_state == AssessmentState::Running {
+        CommentStatus::Assessing
+    } else if item.kind != CommentItemKind::PrQuestion
+        && matches!(item.assessment_state, AssessmentState::NotAssessed { .. })
+    {
+        CommentStatus::NotAssessed
+    } else if awaits {
+        CommentStatus::NeedsYou
+    } else {
+        CommentStatus::All
+    }
+}
+
+/// Counts the Needs you items in the queue and those among them with a gate.
+pub(super) fn needs_you(entries: &[QueueEntry], items: &HashMap<u32, StatusItem>) -> (u32, u32) {
+    let mut total = 0u32;
+    let mut gates = 0u32;
+    for item in entries
+        .iter()
+        .flat_map(|entry| &entry.item_nos)
+        .filter_map(|no| items.get(no))
+    {
+        if comment_status(item) == CommentStatus::NeedsYou {
+            total = total.saturating_add(1);
+            gates = gates.saturating_add(u32::from(item.gated));
+        }
+    }
+    (total, gates)
 }
 
 /// The key two items share to form a group: the recommended kind and the target, else the reason class.
@@ -240,6 +322,141 @@ mod tests {
     use contracts::api::review_loop::DecisionTarget;
 
     use super::*;
+
+    #[test]
+    fn needs_you_matches_fixture() {
+        use contracts::api::review_loop::{GateMark, ImportedGithubDecision};
+        use contracts::time::Timestamp;
+        use serde::Deserialize;
+
+        #[derive(Deserialize)]
+        struct Item {
+            no: u32,
+            kind: CommentItemKind,
+            state: ItemState,
+            assessment_state: AssessmentState,
+            gates: Vec<GateMark>,
+            #[serde(default)]
+            status_comment: bool,
+            imported_decision: Option<ImportedGithubDecision>,
+            duplicate_of: Option<u32>,
+            #[serde(default)]
+            decision_follows_primary: bool,
+            gone_at: Option<Timestamp>,
+        }
+
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../docs/contracts/fixtures/needs-you-cases.json"
+        ))
+        .unwrap();
+        let defaults = fixture["defaults"].as_object().unwrap();
+        let items: Vec<_> = fixture["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|overrides| {
+                let mut data = defaults.clone();
+                data.extend(overrides.as_object().unwrap().clone());
+                let item: Item = serde_json::from_value(data.into()).unwrap();
+                StatusItem {
+                    no: item.no,
+                    kind: item.kind,
+                    state: item.state,
+                    assessment_state: item.assessment_state,
+                    status_comment: item.status_comment,
+                    imported: item.imported_decision.is_some(),
+                    duplicate_of: item.duplicate_of,
+                    decision_follows_primary: item.decision_follows_primary,
+                    gone: item.gone_at.is_some(),
+                    gated: !item.gates.is_empty(),
+                }
+            })
+            .collect();
+        let expected: Vec<CommentStatus> =
+            serde_json::from_value(fixture["expected_statuses"].clone()).unwrap();
+        assert_eq!(items.len(), expected.len());
+        for (item, status) in items.iter().zip(expected) {
+            assert_eq!(comment_status(item), status, "C{}", item.no);
+        }
+        let entries: Vec<QueueEntry> = serde_json::from_value(fixture["queue"].clone()).unwrap();
+        let items = items.into_iter().map(|item| (item.no, item)).collect();
+        let (total, gates) = needs_you(&entries, &items);
+        assert_eq!(fixture["expected_needs_you"], total);
+        assert_eq!(fixture["expected_needs_you_gates"], gates);
+    }
+
+    #[test]
+    fn rust_dashcore_1336_regression() {
+        use contracts::api::review_loop::NotAssessedReason;
+        use serde::Deserialize;
+
+        #[derive(Deserialize)]
+        struct Item {
+            no: u32,
+            kind: CommentItemKind,
+            #[serde(default)]
+            assessed: bool,
+            duplicate_of: Option<u32>,
+            #[serde(default)]
+            status_comment: bool,
+        }
+
+        #[derive(Deserialize)]
+        struct Fixture {
+            legacy_dashboard_needs_you: usize,
+            expected_needs_you: Vec<u32>,
+            items: Vec<Item>,
+        }
+
+        let fixture: Fixture = serde_json::from_str(include_str!(
+            "../../../../fixtures/review-loop/regressions/rust-dashcore-1336.json"
+        ))
+        .unwrap();
+        let by_no: HashMap<_, _> = fixture
+            .items
+            .iter()
+            .map(|item| {
+                (
+                    item.no,
+                    StatusItem {
+                        no: item.no,
+                        kind: item.kind,
+                        state: ItemState::Undecided,
+                        assessment_state: if item.assessed {
+                            AssessmentState::Assessed
+                        } else {
+                            AssessmentState::NotAssessed {
+                                reason: NotAssessedReason::Missing,
+                            }
+                        },
+                        status_comment: item.status_comment,
+                        imported: false,
+                        duplicate_of: item.duplicate_of,
+                        decision_follows_primary: false,
+                        gone: false,
+                        gated: false,
+                    },
+                )
+            })
+            .collect();
+        let item_nos: Vec<_> = fixture.items.iter().map(|item| item.no).collect();
+        assert_eq!(item_nos.len(), fixture.legacy_dashboard_needs_you);
+        let actual: Vec<_> = item_nos
+            .iter()
+            .copied()
+            .filter(|no| comment_status(&by_no[no]) == CommentStatus::NeedsYou)
+            .collect();
+        assert_eq!(actual, fixture.expected_needs_you);
+        let entries = [QueueEntry {
+            item_nos,
+            reason: QueueReason::Group,
+            skipped: false,
+        }];
+        assert_eq!(
+            needs_you(&entries, &by_no),
+            (u32::try_from(actual.len()).unwrap(), 0)
+        );
+    }
 
     fn item(no: u32) -> QueueItem {
         QueueItem {

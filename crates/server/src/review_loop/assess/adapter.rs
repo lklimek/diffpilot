@@ -134,6 +134,7 @@ fn host_rows(
                 },
                 stable_key: format!("{prefix}{ordinal}"),
                 author: row.reviewer.clone(),
+                status_comment: false,
                 author_kind: if frozen
                     .data
                     .manifest

@@ -397,6 +397,7 @@ pub fn observe(read: &PrRead, bots: &BotRule) -> (Vec<Observed>, Snapshot) {
                 stable_key,
                 author: login(first.author.as_ref()),
                 author_kind,
+                status_comment: false,
                 url: github_web_url(&first.url),
                 location: Some(ItemLocation {
                     path: thread.path.clone(),
@@ -489,6 +490,7 @@ pub fn observe(read: &PrRead, bots: &BotRule) -> (Vec<Observed>, Snapshot) {
                     stable_key,
                     author: login(review.author.as_ref()),
                     author_kind,
+                    status_comment: false,
                     url: url.clone(),
                     location,
                     title,
@@ -580,6 +582,7 @@ pub fn observe(read: &PrRead, bots: &BotRule) -> (Vec<Observed>, Snapshot) {
                 stable_key: format!("comment:{id}:1"),
                 author: login(comment.author.as_ref()),
                 author_kind,
+                status_comment: false,
                 url: github_web_url(&comment.url),
                 location: None,
                 title: markers::title_of(&text),

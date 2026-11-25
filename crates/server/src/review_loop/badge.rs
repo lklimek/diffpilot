@@ -169,7 +169,7 @@ pub struct BadgeInputs {
     /// Failed effects.
     pub failed_effects: u32,
     /// Undecided questions.
-    pub undecided: u32,
+    pub needs_you: u32,
     /// Decisions with open or claimed effects.
     pub executing: u32,
     /// thepastaclaw reviews or queues this PR (plug-in, or its gate comment).
@@ -227,9 +227,9 @@ pub fn badge(inputs: &BadgeInputs) -> PrBadgeView {
         view.badge = Some(PrBadge::BlockedFailing);
         return view;
     }
-    if inputs.undecided > 0 {
+    if inputs.needs_you > 0 {
         view.facts.push(plural(
-            inputs.undecided,
+            inputs.needs_you,
             "undecided question",
             "undecided questions",
         ));
@@ -596,7 +596,7 @@ mod tests {
         assert_eq!(
             badge(&BadgeInputs {
                 draft: true,
-                undecided: 1,
+                needs_you: 1,
                 ..ready()
             })
             .badge,
@@ -635,7 +635,7 @@ mod tests {
         assert_eq!(badge(&ready()).badge, Some(PrBadge::ReadyToMerge));
         let all = BadgeInputs {
             failed_effects: 1,
-            undecided: 2,
+            needs_you: 2,
             executing: 3,
             bot_round: true,
             ..ready()
@@ -648,7 +648,7 @@ mod tests {
         assert_eq!(badge(&b2).badge, Some(PrBadge::QuestionsWaiting));
         assert_eq!(badge(&b2).facts, ["2 undecided questions"]);
         let b3 = BadgeInputs {
-            undecided: 0,
+            needs_you: 0,
             ..b2.clone()
         };
         assert_eq!(badge(&b3).badge, Some(PrBadge::Executing));
@@ -712,7 +712,7 @@ mod tests {
         }
         let unknown_but_blocked = BadgeInputs {
             ci: None,
-            undecided: 1,
+            needs_you: 1,
             ..ready()
         };
         assert_eq!(

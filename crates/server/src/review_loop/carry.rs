@@ -254,6 +254,7 @@ mod tests {
             stable_key: "821d7cdc93fec6e1".into(),
             author: "thepastaclaw".into(),
             author_kind: AuthorKind::Bot,
+            status_comment: false,
             url: Some("https://github.com/acme/node-client/pull/482#discussion_r2".into()),
             location: Some(ItemLocation {
                 path: "src/rpc/client.rs".into(),
@@ -340,6 +341,7 @@ mod tests {
             stable_key: "821d7cdc93fec6e1".into(),
             author: "thepastaclaw".into(),
             author_kind: AuthorKind::Bot,
+            status_comment: false,
             url: observed("h").url,
             location: None,
             title: "t".into(),

@@ -1680,6 +1680,7 @@ async fn assessment_stale_canonical_leaves_duplicate_missing_without_aborting_va
         stable_key: "T2".into(),
         author: "reviewer".into(),
         author_kind: contracts::api::review_loop::AuthorKind::Human,
+        status_comment: false,
         url: None,
         location: None,
         title: "Duplicate".into(),

@@ -265,7 +265,7 @@ async fn request(
             Some(asked) => item.id == asked && item.kind != CommentItemKind::PrQuestion,
             None => assessable(item),
         };
-        if !wanted {
+        if !wanted || item.status_comment {
             continue;
         }
         if reason != PassReason::Ask

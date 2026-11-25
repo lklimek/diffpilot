@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, Sqlite, Transaction};
 
-use contracts::api::dashboard::CommentTally;
 use contracts::api::review_loop::{
     AuthorKind, CommentAssessment, CommentItemKind, GateMark, ItemGithubFacts, ItemLocation,
     ItemState, OutsideResolution, ReadFailure,
@@ -63,6 +62,8 @@ pub struct ObservedItem {
     pub author: String,
     /// Author kind.
     pub author_kind: AuthorKind,
+    /// A bot PR status or summary comment.
+    pub status_comment: bool,
     /// GitHub link.
     pub url: Option<String>,
     /// Discussed lines.
@@ -108,6 +109,9 @@ pub struct ItemRecord {
     pub author: String,
     /// Author kind.
     pub author_kind: AuthorKind,
+    /// A bot PR status or summary comment.
+    #[serde(default)]
+    pub status_comment: bool,
     /// GitHub link.
     pub url: Option<String>,
     /// Discussed lines.
@@ -274,7 +278,7 @@ pub enum PassStart {
 
 const ITEM_COLUMNS: &str = "id, pull_request_id, item_no, kind, stable_key, author, author_kind, url, path,
     start_line, end_line, title, body, body_hash, first_seen_head, first_round, bot_severity, gate_marks, github,
-    state, revision, outside, repeat_of, gone_at, updated_at, source_id, quote, duplicate_of";
+    state, revision, outside, repeat_of, gone_at, updated_at, source_id, quote, duplicate_of, status_comment";
 
 fn item_from_row(row: &SqliteRow) -> Result<ItemRecord, DbError> {
     let path: Option<String> = row.try_get("path")?;
@@ -301,6 +305,7 @@ fn item_from_row(row: &SqliteRow) -> Result<ItemRecord, DbError> {
         stable_key: row.try_get("stable_key")?,
         author: row.try_get("author")?,
         author_kind: wire_col(row, "author_kind")?,
+        status_comment: row.try_get("status_comment")?,
         url: row.try_get("url")?,
         location: path.map(|path| ItemLocation { path, lines }),
         title: row.try_get("title")?,
@@ -774,10 +779,8 @@ impl ReviewLoop<'_> {
     }
 
     /// For each of `prs` (repository and number) that the tenant read successfully or `user_id` watches: its comment
-    /// counts after a successful read (comment items without PR-level questions and items the read no longer
-    /// produces, and those waiting for a decision), and whether the user watches it, in list order. Waiting matches
-    /// the server's queue: an open state, and not listed in a standing "merge now" decision's follow-up PR. One
-    /// statement for the whole list. Read-only.
+    /// count of current comment items after a successful read, and whether the user watches it, in list order.
+    /// One read-only statement for the whole list.
     pub async fn comment_tallies(
         &self,
         tenant_id: &str,
@@ -789,7 +792,7 @@ impl ReviewLoop<'_> {
                 .map(|(repo, number)| serde_json::json!([repo.owner, repo.name, number]))
                 .collect(),
         );
-        let rows: Vec<(i64, bool, bool, i64, i64)> = sqlx::query_as(
+        let rows: Vec<(i64, i64, bool, bool, i64)> = sqlx::query_as(
             "WITH wanted AS (
                  SELECT CAST(j.key AS INTEGER) AS idx, json_extract(j.value, '$[0]') AS owner,
                      json_extract(j.value, '$[1]') AS name, json_extract(j.value, '$[2]') AS number
@@ -802,21 +805,8 @@ impl ReviewLoop<'_> {
                          AND pw.user_id = ?3 AND pw.state <> 'ended') AS watched
                  FROM wanted w
                  JOIN repos r ON r.tenant_id = ?2 AND r.owner = w.owner AND r.name = w.name
-                 JOIN pull_requests p ON p.tenant_id = ?2 AND p.repo_id = r.id AND p.number = w.number),
-             followed AS (
-                 SELECT k.pr, CAST(n.value AS INTEGER) AS no
-                 FROM known k
-                 JOIN comment_items q ON q.pull_request_id = k.pr
-                 JOIN comment_decisions d ON d.item_id = q.id AND d.kind = 'merge_with_follow_ups'
-                 JOIN comment_effects e ON e.decision_id = d.id AND e.kind = 'follow_up_pr'
-                     AND e.state <> 'cancelled'
-                 JOIN json_each(e.params, '$.item_nos') n
-                 WHERE k.was_read
-                   AND NOT EXISTS (SELECT 1 FROM comment_decisions s WHERE s.supersedes = d.id)
-                   AND NOT EXISTS (SELECT 1 FROM comment_decision_undos u WHERE u.decision_id = d.id))
-             SELECT k.idx, k.was_read, k.watched, COUNT(i.id),
-                 COALESCE(SUM(i.state IN ('assessing', 'undecided', 'asked_back', 'reopened')
-                     AND NOT EXISTS (SELECT 1 FROM followed f WHERE f.pr = k.pr AND f.no = i.item_no)), 0)
+                 JOIN pull_requests p ON p.tenant_id = ?2 AND p.repo_id = r.id AND p.number = w.number)
+             SELECT k.idx, k.pr, k.was_read, k.watched, COUNT(i.id)
              FROM known k
              LEFT JOIN comment_items i ON k.was_read AND i.pull_request_id = k.pr AND i.kind <> 'pr_question'
                  AND i.gone_at IS NULL
@@ -829,18 +819,15 @@ impl ReviewLoop<'_> {
         .bind(user_id)
         .fetch_all(self.pool)
         .await?;
-        let count = |value: i64, column: &'static str| {
-            u32::try_from(value).map_err(|_| DbError::Corrupt { column })
-        };
         rows.into_iter()
-            .map(|(index, was_read, watched, total, needs_you)| {
+            .map(|(index, pull_request_id, was_read, watched, total)| {
                 Ok(PrCommentTally {
                     index: usize::try_from(index).unwrap_or(usize::MAX),
-                    counts: was_read
+                    pull_request_id,
+                    total: was_read
                         .then(|| {
-                            Ok::<_, DbError>(CommentTally {
-                                total: count(total, "comment_items")?,
-                                needs_you: count(needs_you, "comment_items.state")?,
+                            u32::try_from(total).map_err(|_| DbError::Corrupt {
+                                column: "comment_items",
                             })
                         })
                         .transpose()?,
@@ -918,8 +905,8 @@ pub(crate) async fn upsert_item_in(
             sqlx::query(
                 "INSERT INTO comment_items (id, tenant_id, pull_request_id, item_no, kind, stable_key, author,
                      author_kind, url, path, start_line, end_line, title, body, body_hash, first_seen_head,
-                     first_round, bot_severity, github, state, outside, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     first_round, bot_severity, github, state, outside, created_at, updated_at, status_comment)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(id.to_string())
             .bind(tenant_id)
@@ -944,6 +931,7 @@ pub(crate) async fn upsert_item_in(
             .bind(observed.outside.as_ref().map(json).transpose()?)
             .bind(ts(now))
             .bind(ts(now))
+            .bind(observed.status_comment)
             .execute(&mut **tx)
             .await?;
             UpsertOutcome::New(item_in(tx, id).await?)
@@ -957,6 +945,7 @@ pub(crate) async fn upsert_item_in(
             let changed = item.kind != observed.kind
                 || item.author != observed.author
                 || item.author_kind != observed.author_kind
+                || item.status_comment != observed.status_comment
                 || item.url != observed.url
                 || item.location != observed.location
                 || item.title != observed.title
@@ -972,7 +961,7 @@ pub(crate) async fn upsert_item_in(
                     "UPDATE comment_items SET kind = ?, author = ?, author_kind = ?, url = ?, path = ?,
                          start_line = ?, end_line = ?, title = ?, body = ?, body_hash = ?, bot_severity = ?,
                          github = ?, state = ?, outside = ?, gone_at = NULL, revision = revision + 1,
-                         updated_at = ?
+                         updated_at = ?, status_comment = ?
                      WHERE id = ?",
                 )
                 .bind(wire(observed.kind)?)
@@ -990,6 +979,7 @@ pub(crate) async fn upsert_item_in(
                 .bind(wire(state)?)
                 .bind(observed.outside.as_ref().map(json).transpose()?)
                 .bind(ts(now))
+                .bind(observed.status_comment)
                 .bind(item.id.to_string())
                 .execute(&mut **tx)
                 .await?;
@@ -1007,8 +997,10 @@ pub(crate) async fn upsert_item_in(
 pub struct PrCommentTally {
     /// Position in the requested list.
     pub index: usize,
-    /// Comment items and those waiting for a decision; `None` before the first successful read.
-    pub counts: Option<CommentTally>,
+    /// The stored pull request.
+    pub pull_request_id: i64,
+    /// Comment items; `None` before the first successful read.
+    pub total: Option<u32>,
     /// The user watches the pull request.
     pub watched: bool,
 }

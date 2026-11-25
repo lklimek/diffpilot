@@ -2614,6 +2614,7 @@ async fn comment_item(state: &AppState, key: &str) -> db::repo::review_loop::Ite
         stable_key: key.to_owned(),
         author: "thepastaclaw".to_owned(),
         author_kind: AuthorKind::Bot,
+        status_comment: false,
         url: None,
         location: Some(ItemLocation {
             path: "src/rpc/client.rs".to_owned(),
