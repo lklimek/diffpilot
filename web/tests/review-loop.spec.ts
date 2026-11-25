@@ -236,3 +236,13 @@ test("v1.4 dashboard, PR panel and queue agree on Needs you", async ({ page }) =
   await expect(panel.getByText("Needs you").locator("xpath=following-sibling::dd[1]")).toContainText("11");
   await expect(panel.getByRole("button", { name: "Watch" })).toBeVisible();
 });
+
+test("v1.4 hiding assessment keeps the chosen table decision", async ({ page }) => {
+  await page.goto(`${PR}/comments/table?scenario=comments-v14`);
+  const decision = page.getByRole("combobox", { name: /^Decision for C22/ });
+  await decision.selectOption("resolve");
+  await page.getByRole("button", { name: "Hide", exact: true }).click();
+  await expect(page).toHaveURL(/\/comments\/table\?/);
+  await expect(decision).toHaveValue("resolve");
+  await expect(page.getByRole("link", { name: "Table", exact: true })).toBeFocused();
+});

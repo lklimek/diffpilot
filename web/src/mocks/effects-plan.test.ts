@@ -25,6 +25,8 @@ import {
   undo,
 } from "./review-loop";
 
+import { setScenario } from "./scenarios";
+
 const byNo = (no: number) => listItems().find((i) => i.no === no)!;
 const request = (kind: DecisionKind, fields: Partial<DecideRequest> = {}): DecideRequest => ({
   kind,
@@ -329,5 +331,64 @@ describe("mock effect function (effects.rs plan)", () => {
     );
     expect(rest.rows.map((r) => r.row.item_no)).not.toContain(21);
     expect(rest.rows.every((r) => r.row.resolve_ticked && r.row.reply_text === null)).toBe(true);
+  });
+});
+
+describe("decisions on linked items", () => {
+  it("plans and stores effects for each following thread, keeps gates independent and applies a standing decision to later links", () => {
+    setScenario("comments-v14");
+    resetReviewLoop();
+    try {
+      const gate = byNo(31);
+      gate.gates = [{ gate: "G-FUNDS", source: "owner" }];
+      const body = request("fix_here");
+      const preview = previewEffects([{ ...body, item_no: 14 }]);
+      expect(preview).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            item_no: 30,
+            effects: expect.arrayContaining([
+              expect.objectContaining({
+                kind: "resolve",
+                params: expect.objectContaining({ thread_id: "PRRT_30" }),
+              }),
+            ]),
+          }),
+        ]),
+      );
+      const recorded = decide("C14", body) as Decision;
+      expect(byNo(30).decisions.at(-1)).toMatchObject({
+        kind: "fix_here",
+        carried_from: recorded.id,
+        effects: expect.arrayContaining([
+          expect.objectContaining({
+            kind: "resolve",
+            params: expect.objectContaining({ thread_id: "PRRT_30" }),
+          }),
+        ]),
+      });
+      expect(gate.decisions).toHaveLength(0);
+      Object.assign(byNo(22), { duplicate_of: 14, decision_follows_primary: true, state: "assessing" });
+      expect(byNo(22).decisions.at(-1)).toMatchObject({
+        carried_from: recorded.id,
+        effects: expect.arrayContaining([
+          expect.objectContaining({
+            kind: "resolve",
+            params: expect.objectContaining({ thread_id: "PRRT_22" }),
+          }),
+        ]),
+      });
+      expect(byNo(22).decisions).toHaveLength(1);
+      undo("C14", byNo(14).revision);
+      for (const no of [22, 30])
+        expect(
+          byNo(no)
+            .decisions.at(-1)
+            ?.effects.every((effect) => effect.state === "cancelled"),
+        ).toBe(true);
+    } finally {
+      setScenario(null);
+      resetReviewLoop();
+    }
   });
 });

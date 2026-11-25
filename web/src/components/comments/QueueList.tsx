@@ -5,7 +5,18 @@ import { MenuButton, MenuItem } from "../menu/MenuButton";
 import { clockText } from "../format/time";
 import { CommentTitle, BotHeading } from "./CommentTitle";
 import { GithubDecision, githubDecisionEvidence } from "./GithubDecision";
-import { commentStatus, needsYouQueue, QUEUE_STATUS, type QueueStatus } from "./queueStatus";
+import { DuplicateOfLink } from "./DuplicateLinks";
+import type { Navigate } from "../dashboard/common/navigate";
+import {
+  commentStatus,
+  duplicatePrimary,
+  followsPrimary,
+  needsYouCount,
+  needsYouQueue,
+  NOT_ASSESSED,
+  QUEUE_STATUS,
+  type QueueStatus,
+} from "./queueStatus";
 import { buttonClass } from "../button/button";
 import { OpenExternal } from "../dashboard/common/OpenExternal";
 import { ProvenanceTag, provenanceNote, type ProvenanceSource } from "../section/ProvenanceTag";
@@ -43,6 +54,8 @@ interface QueueListProps {
   /** The entry shown. */
   current: string | null;
   onOpen: (entry: QueueEntry) => void;
+  itemHref?: (no: number) => string;
+  onNavigate?: Navigate;
   /** Items "Decide the rest" would decide; the button is hidden without any. */
   restCount: number;
   onDecideRest: () => void;
@@ -165,7 +178,7 @@ const DESCRIPTION: Partial<Record<QueueStatus, string>> = {
   waiting: "Read from GitHub and waiting for the next pass.",
   not_assessed: "Assessment did not complete or reached the daily limit.",
   decided: "Decisions made here, carried from earlier rounds or imported from GitHub.",
-  duplicates: "The same point as another item. Decided with that item.",
+  duplicates: "Items whose decision follows their primary.",
   status_comments: "Bot status and summaries.",
 };
 
@@ -176,8 +189,8 @@ export function commentStatusText(item: ReviewComment, since?: string | null, no
     case "waiting":
       return "◌ waiting for assessment";
     case "not_assessed":
-      return item.assessment_state.state === "not_assessed" && item.assessment_state.reason !== "not_run"
-        ? `Not assessed: ${item.assessment_state.reason.replaceAll("_", " ")}`
+      return item.assessment_state.state === "not_assessed"
+        ? `Not assessed: ${NOT_ASSESSED[item.assessment_state.reason] ?? item.assessment_state.reason}`
         : "Not assessed";
     case "duplicates":
       return `⧉ Same point as C${item.duplicate_of}`;
@@ -194,6 +207,8 @@ export function QueueList({
   items,
   current,
   onOpen,
+  itemHref,
+  onNavigate,
   restCount,
   onDecideRest,
   onOpenLog,
@@ -226,13 +241,15 @@ export function QueueList({
         ]),
     ) as Record<Exclude<QueueStatus, "needs_you">, QueueEntry[]>),
   };
-  const count = (key: QueueStatus) => (key === "needs_you" ? needs.length : subsets[key].length);
+  const count = (key: QueueStatus) =>
+    key === "needs_you" ? needsYouCount(0, queue, items) : subsets[key].length;
   const selected = subsets[status];
   const visible =
     status === "all"
       ? selected.filter((entry) => {
-          const primary = items.get(entry.item_nos[0]!)?.duplicate_of;
-          return primary == null || primary === entry.item_nos[0] || !items.has(primary);
+          const item = items.get(entry.item_nos[0]!)!;
+          const primary = duplicatePrimary(item);
+          return !followsPrimary(item) || primary == null || !items.has(primary);
         })
       : selected;
 
@@ -243,9 +260,7 @@ export function QueueList({
     const rec = first.assessment?.recommendation;
     const duplicates = all.filter(
       (item) =>
-        item.duplicate_of != null &&
-        entry.item_nos.includes(item.duplicate_of) &&
-        item.no !== item.duplicate_of,
+        followsPrimary(item) && item.duplicate_of != null && entry.item_nos.includes(item.duplicate_of),
     );
     const oneClass = entry.item_nos.every(
       (no) => items.get(no)?.assessment?.recommendation.reason_class === rec?.reason_class,
@@ -267,6 +282,7 @@ export function QueueList({
       commentStatusText(first, since, now)
     );
     const evidence = imported ? githubDecisionEvidence(first) : null;
+    const primary = duplicatePrimary(first);
     return (
       <li key={entryKey(entry)}>
         <div className="flex items-center gap-0.5">
@@ -303,6 +319,15 @@ export function QueueList({
             />
           )}
         </div>
+        {!group && primary != null && !followsPrimary(first) && (
+          <div className="ml-9">
+            <DuplicateOfLink
+              item={first}
+              href={items.has(primary) ? itemHref?.(primary) : undefined}
+              onNavigate={onNavigate}
+            />
+          </div>
+        )}
         {duplicates.length > 0 && status !== "duplicates" && (
           <details className="ml-9 text-xs text-muted">
             <summary className="min-h-6 cursor-pointer content-center">
@@ -333,7 +358,7 @@ export function QueueList({
   const gateText = status === "needs_you" && gates ? `${gates} ${gates === 1 ? "gate" : "gates"}` : null;
   return (
     <nav aria-label="Queue" className="min-w-0 rounded-lg border border-border bg-surface px-3 py-3">
-      <div ref={statusHost} className="mb-2">
+      <div ref={statusHost} data-queue-status className="mb-2">
         <MenuButton
           label={`Status: ${trigger}${gateText ? `, ${gateText}` : ""}`}
           trigger={

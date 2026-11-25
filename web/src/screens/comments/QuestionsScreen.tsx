@@ -1,3 +1,5 @@
+import { useQueryClient } from "@tanstack/react-query";
+import type { ReviewComment } from "../../api/provisional/comments";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { ApiError } from "../../api/client";
@@ -9,6 +11,7 @@ import type {
   QueueEntry,
 } from "../../api/generated/types";
 import {
+  cachedCommentsReview,
   useAssessAgain,
   useCommentContext,
   useCommentLog,
@@ -27,6 +30,10 @@ import type { EffectsPreviewState } from "../../components/comments/decisions";
 import { itemId } from "../../components/comments/parts";
 import { CommentOverviewCard } from "../../components/comments/CommentOverviewCard";
 import {
+  awaitsDecision,
+  commentsByNo,
+  duplicatePrimary,
+  needsYouCount,
   needsYouQueue,
   commentStatus,
   queueStatusOf,
@@ -68,8 +75,10 @@ const KEYS: [string, string][] = [
 
 /** V1 Questions (plan §3.2, §2.4): one question at a time, groups, "Decide the rest", PR-level questions. */
 export function QuestionsScreen() {
-  const { pr, overview, items, askAnswers, login, now, statusHost, focusQueueStatus } = useComments();
+  const { pr, overview, items, needsYou, askAnswers, login, now, statusHost, focusQueueStatus } =
+    useComments();
   const [search, setSearch] = useSearchParams();
+  const client = useQueryClient();
   const status = queueStatusOf(search.get("status"));
   useEffect(focusQueueStatus, [focusQueueStatus]);
   const changeStatus = (next: QueueStatus) => {
@@ -77,6 +86,11 @@ export function QuestionsScreen() {
     if (next === "needs_you") params.delete("status");
     else params.set("status", next);
     setSearch(params);
+  };
+  const itemHref = (no: number) => {
+    const params = new URLSearchParams(search);
+    params.set("item", `C${no}`);
+    return `${commentsPath(pr)}?${params}`;
   };
   const selectItem = (item: string | null, replace = false) => {
     const params = new URLSearchParams(search);
@@ -114,12 +128,13 @@ export function QuestionsScreen() {
   });
   const byNo = useMemo(() => new Map(items.map((i) => [i.no, i])), [items]);
   const duplicates = useMemo(() => {
-    const grouped = new Map<number, CommentItem[]>();
+    const grouped = new Map<number, ReviewComment[]>();
     for (const item of items) {
-      if (item.duplicate_of == null || item.duplicate_of === item.no) continue;
-      const peers = grouped.get(item.duplicate_of) ?? [];
+      const primary = duplicatePrimary(item);
+      if (primary == null) continue;
+      const peers = grouped.get(primary) ?? [];
       peers.push(item);
-      grouped.set(item.duplicate_of, peers);
+      grouped.set(primary, peers);
     }
     return grouped;
   }, [items]);
@@ -207,8 +222,9 @@ export function QuestionsScreen() {
         ? { state: "ready", value: context.data }
         : { state: "loading" };
 
-  const afterDecided = (what: string, count: number, next: number[] | null) => {
-    const left = Math.max(0, overview.counts.undecided - count);
+  const afterDecided = (what: string, next: number[] | null) => {
+    const cached = cachedCommentsReview(client, pr);
+    const left = needsYouCount(needsYou, cached.overview?.queue, commentsByNo(cached.items));
     setAnnouncement(`${what}: decision recorded. ${left} ${left === 1 ? "question" : "questions"} left.`);
     selectItem(null, true);
     setSkipped(new Set());
@@ -220,7 +236,7 @@ export function QuestionsScreen() {
       { no: item.no, body: request },
       {
         onSuccess: (decision) => {
-          afterDecided(itemId(item), 1, next);
+          afterDecided(itemId(item), next);
           setUndoable({ no: item.no, decision: decision.id, label: itemId(item) });
         },
       },
@@ -233,7 +249,7 @@ export function QuestionsScreen() {
       { via, rows },
       {
         onSuccess: () => {
-          afterDecided(`${rows.length} items`, rows.length, next);
+          afterDecided(`${rows.length} items`, next);
           setUndoable(null);
         },
       },
@@ -319,6 +335,21 @@ export function QuestionsScreen() {
   const error = decide.isError ? errorText(decide.error) : batch.isError ? errorText(batch.error) : null;
   const undoError = undoable && undoDecision.isError ? errorText(undoDecision.error) : null;
 
+  const deferred = new Map<QueueStatus, number>();
+  if (!entry) {
+    for (const item of items) {
+      const phase = commentStatus(item);
+      if (
+        phase === "assessing" ||
+        phase === "waiting" ||
+        phase === "not_assessed" ||
+        (phase === "duplicates" && (awaitsDecision(item) || (item.state === "assessing" && !item.gone_at)))
+      )
+        deferred.set(phase, (deferred.get(phase) ?? 0) + 1);
+    }
+  }
+  const primary = single && duplicatePrimary(single);
+
   let card;
   if (rest)
     card = decideRest.data ? (
@@ -344,6 +375,8 @@ export function QuestionsScreen() {
         assessed={overview.assessment.assessed}
         head={overview.head}
         now={now}
+        deferred={deferred}
+        onStatus={changeStatus}
       >
         <StartAgentHelp
           pr={pr}
@@ -402,6 +435,7 @@ export function QuestionsScreen() {
         key={single.id}
         item={single}
         duplicates={duplicates.get(single.no) ?? []}
+        primaryHref={primary != null && byNo.has(primary) ? itemHref(primary) : undefined}
         reask={reask}
         position={{ index: index + 1, total: Math.max(queue.length, index + 1) }}
         prNumber={pr.number}
@@ -457,6 +491,8 @@ export function QuestionsScreen() {
         items={byNo}
         current={rest ? null : entry && entryKey(entry)}
         onOpen={open}
+        itemHref={itemHref}
+        onNavigate={(href) => void navigate(href)}
         status={status}
         onStatus={changeStatus}
         statusHost={statusHost}
@@ -511,7 +547,7 @@ export function QuestionsScreen() {
             <tbody>
               {(
                 [
-                  ["Needs you", overview.counts.undecided],
+                  ["Needs you", needsYou],
                   ["… gate items", gateCount],
                   ["Asked again", overview.counts.asked_again],
                   ["Decisions waiting for agents", overview.counts.waiting_for_agents],

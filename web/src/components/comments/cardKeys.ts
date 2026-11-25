@@ -8,6 +8,11 @@ export const isTypingField = (target: EventTarget | null) =>
     target.isContentEditable ||
     (target instanceof HTMLInputElement && !["radio", "checkbox"].includes(target.type)));
 
+/** A refreshed card leaves keyboard focus with the reader while Queue Status is in use. */
+export function focusQuestionHeading(heading: HTMLElement | null) {
+  if (!document.activeElement?.closest("[data-queue-status]")) heading?.focus();
+}
+
 /** What a card's keys do; a key without its handler does nothing. */
 export interface CardKeys {
   /** Number of options 1–8 choose from. */

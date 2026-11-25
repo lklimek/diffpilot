@@ -38,7 +38,7 @@ import {
   type ReviewCommentsOverview,
   type ReviewPrPage,
 } from "../api/provisional/comments";
-import { commentStatus } from "../components/comments/queueStatus";
+import { duplicatePrimary, followsPrimary } from "../components/comments/queueStatus";
 import {
   ASKED_AGAIN,
   NOT_READ,
@@ -518,12 +518,14 @@ function v14Items(): ReviewComment[] {
     ...seeded,
     item(30, {
       duplicate_of: 14,
+      decision_follows_primary: true,
       author: "coderabbitai[bot]",
       title: "The timeout can repeat the request",
       body: "The retry can send a request that was already accepted.",
     }),
     item(31, {
       duplicate_of: 14,
+      decision_follows_primary: true,
       title: "The same request can be sent twice",
       body: "The resend may duplicate an accepted request.",
     }),
@@ -601,15 +603,27 @@ export function resetReviewLoop(): void {
 const OPEN_STATES = new Set(["undecided", "reopened", "asked_back"]);
 /** Waiting for a decision: open and still produced by the read (an item with `gone_at` leaves the queue). */
 const isOpen = (i: CommentItem) => OPEN_STATES.has(i.state) && !i.gone_at;
+const isAssessing = (i: CommentItem) => i.state === "assessing" && !i.gone_at;
 /** The open items of `list` no standing "Merge with follow-ups" covers (queue.rs `waiting`). */
 function waitingIn(list: ReviewComment[]): ReviewComment[] {
   const covered = followedUp(list);
-  return list.filter((i) => commentStatus(i) === "needs_you" && !covered.has(i.no));
+  return list.filter(
+    (item) =>
+      (isOpen(item) || (duplicatePrimary(item) != null && item.gates.length > 0 && isAssessing(item))) &&
+      !covered.has(item.no) &&
+      !item.status_comment &&
+      !item.imported_decision &&
+      !followsPrimary(item) &&
+      (item.kind === "pr_question" ||
+        duplicatePrimary(item) != null ||
+        item.assessment_state.state === "assessed"),
+  );
 }
 
 /** Items as RC4 answers them in the selected state. */
 export function listItems(): ReviewComment[] {
   const all = items();
+  applyStandingDecisions(all);
   switch (state()) {
     case "empty":
     case "no-agent":
@@ -688,8 +702,8 @@ function assessmentProgress(list: ReviewComment[]) {
       !i.gone_at,
   );
   const assessed = needs.filter((i) => i.assessment_state.state === "assessed").length;
-  const in_pass = needs.filter((i) => commentStatus(i) === "assessing").length;
-  const waiting = needs.filter((i) => commentStatus(i) === "waiting").length;
+  const in_pass = needs.filter((i) => i.assessment_state.state === "running").length;
+  const waiting = needs.filter((i) => i.assessment_queued).length;
   return {
     running: in_pass > 0,
     in_pass,
@@ -949,6 +963,7 @@ function store_decision(
   body: DecideRequest,
   planned: Planned,
   via: Decision["via"],
+  carriedFrom: Decision["id"] | null = null,
 ): Decision {
   const id = nextDecisionId();
   const decided: Decision = {
@@ -963,7 +978,7 @@ function store_decision(
     comment: body.comment?.trim() || null,
     recommendation: it.assessment?.recommendation ?? null,
     via,
-    carried_from: null,
+    carried_from: carriedFrom,
     supersedes: it.decisions.at(-1)?.id ?? null,
     head: HEAD,
     decided_by: "alice",
@@ -1018,19 +1033,24 @@ export function undo(raw: string, revision: number): CommentItem | Refusal {
   if (it.revision !== revision) return changedSince(it);
   const last = it.decisions.at(-1);
   if (!last || last.undone_at) return [409, "conflict", `C${it.no} has no decision to undo.`];
-  if (last.effects.some((e) => e.state === "claimed" || e.state === "done" || e.state === "failed"))
-    return [409, "conflict", `An agent already claimed an effect of the decision on C${it.no}; it stays.`];
-  cancelUnclaimed(last);
-  last.undone_at = now();
-  for (const duplicate of store!.items.filter((item) => item.duplicate_of === it.no)) {
+  const linked = store!.items.flatMap((duplicate) => {
     const decision = duplicate.decisions.at(-1);
-    if (!decision || decision.carried_from !== last.id || decision.undone_at) continue;
-    decision.undone_at = last.undone_at;
-    duplicate.state = "undecided";
-    duplicate.revision += 1;
+    return decision?.carried_from === last.id && !decision.undone_at ? [{ item: duplicate, decision }] : [];
+  });
+  const affected = [{ item: it, decision: last }, ...linked];
+  if (
+    affected.some(({ decision }) =>
+      decision.effects.some((e) => e.state === "claimed" || e.state === "done" || e.state === "failed"),
+    )
+  )
+    return [409, "conflict", `An agent already claimed an effect of the decision on C${it.no}; it stays.`];
+  const at = now();
+  for (const { item, decision } of affected) {
+    cancelUnclaimed(decision);
+    decision.undone_at = at;
+    item.state = "undecided";
+    item.revision += 1;
   }
-  it.state = "undecided";
-  it.revision += 1;
   return it;
 }
 
@@ -1069,12 +1089,68 @@ export function markGate(raw: string, body: GateMarkRequest): CommentItem | Refu
   return it;
 }
 
+type PlannedDuplicate = { item: ReviewComment; body: DecideRequest; planned: Planned };
+
+function planDuplicate(
+  item: ReviewComment,
+  decision: Pick<DecideRequest, "kind" | "reason" | "target" | "resolve_ticked" | "comment">,
+  scope: PlanScope,
+): PlannedDuplicate | Refusal {
+  const { kind, reason, target, resolve_ticked, comment } = decision;
+  const body: DecideRequest = {
+    kind,
+    reason,
+    target,
+    resolve_ticked,
+    comment,
+    item_revision: item.revision,
+    override: null,
+    reply_text: null,
+  };
+  const planned = plan(item, body, scope);
+  return typeof planned === "string"
+    ? [400, "invalid_request", `C${item.no}: ${planned}.`]
+    : { item, body, planned };
+}
+
+function applyStandingDecisions(all: ReviewComment[]) {
+  for (const item of all) {
+    if (
+      !followsPrimary(item) ||
+      (!isOpen(item) && !isAssessing(item)) ||
+      item.imported_decision ||
+      item.status_comment
+    )
+      continue;
+    const primary = all.find((candidate) => candidate.no === item.duplicate_of);
+    const decision = primary?.decisions.at(-1);
+    if (
+      !primary ||
+      isOpen(primary) ||
+      isAssessing(primary) ||
+      !decision ||
+      decision.undone_at ||
+      item.decisions.at(-1)?.carried_from === decision.id
+    )
+      continue;
+    const copy = planDuplicate(item, decision, scopeOf([item.no]));
+    if (isRefused(copy)) {
+      item.decision_follows_primary = false;
+      continue;
+    }
+    store_decision(item, copy.body, copy.planned, "carried", decision.id);
+  }
+}
+
+type PlannedRow = [CommentItem, Planned, string | null, PlannedDuplicate[]];
+
 /** The server's plans of `rows` (all or nothing) with their plan digests, or its refusal (mod.rs `Loaded::plan`). */
-function planRows(rows: DecisionBatchRow[]): [CommentItem, Planned, string | null][] | Refusal {
+function planRows(rows: DecisionBatchRow[]): PlannedRow[] | Refusal {
   const found = rows.map((r) => [r, store!.items.find((i) => i.no === r.item_no)] as const);
   if (found.some(([, it]) => !it)) return NOT_FOUND;
-  const scope = scopeOf(rows.map((r) => r.item_no));
-  const out: [CommentItem, Planned, string | null][] = [];
+  const selected = new Set(rows.map((r) => r.item_no));
+  const scope = scopeOf([...selected]);
+  const out: PlannedRow[] = [];
   for (const [row, it] of found) {
     let at = scope;
     if (row.kind === "dismiss_stale_reviews" && questionOf(it!) === "dismiss") {
@@ -1084,7 +1160,25 @@ function planRows(rows: DecisionBatchRow[]): [CommentItem, Planned, string | nul
     }
     const planned = plan(it!, row, at);
     if (typeof planned === "string") return [400, "invalid_request", `C${it!.no}: ${planned}.`];
-    out.push([it!, planned, planDigest(it!, row, at)]);
+    const duplicates: PlannedDuplicate[] = [];
+    for (const item of store!.items) {
+      if (
+        !followsPrimary(item) ||
+        item.duplicate_of !== it!.no ||
+        selected.has(item.no) ||
+        item.imported_decision ||
+        item.status_comment ||
+        item.gone_at
+      )
+        continue;
+      const carried = item.decisions.at(-1)?.carried_from;
+      if (!isOpen(item) && !isAssessing(item) && !it!.decisions.some((decision) => decision.id === carried))
+        continue;
+      const copy = planDuplicate(item, row, scope);
+      if (isRefused(copy)) return copy;
+      duplicates.push(copy);
+    }
+    out.push([it!, planned, planDigest(it!, row, at), duplicates]);
   }
   return out;
 }
@@ -1098,19 +1192,16 @@ export function previewEffects(rows: DecisionBatchRow[]): EffectsPreview[] | Ref
   items();
   const planned = planRows(rows);
   if (isRefused(planned)) return planned;
-  return planned.map(([it, p, digest]) => ({
-    item_no: it.no,
-    effects: p.effects,
-    ...(digest === null ? {} : { plan_digest: digest }),
-  }));
+  return planned.flatMap(([it, p, digest, duplicates]) => [
+    { item_no: it.no, effects: p.effects, ...(digest === null ? {} : { plan_digest: digest }) },
+    ...duplicates.map(({ item, planned }) => ({ item_no: item.no, effects: planned.effects })),
+  ]);
 }
 
 /** RC17. */
 export const decideRestList = (): DecideRest =>
   decideRest(
-    listItems().filter(
-      (item) => !item.status_comment && item.duplicate_of == null && !item.imported_decision,
-    ),
+    listItems().filter((item) => !item.status_comment && !followsPrimary(item) && !item.imported_decision),
     scopeOf,
   );
 
@@ -1160,30 +1251,12 @@ function storeRows(via: Decision["via"], rows: DecisionBatchRow[]): Decision[] |
       "item_changed",
       `These comments changed since you looked: ${changed.join(", ")}. Read them again.`,
     ];
-  const recorded = planned.map(([it, p], i) => store_decision(it, rows[i]!, p, via));
-  for (const primary of recorded) {
-    for (const duplicate of store!.items.filter(
-      (item) => item.duplicate_of === primary.item_no && isOpen(item) && !item.imported_decision,
-    )) {
-      duplicate.decisions = [
-        ...duplicate.decisions,
-        {
-          ...primary,
-          id: nextDecisionId(),
-          item_no: duplicate.no,
-          via: "carried",
-          carried_from: primary.id,
-          supersedes: duplicate.decisions.at(-1)?.id ?? null,
-          reply_text: null,
-          recommendation: duplicate.assessment?.recommendation ?? null,
-          effects: [],
-        },
-      ];
-      duplicate.state = "decided";
-      duplicate.revision += 1;
-    }
-  }
-  return recorded;
+  return planned.map(([it, p, , duplicates], i) => {
+    const primary = store_decision(it, rows[i]!, p, via);
+    for (const { item, body, planned } of duplicates)
+      store_decision(item, body, planned, "carried", primary.id);
+    return primary;
+  });
 }
 
 /** RC8. */

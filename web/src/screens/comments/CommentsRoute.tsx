@@ -27,6 +27,7 @@ import { AssessmentBanner } from "../../components/comments/AssessmentBanner";
 import { OpenExternal } from "../../components/dashboard/common/OpenExternal";
 import { WatchControl } from "../../components/watch/WatchControl";
 import { CommentsTabs, type CommentsPage } from "../../components/comments/CommentsTabs";
+import { commentsByNo, needsYouCount } from "../../components/comments/queueStatus";
 import { READ_FAILURE } from "../../components/comments/parts";
 import { StatusPopover } from "../../components/status/StatusPopover";
 import { clockText } from "../../components/format/time";
@@ -40,6 +41,7 @@ export interface CommentsContext {
   pr: PrRef;
   overview: ReviewCommentsOverview;
   items: ReviewComment[];
+  needsYou: number;
   statusHost: RefObject<HTMLDivElement | null>;
   focusQueueStatus: () => void;
   page: PrPage | undefined;
@@ -101,6 +103,7 @@ export function CommentsRoute() {
   const read = useReadComments(pr);
   const watch = useWatchPr(pr);
   const statusHost = useRef<HTMLDivElement>(null);
+  const activeTab = useRef<HTMLAnchorElement>(null);
   const focusStatusOnMount = useRef(false);
   const focusQueueStatus = () => {
     if (!focusStatusOnMount.current) return;
@@ -130,6 +133,7 @@ export function CommentsRoute() {
     [pr.repo.owner, pr.repo.name, pr.number],
   );
   const o = overview.data;
+  const needsYou = needsYouCount(o?.counts.undecided ?? 0, o?.queue, commentsByNo(items.data));
   const watching = o?.watch === undefined ? page.data?.watch : o.watch;
   const analysis = o?.analysis ?? null;
   const base = analysis ? `/analyses/${encodeURIComponent(analysis)}` : null;
@@ -147,6 +151,7 @@ export function CommentsRoute() {
       pr,
       overview: o,
       items: items.data,
+      needsYou,
       statusHost,
       focusQueueStatus,
       page: page.data,
@@ -268,7 +273,15 @@ export function CommentsRoute() {
             />
           </>
         )}
-        {o && <CommentsTabs current={current} hrefs={hrefs} questions={o.counts.undecided} onNavigate={go} />}
+        {o && (
+          <CommentsTabs
+            current={current}
+            hrefs={hrefs}
+            questions={needsYou}
+            onNavigate={go}
+            activeTabRef={activeTab}
+          />
+        )}
         {o && (
           <AssessmentBanner
             progress={o.assessment}
@@ -276,9 +289,12 @@ export function CommentsRoute() {
             prKey={display}
             now={now}
             onHide={() => {
-              focusStatusOnMount.current = true;
-              if (current === "questions") focusQueueStatus();
-              else go(hrefs.questions);
+              if (current === "questions") {
+                focusStatusOnMount.current = true;
+                focusQueueStatus();
+              } else {
+                activeTab.current?.focus();
+              }
             }}
           />
         )}
