@@ -54,8 +54,6 @@ pub const GITHUB_API_URL: &str = "SR_GITHUB_API_URL";
 pub const GITHUB_OAUTH_URL: &str = "SR_GITHUB_OAUTH_URL";
 /// Base URL repositories are cloned from (`<base>/<owner>/<name>.git`); `file://` allowed for development.
 pub const GITHUB_CLONE_URL: &str = "SR_GITHUB_CLONE_URL";
-/// Optional comma-separated trusted maintainer relay logins; empty by default.
-pub const MAINTAINER_DELEGATES: &str = "SR_MAINTAINER_DELEGATES";
 /// MemCan MCP endpoint URL.
 pub const MEMCAN_URL: &str = "SR_MEMCAN_URL";
 /// MemCan bearer token.
@@ -113,8 +111,6 @@ pub struct Config {
     pub github_webhook_url: Option<Url>,
     /// GitHub logins allowed to sign in to the default tenant; at least one, unique ignoring ASCII case.
     pub allowed_logins: Vec<String>,
-    /// Explicit trusted relays, independent of tenant membership or bot status.
-    pub maintainer_delegates: Vec<String>,
     /// Reverse proxies whose forwarding headers are trusted (default: none).
     pub trusted_proxies: Vec<IpNet>,
     /// Directory for the database and the bare mirrors (default `data`).
@@ -432,10 +428,6 @@ impl Config {
         Ok(Self {
             public_url: parse_http_url(PUBLIC_URL, &require(PUBLIC_URL)?)?,
             allowed_logins: parse_allowed_logins(&require(ALLOWED_LOGINS)?)?,
-            maintainer_delegates: get(MAINTAINER_DELEGATES)?
-                .map(|value| parse_logins(MAINTAINER_DELEGATES, &value))
-                .transpose()?
-                .unwrap_or_default(),
             listen_addr,
             runner_listen_addr,
             webhook_listen_addr,
@@ -818,22 +810,14 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn maintainer_relays_require_explicit_valid_configuration() {
-        let mut env = required_env();
-        assert!(parse(&env).unwrap().maintainer_delegates.is_empty());
-        env.insert(MAINTAINER_DELEGATES, "Relay-Bot, relay_user".into());
-        assert_eq!(
-            parse(&env).unwrap().maintainer_delegates,
-            vec!["Relay-Bot", "relay_user"]
-        );
-        env.insert(MAINTAINER_DELEGATES, "bad/login".into());
-        assert!(matches!(
-            parse(&env),
-            Err(ConfigError::InvalidLogin {
-                key: MAINTAINER_DELEGATES,
-                ..
-            })
-        ));
+    fn no_maintainer_delegates_env_var() {
+        assert!(!include_str!("../../../.env.example").contains("SR_MAINTAINER_DELEGATES"));
+        let env = required_env();
+        Config::from_lookup(|key| {
+            assert_ne!(key, "SR_MAINTAINER_DELEGATES");
+            Ok(env.get(key).cloned())
+        })
+        .unwrap();
     }
 
     #[test]

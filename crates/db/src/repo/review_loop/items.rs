@@ -91,6 +91,9 @@ pub struct ObservedItem {
 /// A stored item.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ItemRecord {
+    /// Candidate grounded and authorised by the host for this point.
+    #[serde(skip)]
+    pub import_candidate: Option<super::ImportCandidate>,
     /// Versioned source for a grounded body/comment point.
     pub source_id: Option<i64>,
     /// Verbatim source span.
@@ -333,7 +336,10 @@ pub enum PassStart {
 
 const ITEM_COLUMNS: &str = "id, pull_request_id, item_no, kind, stable_key, author, author_kind, url, path,
     start_line, end_line, title, body, body_hash, first_seen_head, first_round, bot_severity, gate_marks, github,
-    state, revision, outside, repeat_of, gone_at, updated_at, source_id, quote, duplicate_of, status_comment";
+    state, revision, outside, repeat_of, gone_at, updated_at, source_id, quote, duplicate_of, status_comment,
+    CASE WHEN EXISTS (SELECT 1 FROM memberships m WHERE m.tenant_id = comment_items.tenant_id
+        AND m.user_id = json_extract(comment_items.import_candidate, '$.user_id'))
+        THEN import_candidate END AS import_candidate";
 
 fn item_from_row(row: &SqliteRow) -> Result<ItemRecord, DbError> {
     let path: Option<String> = row.try_get("path")?;
@@ -350,6 +356,7 @@ fn item_from_row(row: &SqliteRow) -> Result<ItemRecord, DbError> {
     };
     let first_round: Option<i64> = row.try_get("first_round")?;
     Ok(ItemRecord {
+        import_candidate: opt_json_col(row, "import_candidate")?,
         source_id: row.try_get("source_id")?,
         quote: row.try_get("quote")?,
         duplicate_of: opt_wire_col(row, "duplicate_of")?,
@@ -662,6 +669,9 @@ impl ReviewLoop<'_> {
         if updated.rows_affected() == 0 {
             item_in(&mut tx, id).await?;
             return Err(DbError::Conflict);
+        }
+        if !gates.is_empty() {
+            super::origins::reopen_follower(&mut tx, id, now).await?;
         }
         let item = item_in(&mut tx, id).await?;
         tx.commit().await?;
@@ -1003,11 +1013,11 @@ impl ReviewLoop<'_> {
             view.pr.items.push(item);
             Ok(())
         })?;
-        use super::decisions::{DECISION_COLUMNS, decision_from_row, effect_from_row};
+        use super::decisions::{DECISION_COLUMNS, ORIGIN_JOIN, decision_from_row, effect_from_row};
         let decisions = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {DECISION_COLUMNS}, i.pull_request_id AS tally_pr
              FROM comment_decisions d JOIN comment_items i ON i.id = d.item_id
-             JOIN users u ON u.id = d.user_id
+             JOIN users u ON u.id = d.user_id {ORIGIN_JOIN}
              WHERE i.pull_request_id IN (SELECT value FROM json_each(?))
              ORDER BY d.decided_at, d.rowid",
         )))
@@ -1397,6 +1407,9 @@ pub(crate) async fn add_assessment_in(
         .bind(item.to_string())
         .execute(&mut **tx)
         .await?;
+    }
+    if !assessment.gates.is_empty() {
+        super::origins::reopen_follower(tx, item, assessment.assessed_at).await?;
     }
     Ok(true)
 }

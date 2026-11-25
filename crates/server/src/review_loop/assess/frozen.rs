@@ -15,6 +15,10 @@ use tokio::io::AsyncWriteExt;
 #[derive(Serialize, Deserialize)]
 pub(super) struct Frozen {
     pub data: PrData,
+    #[serde(default)]
+    pub authorities: super::imports::Authorities,
+    #[serde(default)]
+    pub written: std::collections::BTreeMap<String, contracts::api::review_loop::Written>,
     pub items: Vec<ItemRecord>,
     pub sent: Vec<SentItem>,
     pub native: VerifyCommentsInput,

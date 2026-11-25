@@ -18,6 +18,7 @@ pub(crate) use actions::cancel_unclaimed as cancel_unclaimed_in;
 mod carry;
 mod decisions;
 mod items;
+mod origins;
 pub(crate) use items::{add_assessment_in, upsert_item_in};
 mod notify;
 mod watches;
@@ -37,6 +38,7 @@ pub use notify::{
     ChannelInput, ChannelRecord, DeliveryRecord, DeliveryTarget, FailureTransition, PushInput,
     SecretUpdate, SubscriptionRecord,
 };
+pub use origins::{ImportCandidate, NewOrigin};
 pub use watches::{NewUserEvent, WatchOutcome, WatchRecord};
 
 #[cfg(test)]

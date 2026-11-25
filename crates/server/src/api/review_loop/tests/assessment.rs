@@ -526,8 +526,9 @@ async fn comments_overview_and_items_get_queue_no_llm_work() {
         assert!(progress["since"].is_null());
         assert!(comments["counts"]["needs_you"].is_u64());
         assert!(comments["counts"]["needs_you_gates"].is_u64());
-        assert!(comments["counts"].get("imported_unseen").is_none());
     }
+    assert_eq!(overview["counts"]["imported_unseen"], 0);
+    assert!(page["comments"]["counts"].get("imported_unseen").is_none());
 }
 
 #[tokio::test]

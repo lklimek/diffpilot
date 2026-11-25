@@ -1773,6 +1773,7 @@ async fn assessment_stale_canonical_leaves_duplicate_missing_without_aborting_va
         _ => panic!("new"),
     };
     let point = |key: &str, id, hash: String, duplicate| PrimaryPoint {
+        import: None,
         carry: None,
         key: key.into(),
         existing: Some((id, hash)),
@@ -1839,6 +1840,7 @@ async fn assessment_primary_preserves_items_gone_during_the_pass() {
             .await
             .unwrap();
         let point = PrimaryPoint {
+            import: None,
             carry: None,
             key: "current".into(),
             existing: Some((id, "a".repeat(64))),

@@ -137,7 +137,7 @@ impl<T> Default for Fetched<T> {
 }
 
 /// A login (optionally with GitHub's `[bot]` suffix) is safe in an API path and a search query.
-fn valid_login(login: &str) -> bool {
+pub(super) fn valid_login(login: &str) -> bool {
     let bare = login.strip_suffix("[bot]").unwrap_or(login);
     (1..=39).contains(&bare.len())
         && bare

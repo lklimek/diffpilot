@@ -8,7 +8,7 @@ use contracts::job::result::JobFailureKind;
 use serde_json::Value;
 
 /// Version of prompts/check_pr_comments.md, independent of the upstream report schema.
-pub(super) const PROMPT_VERSION: u32 = 1;
+pub(super) const PROMPT_VERSION: u32 = 2;
 use std::collections::HashSet;
 
 pub(super) struct Decoded {
@@ -51,34 +51,12 @@ pub(super) fn decode(data: &PrData, value: Value) -> Result<Decoded, JobFailureK
             .retain(|id| data.scope.threads.contains(id));
         row.merged_urls
             .retain(|url| data.scope.sources.contains(url));
-        if let Some(recorded) = &mut row.recorded_decision {
-            let grounded = all_comments(data).any(|comment| {
-                url(comment) == recorded.comment_url
-                    && author(comment).eq_ignore_ascii_case(&recorded.by)
-                    && distinct_quote(body(comment), &recorded.quote)
-            });
-            if !grounded {
-                row.recorded_decision = None;
-            } else if let Some(named) = &recorded.on_behalf_of {
-                // A relay never acquires an unnamed or untrusted principal.
-                if !data
-                    .manifest
-                    .delegates
-                    .iter()
-                    .any(|d| d.eq_ignore_ascii_case(&recorded.by))
-                    || !data
-                        .manifest
-                        .maintainers
-                        .iter()
-                        .any(|m| m.eq_ignore_ascii_case(named))
-                    || !recorded
-                        .quote
-                        .split(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_')
-                        .any(|word| word.eq_ignore_ascii_case(named))
-                {
-                    recorded.on_behalf_of = None;
-                }
-            }
+        if row
+            .recorded_decision
+            .as_ref()
+            .is_some_and(|recorded| !all_comments(data).any(|comment| grounded(comment, recorded)))
+        {
+            row.recorded_decision = None;
         }
     }
     Ok(Decoded {
@@ -186,6 +164,16 @@ pub(super) fn valid_proposal(proposal: &ProposedDecision) -> bool {
     }
 }
 
+pub(super) fn grounded(
+    comment: &Value,
+    d: &contracts::agent::comment_report::RecordedDecision,
+) -> bool {
+    url(comment) == d.comment_url
+        && author(comment).eq_ignore_ascii_case(&d.by)
+        && (distinct_quote(body(comment), &d.quote)
+            || comment["relayMarker"].as_str() == Some(d.quote.as_str()))
+}
+
 pub(super) fn distinct_quote(text: &str, quote: &str) -> bool {
     let n = quote.chars().count();
     n > 0 && n <= 600 && (n >= 12 || quote == text) && text.match_indices(quote).count() == 1
@@ -224,7 +212,7 @@ pub(super) fn threads(data: &PrData) -> impl Iterator<Item = &Value> {
         .flatten()
 }
 
-fn comments(thread: &Value) -> impl Iterator<Item = &Value> {
+pub(super) fn comments(thread: &Value) -> impl Iterator<Item = &Value> {
     thread["comments"]
         .get("nodes")
         .unwrap_or(&thread["comments"])
@@ -233,12 +221,12 @@ fn comments(thread: &Value) -> impl Iterator<Item = &Value> {
         .flatten()
 }
 
-fn all_comments(data: &PrData) -> impl Iterator<Item = &Value> {
-    data.comments
-        .iter()
-        .chain(data.reviews.iter())
-        .chain(data.review_comments.iter())
-        .chain(threads(data).flat_map(comments))
+pub(super) fn all_comments(data: &PrData) -> impl Iterator<Item = &Value> {
+    threads(data)
+        .flat_map(comments)
+        .chain(&data.comments)
+        .chain(&data.reviews)
+        .chain(&data.review_comments)
 }
 
 #[cfg(test)]
@@ -330,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn host_recorded_decisions_keep_real_author_and_only_named_trusted_relays() {
+    fn host_recorded_decisions_require_grounded_author_and_quote() {
         let mut input = data();
         input.comments.push(json!({"author":{"login":"relay"},"url":"https://github.com/acme/r/pull/12#issuecomment-50","body":"Per owner decision, defer this request."}));
         let mut point = row("CMT-002");

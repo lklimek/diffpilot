@@ -10,6 +10,8 @@ use sqlx::{Sqlite, Transaction};
 /// A grounded primary row; secondary adapters never submit these writes.
 #[derive(Clone, Debug)]
 pub struct PrimaryPoint {
+    /// A host-validated record of a decision on this point.
+    pub import: Option<review_loop::ImportCandidate>,
     /// A snapshot-bound standing decision and whether its point must be asked again.
     pub carry: Option<PrimaryCarry>,
     /// Common comparison key.
@@ -126,9 +128,10 @@ pub(super) async fn apply(
                 .execute(&mut **tx)
                 .await?;
         }
-        sqlx::query("UPDATE comment_items SET duplicate_of=?,duplicate_fingerprint=? WHERE id=?")
+        sqlx::query("UPDATE comment_items SET duplicate_of=?,duplicate_fingerprint=?,import_candidate=? WHERE id=?")
             .bind(duplicate.map(|id: CommentItemId| id.to_string()))
             .bind(duplicate.map(|_| point.fingerprint.as_str()))
+            .bind(point.import.as_ref().map(serde_json::to_string).transpose()?)
             .bind(id.to_string())
             .execute(&mut **tx)
             .await?;
@@ -203,7 +206,7 @@ pub(super) async fn capture_owner(
         SELECT p.id,p.primary_method,c.comparison_key,p.tenant_id,p.payer_id,c.primary_item_id,d.id,(SELECT count(*) FROM history),d.user_id,d.decided_at,d.kind,d.target
         FROM comment_decisions d JOIN assessment_comparison_items c ON c.primary_item_id=d.item_id AND c.tenant_id=d.tenant_id
         JOIN assessment_passes p ON p.id=c.pass_id AND p.primary_method=c.method JOIN memberships m ON m.tenant_id=d.tenant_id AND m.user_id=d.user_id
-        WHERE d.id=? AND d.tenant_id=? AND d.via<>'carried' AND c.status='matched' AND d.head=p.head AND d.body_hash=c.primary_item_hash
+        WHERE d.id=? AND d.tenant_id=? AND d.via<>'carried' AND NOT EXISTS (SELECT 1 FROM comment_decision_origins o WHERE o.decision_id=d.id) AND c.status='matched' AND d.head=p.head AND d.body_hash=c.primary_item_hash
         AND (json_extract(c.source,'$.kind')='inline' OR d.source_version=json_extract(c.source,'$.version'))
         ON CONFLICT(pass_id,comparison_key,decision_id) DO NOTHING")
         .bind(id.to_string()).bind(id.to_string()).bind(tenant).execute(&mut **tx).await?;

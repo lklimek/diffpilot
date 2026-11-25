@@ -40,6 +40,7 @@ mod handin;
 mod markers;
 pub mod notify;
 mod observe;
+pub(crate) mod propagation;
 mod queue;
 pub(crate) mod seen;
 pub mod views;
@@ -384,7 +385,6 @@ async fn read_now(
         &known_bots,
         state.db.users().member_logins(tenant).await?,
     );
-    pr_data.manifest.delegates = state.config.maintainer_delegates.clone();
     observed.retain(|entry| {
         entry.item.kind == CommentItemKind::Thread
             || entry.item.url.as_ref().is_some_and(|url| {
@@ -817,7 +817,13 @@ async fn carry_over(
 ) -> Result<(), LoopError> {
     let rl = state.db.review_loop();
     let source = stored.decision.id;
+    let automatic = matches!(
+        stored.decision.via,
+        DecisionVia::ImportedGithub | DecisionVia::FollowsPrimary
+    );
     let (kind, reason, evidence) = match verdict {
+        // Keep the original provenance when an automatic decision's point is repeated.
+        carry::Verdict::Carry(evidence) if automatic => (CarryKind::Carried, None, evidence),
         carry::Verdict::Carry(evidence) => {
             let request = DecideRequest {
                 kind: stored.decision.kind,
@@ -845,6 +851,7 @@ async fn carry_over(
             };
             let user = rl.decision_user(source).await?;
             let new = NewDecision {
+                origin: None,
                 item: record.id,
                 item_revision: record.revision,
                 user_id: user,
@@ -875,18 +882,24 @@ async fn carry_over(
         }
         carry::Verdict::Reask(reason, evidence) => (CarryKind::AskedAgain, Some(reason), evidence),
     };
-    rl.record_carry(
-        tenant,
-        &NewCarryEvent {
-            item: record.id,
-            source_decision: source,
-            kind,
-            reason,
-            evidence,
-        },
-        Timestamp::now(),
-    )
-    .await?;
+    let recorded = rl
+        .record_carry(
+            tenant,
+            &NewCarryEvent {
+                item: record.id,
+                source_decision: source,
+                kind,
+                reason,
+                evidence,
+            },
+            automatic.then_some(record.revision),
+            Timestamp::now(),
+        )
+        .await;
+    if automatic && matches!(recorded, Err(DbError::Conflict)) {
+        return Ok(());
+    }
+    recorded?;
     if kind == CarryKind::AskedAgain {
         // The earlier decision's unclaimed effects were cancelled: they leave the feed.
         state.feed.wake_sync();
@@ -1395,16 +1408,17 @@ pub async fn decide(
         .db
         .review_loop()
         .decide_planned(&session.tenant_id, pr, Timestamp::now(), |view| {
-            Loaded::from_view(handle, view)
-                .ok_or(LoopError::NotFound)?
-                .new_decisions(&session.user_id, rows, via)
+            let loaded = Loaded::from_view(handle, view).ok_or(LoopError::NotFound)?;
+            let mut decisions = loaded.new_decisions(&session.user_id, rows, via)?;
+            loaded.append_propagated(&mut decisions);
+            Ok::<_, LoopError>(decisions)
         })
         .await?;
     match outcome {
         DecideOutcome::Stored(stored) => {
             tracing::info!(pr, count = stored.len(), ?via, "decisions stored");
             state.feed.wake_sync();
-            Ok(stored)
+            Ok(stored.into_iter().take(rows.len()).collect())
         }
         DecideOutcome::ItemChanged(nos) => Err(LoopError::ItemChanged(nos)),
     }
@@ -1485,6 +1499,7 @@ impl Loaded {
             .iter()
             .zip(planned)
             .map(|(row, (record, planned))| NewDecision {
+                origin: None,
                 item: record.id,
                 item_revision: row.decision.item_revision,
                 user_id: user.to_owned(),
@@ -1637,7 +1652,10 @@ pub async fn mark_gate(
         .set_gates(record.id, revision, &gates, Timestamp::now())
         .await
     {
-        Ok(record) => {
+        Ok(updated) => {
+            if updated.state == ItemState::Reopened && record.state != ItemState::Reopened {
+                state.feed.wake_sync();
+            }
             tracing::info!(
                 pr = handle.id,
                 item = no,
@@ -1645,7 +1663,7 @@ pub async fn mark_gate(
                 marked,
                 "gate mark changed by the owner"
             );
-            Ok(record)
+            Ok(updated)
         }
         Err(DbError::Conflict) => Err(LoopError::ItemChanged(vec![no])),
         Err(error) => Err(error.into()),

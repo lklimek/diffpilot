@@ -25,7 +25,7 @@ pub enum ActionOutcome {
 }
 
 /// The standing (not superseded, not undone) decision of an item.
-async fn standing(
+pub(super) async fn standing(
     tx: &mut sqlx::Transaction<'static, sqlx::Sqlite>,
     item: CommentItemId,
 ) -> Result<Option<String>, DbError> {
@@ -75,27 +75,26 @@ impl ReviewLoop<'_> {
         let Some(decision) = standing(&mut tx, item).await? else {
             return Ok(ActionOutcome::NoDecision);
         };
-        let touched: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM comment_effects WHERE decision_id = ?
-                 AND state IN ('claimed', 'done', 'failed'))",
-        )
-        .bind(&decision)
-        .fetch_one(&mut *tx)
-        .await?;
-        if touched {
-            return Ok(ActionOutcome::EffectClaimed);
+        let mut decisions = super::origins::followers(&mut tx, &decision).await?;
+        decisions.push((decision, item));
+        for (decision, _) in &decisions {
+            let touched: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM comment_effects WHERE decision_id = ?
+                     AND state IN ('claimed', 'done', 'failed'))",
+            )
+            .bind(decision)
+            .fetch_one(&mut *tx)
+            .await?;
+            if touched {
+                return Ok(ActionOutcome::EffectClaimed);
+            }
         }
-        cancel_unclaimed(&mut tx, &decision, now).await?;
-        sqlx::query(
-            "INSERT INTO comment_decision_undos (decision_id, tenant_id, user_id, at) VALUES (?, ?, ?, ?)",
-        )
-        .bind(&decision)
-        .bind(tenant_id)
-        .bind(user_id)
-        .bind(ts(now))
-        .execute(&mut *tx)
-        .await?;
-        set_state_in(&mut tx, item, ItemState::Undecided, now).await?;
+        for (decision, item) in decisions {
+            super::origins::undo(&mut tx, tenant_id, user_id, &decision, item, now).await?;
+        }
+        if item_in(&mut tx, item).await?.state != ItemState::Undecided {
+            set_state_in(&mut tx, item, ItemState::Undecided, now).await?;
+        }
         let record = item_in(&mut tx, item).await?;
         tx.commit().await?;
         Ok(ActionOutcome::Done(Box::new(record)))

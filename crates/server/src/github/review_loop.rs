@@ -23,21 +23,24 @@ reviewDecision updatedAt}}}";
 pub const REVIEW_THREADS: &str = "query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){\
 pullRequest(number:$pr){reviewThreads(first:100,after:$after){totalCount pageInfo{hasNextPage endCursor} \
 nodes{id isResolved isOutdated path line startLine diffSide resolvedBy{login} comments(first:50){totalCount \
-nodes{databaseId state author{login __typename} body createdAt lastEditedAt url commit{oid} originalCommit{oid} pullRequestReview{id}}}}}}}}";
+nodes{databaseId state author{login __typename ... on User{databaseId} ... on Bot{databaseId}} body createdAt lastEditedAt url commit{oid} originalCommit{oid} pullRequestReview{id}}}}}}}}";
 
 /// Q-L3: reviews.
 pub const REVIEWS: &str = "query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){\
 pullRequest(number:$pr){reviews(first:100,after:$after){totalCount pageInfo{hasNextPage endCursor} \
-nodes{id databaseId author{login __typename} state submittedAt lastEditedAt commit{oid} body url}}}}}";
+nodes{id databaseId author{login __typename ... on User{databaseId} ... on Bot{databaseId}} state submittedAt lastEditedAt commit{oid} body url}}}}}";
 
 /// Q-L4: PR-level comments.
 pub const PR_COMMENTS: &str = "query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){\
 pullRequest(number:$pr){comments(first:100,after:$after){totalCount pageInfo{hasNextPage endCursor} \
-nodes{id databaseId author{login __typename} body createdAt lastEditedAt url}}}}}";
+nodes{id databaseId author{login __typename ... on User{databaseId} ... on Bot{databaseId}} body createdAt lastEditedAt url}}}}}";
 
 /// A comment's or review's author; `None` for a deleted account (`ghost`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Author {
+    /// Numeric account id, when GitHub exposes it for this actor.
+    #[serde(rename = "databaseId", default)]
+    pub database_id: Option<u64>,
     /// Login.
     pub login: String,
     /// `User`, `Bot`, `Organization`, …

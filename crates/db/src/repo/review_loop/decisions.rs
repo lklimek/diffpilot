@@ -9,8 +9,8 @@ use sqlx::{Row, Sqlite, Transaction};
 use contracts::api::access_tokens::AccessTokenId;
 use contracts::api::review_loop::{
     ClaimInfo, Decision, DecisionKind, DecisionTarget, DecisionVia, Effect, EffectKind,
-    EffectParams, EffectReport, EffectState, Executor, FeedDecision, FeedItem, ItemState, Override,
-    Recommendation, ReportOutcome,
+    EffectParams, EffectReport, EffectState, Executor, FeedDecision, FeedItem, ImportedDecision,
+    ItemState, Override, Recommendation, ReportOutcome,
 };
 use contracts::common::{LineRange, PrRef, RepoRef};
 use contracts::ids::{CommentItemId, CommitSha, DecisionId, EffectId};
@@ -43,6 +43,8 @@ pub struct NewEffect {
 /// A decision to store.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewDecision {
+    /// Automatic origin, kept beside the decision row.
+    pub origin: Option<super::NewOrigin>,
     /// The item.
     pub item: CommentItemId,
     /// The item revision the decision is based on.
@@ -87,6 +89,12 @@ pub enum DecideOutcome {
 /// A decision with the item facts the carry-over rules compare.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoredDecision {
+    /// Server user who owns this decision.
+    pub user_id: String,
+    /// Exact decision this follower depends on.
+    pub primary_decision: Option<DecisionId>,
+    /// A withdrawal has authority over its own point only.
+    pub author_withdrawal: bool,
     /// The decision.
     pub decision: Decision,
     /// Its item.
@@ -166,8 +174,14 @@ pub struct DecisionOwner {
 
 pub(super) const DECISION_COLUMNS: &str ="d.id, d.item_id, i.item_no, d.kind, d.reason, d.target, d.override, d.resolve_ticked,
     d.reply_text, d.comment, d.recommendation, d.via, d.carried_from, d.supersedes, d.head, d.body_hash,
-    d.start_line, d.end_line, u.login, d.decided_at,
+    d.start_line, d.end_line, d.user_id, u.login, d.decided_at, o.origin, o.primary_decision_id,
+    o.by_login, o.by_github_id, o.relay_login, o.recorded_at, o.evidence_url, o.quote, o.author_withdrawal,
+    pi.item_no AS follows_no,
     (SELECT un.at FROM comment_decision_undos un WHERE un.decision_id = d.id) AS undone_at";
+
+pub(super) const ORIGIN_JOIN: &str = "LEFT JOIN comment_decision_origins o ON o.decision_id = d.id
+     LEFT JOIN comment_decisions pd ON pd.id = o.primary_decision_id
+     LEFT JOIN comment_items pi ON pi.id = pd.item_id";
 
 pub(super) fn decision_from_row(row: &SqliteRow) -> Result<StoredDecision, DbError> {
     let start: Option<i64> = row.try_get("start_line")?;
@@ -184,10 +198,37 @@ pub(super) fn decision_from_row(row: &SqliteRow) -> Result<StoredDecision, DbErr
     let carried: Option<String> = row.try_get("carried_from")?;
     let supersedes: Option<String> = row.try_get("supersedes")?;
     let resolve: i64 = row.try_get("resolve_ticked")?;
+    let (via, imported, follows) = match row.try_get::<Option<&str>, _>("origin")? {
+        Some("imported_github") => (
+            DecisionVia::ImportedGithub,
+            Some(ImportedDecision {
+                by: row.try_get("by_login")?,
+                by_id: row
+                    .try_get::<Option<i64>, _>("by_github_id")?
+                    .and_then(|id| u64::try_from(id).ok()),
+                at: ts_col(row, "recorded_at")?,
+                evidence_url: row.try_get("evidence_url")?,
+                quote: row.try_get("quote")?,
+                relay: row.try_get("relay_login")?,
+            }),
+            None,
+        ),
+        Some("follows_primary") => (
+            DecisionVia::FollowsPrimary,
+            None,
+            Some(u32_col(row, "follows_no")?),
+        ),
+        _ => (wire_col(row, "via")?, None, None),
+    };
     Ok(StoredDecision {
+        user_id: row.try_get("user_id")?,
+        primary_decision: opt_wire_col(row, "primary_decision_id")?,
+        author_withdrawal: row
+            .try_get::<Option<bool>, _>("author_withdrawal")?
+            .unwrap_or(false),
         decision: Decision {
-            imported: None,
-            follows: None,
+            imported,
+            follows,
             id: wire_col(row, "id")?,
             item_no: u32_col(row, "item_no")?,
             kind: wire_col(row, "kind")?,
@@ -198,7 +239,7 @@ pub(super) fn decision_from_row(row: &SqliteRow) -> Result<StoredDecision, DbErr
             reply_text: row.try_get("reply_text")?,
             comment: row.try_get("comment")?,
             recommendation: opt_json_col(row, "recommendation")?,
-            via: wire_col(row, "via")?,
+            via,
             carried_from: carried
                 .map(|id| super::super::jobs::parse_wire(&id, "carried_from"))
                 .transpose()?,
@@ -299,7 +340,7 @@ pub(super) async fn decisions_where(
 ) -> Result<Vec<StoredDecision>, DbError> {
     let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT {DECISION_COLUMNS} FROM comment_decisions d
-         JOIN comment_items i ON i.id = d.item_id JOIN users u ON u.id = d.user_id
+         JOIN comment_items i ON i.id = d.item_id JOIN users u ON u.id = d.user_id {ORIGIN_JOIN}
          WHERE {filter} ORDER BY d.decided_at, d.rowid"
     )))
     .bind(value)
@@ -385,6 +426,15 @@ async fn settle(
     .execute(&mut **tx)
     .await?;
     cancel_dependents(tx, decision, now).await?;
+    let undone: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM comment_decision_undos WHERE decision_id = ?)",
+    )
+    .bind(decision)
+    .fetch_one(&mut **tx)
+    .await?;
+    if undone {
+        return super::actions::cancel_unclaimed(tx, decision, now).await;
+    }
     let item: CommentItemId = wire_col(
         &sqlx::query("SELECT item_id FROM comment_decisions WHERE id = ?")
             .bind(decision)
@@ -520,6 +570,7 @@ impl ReviewLoop<'_> {
              WHERE d.tenant_id = ?1 AND e.executor = 'agent'
                AND (e.state IN ('waiting', 'open') OR (e.state = 'claimed' AND e.lease_until < ?2))
                AND NOT EXISTS (SELECT 1 FROM comment_decisions n WHERE n.supersedes = d.id)
+               AND NOT EXISTS (SELECT 1 FROM comment_decision_undos u WHERE u.decision_id = d.id)
                AND NOT EXISTS (SELECT 1 FROM comment_effects c WHERE c.decision_id = d.id
                                AND c.state = 'claimed' AND c.lease_until >= ?2)
                AND (?3 IS NULL OR (r.owner = ?3 AND r.name = ?4))
@@ -748,6 +799,7 @@ impl ReviewLoop<'_> {
              JOIN pull_requests p ON p.id = i.pull_request_id JOIN repos r ON r.id = p.repo_id
              WHERE e.executor = 'agent' AND e.state IN ('waiting', 'open', 'claimed')
                AND NOT EXISTS (SELECT 1 FROM comment_decisions n WHERE n.supersedes = d.id)
+               AND NOT EXISTS (SELECT 1 FROM comment_decision_undos u WHERE u.decision_id = d.id)
                AND NOT EXISTS (SELECT 1 FROM comment_effects c WHERE c.decision_id = d.id
                                AND c.state = 'claimed' AND c.lease_until >= ?)
              ORDER BY d.decided_at, d.rowid, e.seq",
@@ -879,11 +931,13 @@ async fn claim_refusal(
     capabilities: &[EffectKind],
     now: Timestamp,
 ) -> Result<Option<ClaimOutcome>, DbError> {
-    let superseded: bool =
-        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM comment_decisions WHERE supersedes = ?)")
-            .bind(decision.to_string())
-            .fetch_one(&mut **tx)
-            .await?;
+    let ended: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM comment_decisions WHERE supersedes = ?1
+                        UNION ALL SELECT 1 FROM comment_decision_undos WHERE decision_id = ?1)",
+    )
+    .bind(decision.to_string())
+    .fetch_one(&mut **tx)
+    .await?;
     let rows = sqlx::query(
         "SELECT kind, state, claim_token_id, lease_until FROM comment_effects
          WHERE decision_id = ? AND executor = 'agent' AND state IN ('waiting', 'open', 'claimed')",
@@ -891,7 +945,7 @@ async fn claim_refusal(
     .bind(decision.to_string())
     .fetch_all(&mut **tx)
     .await?;
-    if superseded || rows.is_empty() {
+    if ended || rows.is_empty() {
         return Ok(Some(ClaimOutcome::NothingOpen));
     }
     let allowed = capabilities
@@ -921,6 +975,15 @@ async fn store(
     decisions: &[NewDecision],
     now: Timestamp,
 ) -> Result<DecideOutcome, DbError> {
+    // Import visibility and Comments visits share the writer lock.
+    let now = if decisions
+        .iter()
+        .any(|new| matches!(new.origin, Some(super::NewOrigin::Imported(_))))
+    {
+        Timestamp::now()
+    } else {
+        now
+    };
     let mut changed = Vec::new();
     let mut items = Vec::new();
     for new in decisions {
@@ -934,17 +997,12 @@ async fn store(
         return Ok(DecideOutcome::ItemChanged(changed));
     }
     let mut ids = Vec::new();
+    let mut superseded = Vec::new();
     for (new, item) in decisions.iter().zip(items) {
         let supersedes = current_id(tx, new.item).await?;
         if let Some(previous) = &supersedes {
-            sqlx::query(
-                "UPDATE comment_effects SET state = 'cancelled', updated_at = ?
-                 WHERE decision_id = ? AND state IN ('waiting', 'open')",
-            )
-            .bind(ts(now))
-            .bind(previous)
-            .execute(&mut **tx)
-            .await?;
+            super::actions::cancel_unclaimed(tx, previous, now).await?;
+            superseded.push((previous.clone(), &new.user_id));
         }
         let id = DecisionId::new_random();
         let lines = item.location.as_ref().and_then(|location| location.lines);
@@ -967,7 +1025,7 @@ async fn store(
         .bind(&new.reply_text)
         .bind(&new.comment)
         .bind(new.recommendation.as_ref().map(json).transpose()?)
-        .bind(wire(new.via)?)
+        .bind(wire(if new.origin.is_some() { DecisionVia::Question } else { new.via })?)
         .bind(new.carried_from.map(|id| id.to_string()))
         .bind(supersedes)
         .bind(&new.head.0)
@@ -978,6 +1036,9 @@ async fn store(
         .bind(new.item.to_string())
         .execute(&mut **tx)
         .await?;
+        if let Some(origin) = &new.origin {
+            super::origins::store(tx, id, origin, new).await?;
+        }
         for effect in &new.effects {
             sqlx::query(
                 "INSERT INTO comment_effects (id, tenant_id, decision_id, seq, after_seq, kind, executor, params,
@@ -1002,9 +1063,19 @@ async fn store(
             .await?;
         }
         // The decision itself always changes the item: one revision step even when the state stays.
-        set_state_in(tx, new.item, item.state, now).await?;
+        let state = if matches!(new.origin, Some(super::NewOrigin::Imported(_))) {
+            ItemState::Decided
+        } else {
+            item.state
+        };
+        set_state_in(tx, new.item, state, now).await?;
         settle(tx, &id.to_string(), true, now).await?;
         ids.push(id);
+    }
+    for (primary, user) in superseded {
+        for (decision, item) in super::origins::followers(tx, &primary).await? {
+            super::origins::undo(tx, tenant_id, user, &decision, item, now).await?;
+        }
     }
     let mut stored = Vec::new();
     for id in ids {

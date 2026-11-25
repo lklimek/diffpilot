@@ -169,6 +169,7 @@ fn without_known_bots_thepastaclaw_is_a_person_and_its_markers_are_not_read() {
         ("claude", "User", AuthorKind::Human),
     ] {
         let author = Author {
+            database_id: None,
             login: login.into(),
             typename: typename.into(),
         };

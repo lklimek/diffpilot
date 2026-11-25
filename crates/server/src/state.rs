@@ -40,6 +40,8 @@ pub struct AppState {
     pub feed: FeedHub,
     /// Coalesces reads after agent reports within this application (ADR-023).
     pub report_reads: ReportReads,
+    /// Numeric resolutions of linked GitHub logins across assessment reads.
+    pub relay_ids: crate::review_loop::assess::RelayIds,
     /// Wakes the notification delivery task (ADR-023).
     pub notify: NotifyHub,
     /// Process-local webhook counters shared by both HTTP listeners.
@@ -71,6 +73,7 @@ impl AppState {
             dashboard: DashboardHub::default(),
             feed: FeedHub::default(),
             report_reads: ReportReads::default(),
+            relay_ids: Default::default(),
             notify: NotifyHub::default(),
             webhook_metrics: Default::default(),
         }

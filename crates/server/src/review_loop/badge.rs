@@ -943,6 +943,7 @@ mod tests {
             .decide(
                 DEFAULT_TENANT,
                 &[NewDecision {
+                    origin: None,
                     item: question.id,
                     item_revision: question.revision,
                     user_id: "u1".into(),

@@ -294,7 +294,7 @@ message or `Retry-After`) exits 4 with how long to wait instead.
 - Use `CommentCounts.needs_you` and `needs_you_gates` for the actionable queue and its gated subset. The dashboard
   exposes the same count as `CommentTally.needs_you`. Unassessed unlinked comments are excluded from Needs you.
   Status comments are listed with `status_comment` and excluded from the decision queue, `undecided` and
-  `assessment.total`. The server omits `imported_unseen` until it computes imports since the last Comments visit.
+  `assessment.total`. Access-token reads omit the browser's `imported_unseen` count.
 - The new repository coverage read lists repositories tracked by the reader's tenant. The activity read
   exposes peer jobs in the reader's tenant with only kind and a response-local id. `GET /api/v1/me/prs` is a
   reader-specific history. A read token can list it and read a PR page without recording a visit. Reserved reads

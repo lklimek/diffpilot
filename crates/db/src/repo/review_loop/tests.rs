@@ -101,6 +101,7 @@ async fn new_item(db: &Db, key: &str) -> ItemRecord {
 
 fn fix_decision(item: &ItemRecord) -> NewDecision {
     NewDecision {
+        origin: None,
         item: item.id,
         item_revision: item.revision,
         user_id: "u1".into(),
@@ -1046,7 +1047,9 @@ async fn carry_events_are_logged_and_counted() {
         reason: None,
         evidence: evidence.clone(),
     };
-    rl.record_carry(T, &carried, at(20)).await.expect("carry");
+    rl.record_carry(T, &carried, None, at(20))
+        .await
+        .expect("carry");
     let pending = rl
         .carry_events(T, Some(PR), None, 10)
         .await
@@ -1064,11 +1067,13 @@ async fn carry_events_are_logged_and_counted() {
             ..evidence
         },
     };
-    rl.record_carry(T, &asked, at(30)).await.expect("re-ask");
+    rl.record_carry(T, &asked, None, at(30))
+        .await
+        .expect("re-ask");
     let mut wrong = asked.clone();
     wrong.reason = None;
     assert!(matches!(
-        rl.record_carry(T, &wrong, at(31)).await,
+        rl.record_carry(T, &wrong, None, at(31)).await,
         Err(DbError::Conflict)
     ));
 

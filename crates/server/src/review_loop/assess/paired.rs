@@ -24,7 +24,7 @@ use db::repo::review_loop::{ItemRecord, NewPass, PassRecord};
 use futures::StreamExt;
 use serde_json::json;
 
-const HOST_VERSION: &str = "13.7.0/71096d7/4.2/brief1";
+const HOST_VERSION: &str = "13.7.0/71096d7/4.2/brief2";
 
 pub(super) async fn admit(
     state: &AppState,
@@ -88,8 +88,12 @@ pub(super) async fn admit(
             }
         }
     }
+    let authorities =
+        super::imports::Authorities::read(state, &tenant, &user.0, &mut data.manifest).await?;
     let mut frozen = Frozen {
         data,
+        authorities,
+        written: snapshot.map(|s| s.written.clone()).unwrap_or_default(),
         items: items.to_vec(),
         sent: review.sent.clone(),
         native: native.clone(),
@@ -263,6 +267,20 @@ pub(super) async fn run(
     runs.sort_by_key(|r| r.reference.method != pass.config.primary_method);
     for run in runs {
         if run.status == AssessmentRunStatus::Succeeded {
+            if run.reference.method == pass.config.primary_method
+                && let Err(error) = crate::review_loop::propagation::propagate(
+                    state,
+                    &tenant,
+                    record.pull_request_id,
+                )
+                .await
+            {
+                tracing::warn!(
+                    ?error,
+                    pr = record.pull_request_id,
+                    "review decisions could not propagate after resuming assessment"
+                );
+            }
             continue;
         }
         loop {
@@ -378,6 +396,22 @@ pub(super) async fn run(
                     if primary { &writes } else { &[] },
                 )
                 .await?;
+            if primary
+                && accepted
+                && normalized.status == AssessmentRunStatus::Succeeded
+                && let Err(error) = crate::review_loop::propagation::propagate(
+                    state,
+                    &tenant,
+                    record.pull_request_id,
+                )
+                .await
+            {
+                tracing::warn!(
+                    ?error,
+                    pr = record.pull_request_id,
+                    "review decisions could not propagate after assessment"
+                );
+            }
             if primary
                 && accepted
                 && run.reference.method == AssessmentMethod::PromptV4

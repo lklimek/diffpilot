@@ -67,10 +67,12 @@ fn event_from_row(row: &SqliteRow) -> Result<CarryEvent, DbError> {
 impl ReviewLoop<'_> {
     /// Records a carry or re-ask: the repeat becomes `repeat` (carried) or `reopened` (asked again; the source
     /// decision's effects no agent holds are cancelled) and names the source decision's item when it is another item.
+    /// A retained decision must still be standing at `expected_revision`.
     pub async fn record_carry(
         &self,
         tenant_id: &str,
         event: &NewCarryEvent,
+        expected_revision: Option<u32>,
         now: Timestamp,
     ) -> Result<CarryEventId, DbError> {
         if (event.kind == CarryKind::AskedAgain) != event.reason.is_some() {
@@ -78,9 +80,19 @@ impl ReviewLoop<'_> {
         }
         let mut tx = write_tx(self.pool).await?;
         let item = item_in(&mut tx, event.item).await?;
+        let source = event.source_decision.to_string();
+        if let Some(revision) = expected_revision
+            && (item.revision != revision
+                || super::actions::standing(&mut tx, event.item)
+                    .await?
+                    .as_deref()
+                    != Some(&source))
+        {
+            return Err(DbError::Conflict);
+        }
         let source_item: String =
             sqlx::query_scalar("SELECT item_id FROM comment_decisions WHERE id = ?")
-                .bind(event.source_decision.to_string())
+                .bind(&source)
                 .fetch_optional(&mut *tx)
                 .await?
                 .ok_or(DbError::NotFound)?;
@@ -94,7 +106,7 @@ impl ReviewLoop<'_> {
         .bind(tenant_id)
         .bind(item.pull_request_id)
         .bind(event.item.to_string())
-        .bind(event.source_decision.to_string())
+        .bind(&source)
         .bind(wire(event.kind)?)
         .bind(event.reason.map(wire).transpose()?)
         .bind(json(&event.evidence)?)

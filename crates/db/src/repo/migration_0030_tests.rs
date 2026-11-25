@@ -58,6 +58,7 @@ const CLEANED: &[&str] = &[
 const NEW: &[&str] = &[
     "app_repositories",
     "comment_decision_origins",
+    "comment_visits",
     "dashboard_ranking_resets",
     "dashboard_sends",
     "github_deliveries",

@@ -1008,9 +1008,8 @@ once any required session, token or CSRF checks pass.
   The PR badge and dashboard use this calculation. An open non-bot review item in the decision queue vetoes
   Ready to merge while awaiting assessment or included in a running pass. Status comments are listed and excluded
   from the queue, including `undecided`, and from `assessment.total`. Assess again on a status comment returns
-  409 `conflict`. Ask can
-  still use it as context. `imported_unseen` is omitted until the server tracks imports since the last Comments
-  visit.
+  409 `conflict`. Ask can still use it as context. The browser's Comments overview reports `imported_unseen`,
+  the number of current GitHub imports since that member last opened Comments for this PR.
 - The Tour's optional `StepFacts.leading_context` is the deterministic line range of doc comments and attributes
   immediately above the step's first item. The generic technology plugin leaves it absent.
 - PR history merges the reader's requested analyses, watches including ended ones, and PR page visits. It returns
