@@ -170,8 +170,8 @@ pub struct BadgeInputs {
     pub failed_effects: u32,
     /// Undecided questions.
     pub needs_you: u32,
-    /// An open non-bot review point still needs assessment.
-    pub pending_human_review: bool,
+    /// Open non-bot review points still awaiting assessment.
+    pub pending_human_review: u32,
     /// Decisions with open or claimed effects.
     pub executing: u32,
     /// thepastaclaw reviews or queues this PR (plug-in, or its gate comment).
@@ -254,9 +254,12 @@ pub fn badge(inputs: &BadgeInputs) -> PrBadgeView {
         return view;
     }
     let mut ready = view.missing.is_empty();
-    if inputs.pending_human_review {
-        view.facts
-            .push("Review items still need assessment".to_owned());
+    if inputs.pending_human_review > 0 {
+        view.facts.push(plural(
+            inputs.pending_human_review,
+            "review item not assessed yet",
+            "review items not assessed yet",
+        ));
         ready = false;
     }
     match inputs.ci {
@@ -860,14 +863,20 @@ mod tests {
             panic!("new pass")
         };
         let view = || super::super::views::badge(&state, handle.clone(), &work);
-        assert_eq!(view().await.unwrap().badge, Some(PrBadge::ReadyToMerge));
+        let queued = view().await.unwrap();
+        assert_eq!(queued.badge, None);
+        assert!(
+            queued
+                .facts
+                .contains(&"1 review item not assessed yet".to_owned())
+        );
         rl.pass_running(pass, job).await.unwrap();
         let during = view().await.unwrap();
         assert_eq!(during.badge, None);
         assert!(
             during
                 .facts
-                .contains(&"Review items still need assessment".to_owned())
+                .contains(&"1 review item not assessed yet".to_owned())
         );
         rl.finish_pass(pass, true, Timestamp::now()).await.unwrap();
         assert_eq!(view().await.unwrap().badge, Some(PrBadge::ReadyToMerge));

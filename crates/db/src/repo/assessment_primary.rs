@@ -26,6 +26,8 @@ pub struct PrimaryPoint {
     pub duplicate: Option<String>,
     /// Validated card; absent for duplicates or merged-only thread members.
     pub assessment: Option<CommentAssessment>,
+    /// Primary report description, when provided by the method.
+    pub description: Option<String>,
     /// Frozen normalized point/code fingerprint.
     pub fingerprint: String,
 }
@@ -134,7 +136,15 @@ pub(super) async fn apply(
             if assessment.head != pass.input.head {
                 return Err(DbError::Conflict);
             }
-            review_loop::add_assessment_in(tx, tenant, id, assessment, &point.fingerprint).await?;
+            review_loop::add_assessment_in(
+                tx,
+                tenant,
+                id,
+                assessment,
+                &point.fingerprint,
+                point.description.as_deref(),
+            )
+            .await?;
         }
         let hash: String = sqlx::query_scalar("SELECT body_hash FROM comment_items WHERE id=?")
             .bind(id.to_string())

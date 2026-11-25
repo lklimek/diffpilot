@@ -526,6 +526,28 @@ async fn settle_all(
     Ok(())
 }
 
+/// A report read found more comments. Use the normal watch admission rules for that PR.
+pub(super) async fn comments_found_after_report(
+    state: &AppState,
+    pr: i64,
+) -> Result<(), WatchError> {
+    let rl = state.db.review_loop();
+    let now = Timestamp::now();
+    {
+        let _detection = DETECTION.lock().await;
+        for watch in rl
+            .live_watches()
+            .await?
+            .iter()
+            .filter(|watch| watch.pull_request_id == pr)
+        {
+            rl.set_pass_due(&watch.user_id, pr, Some(now)).await?;
+        }
+    }
+    settle_all(state, Some(&HashSet::from([pr])), now).await?;
+    Ok(())
+}
+
 /// The watch's next state: a due pass is requested (or waits for the bot's round, the spacing or the daily cap);
 /// without one the watch shows whether a pass of its pull request runs. Paused and ended watches stay.
 async fn settle(state: &AppState, watch: &WatchRecord, now: Timestamp) -> Result<(), WatchError> {

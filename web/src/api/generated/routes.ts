@@ -77,6 +77,7 @@ export const routes = {
   getPrPage: { method: "GET", path: "/api/v1/prs/{owner}/{name}/{number}", auth: "read" },
   getComments: { method: "GET", path: "/api/v1/prs/{owner}/{name}/{number}/comments", auth: "read" },
   readComments: { method: "POST", path: "/api/v1/prs/{owner}/{name}/{number}/comments/read", auth: "session_csrf" },
+  startCommentAssessment: { method: "POST", path: "/api/v1/prs/{owner}/{name}/{number}/comments/assess", auth: "session_csrf" },
   listCommentItems: { method: "GET", path: "/api/v1/prs/{owner}/{name}/{number}/comments/items", auth: "read" },
   getCommentContext: { method: "GET", path: "/api/v1/prs/{owner}/{name}/{number}/comments/items/{item}/context", auth: "read" },
   assessComment: { method: "POST", path: "/api/v1/prs/{owner}/{name}/{number}/comments/items/{item}/assess", auth: "session_csrf" },

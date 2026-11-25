@@ -79,6 +79,26 @@ async fn world() -> World {
         .expect("user");
     state
         .db
+        .llm_credentials()
+        .put_status(
+            DEFAULT_TENANT,
+            "u1",
+            &contracts::gateway::CredentialStatus {
+                telemetry: Default::default(),
+                challenge: None,
+                mode: contracts::gateway::CredentialMode::ChatgptPlan,
+                state: contracts::gateway::CredentialState::Linked,
+                relink_reason: None,
+                label: None,
+                plan: None,
+                paused_until: None,
+                last_call: None,
+            },
+        )
+        .await
+        .expect("fake linked plan");
+    state
+        .db
         .assessments()
         .set_config(
             DEFAULT_TENANT,
@@ -245,8 +265,8 @@ fn fake_provider_answer(prompt: &str) -> Value {
     json!({"purpose": "Fake purpose for tests.", "items": items, "answer": null})
 }
 
-/// Opening Comments reads the PR's threads from GitHub, queues a `verify_comments` pass whose job the runner
-/// answers, the assessments land on the items, and a decision is stored with its effects.
+/// Comments reads the PR's threads. The explicit assessment request queues a job the runner answers,
+/// the assessments land on the items, and a decision is stored with its effects.
 #[tokio::test]
 async fn comments_open_assess_and_decide_end_to_end() {
     let w = world().await;
@@ -276,6 +296,17 @@ async fn comments_open_assess_and_decide_end_to_end() {
         .filter(|item| item["kind"] == "thread")
         .count();
     assert!(threads > 0, "{items}");
+    assert!(
+        w.state
+            .db
+            .review_loop()
+            .live_passes()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let (status, body) = w.call("POST", &format!("{PR}/comments/assess"), None).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
 
     assert!(w.run_passes(pr).await >= 1);
     let rl = w.state.db.review_loop();

@@ -10,7 +10,7 @@ use contracts::common::PrRef;
 use contracts::time::Timestamp;
 use db::error::DbError;
 
-use super::{LoopError, PrHandle, ReadOutcome, assess, standing};
+use super::{LoopError, PrHandle, ReadOutcome, standing, watch};
 use crate::github::review_loop::PrRead;
 use crate::github::threads::github_web_url;
 use crate::state::AppState;
@@ -84,8 +84,7 @@ async fn read(state: &AppState, tenant: &str, user: &str, id: i64) -> Result<(),
     let read = super::read_if_due(state, tenant, user, &pr, true).await?;
     if let ReadOutcome::Read { new } = read.outcome
         && new > 0
-        && let Err(error) =
-            assess::request_pass_for(state, id, assess::PassReason::NewComments, user).await
+        && let Err(error) = watch::comments_found_after_report(state, id).await
     {
         tracing::warn!(
             ?error,

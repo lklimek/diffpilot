@@ -575,6 +575,13 @@ pub const READ_COMMENTS: Route = route(
     "/api/v1/prs/{owner}/{name}/{number}/comments/read",
     SessionCsrf,
 );
+/// C20: requests a new assessment pass for the PR's comments (202).
+pub const START_COMMENT_ASSESSMENT: Route = route(
+    "startCommentAssessment",
+    Post,
+    "/api/v1/prs/{owner}/{name}/{number}/comments/assess",
+    SessionCsrf,
+);
 /// RC4: the PR's items with assessments, decisions and effects (`ItemsQuery`).
 pub const LIST_COMMENT_ITEMS: Route = route(
     "listCommentItems",
@@ -847,6 +854,7 @@ pub const ROUTES: &[Route] = &[
     GET_PR_PAGE,
     GET_COMMENTS,
     READ_COMMENTS,
+    START_COMMENT_ASSESSMENT,
     LIST_COMMENT_ITEMS,
     GET_COMMENT_CONTEXT,
     ASSESS_COMMENT,

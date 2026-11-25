@@ -59,6 +59,7 @@ async fn received(server: &MockServer, marker: &str) -> Vec<Received> {
 
 /// PR 482 read from GitHub (no assessment pass asked) and watched by `u1`.
 async fn watched_482(w: &World) -> i64 {
+    w.link_llm().await;
     let read = crate::review_loop::read_if_due(&w.state, DEFAULT_TENANT, "u1", &pr_482(), false)
         .await
         .expect("read");
@@ -76,6 +77,25 @@ async fn watched_482(w: &World) -> i64 {
         .await
         .expect("watch");
     id
+}
+
+#[tokio::test]
+async fn watched_pr_still_auto_assesses() {
+    let w = world().await;
+    let pr = watched_482(&w).await;
+    w.age_read().await;
+    mount_probe(&w.server, probe_answer("2026-11-12T10:40:12Z")).await;
+    watch::tick_at(&w.state, Timestamp::now()).await.unwrap();
+    let pass = w
+        .state
+        .db
+        .review_loop()
+        .latest_pass(pr)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(pass.cause, PassCause::Watch);
+    assert_eq!(pass.user_id.as_deref(), Some("u1"));
 }
 
 async fn the_watch(w: &World, pr: i64) -> WatchRecord {

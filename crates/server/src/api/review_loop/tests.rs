@@ -123,6 +123,30 @@ async fn world_with(adjust: impl FnOnce(&mut AppState)) -> World {
 }
 
 impl World {
+    async fn link_llm(&self) {
+        use contracts::gateway::{CredentialMode, CredentialState, CredentialStatus};
+        self.state
+            .db
+            .llm_credentials()
+            .put_status(
+                DEFAULT_TENANT,
+                "u1",
+                &CredentialStatus {
+                    telemetry: Default::default(),
+                    challenge: None,
+                    mode: CredentialMode::ChatgptPlan,
+                    state: CredentialState::Linked,
+                    relink_reason: None,
+                    label: None,
+                    plan: None,
+                    paused_until: None,
+                    last_call: None,
+                },
+            )
+            .await
+            .unwrap();
+    }
+
     async fn call(&self, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
         let request = Request::builder()
             .method(method)
@@ -315,35 +339,17 @@ async fn comments_work_without_analysis() {
         15,
         "8 inline threads, legacy body findings, newly eligible prose sources and the merge question"
     );
-    // Opening Comments starts one `verify_comments` pass; review points show the assessment as running.
     for item in items
         .iter()
         .filter(|item| item["kind"] != "pr_question" && item["status_comment"] != true)
     {
         assert_eq!(
             item["assessment_state"],
-            json!({"state": "running"}),
+            json!({"state": "not_assessed", "reason": "not_run"}),
             "{item}"
         );
         assert_eq!(item["assessment"], Value::Null);
     }
-    let passes = w
-        .state
-        .db
-        .review_loop()
-        .live_passes()
-        .await
-        .expect("passes");
-    assert_eq!(passes.len(), 1, "{passes:?}");
-    let job = w
-        .state
-        .db
-        .jobs()
-        .get(passes[0].job_id.expect("the pass's job"))
-        .await
-        .expect("job");
-    assert_eq!(job.spec.kind, contracts::agent::JobKind::VerifyComments);
-    assert_eq!(job.analysis_id, None, "no analysis is started");
     let numbers: Vec<u64> = items.iter().filter_map(|i| i["no"].as_u64()).collect();
     assert_eq!(
         numbers,
@@ -944,26 +950,13 @@ async fn effects_preview_and_github_failure_keeps_the_last_read() {
 #[tokio::test]
 async fn read_again_queues_no_llm_work() {
     let w = world().await;
+    w.link_llm().await;
     let (status, _) = w.post(&format!("{PR}/comments/read"), json!({})).await;
     assert_eq!(status, StatusCode::ACCEPTED);
     assert_eq!(w.items().await.len(), 15, "the refresh stored new items");
     let review_loop = w.state.db.review_loop();
     let passes = review_loop.live_passes().await.expect("passes");
     assert!(passes.is_empty(), "refresh queued {passes:?}");
-
-    w.get(&format!("{PR}/comments")).await;
-    let passes = review_loop.live_passes().await.expect("passes");
-    assert_eq!(passes.len(), 1, "Comments requests one pass: {passes:?}");
-    let first = passes[0].id;
-
-    w.get(&format!("{PR}/comments")).await;
-    let passes = review_loop.live_passes().await.expect("passes");
-    assert_eq!(
-        passes.len(),
-        1,
-        "Comments keeps the current pass: {passes:?}"
-    );
-    assert_eq!(passes[0].id, first);
 }
 
 /// T22: decisions, gate marks, re-reads and item actions refuse access tokens.
@@ -1120,7 +1113,13 @@ async fn pr_page_without_any_github_read_degrades() {
 #[tokio::test]
 async fn assess_again_while_a_pass_runs_is_a_conflict() {
     let w = world().await;
-    w.get(&format!("{PR}/comments")).await;
+    w.link_llm().await;
+    assert_eq!(
+        w.call("POST", &format!("{PR}/comments/assess"), None)
+            .await
+            .0,
+        StatusCode::ACCEPTED
+    );
     let item = w.item(L2).await;
     let uri = format!("{PR}/comments/items/C{}/assess", item["no"]);
     let (status, body) = w.post(&uri, json!({})).await;
@@ -1299,6 +1298,13 @@ async fn bot_status_comment_not_a_question() {
     };
     assert!(!queued(&status["no"]));
     assert!(queued(&finding["no"]));
+    w.link_llm().await;
+    assert_eq!(
+        w.call("POST", &format!("{PR}/comments/assess"), None)
+            .await
+            .0,
+        StatusCode::ACCEPTED
+    );
     let pass = w
         .state
         .db

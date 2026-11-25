@@ -166,13 +166,34 @@ pub struct StoredAssessment {
     pub assessment: CommentAssessment,
     /// Fingerprint of comment text, code at its lines and PR purpose.
     pub fingerprint: String,
+    /// Description from the primary method's report, when provided.
+    pub description: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct AssessmentBody<T> {
+    #[serde(flatten)]
+    assessment: T,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+}
+
+fn stored_assessment(
+    body: AssessmentBody<CommentAssessment>,
+    fingerprint: String,
+) -> StoredAssessment {
+    StoredAssessment {
+        assessment: body.assessment,
+        fingerprint,
+        description: body.description,
+    }
 }
 
 /// What started an assessment pass.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PassCause {
-    /// Comments or the PR page opened with unassessed items.
+    /// A session requested a pass for the PR's comments.
     Opened,
     /// A read found new comments or a moved head.
     Read,
@@ -247,12 +268,13 @@ pub struct PassRecord {
     pub sent: Vec<SentItem>,
     /// The question a question pass answers.
     pub question: Option<QuestionId>,
+    /// When the live pass was admitted.
+    pub created_at: Timestamp,
     /// When it ended (finished or failed).
     pub finished_at: Option<Timestamp>,
 }
 
-const PASS_COLUMNS: &str =
-    "id, pull_request_id, user_id, cause, head, state, job_id, sent, question_id, finished_at";
+const PASS_COLUMNS: &str = "id, pull_request_id, user_id, cause, head, state, job_id, sent, question_id, created_at, finished_at";
 
 fn pass_from_row(row: &SqliteRow) -> Result<PassRecord, DbError> {
     Ok(PassRecord {
@@ -265,6 +287,7 @@ fn pass_from_row(row: &SqliteRow) -> Result<PassRecord, DbError> {
         job_id: opt_wire_col(row, "job_id")?,
         sent: json_col(row, "sent")?,
         question: opt_wire_col(row, "question_id")?,
+        created_at: ts_col(row, "created_at")?,
         finished_at: opt_ts_col(row, "finished_at")?,
     })
 }
@@ -625,8 +648,29 @@ impl ReviewLoop<'_> {
         assessment: &CommentAssessment,
         fingerprint: &str,
     ) -> Result<bool, DbError> {
+        self.add_assessment_with_description(tenant_id, item, assessment, fingerprint, None)
+            .await
+    }
+
+    /// Stores a validated assessment with its report description, including when it is reused at a new head.
+    pub async fn add_assessment_with_description(
+        &self,
+        tenant_id: &str,
+        item: CommentItemId,
+        assessment: &CommentAssessment,
+        fingerprint: &str,
+        description: Option<&str>,
+    ) -> Result<bool, DbError> {
         let mut tx = write_tx(self.pool).await?;
-        let stored = add_assessment_in(&mut tx, tenant_id, item, assessment, fingerprint).await?;
+        let stored = add_assessment_in(
+            &mut tx,
+            tenant_id,
+            item,
+            assessment,
+            fingerprint,
+            description,
+        )
+        .await?;
         tx.commit().await?;
         Ok(stored)
     }
@@ -643,10 +687,7 @@ impl ReviewLoop<'_> {
         .fetch_optional(self.pool)
         .await?
         .map(|row| {
-            Ok(StoredAssessment {
-                assessment: json_col(&row, "body")?,
-                fingerprint: row.try_get("fingerprint")?,
-            })
+            Ok(stored_assessment(json_col(&row, "body")?, row.try_get("fingerprint")?))
         })
         .transpose()
     }
@@ -854,10 +895,11 @@ impl ReviewLoop<'_> {
         let mut tx = read_tx(self.pool).await?;
         let rows = sqlx::query(
             "SELECT c.pull_request_id, c.read_at, c.read_failure, c.read_failed_at, NULL AS github_snapshot,
-                    c.round_count, c.purpose,
-                    (SELECT p.state FROM comment_passes p WHERE p.pull_request_id = c.pull_request_id
-                     ORDER BY p.created_at DESC, p.rowid DESC LIMIT 1) AS pass_state
-             FROM comment_prs c
+                    c.round_count, c.purpose, p.id, p.user_id, p.cause, p.head, p.state, p.job_id,
+                    p.sent, p.question_id, p.created_at, p.finished_at
+             FROM comment_prs c LEFT JOIN comment_passes p ON p.id = (
+                 SELECT id FROM comment_passes WHERE pull_request_id = c.pull_request_id
+                 ORDER BY created_at DESC, rowid DESC LIMIT 1)
              WHERE c.tenant_id = ? AND c.read_at IS NOT NULL
                AND c.pull_request_id IN (SELECT value FROM json_each(?))",
         )
@@ -878,7 +920,10 @@ impl ReviewLoop<'_> {
                             assessments: vec![],
                             decisions: vec![],
                         },
-                        latest_pass: opt_wire_col(row, "pass_state")?,
+                        latest_pass: row
+                            .try_get::<Option<String>, _>("id")?
+                            .map(|_| pass_from_row(row))
+                            .transpose()?,
                     })
                 })(),
             );
@@ -906,10 +951,7 @@ impl ReviewLoop<'_> {
             if let Some(assessment) = opt_json_col(row, "assessment_body")? {
                 view.pr.assessments.push((
                     item.id,
-                    StoredAssessment {
-                        assessment,
-                        fingerprint: row.try_get("assessment_fingerprint")?,
-                    },
+                    stored_assessment(assessment, row.try_get("assessment_fingerprint")?),
                 ));
             }
             view.pr.items.push(item);
@@ -1146,8 +1188,8 @@ pub struct PrView {
 pub struct PrTallyView {
     /// Items, their latest assessments and the decisions needed for queue membership.
     pub pr: PrView,
-    /// The latest assessment pass's state.
-    pub latest_pass: Option<PassState>,
+    /// The latest assessment pass.
+    pub latest_pass: Option<PassRecord>,
 }
 
 fn apply_tally_rows(
@@ -1196,10 +1238,7 @@ pub(super) async fn pr_view_in(
     .map(|row| {
         Ok((
             wire_col(row, "item_id")?,
-            StoredAssessment {
-                assessment: json_col(row, "body")?,
-                fingerprint: row.try_get("fingerprint")?,
-            },
+            stored_assessment(json_col(row, "body")?, row.try_get("fingerprint")?),
         ))
     })
     .collect::<Result<Vec<_>, DbError>>()?;
@@ -1252,6 +1291,7 @@ pub(crate) async fn add_assessment_in(
     item: CommentItemId,
     assessment: &CommentAssessment,
     fingerprint: &str,
+    description: Option<&str>,
 ) -> Result<bool, DbError> {
     let status: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM comment_items WHERE id = ? AND status_comment)",
@@ -1282,7 +1322,7 @@ pub(crate) async fn add_assessment_in(
         .bind(assessment.job.to_string())
         .bind(&assessment.head.0)
         .bind(fingerprint)
-        .bind(json(assessment)?)
+        .bind(json(&AssessmentBody { assessment, description: description.map(str::to_owned) })?)
         .bind(assessment.prompt_version)
         .bind(ts(assessment.assessed_at))
         .bind(assessment.job.to_string())

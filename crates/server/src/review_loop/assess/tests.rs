@@ -510,6 +510,81 @@ async fn wait_pass(state: &AppState, id: PassId) {
 }
 
 #[tokio::test]
+async fn incomplete_pass_continues_until_no_progress() {
+    let f = fixture(HEAD).await;
+    let first_item = item(&f.state, "first", "src/rpc/client.rs", (40, 43)).await;
+    let second_item = item(&f.state, "second", "src/rpc/client.rs", (40, 43)).await;
+    watch(&f.state).await;
+    assert_eq!(
+        request_pass(&f.state, PR, PassReason::Watch).await.unwrap(),
+        PassQueued::Queued
+    );
+    let first = live_pass(&f.state).await;
+    assert_eq!(first.sent.len(), 2);
+    let complete = |job: db::repo::jobs::JobRecord, items: Vec<Value>| {
+        let mut result = succeeded(
+            job.id,
+            json!({"purpose":"Retry calls","items":items,"answer":null}),
+        );
+        result.assessment = job.spec.assessment.map(Box::new);
+        result
+    };
+    let job = claim_method(&f.state).await;
+    f.state
+        .db
+        .jobs()
+        .complete(
+            &complete(job, vec![entry(&format!("C{}", first_item.no))]),
+            Timestamp::now(),
+        )
+        .await
+        .unwrap();
+    let continued = claim_method(&f.state).await;
+    let next = live_pass(&f.state).await;
+    assert_ne!(first.id, next.id);
+    assert_eq!(next.cause, PassCause::Watch);
+    assert_eq!(
+        next.sent.iter().map(|sent| sent.item).collect::<Vec<_>>(),
+        vec![second_item.id]
+    );
+    f.state
+        .db
+        .jobs()
+        .complete(&complete(continued, vec![]), Timestamp::now())
+        .await
+        .unwrap();
+    wait_pass(&f.state, next.id).await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while FOLLOWING.lock().unwrap().contains(&next.id) {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        f.state
+            .db
+            .review_loop()
+            .latest_pass(PR)
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        next.id
+    );
+    assert_eq!(
+        f.state
+            .db
+            .assessments()
+            .quota(&contracts::ids::UserId("u1".into()), Timestamp::now())
+            .await
+            .unwrap()
+            .remaining,
+        DAILY_PASSES_PER_USER - 2
+    );
+}
+
+#[tokio::test]
 async fn paired_failed_method_retry_keeps_primary_snapshot_and_one_slot() {
     use contracts::assessment::*;
     use contracts::job::result::{JobFailureKind, Usage};

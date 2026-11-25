@@ -195,6 +195,7 @@ fn host_rows(
                 } else {
                     None
                 },
+                description: Some(row.description.clone()),
                 fingerprint: existing
                     .and_then(|i| frozen.fingerprints.get(&i.id.to_string()))
                     .cloned()
@@ -273,6 +274,7 @@ fn host_rows(
                     source: None,
                     duplicate: Some(canonical.clone()),
                     assessment: None,
+                    description: None,
                     fingerprint: frozen
                         .sent
                         .iter()
@@ -791,6 +793,7 @@ fn native_rows(
             source: binding,
             duplicate: None,
             assessment: Some(card),
+            description: None,
             fingerprint: frozen
                 .sent
                 .iter()
