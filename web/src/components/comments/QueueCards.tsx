@@ -1,5 +1,5 @@
 import type { ReviewComment } from "../../api/provisional/comments";
-import { QUEUE_STATUS, type QueueStatus } from "./queueStatus";
+import { queueStatusLabel, type QueueStatus } from "./queueStatus";
 // The other question kinds of V1 (plan §2.4, §2.6): group, "Decide the rest", PR-level questions, assessment
 // running and the empty queue.
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
@@ -731,6 +731,7 @@ export function EmptyQueueCard({
   now,
   children,
   deferred,
+  inPass,
   onStatus,
 }: {
   read: GithubRead;
@@ -739,6 +740,7 @@ export function EmptyQueueCard({
   now: Date;
   children?: ReactNode;
   deferred?: ReadonlyMap<QueueStatus, number>;
+  inPass?: number;
   onStatus?: (status: QueueStatus) => void;
 }) {
   const heading = deferred?.size ? "No questions need you now" : "No undecided questions";
@@ -752,13 +754,20 @@ export function EmptyQueueCard({
       </p>
       {deferred && deferred.size > 0 && (
         <div className="flex flex-wrap gap-2">
-          {[...deferred].map(([status, count]) => (
-            <Tooltip key={status} tip={`Shows ${QUEUE_STATUS[status].toLowerCase()} in the queue.`}>
-              <button type="button" className={buttonClass("plain", true)} onClick={() => onStatus?.(status)}>
-                {QUEUE_STATUS[status]} · {count}
-              </button>
-            </Tooltip>
-          ))}
+          {[...deferred].map(([status, count]) => {
+            const label = queueStatusLabel(status, inPass);
+            return (
+              <Tooltip key={status} tip={`Shows ${label.toLowerCase()} in the queue.`}>
+                <button
+                  type="button"
+                  className={buttonClass("plain", true)}
+                  onClick={() => onStatus?.(status)}
+                >
+                  {label} · {count}
+                </button>
+              </Tooltip>
+            );
+          })}
         </div>
       )}
       <p className="text-xs text-muted">

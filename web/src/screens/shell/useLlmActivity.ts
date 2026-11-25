@@ -24,7 +24,8 @@ export function useLlmActivity(login: string) {
   const fallback = {
     enabled: activity === null,
     retry: false,
-    refetchInterval: POLL_MS,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   };
   // A dashboard read wakes the legacy scanner. Reuse the open dashboard's data without reading it here.
   const client = useQueryClient();

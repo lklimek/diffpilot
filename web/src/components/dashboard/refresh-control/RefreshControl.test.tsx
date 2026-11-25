@@ -49,6 +49,22 @@ describe("RefreshControl", () => {
     );
   });
 
+  it("shows the cancelled scan and the ranking failure next to Retry ranking", async () => {
+    const onRetryRanking = vi.fn();
+    render(
+      <RefreshControl
+        {...defaults}
+        latest={{ ...SCANNING, state: "cancelled" }}
+        rankingNotices={[{ label: "Ranking failed", detail: "The LLM stopped answering." }]}
+        onRetryRanking={onRetryRanking}
+      />,
+    );
+    expect(screen.getByText(/^Ranking failed · Scan cancelled · Full scan \d\d:\d\d$/)).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Retry ranking" }));
+    expect(onRetryRanking).toHaveBeenCalledOnce();
+    expect(defaults.onRefresh).not.toHaveBeenCalled();
+  });
+
   it("refreshes normally and re-judges outdated items using the menu", async () => {
     const onRefresh = vi.fn();
     const onRejudgeOutdated = vi.fn();
