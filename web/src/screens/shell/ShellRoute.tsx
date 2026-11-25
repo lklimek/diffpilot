@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Navigate, Outlet, useLocation, useOutletContext } from "react-router";
 import { useMe } from "../../api/queries";
@@ -7,6 +7,8 @@ import { useUserEventNotifications } from "../../app/userEvents";
 import { ALL_CARRY_OVERS_PATH, WATCHING_PATH } from "../pr/paths";
 import { MY_WORK_PATH, REVIEW_START_PATH, SETTINGS_HELP_PATH, SETTINGS_PATH } from "./paths";
 import { ShellLayout } from "./ShellLayout";
+import type { useSessionSignOut } from "./useSessionSignOut";
+import { useUserMenu } from "./useUserMenu";
 import { DashboardScreen } from "../dashboard/DashboardScreen";
 
 /** What a page inside the shell may set: My work's count (kept while other pages show), help, top-bar actions. */
@@ -14,8 +16,9 @@ export interface ShellSlots {
   /** Where a page renders its top-bar actions (`createPortal`); null until the bar is mounted. */
   actions: HTMLElement | null;
   setCount: (count: number | null) => void;
-  /** The page's keyboard help; null removes the help button. */
+  /** The page's keyboard help; null removes the shortcut from the user menu. */
   setHelp: (help: (() => void) | null) => void;
+  signOut: ReturnType<typeof useSessionSignOut>;
 }
 
 const PAGES: Record<string, { section: AppSection; crumb: string }> = {
@@ -30,7 +33,7 @@ const PAGES: Record<string, { section: AppSection; crumb: string }> = {
 /** Layout route of `/`, `/review` and `/settings` (plan §F.2): the shell stays while its pages change. */
 export function ShellRoute() {
   const { pathname } = useLocation();
-  const me = useMe();
+  const login = useMe().data?.user?.login ?? null;
   useUserEventNotifications();
   // The router matches `/review/` as `/review`.
   const page = PAGES[pathname.replace(/(.)\/+$/, "$1")] ?? PAGES[MY_WORK_PATH]!;
@@ -39,17 +42,14 @@ export function ShellRoute() {
   const [help, setHelp] = useState<{ open: () => void } | null>(null);
   const setPageHelp = useCallback((open: (() => void) | null) => setHelp(open ? { open } : null), []);
   // Stable setters: pages call them from effects; a new function per render would loop.
-  const slots = useMemo<ShellSlots>(
-    () => ({ actions, setCount, setHelp: setPageHelp }),
-    [actions, setPageHelp],
-  );
+  const { userMenu, signOut } = useUserMenu(login, help?.open);
+  const slots: ShellSlots = { actions, setCount, setHelp: setPageHelp, signOut };
   return (
     <ShellLayout
       current={page.section}
       crumb={page.crumb}
-      login={me.data?.user?.login ?? null}
+      userMenu={userMenu}
       myWorkCount={count}
-      onHelp={help?.open}
       actions={<span ref={setActions} className="contents" />}
     >
       <Outlet context={slots} />

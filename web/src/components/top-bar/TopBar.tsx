@@ -5,6 +5,7 @@ import type { CiStatus, LlmLanguage, PrSummary } from "../../api/generated/types
 import { LanguageTag } from "../language-tag/LanguageTag";
 import { PENDING_INCOMPLETE } from "../section/format";
 import { Tooltip } from "../tooltip/Tooltip";
+import { UserMenu, type UserMenuProps } from "../app-shell/UserMenu";
 
 interface TopBarProps {
   hideContextChanges?: boolean;
@@ -17,8 +18,8 @@ interface TopBarProps {
   checksHref?: string;
   /** Language of the analysis's LLM texts; no tag when absent. */
   language?: LlmLanguage;
-  /** Signed-in GitHub login (links to Settings); null when signed out. */
-  login: string | null;
+  /** Account menu of the signed-in reader. */
+  userMenu?: UserMenuProps;
   /** Review progress: flows with every step ticked, out of all flows. */
   progress?: { reviewed: number; total: number };
   /** The progress counter as the flows dropdown (both review views); replaces the plain `progress` text. */
@@ -27,8 +28,6 @@ interface TopBarProps {
   pendingCount?: number | `${number}+` | "unavailable" | "loading";
   /** Opens the pending-review list. */
   onOpenPending?: () => void;
-  /** Opens the `?` help; no button without it. */
-  onHelp?: () => void;
   /** The review views of the analysis: with it the bar starts with the breadcrumb and the view menu. */
   view?: ReviewViews;
 }
@@ -192,7 +191,7 @@ function pendingText(count: NonNullable<TopBarProps["pendingCount"]>): string {
 
 /**
  * Top bar (brief §4 rule 5): brand (in the review views the breadcrumb with the view menu), pull request, head SHA,
- * CI status, "Your progress k / n", pending-review count, help, user (link to Settings).
+ * CI status, "Your progress k / n", pending-review count and user menu.
  */
 export function TopBar({
   hideContextChanges = true,
@@ -201,11 +200,10 @@ export function TopBar({
   ci,
   checksHref,
   language,
-  login,
+  userMenu,
   progress,
   pendingCount,
   onOpenPending,
-  onHelp,
   view,
   progressMenu,
 }: TopBarProps) {
@@ -303,18 +301,6 @@ export function TopBar({
           </button>
         </Tooltip>
       )}
-      {onHelp && (
-        <Tooltip tip="Keyboard shortcuts and how code is drawn (?)">
-          <button
-            type="button"
-            aria-label="Help: keyboard shortcuts and legend"
-            onClick={onHelp}
-            className={BUTTON}
-          >
-            ?
-          </button>
-        </Tooltip>
-      )}
       {onHideContextChanges && (
         <Tooltip tip="Hides Rust comment and import changes in the main code view. The classic diff always shows them. Other languages are unchanged.">
           <label className="flex cursor-pointer items-center gap-1 text-xs whitespace-normal">
@@ -327,13 +313,7 @@ export function TopBar({
           </label>
         </Tooltip>
       )}
-      {login && (
-        <Tooltip tip={`Settings (signed in as ${login})`}>
-          <a href="/settings" aria-label={`Settings, signed in as ${login}`} className="text-muted">
-            {login}
-          </a>
-        </Tooltip>
-      )}
+      {userMenu && <UserMenu {...userMenu} />}
     </header>
   );
 }

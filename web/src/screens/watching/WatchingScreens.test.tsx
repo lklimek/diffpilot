@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it, vi } from "vitest";
@@ -37,7 +37,9 @@ describe("Watch by pasted pull request link", () => {
     const input = await form();
     await userEvent.type(input, "https://github.com/octo/project/pull/123/files/?diff=split#L7{Enter}");
     expect(await screen.findByRole("link", { name: "octo/project #123" })).toBeVisible();
-    expect(screen.getByRole("status")).toHaveTextContent("Watching octo/project #123.");
+    expect(within(screen.getByRole("main")).getByRole("status")).toHaveTextContent(
+      "Watching octo/project #123.",
+    );
     expect(input).toHaveValue("");
     expect(input).toHaveFocus();
     expect(mutations).toEqual(["PUT /api/v1/prs/octo/project/123/watch"]);
@@ -96,7 +98,11 @@ describe("Watch by pasted pull request link", () => {
     );
     server.use(http.put(WATCH, () => new HttpResponse(null, { status: 204 })));
     await userEvent.click(screen.getByRole("button", { name: "Watch pull request" }));
-    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Watching octo/project #123."));
+    await waitFor(() =>
+      expect(within(screen.getByRole("main")).getByRole("status")).toHaveTextContent(
+        "Watching octo/project #123.",
+      ),
+    );
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
@@ -119,6 +125,10 @@ describe("Watch by pasted pull request link", () => {
     await userEvent.click(adding);
     expect(put).toHaveBeenCalledTimes(1);
     finish();
-    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Watching octo/project #123."));
+    await waitFor(() =>
+      expect(within(screen.getByRole("main")).getByRole("status")).toHaveTextContent(
+        "Watching octo/project #123.",
+      ),
+    );
   });
 });

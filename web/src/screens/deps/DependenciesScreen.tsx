@@ -12,7 +12,7 @@ import { filesHash } from "../../components/files/model";
 import { githubLineUrl } from "../../components/github/links";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { Tooltip } from "../../components/tooltip/Tooltip";
-import { TopBar } from "../../components/top-bar/TopBar";
+import { ReviewTopBar } from "../shell/ReviewTopBar";
 import { SETTINGS_PATH } from "../shell/paths";
 import { errorText } from "../tour/code";
 import { checksHref } from "../tour/review";
@@ -76,7 +76,7 @@ export function DependenciesScreen() {
 function Shell({ login, children }: { login: string | null; children: ReactNode }) {
   return (
     <div className="flex min-h-screen flex-col">
-      <TopBar login={login} />
+      <ReviewTopBar login={login} />
       <main id="main" className="grid gap-3 px-8 py-5">
         {children}
       </main>
@@ -175,7 +175,7 @@ function DependenciesView({
       >
         Skip to content
       </a>
-      <TopBar
+      <ReviewTopBar
         pr={pr}
         ci={tour.pr_context.facts.ci}
         checksHref={checksHref(pr)}

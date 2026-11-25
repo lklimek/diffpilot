@@ -49,25 +49,36 @@ describe("ShellTopBar", () => {
   it("starts with a skip link and holds the page actions, help and the user", async () => {
     const onHelp = vi.fn();
     render(
-      <ShellTopBar crumb="My work" homeHref="/" settingsHref="/settings" login="alice" onHelp={onHelp}>
+      <ShellTopBar
+        crumb="My work"
+        homeHref="/"
+        userMenu={{
+          login: "alice",
+          settingsHref: "/settings",
+          usageHref: "/settings#llm-usage",
+          now: new Date(),
+          activity: null,
+          onHelp,
+          onSignOut: vi.fn(),
+        }}
+      >
         <button type="button">Refresh</button>
       </ShellTopBar>,
     );
     const links = screen.getAllByRole("link");
     expect(links[0]).toHaveTextContent("Skip to content");
     expect(links[0]).toHaveAttribute("href", "#main");
-    expect(screen.getByRole("link", { name: "Settings, signed in as alice" })).toHaveAttribute(
-      "href",
-      "/settings",
-    );
+    expect(screen.queryByRole("button", { name: "Keyboard shortcuts" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "alice" }));
+    expect(screen.getByRole("link", { name: "Settings" })).toHaveAttribute("href", "/settings");
     expect(screen.getByRole("button", { name: "Refresh" })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Keyboard shortcuts" }));
     expect(onHelp).toHaveBeenCalledOnce();
   });
 
-  it("has no user link when signed out", () => {
-    render(<ShellTopBar homeHref="/" settingsHref="/settings" login={null} />);
-    expect(screen.queryByRole("link", { name: /signed in/ })).toBeNull();
+  it("has no user menu when signed out", () => {
+    render(<ShellTopBar homeHref="/" />);
+    expect(screen.queryByRole("button", { name: "alice" })).toBeNull();
   });
 });
 

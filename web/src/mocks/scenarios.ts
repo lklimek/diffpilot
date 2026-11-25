@@ -23,6 +23,14 @@ import type {
   ThreadsStatus,
   Tour,
 } from "../api/generated/types";
+import type { LlmActivity } from "../api/provisional/llmActivity";
+import {
+  failedActivity,
+  idleActivity,
+  manyJobsActivity,
+  pausedActivity,
+  runningActivity,
+} from "./llm-activity";
 import type { CommentsMockState } from "./review-loop";
 import largeGraphs from "./diagrams/large-flow-graphs.json";
 import {
@@ -100,6 +108,7 @@ interface Scenario {
   silent?: true;
   /** `settings` answer. */
   settings?: Settings;
+  llmActivity?: LlmActivity;
   /** `repos/{owner}/{name}/settings` answer; null = not known yet (409 `analysis_not_finished`). */
   repoSettings?: RepoSettings | null;
   /** Changes to the `tour` answer. */
@@ -326,6 +335,11 @@ const REPORTED_USAGE: UsageTotals = {
 };
 
 const SCENARIOS = {
+  "llm-activity-idle": { llmActivity: idleActivity },
+  "llm-activity-running": { llmActivity: runningActivity },
+  "llm-activity-paused": { llmActivity: pausedActivity },
+  "llm-activity-failed": { llmActivity: failedActivity },
+  "llm-activity-many": { llmActivity: manyJobsActivity },
   // Review loop (docs/mockups/10-review-loop.html states).
   "comments-no-analysis": { comments: "no-analysis" },
   "comments-running": { comments: "running" },

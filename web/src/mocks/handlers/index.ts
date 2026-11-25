@@ -1,3 +1,4 @@
+import { getLlmActivity } from "./llm-activity";
 import { assessmentHandlers } from "./assessment-settings";
 import { requestFlow, setBackgroundAnalysis } from "./flow-work";
 import { setAskEffort, setLlm } from "./set-llm";
@@ -93,6 +94,7 @@ export const handlers = [
   cancelAnalysis,
   retryAnalysis,
   getSettings,
+  getLlmActivity,
   setLanguage,
   setControlledOwners,
   getRepoSettings,
