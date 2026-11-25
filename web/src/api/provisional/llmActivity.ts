@@ -13,6 +13,7 @@ export type RunningLlmJob = LlmJob & { since: string };
 /** waits_for is the observed reason, as display text. */
 export type QueuedLlmJob = LlmJob & { queued_at: string; waits_for: string | null };
 
+/** The activity snapshot and its future C7 event carry the pause and last-call outcome. */
 export interface LlmActivity {
   running: RunningLlmJob[];
   queued: QueuedLlmJob[];

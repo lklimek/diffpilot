@@ -20,6 +20,7 @@ export interface UserMenuProps {
   lastCall?: LlmCallOutcome | null;
   onNavigate?: Navigate;
   onHelp?: () => void;
+  onOpenChange?: (open: boolean) => void;
   onSignOut: () => void;
   signingOut?: boolean;
   signOutError?: string;
@@ -36,6 +37,7 @@ export function UserMenu({
   lastCall = activity?.last_call ?? null,
   onNavigate,
   onHelp,
+  onOpenChange,
   onSignOut,
   signingOut = false,
   signOutError,
@@ -44,24 +46,29 @@ export function UserMenu({
   const wrapper = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
-  useOutsidePress(open, wrapper, () => setOpen(false));
+  const changeOpen = (next: boolean) => {
+    setOpen(next);
+    onOpenChange?.(next);
+  };
+  useOutsidePress(open, wrapper, () => changeOpen(false));
 
   const close = () => {
-    setOpen(false);
+    changeOpen(false);
     trigger.current?.focus();
   };
   const paused = pausedUntil && Date.parse(pausedUntil) > now.getTime() ? pausedUntil : null;
   const failed = lastCall?.status.state === "not_working";
   const attention = paused ? "paused" : failed ? "failed" : null;
+  const panelName = `${login}: account and LLM activity`;
   const name = paused
     ? `${login} — LLM paused until ${clockText(paused, now)}`
     : failed
       ? `${login} — LLM not working`
-      : login;
+      : panelName;
   const follow =
     onNavigate &&
     ((href: string) => {
-      setOpen(false);
+      changeOpen(false);
       onNavigate(href);
     });
 
@@ -76,7 +83,7 @@ export function UserMenu({
         close();
       }}
       onBlur={(event) => {
-        if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) setOpen(false);
+        if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) changeOpen(false);
       }}
     >
       <Tooltip tip={attention ? name : `Signed in as ${login} (GitHub)`}>
@@ -84,9 +91,10 @@ export function UserMenu({
           ref={trigger}
           type="button"
           aria-label={name}
+          aria-haspopup="dialog"
           aria-expanded={open}
           aria-controls={open ? id : undefined}
-          onClick={() => setOpen(!open)}
+          onClick={() => changeOpen(!open)}
           className="inline-flex min-h-7 min-w-6 cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-[13px] text-text hover:bg-surface-2 aria-expanded:bg-surface-2"
         >
           <span
@@ -114,12 +122,16 @@ export function UserMenu({
           </span>
         </button>
       </Tooltip>
-      <span role="status" className="sr-only">
-        {failed ? `Last LLM call failed at ${dateTimeText(lastCall.at)}.` : ""}
-      </span>
+      {failed && (
+        <span role="status" className="sr-only">
+          Last LLM call failed at {dateTimeText(lastCall.at)}.
+        </span>
+      )}
       {open && (
         <div
           id={id}
+          role="dialog"
+          aria-label={panelName}
           className="absolute right-0 top-full z-50 mt-1 grid max-h-[calc(100dvh-4rem)] w-88 max-w-[calc(100vw-2rem)] gap-1 overflow-y-auto overscroll-contain rounded-lg border border-border bg-surface p-1 text-left text-[13px] whitespace-normal text-text shadow-tip [overflow-wrap:anywhere]"
         >
           <p className="px-2.5 py-1 text-xs text-muted">Signed in as {login} (GitHub)</p>

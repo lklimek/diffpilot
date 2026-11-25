@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppNav } from "./AppNav";
 import { ShellTopBar } from "./ShellTopBar";
+import { UserMenu } from "./UserMenu";
 
 const HREFS = { "my-work": "/", review: "/review", watching: "/watching", settings: "/settings" };
 
@@ -52,15 +53,17 @@ describe("ShellTopBar", () => {
       <ShellTopBar
         crumb="My work"
         homeHref="/"
-        userMenu={{
-          login: "alice",
-          settingsHref: "/settings",
-          usageHref: "/settings#llm-usage",
-          now: new Date(),
-          activity: null,
-          onHelp,
-          onSignOut: vi.fn(),
-        }}
+        userMenu={
+          <UserMenu
+            login="alice"
+            settingsHref="/settings"
+            usageHref="/settings#llm-usage"
+            now={new Date()}
+            activity={null}
+            onHelp={onHelp}
+            onSignOut={vi.fn()}
+          />
+        }
       >
         <button type="button">Refresh</button>
       </ShellTopBar>,
@@ -69,7 +72,7 @@ describe("ShellTopBar", () => {
     expect(links[0]).toHaveTextContent("Skip to content");
     expect(links[0]).toHaveAttribute("href", "#main");
     expect(screen.queryByRole("button", { name: "Keyboard shortcuts" })).toBeNull();
-    await userEvent.click(screen.getByRole("button", { name: "alice" }));
+    await userEvent.click(screen.getByRole("button", { name: "alice: account and LLM activity" }));
     expect(screen.getByRole("link", { name: "Settings" })).toHaveAttribute("href", "/settings");
     expect(screen.getByRole("button", { name: "Refresh" })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Keyboard shortcuts" }));
@@ -78,7 +81,7 @@ describe("ShellTopBar", () => {
 
   it("has no user menu when signed out", () => {
     render(<ShellTopBar homeHref="/" />);
-    expect(screen.queryByRole("button", { name: "alice" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "alice: account and LLM activity" })).toBeNull();
   });
 });
 

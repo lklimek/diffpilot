@@ -1,20 +1,34 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { renderRoute, startMockServer } from "../../__tests__/screen";
 import { unlinkedCodex } from "../../mocks/assessment";
-import { setScenario } from "../../mocks/scenarios";
+import { idleActivity } from "../../mocks/llm-activity";
+import { SETTINGS, setScenario } from "../../mocks/scenarios";
 
 const server = startMockServer();
+const renderShell = vi.hoisted(() => vi.fn());
+
+vi.mock("./ShellLayout", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./ShellLayout")>();
+  return {
+    ShellLayout: (props: Parameters<typeof original.ShellLayout>[0]) => {
+      renderShell();
+      return <original.ShellLayout {...props} />;
+    },
+  };
+});
+
+const accountButton = () => screen.findByRole("button", { name: /^alice/ });
 
 it("reads the last call even when job activity has no server endpoint", async () => {
   setScenario("llm-error");
   server.use(http.get("/api/v1/llm/activity", () => new HttpResponse(null, { status: 404 })));
   renderRoute("/");
 
-  const trigger = await screen.findByRole("button", { name: "alice — LLM not working" });
-  await userEvent.click(trigger);
+  await userEvent.click(await accountButton());
+  expect(await screen.findByRole("button", { name: "alice — LLM not working" })).toBeVisible();
   expect(await screen.findByText("Job activity unavailable.")).toBeVisible();
   expect(screen.getByText("The LLM provider's usage limit was reached.")).toBeVisible();
 });
@@ -29,8 +43,8 @@ it("uses the current Codex account pause when the job route is absent", async ()
   );
   renderRoute("/review");
 
-  const trigger = await screen.findByRole("button", { name: /^alice — LLM paused until/ });
-  await userEvent.click(trigger);
+  await userEvent.click(await accountButton());
+  expect(await screen.findByRole("button", { name: /^alice — LLM paused until/ })).toBeVisible();
   expect(screen.getByText(/^Paused at the usage limit until/)).toBeVisible();
 });
 
@@ -61,10 +75,78 @@ it.each(["/", "/review"])("signs out from %s using the existing session route", 
   window.sessionStorage.setItem(draft, '{"comment":"draft"}');
   const router = renderRoute(path);
   const banner = screen.getByRole("banner");
-  await userEvent.click(await within(banner).findByRole("button", { name: "alice" }));
+  await userEvent.click(
+    await within(banner).findByRole("button", { name: "alice: account and LLM activity" }),
+  );
   await userEvent.click(within(banner).getByRole("button", { name: "Sign out" }));
   expect(await screen.findByRole("link", { name: "Sign in with GitHub" })).toBeVisible();
   await waitFor(() => expect(router.state.location.pathname).toBe("/"));
   expect(requestBody).toEqual({ everywhere: false });
   expect(window.sessionStorage.getItem(draft)).toBeNull();
+});
+
+it("takes the activity route's last call and pause as authoritative without fetching Settings or Codex", async () => {
+  const settings = vi.fn(() => HttpResponse.json(SETTINGS));
+  const codex = vi.fn(() => HttpResponse.json(unlinkedCodex));
+  server.use(
+    http.get("/api/v1/llm/activity", () => HttpResponse.json(idleActivity)),
+    http.get("/api/v1/settings", settings),
+    http.get("/api/v1/settings/codex", codex),
+  );
+  renderRoute("/review");
+  await userEvent.click(await accountButton());
+  expect(await screen.findByText("Idle")).toBeVisible();
+  expect(screen.getByText("Last LLM call outcome unknown.")).toBeVisible();
+  expect(settings).not.toHaveBeenCalled();
+  expect(codex).not.toHaveBeenCalled();
+});
+
+it("reads fallback status only on opening the menu and does not poll it", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    const activity = vi.fn(() => new HttpResponse(null, { status: 404 }));
+    const settings = vi.fn(() => HttpResponse.json(SETTINGS));
+    const codex = vi.fn(() => HttpResponse.json(unlinkedCodex));
+    server.use(
+      http.get("/api/v1/llm/activity", activity),
+      http.get("/api/v1/settings", settings),
+      http.get("/api/v1/settings/codex", codex),
+    );
+    renderRoute("/review");
+    const trigger = await accountButton();
+    await waitFor(() => expect(activity).toHaveBeenCalledOnce());
+    await act(() => vi.advanceTimersByTimeAsync(60_000));
+    expect(settings).not.toHaveBeenCalled();
+    expect(codex).not.toHaveBeenCalled();
+
+    await userEvent.click(trigger);
+    await waitFor(() => expect(settings).toHaveBeenCalledOnce());
+    await waitFor(() => expect(codex).toHaveBeenCalledOnce());
+    await act(() => vi.advanceTimersByTimeAsync(60_000));
+    expect(settings).toHaveBeenCalledOnce();
+    expect(codex).toHaveBeenCalledOnce();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("updates the activity in the menu without rendering the shell layout again", async () => {
+  let answer!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    answer = resolve;
+  });
+  const pausedUntil = new Date(Date.now() + 60 * 60_000).toISOString();
+  server.use(
+    http.get("/api/v1/llm/activity", async () => {
+      await ready;
+      return HttpResponse.json({ ...idleActivity, paused_until: pausedUntil });
+    }),
+  );
+  renderRoute("/review");
+  await accountButton();
+  const renders = renderShell.mock.calls.length;
+
+  answer();
+  expect(await screen.findByRole("button", { name: /^alice — LLM paused until/ })).toBeVisible();
+  expect(renderShell).toHaveBeenCalledTimes(renders);
 });

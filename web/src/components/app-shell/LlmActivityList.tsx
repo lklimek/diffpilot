@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useId, useState, type ReactNode } from "react";
 import type { LlmCallOutcome } from "../../api/generated/types";
 import type { LlmActivity, LlmJobKind, QueuedLlmJob, RunningLlmJob } from "../../api/provisional/llmActivity";
 import { navigateOnClick, type Navigate } from "../dashboard/common/navigate";
@@ -24,6 +24,34 @@ function subjectHref(href: string): string | null {
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
+type Job = RunningLlmJob | QueuedLlmJob;
+
+const jobTime = (job: Job) => ("since" in job ? job.since : job.queued_at);
+
+function JobRow({
+  running,
+  time,
+  now,
+  children,
+}: {
+  running: boolean;
+  time: string;
+  now: Date;
+  children: ReactNode;
+}) {
+  return (
+    <li className="flex items-baseline gap-2 py-1">
+      <span aria-hidden className={running ? "text-low" : "text-muted"}>
+        {running ? "◔" : "◌"}
+      </span>
+      <span className="min-w-0 flex-1">{children}</span>
+      <span className="shrink-0 text-xs text-muted tabular-nums">
+        {running ? "since" : "queued"} {clockText(time, now)}
+      </span>
+    </li>
+  );
+}
+
 function Jobs({
   title,
   jobs,
@@ -31,14 +59,23 @@ function Jobs({
   onNavigate,
 }: {
   title: string;
-  jobs: (RunningLlmJob | QueuedLlmJob)[];
+  jobs: Job[];
   now: Date;
   onNavigate?: Navigate;
 }) {
   const id = useId();
   const [expanded, setExpanded] = useState(false);
-  if (!jobs.length) return null;
-  const shown = expanded ? jobs : jobs.slice(0, PREVIEW_COUNT);
+  const [first] = jobs;
+  if (!first) return null;
+
+  const running = "since" in first;
+  const own = jobs.filter((job) => job.owner === "self");
+  const others = jobs.filter((job) => job.owner === "other");
+  const oldest = others.reduce<string | null>((earliest, job) => {
+    const time = jobTime(job);
+    return earliest === null || Date.parse(time) < Date.parse(earliest) ? time : earliest;
+  }, null);
+  const shown = expanded ? own : own.slice(0, PREVIEW_COUNT);
   return (
     <div className="grid gap-1">
       <h4 id={`${id}-heading`} className="text-xs font-semibold">
@@ -46,45 +83,40 @@ function Jobs({
       </h4>
       <ul id={id} aria-labelledby={`${id}-heading`} className="m-0 divide-y divide-border p-0">
         {shown.map((job) => {
-          const running = "since" in job;
-          const time = running ? job.since : job.queued_at;
-          const subject = job.owner === "self" ? job.subject : null;
+          const subject = job.subject;
           const href = subject ? subjectHref(subject.href) : null;
           return (
-            <li key={job.id} className="flex items-baseline gap-2 py-1">
-              <span aria-hidden className={running ? "text-low" : "text-muted"}>
-                {running ? "◔" : "◌"}
-              </span>
-              <span className="min-w-0 flex-1">
-                {job.owner === "other" ? "1 job of another user" : KIND[job.kind]}
-                {subject && (
-                  <>
-                    {" · "}
-                    {href ? (
-                      <a
-                        href={href}
-                        onClick={navigateOnClick(href, onNavigate)}
-                        className="inline-flex min-h-6 items-center text-accent underline"
-                      >
-                        {subject.label}
-                      </a>
-                    ) : (
-                      subject.label
-                    )}
-                  </>
-                )}
-                {job.owner === "self" && !running && job.waits_for && (
-                  <small className="block text-xs text-muted">{job.waits_for}</small>
-                )}
-              </span>
-              <span className="shrink-0 text-xs text-muted tabular-nums">
-                {running ? "since" : "queued"} {clockText(time, now)}
-              </span>
-            </li>
+            <JobRow key={job.id} running={running} time={jobTime(job)} now={now}>
+              {KIND[job.kind]}
+              {subject && (
+                <>
+                  {" · "}
+                  {href ? (
+                    <a
+                      href={href}
+                      onClick={navigateOnClick(href, onNavigate)}
+                      className="inline-flex min-h-6 items-center text-accent underline"
+                    >
+                      {subject.label}
+                    </a>
+                  ) : (
+                    subject.label
+                  )}
+                </>
+              )}
+              {"queued_at" in job && job.waits_for && (
+                <small className="block text-xs text-muted">{job.waits_for}</small>
+              )}
+            </JobRow>
           );
         })}
+        {oldest && (
+          <JobRow running={running} time={oldest} now={now}>
+            {others.length === 1 ? "1 job of another user" : `${others.length} jobs of other users`}
+          </JobRow>
+        )}
       </ul>
-      {jobs.length > PREVIEW_COUNT && (
+      {own.length > PREVIEW_COUNT && (
         <button
           type="button"
           aria-expanded={expanded}
@@ -92,7 +124,7 @@ function Jobs({
           onClick={() => setExpanded(!expanded)}
           className="min-h-6 w-fit cursor-pointer text-xs text-accent underline"
         >
-          {expanded ? "Show less" : `Show all (${jobs.length})`}
+          {expanded ? "Show less" : `Show all (${own.length})`}
         </button>
       )}
     </div>

@@ -1,14 +1,13 @@
 import type { ReactNode } from "react";
 import { Tooltip } from "../tooltip/Tooltip";
 import { navigateOnClick, type Navigate } from "../dashboard/common/navigate";
-import { UserMenu, type UserMenuProps } from "./UserMenu";
 
 interface ShellTopBarProps {
   /** Name of the page after the brand (`My work`). */
   crumb?: string;
   /** In-app href of the start page (the brand link). */
   homeHref: string;
-  userMenu?: UserMenuProps;
+  userMenu?: ReactNode;
   onNavigate?: Navigate;
   /** Page actions at the right, e.g. the refresh control. */
   children?: ReactNode;
@@ -49,7 +48,7 @@ export function ShellTopBar({
       )}
       <span className="flex-1" />
       {children}
-      {userMenu && <UserMenu {...userMenu} />}
+      {userMenu}
     </header>
   );
 }

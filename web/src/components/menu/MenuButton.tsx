@@ -1,5 +1,6 @@
 import { useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { buttonClass } from "../button/button";
+import { navigateOnClick, type Navigate } from "../dashboard/common/navigate";
 import { useOutsidePress } from "../popover/useOutsidePress";
 import { Tooltip, useTipPrecedence } from "../tooltip/Tooltip";
 
@@ -140,6 +141,7 @@ export function MenuButton({
           className="fixed z-50 w-64 max-w-[calc(100vw-16px)] overflow-y-auto overscroll-contain rounded-lg border border-border bg-surface p-1 text-left text-sm whitespace-normal text-text shadow-tip [overflow-wrap:anywhere]"
           onBlur={(event) => {
             if (
+              event.relatedTarget &&
               event.relatedTarget !== button.current &&
               !event.currentTarget.contains(event.relatedTarget)
             ) {
@@ -166,6 +168,10 @@ interface MenuItemProps {
   disabledReason?: string;
   selection?: { kind: "checkbox" | "radio"; checked: boolean };
   href?: string;
+  /** External links open in a new tab, announced in the item's name. */
+  external?: boolean;
+  /** Routes plain clicks in the app while preserving native modified clicks. */
+  onNavigate?: Navigate;
   onSelect?: () => void;
 }
 
@@ -177,15 +183,19 @@ export function MenuItem({
   disabledReason,
   selection,
   href,
+  external = false,
+  onNavigate,
   onSelect,
 }: MenuItemProps) {
   const id = useId();
   const detail = [description, disabledReason].filter(Boolean).join(" ");
   const disabled = Boolean(disabledReason);
+  const newTab = href && external && !disabled;
   const props = {
     role: selection ? (`menuitem${selection.kind}` as const) : "menuitem",
     tabIndex: -1,
-    "aria-labelledby": `${id}-label`,
+    "aria-label": newTab ? `${label}, new tab` : undefined,
+    "aria-labelledby": newTab ? undefined : `${id}-label`,
     "aria-describedby": detail ? `${id}-detail` : undefined,
     "aria-checked": selection?.checked,
     "aria-disabled": disabled || undefined,
@@ -210,7 +220,16 @@ export function MenuItem({
     </>
   );
   return href && !disabled ? (
-    <a {...props} href={href} onClick={onSelect}>
+    <a
+      {...props}
+      href={href}
+      target={external ? "_blank" : undefined}
+      rel={external ? "noopener noreferrer" : undefined}
+      onClick={(event) => {
+        onSelect?.();
+        if (!external) navigateOnClick(href, onNavigate)(event);
+      }}
+    >
       {content}
     </a>
   ) : (
