@@ -195,6 +195,9 @@ pub struct RefreshProgress {
     /// Never-judged items left behind by a ranking cap.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub left_provisional_keys: Vec<ItemKey>,
+    /// Outdated items selected for the current scan's ranking attempt.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bulk_rejudge_keys: Vec<ItemKey>,
 }
 
 /// Judgement counts of a refresh (plan §B.4).
@@ -382,6 +385,8 @@ pub struct StoredJudgement {
     pub judged_at: Timestamp,
     /// Last refresh that saw the item.
     pub last_seen_at: Timestamp,
+    /// When the user requested a replacement, until a new judgement is saved.
+    pub rejudge_requested_at: Option<Timestamp>,
 }
 
 impl Dashboard<'_> {
@@ -1051,13 +1056,38 @@ impl Dashboard<'_> {
         user_id: &str,
         id: RefreshId,
     ) -> Result<RestartOutcome, DbError> {
+        self.restart_ranking_inner(tenant_id, user_id, id, false)
+            .await
+    }
+
+    /// Starts a new ranking attempt on the current snapshot, including after a successful ranking.
+    pub async fn restart_pending_ranking(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        id: RefreshId,
+    ) -> Result<RestartOutcome, DbError> {
+        self.restart_ranking_inner(tenant_id, user_id, id, true)
+            .await
+    }
+
+    async fn restart_ranking_inner(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        id: RefreshId,
+        allow_finished: bool,
+    ) -> Result<RestartOutcome, DbError> {
         let mut tx = write_tx(self.pool).await?;
         let refresh = read_record(&mut *tx, tenant_id, user_id, id).await?;
         let retryable = refresh.state == RefreshState::Finished
-            && matches!(
-                refresh.ranking_state,
-                Some(RankingState::Failed | RankingState::Interrupted | RankingState::Cancelled)
-            );
+            && (allow_finished
+                || matches!(
+                    refresh.ranking_state,
+                    Some(
+                        RankingState::Failed | RankingState::Interrupted | RankingState::Cancelled
+                    )
+                ));
         if !retryable {
             return Ok(RestartOutcome::NotRetryable);
         }
@@ -1082,7 +1112,7 @@ impl Dashboard<'_> {
         }
         sqlx::query(
             "UPDATE dashboard_refreshes SET state = 'ranking', ranking_state = 'running', finished_at = NULL,
-                 ranking_attempt = ranking_attempt + 1
+                 ranking_attempt = ranking_attempt + 1, progress = json_remove(progress, '$.bulk_rejudge_keys')
              WHERE id = ?",
         )
         .bind(id.to_string())
@@ -1395,6 +1425,30 @@ impl Dashboard<'_> {
         Ok(())
     }
 
+    /// Persists re-judge requests on existing judgements for this user.
+    pub async fn request_rejudgements(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        keys: &[ItemKey],
+        now: Timestamp,
+    ) -> Result<(), DbError> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+        sqlx::query(
+            "UPDATE dashboard_judgements SET rejudge_requested_at = ?4, last_seen_at = MAX(last_seen_at, ?4)
+             WHERE tenant_id = ?1 AND user_id = ?2 AND item_key IN (SELECT value FROM json_each(?3))",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(serde_json::to_string(keys)?)
+        .bind(ts(now))
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// Marks the user's judgements of these items as seen at `now` (retention).
     pub async fn mark_seen(
         &self,
@@ -1463,7 +1517,8 @@ async fn upsert_judgement(
              ON CONFLICT (user_id, item_key) DO UPDATE SET input_fingerprint = excluded.input_fingerprint,
                  input_version = excluded.input_version, prompt_version = excluded.prompt_version,
                  body = excluded.body, refresh_id = excluded.refresh_id, job_id = excluded.job_id,
-                 model = excluded.model, judged_at = excluded.judged_at, last_seen_at = excluded.last_seen_at
+                 model = excluded.model, judged_at = excluded.judged_at, last_seen_at = excluded.last_seen_at,
+                 rejudge_requested_at = NULL
              WHERE dashboard_judgements.tenant_id = excluded.tenant_id",
         )
         .bind(tenant_id)
@@ -1769,6 +1824,7 @@ fn judgement_of(row: &SqliteRow) -> Result<StoredJudgement, DbError> {
         model: row.try_get("model")?,
         judged_at: parse_ts(&row.try_get::<String, _>("judged_at")?, "judged_at")?,
         last_seen_at: parse_ts(&row.try_get::<String, _>("last_seen_at")?, "last_seen_at")?,
+        rejudge_requested_at: optional_ts(row, "rejudge_requested_at")?,
     })
 }
 
@@ -2942,6 +2998,7 @@ mod tests {
         let id = start(&db, "u1", 0).await;
         let progress = RefreshProgress {
             left_provisional_keys: Vec::new(),
+            bulk_rejudge_keys: Vec::new(),
             steps: vec![ScanStep {
                 key: ScanStepKey::PrDetails,
                 state: StepState::Running,
@@ -3680,6 +3737,7 @@ mod tests {
             model: "gpt-6.1-sol".to_owned(),
             judged_at,
             last_seen_at: judged_at,
+            rejudge_requested_at: None,
         }
     }
 
@@ -4551,6 +4609,7 @@ mod tests {
         let id = ranking(&db, "u1", 1).await;
         let progress = RefreshProgress {
             left_provisional_keys: Vec::new(),
+            bulk_rejudge_keys: Vec::new(),
             steps: Vec::new(),
             percent: 100,
         };

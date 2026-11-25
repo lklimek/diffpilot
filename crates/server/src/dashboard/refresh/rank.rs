@@ -34,8 +34,12 @@ pub struct RankRun {
 pub enum RankMode {
     /// Ranking as part of a scan, including Retry ranking.
     Scan,
+    /// A scan that also requests replacements for outdated judgements.
+    ScanWithRejudge,
     /// Judging pending items on an existing snapshot without a scan.
     Pending,
+    /// A ranking without a scan limited to accepted single-item requests.
+    Rejudge,
 }
 
 /// A stored judgement applicable to an item now, with its LLM text.
@@ -47,6 +51,8 @@ pub struct ItemJudgement {
     pub text: Option<ItemText>,
     /// Judged with an older ranking prompt or judged-input version (`DashboardSummary.older_prompt_judgements`).
     pub older_prompt: bool,
+    /// The user requested a replacement for the stored answer.
+    pub rejudge_requested: bool,
 }
 
 /// The LLM ranking of snapshots.

@@ -67,6 +67,7 @@ fn expected(item: &JudgeItem) -> ItemJudgement {
         judgement,
         text: None,
         older_prompt: false,
+        rejudge_requested: false,
     }
 }
 
@@ -356,7 +357,7 @@ async fn judged_refresh_ranks_the_fixture_world_as_the_scorer_expects() {
     );
     let applied: HashMap<ItemKey, ItemJudgement> =
         items.iter().map(|i| (i.key.clone(), expected(i))).collect();
-    let view = snapshot::build(&stored, &applied, None, &Default::default());
+    let view = snapshot::build(&stored, &applied, None, &Default::default(), None);
     let want: Vec<(&str, Tier, i32)> = view
         .items
         .iter()
@@ -395,4 +396,90 @@ async fn judged_refresh_ranks_the_fixture_world_as_the_scorer_expects() {
         .expect("jobs");
     assert!(jobs.is_empty());
     assert_eq!(judged.lock().expect("judged").len(), items.len());
+}
+
+#[tokio::test]
+async fn refresh_with_rejudge_outdated_replaces_only_stale_answers() {
+    use contracts::api::dashboard::{JudgementState, OutdatedBecause};
+
+    let w = judged_world().await;
+    let served = Arc::new(Mutex::new(Vec::new()));
+    let runner = serve(w.state.clone(), Arc::clone(&served));
+    w.refreshed().await;
+    let key = w
+        .items("?limit=500")
+        .await
+        .items
+        .into_iter()
+        .find(|item| item.llm.is_some())
+        .expect("judged item")
+        .key;
+    let previous = w.summary(ALICE).await.revision;
+    served.lock().expect("served").clear();
+    let dashboard = w.state.db.dashboard();
+    let mut stored = dashboard
+        .judgements(DEFAULT_TENANT, "u1", std::slice::from_ref(&key))
+        .await
+        .expect("stored");
+    stored[0].prompt_version -= 1;
+    dashboard
+        .save_judgements(DEFAULT_TENANT, "u1", &stored)
+        .await
+        .expect("age judgement");
+    let initial = w.summary(ALICE).await;
+    assert_eq!(initial.status_counts.expect("counts").outdated, 1);
+    assert_ne!(initial.revision, previous);
+    let page = w.items("?limit=500").await;
+    let item = page
+        .items
+        .iter()
+        .find(|item| item.key == key)
+        .expect("item");
+    let judgement = item.judgement.expect("judgement");
+    assert_eq!(judgement.state, JudgementState::Outdated);
+    assert_eq!(
+        judgement.outdated_because,
+        Some(OutdatedBecause::PromptChanged)
+    );
+    assert!(
+        served.lock().expect("served").is_empty(),
+        "reading My work starts no work"
+    );
+
+    let response = api::router(w.state.clone())
+        .oneshot(
+            Request::post("/api/v1/dashboard/refreshes")
+                .header("cookie", ALICE)
+                .header("x-csrf-token", "csrf")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"rejudge_outdated":true}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    let started: RefreshStatus = serde_json::from_slice(&bytes).expect("status");
+    assert_eq!(w.settle(started.id).await.judged, 1);
+    runner.abort();
+    let served = served
+        .lock()
+        .expect("served")
+        .iter()
+        .map(|item| item.key.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(served, [key]);
+    assert_eq!(
+        w.summary(ALICE)
+            .await
+            .status_counts
+            .expect("counts")
+            .outdated,
+        0
+    );
 }

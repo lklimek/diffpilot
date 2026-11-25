@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use contracts::api::dashboard::RefreshStatus;
+use contracts::api::dashboard::{ItemKey, RefreshStatus};
 use contracts::ids::RefreshId;
 use contracts::time::Timestamp;
 use jiff::SignedDuration;
@@ -97,9 +97,23 @@ fn key(scope: &Scope) -> UserKey {
 struct ReaderState {
     limited_until: HashMap<UserKey, Timestamp>,
     writers: HashMap<UserKey, Arc<tokio::sync::Mutex<()>>>,
+    rejudges: HashMap<UserKey, Rejudges>,
 }
 
-/// Serializes targeted snapshot reads and remembers their GitHub rate limits.
+#[derive(Debug, Default)]
+struct Rejudges {
+    waiting: HashSet<ItemKey>,
+    dedicated: Option<DedicatedRejudges>,
+}
+
+#[derive(Debug)]
+struct DedicatedRejudges {
+    refresh: RefreshId,
+    attempt: u32,
+    targets: HashSet<ItemKey>,
+}
+
+/// Serializes snapshot reads that write facts and ranking transitions, and remembers GitHub rate limits.
 #[derive(Debug, Default)]
 pub(crate) struct Readers {
     state: Mutex<ReaderState>,
@@ -110,10 +124,92 @@ impl Readers {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Serialises targeted re-reads, including their snapshot read and network calls.
+    /// Coordinates snapshot writers with re-judge requests and the ranking drain.
     pub(crate) async fn writer(&self, scope: &Scope) -> tokio::sync::OwnedMutexGuard<()> {
         let lock = self.state().writers.entry(key(scope)).or_default().clone();
         lock.lock_owned().await
+    }
+
+    /// Tracks accepted clicks until a ranking takes responsibility for them. Writers hold the user's guard.
+    pub(super) fn queue_rejudge(&self, scope: &Scope, item: ItemKey) {
+        self.state()
+            .rejudges
+            .entry(key(scope))
+            .or_default()
+            .waiting
+            .insert(item);
+    }
+
+    pub(super) fn has_waiting_rejudges(&self, scope: &Scope) -> bool {
+        self.state()
+            .rejudges
+            .get(&key(scope))
+            .is_some_and(|work| !work.waiting.is_empty())
+    }
+
+    pub(super) fn start_rejudge_attempt(&self, scope: &Scope, refresh: RefreshId, attempt: u32) {
+        let mut state = self.state();
+        let work = state.rejudges.entry(key(scope)).or_default();
+        work.dedicated = Some(DedicatedRejudges {
+            refresh,
+            attempt,
+            targets: std::mem::take(&mut work.waiting),
+        });
+    }
+
+    pub(crate) fn rejudge_targets(
+        &self,
+        scope: &Scope,
+        refresh: RefreshId,
+        attempt: u32,
+    ) -> Option<HashSet<ItemKey>> {
+        let state = self.state();
+        let work = state.rejudges.get(&key(scope))?;
+        let dedicated = work.dedicated.as_ref()?;
+        (dedicated.refresh == refresh && dedicated.attempt == attempt)
+            .then(|| dedicated.targets.union(&work.waiting).cloned().collect())
+    }
+
+    pub(super) fn rejudges_dispatched<'a>(
+        &self,
+        scope: &Scope,
+        refresh: RefreshId,
+        attempt: u32,
+        items: impl Iterator<Item = &'a ItemKey>,
+    ) {
+        let mut state = self.state();
+        let Some(work) = state.rejudges.get_mut(&key(scope)) else {
+            return;
+        };
+        for item in items {
+            if let Some(item) = work.waiting.take(item)
+                && let Some(dedicated) = work.dedicated.as_mut()
+                && dedicated.refresh == refresh
+                && dedicated.attempt == attempt
+            {
+                dedicated.targets.insert(item);
+            }
+        }
+        if work.dedicated.is_none() && work.waiting.is_empty() {
+            state.rejudges.remove(&key(scope));
+        }
+    }
+
+    pub(super) fn end_rejudge_attempt(&self, scope: &Scope, refresh: RefreshId, attempt: u32) {
+        let mut state = self.state();
+        let Some(work) = state.rejudges.get_mut(&key(scope)) else {
+            return;
+        };
+        if work
+            .dedicated
+            .as_ref()
+            .is_some_and(|dedicated| dedicated.refresh == refresh && dedicated.attempt == attempt)
+        {
+            work.dedicated = None;
+        }
+        if work.dedicated.is_none() && work.waiting.is_empty() {
+            state.rejudges.remove(&key(scope));
+        }
     }
 
     /// The user's GitHub backoff, shared by scans and targeted re-reads.

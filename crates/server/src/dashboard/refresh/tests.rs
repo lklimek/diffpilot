@@ -1019,7 +1019,7 @@ async fn cancel_keeps_previous_snapshot() {
 async fn cancel_before_the_task_runs_stops_the_scan() {
     let w = world().await;
     let mut stopped = w.state.dashboard.stopped();
-    let started = start(&w.state, &alice(), RefreshTrigger::Manual)
+    let started = start(&w.state, &alice(), RefreshTrigger::Manual, false)
         .await
         .expect("start");
     // The spawned task has not run yet (current-thread runtime): end the scan as R3 does in that window.

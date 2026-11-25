@@ -1315,6 +1315,70 @@ mod ranked {
     }
 
     #[tokio::test]
+    async fn nightly_judges_only_never_judged() {
+        use contracts::agent::judge_work::JudgeWorkInput;
+        use contracts::api::dashboard::ItemKey;
+        use db::repo::dashboard::StoredJudgement;
+
+        let baseline = world().await;
+        let baseline = scheduled_ranking(&baseline).await;
+        let total =
+            |refresh: &RefreshRecord| refresh::status_of(refresh).ranking.expect("ranking").total;
+        let state = world().await;
+        let key = ItemKey::parse("acme~wallet-ui~pr~311").expect("key");
+        let before = utc(2026, 11, 17, 6, 0);
+        state
+            .db
+            .dashboard()
+            .save_judgements(
+                DEFAULT_TENANT,
+                "u1",
+                &[StoredJudgement {
+                    item_key: key.clone(),
+                    input_fingerprint: "old facts".to_owned(),
+                    input_version: crate::dashboard::judge::JUDGE_INPUT_VERSION,
+                    prompt_version: crate::dashboard::judge::JUDGE_PROMPT_VERSION,
+                    body: json!({"parts": [], "eligibility": null, "also_keys": [],
+                         "alarm": null, "why": "Previous judgement", "next": ""}),
+                    refresh_id: None,
+                    job_id: None,
+                    model: "fixture".to_owned(),
+                    judged_at: before,
+                    last_seen_at: before,
+                    rejudge_requested_at: None,
+                }],
+            )
+            .await
+            .expect("judgement");
+        let refresh = scheduled_ranking(&state).await;
+        let jobs = state
+            .db
+            .jobs()
+            .list_for_refresh(refresh.id, &[])
+            .await
+            .expect("jobs");
+        assert!(!jobs.is_empty());
+        let (_, snapshot) = crate::dashboard::snapshot::load(&state, DEFAULT_TENANT, "u1")
+            .await
+            .expect("load")
+            .expect("snapshot");
+        assert!(
+            snapshot
+                .pull_requests
+                .iter()
+                .any(|p| p.facts.number == 311 && p.facts.repo.name == "wallet-ui")
+        );
+        assert_eq!(total(&refresh) + 1, total(&baseline));
+        assert!(jobs.iter().all(|job| {
+            JudgeWorkInput::from_prompt(&job.spec.prompt)
+                .expect("input")
+                .items
+                .iter()
+                .all(|item| item.key != key)
+        }));
+    }
+
+    #[tokio::test]
     async fn scheduled_refresh_respects_the_daily_judgement_cap() {
         let state = world().await;
         // Earlier today, before the scheduled 06:00: a refresh that used the whole daily cap.

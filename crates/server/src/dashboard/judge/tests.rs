@@ -318,17 +318,88 @@ impl Harness {
 
     /// Stores `snapshot` for `user` and runs its ranking as the refresh's task.
     async fn rank(&self, user: &str, snapshot: &Snapshot) -> RefreshId {
+        self.rank_mode(user, snapshot, RankMode::Scan).await
+    }
+
+    async fn rank_mode(&self, user: &str, snapshot: &Snapshot, mode: RankMode) -> RefreshId {
         let id = self.stored(user, snapshot).await;
         let run = RankRun {
             scope: scope(user),
             refresh_id: id,
-            mode: RankMode::Scan,
+            mode,
             attempt: 0,
         };
         self.state
             .dashboard
             .spawn(id, JudgeRanker.rank(self.state.clone(), run));
         id
+    }
+
+    async fn post(
+        &self,
+        user: &str,
+        path: &str,
+        body: Option<&str>,
+    ) -> (axum::http::StatusCode, Value) {
+        use axum::body::Body as HttpBody;
+        use axum::http::Request;
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let token = Uuid::new_v4().to_string();
+        let wall = Timestamp::now();
+        self.db()
+            .sessions()
+            .create(
+                &db::repo::sessions::NewSession {
+                    token_hash: &crate::secrets::sha256(token.as_bytes()),
+                    tenant_id: DEFAULT_TENANT,
+                    user_id: user,
+                    csrf_token: "csrf",
+                    expires_at: wall + SignedDuration::from_hours(1),
+                },
+                wall,
+            )
+            .await
+            .expect("session");
+        let mut request = Request::post(path)
+            .header("cookie", format!("__Host-sr_session={token}"))
+            .header("x-csrf-token", "csrf");
+        if body.is_some() {
+            request = request.header("content-type", "application/json");
+        }
+        let response = crate::api::router(self.state.clone())
+            .oneshot(
+                request
+                    .body(HttpBody::from(body.unwrap_or_default().to_owned()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let status = response.status();
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes();
+        (
+            status,
+            if body.is_empty() {
+                Value::Null
+            } else {
+                serde_json::from_slice(&body).expect("JSON")
+            },
+        )
+    }
+
+    async fn click(&self, user: &str, key: ItemKey) -> (axum::http::StatusCode, Value) {
+        self.post(
+            user,
+            &format!("/api/v1/dashboard/items/{key}/rejudge"),
+            None,
+        )
+        .await
     }
 
     async fn status(&self, user: &str, id: RefreshId) -> RefreshStatus {
@@ -1035,18 +1106,25 @@ async fn unchanged_judged_inputs_create_no_job() {
 }
 
 #[tokio::test]
-async fn refresh_records_judged_and_reused_counts() {
+async fn refresh_judges_only_never_judged() {
     let h = harness().await;
     let snap = snapshot(prs(3), vec![], vec![]);
     h.rank_all("u1", &snap).await;
     let mut changed = snap.clone();
+    changed.pull_requests[0].facts.ci = CiEffective::Red;
     changed.pull_requests.push(pr(9, "feat: new"));
-    let (_, done) = h.rank_all("u1", &changed).await;
-    assert_eq!((done.judged, done.reused), (1, 3));
+    let id = h.rank("u1", &changed).await;
+    let (_, input) = h.serve(|i| succeeded(neutral(i))).await;
+    assert_eq!(
+        input.items.iter().map(|i| &i.key).collect::<Vec<_>>(),
+        vec![&key(9)]
+    );
+    let done = h.ranked("u1", id).await;
+    assert_eq!((done.judged, done.reused), (1, 2));
 }
 
 #[tokio::test]
-async fn judged_input_change_marks_inherited_and_queues() {
+async fn facts_change_marks_outdated_not_queued() {
     let h = harness().await;
     let snap = snapshot(prs(2), vec![], vec![]);
     h.rank_all("u1", &snap).await;
@@ -1057,21 +1135,16 @@ async fn judged_input_change_marks_inherited_and_queues() {
     assert_eq!(before[&key(2)].judgement.freshness, Freshness::Inherited);
     assert!(before[&key(2)].text.as_ref().is_some_and(|t| t.inherited));
     let id = h.rank("u1", &changed).await;
-    let (_, input) = h.serve(|i| succeeded(neutral(i))).await;
-    assert_eq!(input.items.len(), 1);
-    assert_eq!(input.items[0].key, key(2));
-    assert!(
-        input.items[0]
-            .previous
-            .as_ref()
-            .is_some_and(|p| p.why == "Judged for the test.")
-    );
+    let (sent, _) = h
+        .serve_until_ended("u1", id, |i| succeeded(neutral(i)))
+        .await;
+    assert_eq!(sent, 0);
     let done = h.ranked("u1", id).await;
-    assert_eq!((done.judged, done.reused), (1, 1));
+    assert_eq!((done.judged, done.reused), (0, 1));
 }
 
 #[tokio::test]
-async fn prompt_version_bump_marks_older_judgements_inherited() {
+async fn prompt_bump_marks_prompt_changed() {
     let h = harness().await;
     let snap = snapshot(prs(1), vec![], vec![]);
     h.rank_all("u1", &snap).await;
@@ -1091,8 +1164,498 @@ async fn prompt_version_bump_marks_older_judgements_inherited() {
     assert_eq!(applied[&key(1)].judgement.freshness, Freshness::Inherited);
     assert!(applied[&key(1)].older_prompt);
     let (_, done) = h.rank_all("u1", &snap).await;
-    assert_eq!((done.judged, done.reused), (1, 0));
-    assert!(!h.judgements("u1", &snap).await[&key(1)].older_prompt);
+    assert_eq!((done.judged, done.reused), (0, 0));
+    assert!(h.judgements("u1", &snap).await[&key(1)].older_prompt);
+}
+
+#[tokio::test]
+async fn rejudge_one_item_counts_daily_cap_only() {
+    use axum::body::Body as HttpBody;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    let h = harness().await;
+    sent_earlier(&h, "u1", DAILY_CAP - 3).await;
+    let mut snap = snapshot(prs(2), vec![], vec![]);
+    h.rank_all("u1", &snap).await;
+    let db = h.db().dashboard();
+    let at = h.state.dashboard.now();
+    // Seed past sends without applying yesterday's cap to the fixture's already-stored newer sends.
+    let filler = h.stored("u1", &snap).await;
+    let yesterday = at - SignedDuration::from_hours(24);
+    assert_eq!(
+        db.reserve_sends(
+            DEFAULT_TENANT,
+            "u1",
+            filler,
+            0,
+            JudgeSend {
+                job_id: JobId::new_random(),
+                items: REFRESH_CAP,
+                sent_at: yesterday,
+                day_start: day_start(yesterday, &TimeZone::UTC)
+            },
+            SendCaps {
+                per_refresh: Some(REFRESH_CAP),
+                per_day: u32::MAX
+            },
+        )
+        .await
+        .expect("reserve"),
+        SendReservation::Reserved,
+    );
+    snap.pull_requests[0].facts.ci = CiEffective::Red;
+    snap.pull_requests[1].facts.ci = CiEffective::Red;
+    db.replace_current_snapshot(DEFAULT_TENANT, "u1", filler, &snap)
+        .await
+        .expect("change facts");
+    let ended = db
+        .finish_ranking(
+            DEFAULT_TENANT,
+            "u1",
+            filler,
+            0,
+            RankingState::Finished,
+            JudgeCounts::default(),
+            at,
+        )
+        .await
+        .expect("finish");
+    assert_eq!(ended, RankingUpdate::Applied);
+    let user = "u1";
+    let wall = Timestamp::now();
+    h.db()
+        .sessions()
+        .create(
+            &db::repo::sessions::NewSession {
+                token_hash: &crate::secrets::sha256(b"rejudge-test"),
+                tenant_id: DEFAULT_TENANT,
+                user_id: user,
+                csrf_token: "csrf",
+                expires_at: wall + SignedDuration::from_hours(1),
+            },
+            wall,
+        )
+        .await
+        .expect("session");
+    let app = crate::api::router(h.state.clone());
+    let send = |key: ItemKey| {
+        app.clone().oneshot(
+            Request::post(format!("/api/v1/dashboard/items/{key}/rejudge"))
+                .header("cookie", "__Host-sr_session=rejudge-test")
+                .header("x-csrf-token", "csrf")
+                .body(HttpBody::empty())
+                .expect("request"),
+        )
+    };
+    // A finished snapshot can be ranked again with its per-refresh cap already exhausted.
+    let accepted = send(key(1)).await.expect("response");
+    assert_eq!(accepted.status(), StatusCode::ACCEPTED);
+    let (job, input) = h.serve(|i| succeeded(neutral(i))).await;
+    assert_eq!(job.round, 1);
+    assert_eq!(
+        input.items.iter().map(|i| &i.key).collect::<Vec<_>>(),
+        vec![&key(1)]
+    );
+    assert!(input.items[0].previous.is_some());
+    h.ranked("u1", filler).await;
+    let totals = db
+        .sent_totals(DEFAULT_TENANT, "u1", filler, day_start(at, &TimeZone::UTC))
+        .await
+        .expect("usage");
+    assert_eq!((totals.refresh, totals.day), (REFRESH_CAP + 1, DAILY_CAP));
+    assert_eq!(
+        send(key(2)).await.expect("response").status(),
+        StatusCode::CONFLICT
+    );
+}
+
+#[tokio::test]
+async fn rejudge_while_ranking_is_drained() {
+    let h = harness().await;
+    let mut snap = snapshot(prs(1), vec![], vec![]);
+    h.rank_all("u1", &snap).await;
+    snap.pull_requests[0].facts.ci = CiEffective::Red;
+    snap.pull_requests.push(pr(2, "New PR"));
+    let id = h.rank("u1", &snap).await;
+    let first = h.claim().await;
+    let input = JudgeWorkInput::from_prompt(&first.spec.prompt).expect("input");
+    assert_eq!(
+        input.items.iter().map(|i| &i.key).collect::<Vec<_>>(),
+        vec![&key(2)]
+    );
+    refresh::rejudge(&h.state, &scope("u1"), &key(1))
+        .await
+        .expect("request");
+    snap.pull_requests.push(pr(3, "Event-added PR"));
+    h.db()
+        .dashboard()
+        .replace_current_snapshot(DEFAULT_TENANT, "u1", id, &snap)
+        .await
+        .expect("add item");
+    refresh::rank_pending(&h.state, &scope("u1"))
+        .await
+        .expect("ranking is live");
+    h.complete(&first, succeeded(neutral(&input))).await;
+    let (next, input) = h.serve(|i| succeeded(neutral(i))).await;
+    assert_eq!(next.round, first.round);
+    assert_ne!(next.stage, first.stage);
+    assert_eq!(
+        input.items.iter().map(|i| &i.key).collect::<Vec<_>>(),
+        vec![&key(1), &key(3)]
+    );
+    let done = h.ranked("u1", id).await;
+    assert_eq!(done.judged, 3);
+    assert!(
+        h.db()
+            .dashboard()
+            .judgements(DEFAULT_TENANT, "u1", &[key(1)])
+            .await
+            .expect("stored")[0]
+            .rejudge_requested_at
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn bulk_rejudge_only_requests_old_items_that_fit_after_new_work() {
+    for room in [REFRESH_CAP, 4] {
+        let h = harness().await;
+        let never_judged = [key(REFRESH_CAP + 3), key(REFRESH_CAP + 4)];
+        let snap = snapshot(prs(REFRESH_CAP + 4), vec![], vec![]);
+        let keys: Vec<_> = (1..=REFRESH_CAP + 2).map(key).collect();
+        let stored: Vec<_> = keys
+            .iter()
+            .cloned()
+            .map(|item_key| StoredJudgement {
+                item_key,
+                input_fingerprint: "old facts".to_owned(),
+                input_version: JUDGE_INPUT_VERSION,
+                prompt_version: JUDGE_PROMPT_VERSION,
+                body: json!({"parts": [], "eligibility": null, "also_keys": [], "alarm": null,
+                         "why": "Previous", "next": ""}),
+                refresh_id: None,
+                job_id: None,
+                model: "fixture".to_owned(),
+                judged_at: now(),
+                last_seen_at: now(),
+                rejudge_requested_at: None,
+            })
+            .collect();
+        let db = h.db().dashboard();
+        db.save_judgements(DEFAULT_TENANT, "u1", &stored)
+            .await
+            .expect("judgements");
+        if room < REFRESH_CAP {
+            sent_earlier(&h, "u1", DAILY_CAP - room).await;
+        }
+        let id = h.rank_mode("u1", &snap, RankMode::ScanWithRejudge).await;
+        let first = h.claim().await;
+        let active = db.refresh(DEFAULT_TENANT, "u1", id).await.expect("ranking");
+        assert_eq!(
+            count(active.progress.bulk_rejudge_keys.len()),
+            room - count(never_judged.len())
+        );
+        let input = JudgeWorkInput::from_prompt(&first.spec.prompt).expect("input");
+        h.complete(&first, succeeded(neutral(&input))).await;
+        let mut sent: Vec<_> = input.items.into_iter().map(|item| item.key).collect();
+        while count(sent.len()) < room {
+            let (_, input) = h.serve(|input| succeeded(neutral(input))).await;
+            sent.extend(input.items.into_iter().map(|item| item.key));
+        }
+        h.ranked("u1", id).await;
+        assert_eq!(count(sent.len()), room);
+        assert!(
+            sent.ends_with(&never_judged),
+            "bulk requests go first, with room left for new items: {sent:?}"
+        );
+        let unsent: Vec<_> = keys
+            .iter()
+            .filter(|key| !sent.contains(key))
+            .cloned()
+            .collect();
+        assert!(
+            db.judgements(DEFAULT_TENANT, "u1", &unsent)
+                .await
+                .expect("old rows")
+                .iter()
+                .all(|row| row.rejudge_requested_at.is_none())
+        );
+        let at = h.state.dashboard.now();
+        db.reset_ranking_usage(DEFAULT_TENANT, "u1", day_start(at, &TimeZone::UTC), at)
+            .await
+            .expect("reset");
+        let plain = h.rank("u1", &snap).await;
+        assert_eq!(
+            h.serve_until_ended("u1", plain, |input| succeeded(neutral(input)))
+                .await,
+            (0, 0)
+        );
+        if room == REFRESH_CAP {
+            db.request_rejudgements(DEFAULT_TENANT, "u1", &keys, h.state.dashboard.now())
+                .await
+                .expect("pending single-item requests");
+            let plain = h.rank("u1", &snap).await;
+            let (sent, _) = h
+                .serve_until_ended("u1", plain, |input| succeeded(neutral(input)))
+                .await;
+            assert_eq!(sent, REFRESH_CAP, "pending C2 requests obey the scan cap");
+        }
+    }
+}
+
+#[tokio::test]
+async fn c2_restart_only_judges_the_clicked_item() {
+    use axum::http::StatusCode;
+
+    let h = harness().await;
+    let mut snap = snapshot(prs(2), vec![], vec![]);
+    h.rank_all("u1", &snap).await;
+    snap.pull_requests
+        .iter_mut()
+        .for_each(|pr| pr.facts.ci = CiEffective::Red);
+    snap.pull_requests
+        .extend((3..=REFRESH_CAP + 4).map(|n| pr(n, "New PR")));
+    let (id, done) = h.rank_all("u1", &snap).await;
+    assert_eq!(done.left_provisional, 2);
+    let db = h.db().dashboard();
+    db.request_rejudgements(DEFAULT_TENANT, "u1", &[key(2)], h.state.dashboard.now())
+        .await
+        .expect("an older request");
+
+    let at = day_start(h.state.dashboard.now(), &TimeZone::UTC);
+    let before = h.sent_since(at).await;
+    assert_eq!(h.click("u1", key(1)).await.0, StatusCode::ACCEPTED);
+    let (job, input) = h.serve(|input| succeeded(neutral(input))).await;
+    assert_eq!(job.round, 1);
+    assert_eq!(
+        input.items.iter().map(|item| &item.key).collect::<Vec<_>>(),
+        [&key(1)]
+    );
+    h.ranked("u1", id).await;
+    assert_eq!(h.sent_since(at).await, before + 1);
+    assert_eq!(h.status("u1", id).await.left_provisional, 2);
+}
+
+#[tokio::test]
+async fn c2_accepted_during_a_failing_batch_gets_a_new_attempt() {
+    use axum::http::StatusCode;
+
+    let h = harness().await;
+    let mut snap = snapshot(prs(1), vec![], vec![]);
+    h.rank_all("u1", &snap).await;
+    snap.pull_requests[0].facts.ci = CiEffective::Red;
+    snap.pull_requests.push(pr(2, "New PR"));
+    let id = h.rank("u1", &snap).await;
+    let first = h.claim().await;
+    assert_eq!(h.click("u1", key(1)).await.0, StatusCode::ACCEPTED);
+    h.complete(
+        &first,
+        JobOutcome::Failed {
+            kind: JobFailureKind::Configuration,
+            message: "Ranking failed".to_owned(),
+        },
+    )
+    .await;
+    let (next, input) = h.serve(|input| succeeded(neutral(input))).await;
+    assert_eq!(next.round, first.round + 1);
+    assert_eq!(
+        input.items.iter().map(|item| &item.key).collect::<Vec<_>>(),
+        [&key(1)]
+    );
+    assert_eq!(h.ranked("u1", id).await.judged, 1);
+}
+
+#[tokio::test]
+async fn c2_accepted_before_a_superseded_ranking_is_picked_up_after_a_failed_scan() {
+    use axum::http::StatusCode;
+
+    let h = harness().await;
+    let mut snap = snapshot(prs(1), vec![], vec![]);
+    h.rank_all("u1", &snap).await;
+    snap.pull_requests[0].facts.ci = CiEffective::Red;
+    snap.pull_requests.push(pr(2, "New PR"));
+    let id = h.rank("u1", &snap).await;
+    let first = h.claim().await;
+    assert_eq!(h.click("u1", key(1)).await.0, StatusCode::ACCEPTED);
+    let scan = refresh::start(&h.state, &scope("u1"), RefreshTrigger::Manual, false)
+        .await
+        .expect("superseding scan");
+    assert_eq!(h.ranked("u1", scan.id).await.state, RefreshState::Failed);
+    // The cancelled runner turn holds the credential until it reports its outcome.
+    h.complete(&first, JobOutcome::Cancelled).await;
+    let (next, input) = h.serve(|input| succeeded(neutral(input))).await;
+    assert_eq!(next.round, first.round + 1);
+    assert_eq!(
+        input.items.iter().map(|item| &item.key).collect::<Vec<_>>(),
+        [&key(1)]
+    );
+    assert_eq!(h.ranked("u1", id).await.judged, 1);
+}
+
+#[tokio::test]
+async fn c2_accepted_during_cancelled_scan_gets_a_new_attempt() {
+    use axum::http::StatusCode;
+
+    let h = harness().await;
+    let mut snap = snapshot(prs(1), vec![], vec![]);
+    let (id, _) = h.rank_all("u1", &snap).await;
+    snap.pull_requests[0].facts.ci = CiEffective::Red;
+    snap.pull_requests.push(pr(2, "New PR"));
+    let dashboard = h.db().dashboard();
+    dashboard
+        .replace_current_snapshot(DEFAULT_TENANT, "u1", id, &snap)
+        .await
+        .expect("snapshot");
+    let StartOutcome::Started { refresh: scan, .. } = dashboard
+        .start_refresh(
+            DEFAULT_TENANT,
+            "u1",
+            RefreshTrigger::Manual,
+            h.state.dashboard.now(),
+        )
+        .await
+        .expect("start scan")
+    else {
+        panic!("the scan should start");
+    };
+
+    assert_eq!(h.click("u1", key(1)).await.0, StatusCode::ACCEPTED);
+    let (status, body) = h
+        .post(
+            "u1",
+            &format!("/api/v1/dashboard/refreshes/{}/cancel", scan.id),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["state"], "cancelled");
+    let restarted = dashboard
+        .refresh(DEFAULT_TENANT, "u1", id)
+        .await
+        .expect("snapshot");
+    assert_eq!(
+        (restarted.state, restarted.ranking_attempt),
+        (RefreshState::Ranking, 1)
+    );
+    let (job, input) = h.serve(|input| succeeded(neutral(input))).await;
+    assert_eq!(job.round, restarted.ranking_attempt);
+    assert_eq!(
+        input.items.iter().map(|item| &item.key).collect::<Vec<_>>(),
+        [&key(1)]
+    );
+    h.ranked("u1", id).await;
+}
+
+#[tokio::test]
+async fn c2_waiting_on_cancelled_rejudge_gets_a_new_attempt() {
+    use axum::http::StatusCode;
+
+    let h = harness().await;
+    let mut snap = snapshot(prs(2), vec![], vec![]);
+    let (id, _) = h.rank_all("u1", &snap).await;
+    for pr in &mut snap.pull_requests {
+        pr.facts.ci = CiEffective::Red;
+    }
+    let dashboard = h.db().dashboard();
+    dashboard
+        .replace_current_snapshot(DEFAULT_TENANT, "u1", id, &snap)
+        .await
+        .expect("snapshot");
+
+    assert_eq!(h.click("u1", key(1)).await.0, StatusCode::ACCEPTED);
+    let first = h.claim().await;
+    assert_eq!(h.click("u1", key(2)).await.0, StatusCode::ACCEPTED);
+    let (status, body) = h
+        .post(
+            "u1",
+            &format!("/api/v1/dashboard/refreshes/{id}/cancel"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["ranking"]["state"], "cancelled");
+    let restarted = dashboard
+        .refresh(DEFAULT_TENANT, "u1", id)
+        .await
+        .expect("snapshot");
+    assert_eq!(
+        (restarted.state, restarted.ranking_attempt),
+        (RefreshState::Ranking, first.round + 1)
+    );
+
+    h.complete(&first, JobOutcome::Cancelled).await;
+    let (job, input) = h.serve(|input| succeeded(neutral(input))).await;
+    assert_eq!(job.round, restarted.ranking_attempt);
+    assert_eq!(
+        input.items.iter().map(|item| &item.key).collect::<Vec<_>>(),
+        [&key(2)]
+    );
+    h.ranked("u1", id).await;
+}
+
+#[tokio::test]
+async fn c2_double_click_accepts_once_and_charges_once() {
+    use axum::http::StatusCode;
+
+    let h = harness().await;
+    sent_earlier(&h, "u1", DAILY_CAP - 2).await;
+    let mut snap = snapshot(prs(1), vec![], vec![]);
+    let (id, _) = h.rank_all("u1", &snap).await;
+    snap.pull_requests[0].facts.ci = CiEffective::Red;
+    h.db()
+        .dashboard()
+        .replace_current_snapshot(DEFAULT_TENANT, "u1", id, &snap)
+        .await
+        .expect("snapshot");
+    let at = day_start(h.state.dashboard.now(), &TimeZone::UTC);
+    let before = h.sent_since(at).await;
+    assert_eq!(h.click("u1", key(1)).await.0, StatusCode::ACCEPTED);
+    let job = h.claim().await;
+    assert_eq!(h.click("u1", key(1)).await.0, StatusCode::ACCEPTED);
+    let input = JudgeWorkInput::from_prompt(&job.spec.prompt).expect("input");
+    h.complete(&job, succeeded(neutral(&input))).await;
+    h.ranked("u1", id).await;
+    assert_eq!(h.sent_since(at).await, before + 1);
+}
+
+#[tokio::test]
+async fn dashboard_write_routes_reject_current_cross_user_and_invalid_json() {
+    use axum::http::StatusCode;
+
+    let h = harness().await;
+    h.rank_all("u1", &snapshot(prs(1), vec![], vec![])).await;
+    let other = h
+        .stored(
+            "u2",
+            &snapshot(vec![pr(2, "Other user's PR")], vec![], vec![]),
+        )
+        .await;
+    assert_eq!(
+        h.db()
+            .dashboard()
+            .finish_ranking(
+                DEFAULT_TENANT,
+                "u2",
+                other,
+                0,
+                RankingState::Finished,
+                JudgeCounts::default(),
+                now(),
+            )
+            .await
+            .expect("finish"),
+        RankingUpdate::Applied,
+    );
+    let (status, json) = h.click("u1", key(1)).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(json["code"], "conflict");
+    let (status, json) = h.click("u2", key(1)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(json["code"], "not_found");
+    let (status, json) = h.post("u1", "/api/v1/dashboard/refreshes", Some("{")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json["code"], "invalid_request");
 }
 
 /// The ranking step's detail (what the dashboard banner shows for items left provisional).
@@ -1179,6 +1742,31 @@ async fn refresh_cap_judges_at_most_48() {
     assert!(done.log.iter().any(|l| l.ends_with(note)), "{:?}", done.log);
     assert_eq!(ranking_detail(&done), Some(note));
     assert_eq!(h.jobs(id).await.len(), 6, "48 items in batches of 8");
+    let holder = h
+        .db()
+        .dashboard()
+        .refresh(DEFAULT_TENANT, "u1", id)
+        .await
+        .expect("holder");
+    let view = snapshot::build(
+        &snap,
+        &h.judgements("u1", &snap).await,
+        None,
+        &Default::default(),
+        Some(&holder),
+    );
+    let capped = view
+        .items
+        .iter()
+        .filter(|entry| {
+            entry
+                .item
+                .judgement
+                .is_some_and(|j| j.state == contracts::api::dashboard::JudgementState::Capped)
+        })
+        .count();
+    assert_eq!(capped, 2);
+    assert_eq!(view.status_counts().not_judged, 2);
 }
 
 #[tokio::test]
@@ -1235,6 +1823,7 @@ async fn judge_failure_finishes_with_provisional_order_and_a_note() {
         &h.judgements("u1", &snap).await,
         None,
         &Default::default(),
+        None,
     );
     assert_eq!(view.items.len(), 2);
     assert!(
@@ -1281,7 +1870,7 @@ async fn also_ids_limited_to_suggestions() {
     h.ranked("u1", id).await;
     let judged = h.judgements("u1", &snap).await;
     assert_eq!(judged[&key(5)].judgement.also, vec![todo_key.clone()]);
-    let view = snapshot::build(&snap, &judged, None, &Default::default());
+    let view = snapshot::build(&snap, &judged, None, &Default::default(), None);
     assert!(
         view.items.iter().all(|i| i.item.key != todo_key),
         "the TODO is merged into PR #5"
@@ -1324,7 +1913,7 @@ async fn alarm_raises_p0_only_for_asked_items() {
         .expect("save");
     let judged = h.judgements("u1", &snap).await;
     assert!(!judged.contains_key(&key(8)));
-    let view = snapshot::build(&snap, &judged, None, &Default::default());
+    let view = snapshot::build(&snap, &judged, None, &Default::default(), None);
     assert_eq!(view.items.len(), 1);
     assert_eq!(view.items[0].item.score.tier, Tier::P0);
     assert_eq!(
@@ -1372,6 +1961,7 @@ async fn eligibility_answer_hides_an_item_only_when_asked() {
         &h.judgements("u1", &snap).await,
         None,
         &Default::default(),
+        None,
     );
     let ids: Vec<&str> = view.items.iter().map(|i| i.item.id.as_str()).collect();
     assert_eq!(ids, ["wallet-ui#2"]);
@@ -1406,6 +1996,7 @@ async fn stored_not_eligible_answer_never_hides_a_pull_request_directed_at_the_u
         &h.judgements("u1", &snap).await,
         None,
         &Default::default(),
+        None,
     );
     let ids: Vec<&str> = view.items.iter().map(|i| i.item.id.as_str()).collect();
     assert!(
@@ -1496,7 +2087,9 @@ async fn previous_texts_are_not_sent_after_a_language_switch() {
         .set_language("u1", LlmLanguage::En, Timestamp::now())
         .await
         .expect("language");
-    let second = h.rank("u1", &snap).await;
+    refresh::rejudge(&h.state, &scope("u1"), &key(1))
+        .await
+        .expect("re-judge in English");
     let (_, input) = h.serve(|i| succeeded(neutral(i))).await;
     let previous = input.items[0].previous.clone().expect("previous judgement");
     assert_eq!(
@@ -1514,18 +2107,25 @@ async fn previous_texts_are_not_sent_after_a_language_switch() {
             .iter()
             .all(|p| p.basis.is_empty() && p.points_tenths.is_some())
     );
-    h.ranked("u1", second).await;
+    h.ranked("u1", first).await;
     // Judged again in English: its own texts are sent next time.
-    let third = h
-        .rank(
+    h.db()
+        .dashboard()
+        .replace_current_snapshot(
+            DEFAULT_TENANT,
             "u1",
+            first,
             &snapshot(vec![pr(1, "fix: renamed title")], vec![], vec![]),
         )
-        .await;
+        .await
+        .expect("change title");
+    refresh::rejudge(&h.state, &scope("u1"), &key(1))
+        .await
+        .expect("re-judge after title change");
     let (_, input) = h.serve(|i| succeeded(neutral(i))).await;
     let previous = input.items[0].previous.clone().expect("previous judgement");
     assert_eq!(previous.why, "Judged for the test.");
-    h.ranked("u1", third).await;
+    h.ranked("u1", first).await;
 }
 
 /// B4: the excluded list is capped at 200 (by display id); the counts cover every left-out item.
@@ -1544,6 +2144,7 @@ fn excluded_list_is_capped_and_counted_in_full() {
         &HashMap::new(),
         None,
         &Default::default(),
+        None,
     );
     let exclusions = &view.exclusions;
     assert_eq!(
@@ -1580,7 +2181,7 @@ fn a_pull_request_waiting_only_on_others_is_not_in_needs_you() {
         .to_vec();
     f.others_review_requested_at = Some(now() - SignedDuration::from_hours(24));
     let snap = snapshot(vec![waiting, pr(2, "fix: other")], vec![], vec![]);
-    let view = snapshot::build(&snap, &HashMap::new(), None, &Default::default());
+    let view = snapshot::build(&snap, &HashMap::new(), None, &Default::default(), None);
     let ranked: Vec<_> = view
         .items
         .iter()
@@ -1626,7 +2227,7 @@ fn pull_requests_carry_their_size_mark() {
         vec![issue(3, "Bug")],
         vec![todo("Write docs")],
     );
-    let view = snapshot::build(&snap, &HashMap::new(), None, &Default::default());
+    let view = snapshot::build(&snap, &HashMap::new(), None, &Default::default(), None);
     let mut marks: Vec<_> = view
         .items
         .iter()
@@ -1666,7 +2267,7 @@ fn a_waiting_pull_request_returns_to_needs_you_when_it_becomes_the_users_move() 
         let mut item = waiting.clone();
         change(&mut item.facts);
         let snap = snapshot(vec![item], vec![], vec![]);
-        let view = snapshot::build(&snap, &HashMap::new(), None, &Default::default());
+        let view = snapshot::build(&snap, &HashMap::new(), None, &Default::default(), None);
         let judged = candidates(&snap, LlmLanguage::En)
             .iter()
             .filter(|c| c.asked())
@@ -1756,6 +2357,7 @@ async fn unclaimed_judge_job_ends_the_ranking() {
         zone: jiff::tz::TimeZone::UTC,
         language: LlmLanguage::En,
         left_provisional_keys: Vec::new(),
+        bulk_rejudge_keys: Vec::new(),
         unclaimed_since: Some(long_ago),
         provisional: None,
     };
@@ -1844,6 +2446,7 @@ async fn ask_container_does_not_suppress_the_unclaimed_judge_limit() {
         zone: jiff::tz::TimeZone::UTC,
         language: LlmLanguage::En,
         left_provisional_keys: Vec::new(),
+        bulk_rejudge_keys: Vec::new(),
         unclaimed_since: Some(long_ago),
         provisional: None,
     };
@@ -2006,6 +2609,7 @@ async fn stale_attempt_writes_neither_notes_nor_judgements() {
         zone: jiff::tz::TimeZone::UTC,
         language: LlmLanguage::En,
         left_provisional_keys: Vec::new(),
+        bulk_rejudge_keys: Vec::new(),
         unclaimed_since: None,
         provisional: None,
     };
@@ -2041,6 +2645,7 @@ async fn stale_attempt_writes_neither_notes_nor_judgements() {
         item: candidates[0].item.clone(),
         fingerprint: candidates[0].fingerprint.clone(),
         new: true,
+        requested: false,
         points: 0.0,
     };
     let input = JudgeWorkInput {
@@ -2077,7 +2682,7 @@ async fn supersede_and_cancel_end_the_judge_jobs() {
     let id = h.rank("u1", &snap).await;
     let running = h.claim().await;
     // A new refresh supersedes the ranking (its own scan then fails: no GitHub sign-in in this test).
-    refresh::start(&h.state, &scope("u1"), RefreshTrigger::Manual)
+    refresh::start(&h.state, &scope("u1"), RefreshTrigger::Manual, false)
         .await
         .expect("start");
     let jobs = tokio::time::timeout(WAIT, async {
@@ -2636,12 +3241,18 @@ async fn failed_submit_releases_its_reservation() {
         zone: TimeZone::UTC,
         language: LlmLanguage::En,
         left_provisional_keys: Vec::new(),
+        bulk_rejudge_keys: Vec::new(),
         unclaimed_since: None,
         provisional: None,
     };
-    let (queued, _) = ranking.queue(&snap, &candidates(&snap, LlmLanguage::En), &HashMap::new());
+    let (queued, _) = ranking.queue(
+        &snap,
+        &candidates(&snap, LlmLanguage::En),
+        &HashMap::new(),
+        false,
+    );
     assert!(matches!(
-        ranking.batch(1, &queued).await,
+        ranking.batch(1, &queued, Some(REFRESH_CAP)).await,
         Err(RankError::Unusable)
     ));
     assert!(
@@ -2941,6 +3552,7 @@ async fn an_authors_move_statement_changes_neither_waiting_on_others_nor_the_jud
             &HashMap::new(),
             None,
             &stating(number, Move::Author).await,
+            None,
         );
         let ranked: Vec<_> = view.items.iter().map(|i| i.item.id.as_str()).collect();
         let awaiting: Vec<_> = view
@@ -2987,6 +3599,7 @@ async fn every_pull_request_the_read_path_ranks_is_judged_whatever_the_statement
         &HashMap::new(),
         None,
         &stating(7, reviewers_move()).await,
+        None,
     );
     assert_eq!(
         held.awaiting
@@ -3009,7 +3622,7 @@ async fn every_pull_request_the_read_path_ranks_is_judged_whatever_the_statement
     .expect("key");
     let judgements = h.judgements("u1", &snap).await;
     assert!(judgements.contains_key(&key), "{judgements:?}");
-    let ranked = snapshot::build(&snap, &judgements, None, &Default::default());
+    let ranked = snapshot::build(&snap, &judgements, None, &Default::default(), None);
     let seven = ranked
         .items
         .iter()
@@ -3030,7 +3643,7 @@ fn waiting_on_others_counts_an_unknown_request_time_from_the_opening() {
     asked_yesterday.facts.review_requested_from_others = vec!["ana".to_owned()];
     asked_yesterday.facts.others_review_requested_at = Some(now() - SignedDuration::from_hours(24));
     let snap = snapshot(vec![asked_yesterday, opened_long_ago], vec![], vec![]);
-    let view = snapshot::build(&snap, &HashMap::new(), None, &Default::default());
+    let view = snapshot::build(&snap, &HashMap::new(), None, &Default::default(), None);
     let order: Vec<_> = view
         .awaiting
         .iter()
