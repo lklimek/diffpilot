@@ -694,6 +694,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn withdrawing_queued_flow_work_publishes_for_all_entry_points() {
+        use crate::repo::{
+            DEFAULT_TENANT,
+            jobs::{JobStage, NewJob},
+        };
+        use contracts::agent::JobKind;
+        use contracts::job::{spec::JobPriority, state::JobState};
+
+        #[derive(Debug)]
+        enum Change {
+            DisableBackground,
+            Request,
+            RequestAgain,
+            AnalyseRemaining,
+        }
+        for change in [
+            Change::DisableBackground,
+            Change::Request,
+            Change::RequestAgain,
+            Change::AnalyseRemaining,
+        ] {
+            let db = Db::in_memory().await.unwrap();
+            let id = planned(&db, 2).await;
+            let work = db.flow_work();
+            let now = Timestamp::now();
+            work.set_background(id, true, now).await.unwrap();
+            let first = FlowId("f1".into());
+            if matches!(change, Change::RequestAgain | Change::AnalyseRemaining) {
+                db.documents()
+                    .put(
+                        id,
+                        DocumentKind::Flow,
+                        &first.0,
+                        &serde_json::json!({}),
+                        now,
+                    )
+                    .await
+                    .unwrap();
+            }
+            let job = db
+                .jobs()
+                .enqueue(
+                    NewJob {
+                        spec: crate::repo::analyses::testing::job_spec(id, JobKind::AnalyseFlow),
+                        priority: JobPriority::Batch,
+                        stage: JobStage::Flow(FlowId("f2".into())),
+                        generation: 0,
+                    },
+                    now,
+                )
+                .await
+                .unwrap();
+            let activity = db.jobs().subscribe_activity(DEFAULT_TENANT);
+            match change {
+                Change::DisableBackground => work.set_background(id, false, now).await.unwrap(),
+                Change::Request => work.request(id, &first, now).await.unwrap(),
+                Change::RequestAgain => {
+                    assert!(work.request_again(id, &first, "{}", now).await.unwrap())
+                }
+                Change::AnalyseRemaining => work
+                    .analyse_remaining(id, &[(first, "{}".into())], now)
+                    .await
+                    .unwrap(),
+            }
+            assert_eq!(
+                db.jobs().get(job.id).await.unwrap().state,
+                JobState::Cancelled,
+                "{change:?}"
+            );
+            assert!(activity.has_changed().unwrap(), "{change:?} publishes");
+        }
+    }
+
+    #[tokio::test]
     async fn failed_flow_is_retried_automatically_after_the_others_up_to_the_limit() {
         let db = Db::in_memory().await.unwrap();
         let id = planned(&db, 2).await;

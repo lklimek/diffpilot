@@ -269,6 +269,7 @@ impl Assessments<'_> {
                 .execute(&mut *tx).await.map_err(DbError::from)?;
         }
         tx.commit().await.map_err(DbError::from)?;
+        self.job_changes.publish(tenant);
         Ok(AssessmentPass {
             id: request.id,
             payer: user.clone(),

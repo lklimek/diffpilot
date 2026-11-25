@@ -145,7 +145,9 @@ async fn user_stream(
         state,
         session,
         after,
-        pending: VecDeque::new(),
+        pending: VecDeque::from([UserStreamEvent::LlmActivity {
+            activity: last_activity.clone(),
+        }]),
         poll: interval(poll),
         heartbeat: interval(heartbeat),
         activity_ticks,
@@ -154,7 +156,16 @@ async fn user_stream(
     };
     Ok(stream::unfold(cursor, |mut c| async move {
         loop {
+            if *c.stopping.borrow() {
+                return None;
+            }
             if let Some(event) = c.pending.pop_front() {
+                if matches!(&event, UserStreamEvent::LlmActivity { .. }) {
+                    if !session_live(&c.state, &c.session).await {
+                        return None;
+                    }
+                    c.next_activity = Instant::now() + ACTIVITY_INTERVAL;
+                }
                 return Some((event, c));
             }
             let wake = tokio::select! {
@@ -184,12 +195,9 @@ async fn user_stream(
                     };
                     // Only visible changes trigger an event or advance the stream's cooldown.
                     if activity != c.last_activity {
-                        if !session_live(&c.state, &c.session).await {
-                            return None;
-                        }
-                        c.next_activity = Instant::now() + ACTIVITY_INTERVAL;
                         c.last_activity = activity.clone();
-                        return Some((UserStreamEvent::LlmActivity { activity }, c));
+                        c.pending
+                            .push_back(UserStreamEvent::LlmActivity { activity });
                     }
                 }
                 Wake::Poll => {
@@ -322,19 +330,24 @@ mod tests {
             .await
             .expect("in time")
             .expect("an event");
-        let UserStreamEvent::UserEvent { user_event } = &first else {
-            panic!("expected a user event first: {first:?}");
-        };
-        assert_eq!(user_event.text, "new");
-        assert_eq!(first.name(), "user_event");
-        let wire = serde_json::to_value(&first).expect("json");
-        assert_eq!(wire["event"], "user_event");
-        assert_eq!(wire["user_event"]["kind"], "test");
+        assert_eq!(first.name(), "llm_activity");
         let second = tokio::time::timeout(WAIT, events.next())
             .await
             .expect("in time")
+            .expect("a user event");
+        let UserStreamEvent::UserEvent { user_event } = &second else {
+            panic!("expected a user event after the initial snapshot: {second:?}");
+        };
+        assert_eq!(user_event.text, "new");
+        assert_eq!(second.name(), "user_event");
+        let wire = serde_json::to_value(&second).expect("json");
+        assert_eq!(wire["event"], "user_event");
+        assert_eq!(wire["user_event"]["kind"], "test");
+        let third = tokio::time::timeout(WAIT, events.next())
+            .await
+            .expect("in time")
             .expect("a heartbeat");
-        assert_eq!(second.name(), "heartbeat", "{second:?}");
+        assert_eq!(third.name(), "heartbeat", "{third:?}");
     }
 
     /// RW3 ends when the server stops.

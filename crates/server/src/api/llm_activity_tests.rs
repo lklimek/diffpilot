@@ -163,11 +163,7 @@ async fn other_users_pause_end_not_exposed() {
     assert_eq!(own["last_call"]["status"]["state"], "working");
 }
 
-#[tokio::test]
-async fn other_tenants_jobs_not_listed() {
-    let (state, analysis, reader, _) = setup().await;
-    let own = enqueue(&state, analysis, 1, "u1", 1).await;
-
+async fn claim_foreign_analysis(state: &AppState) {
     let db = &state.db;
     let tenant = "other";
     seed_tenant(db, tenant).await.unwrap();
@@ -207,8 +203,16 @@ async fn other_tenants_jobs_not_listed() {
         .await
         .unwrap()
         .id;
-    let hidden = enqueue(&state, foreign, pr_id, "u2", 1).await;
-    claim(&state, "u2", hidden).await;
+    let hidden = enqueue(state, foreign, pr_id, "u2", 1).await;
+    claim(state, "u2", hidden).await;
+}
+
+#[tokio::test]
+async fn other_tenants_jobs_not_listed() {
+    let (state, analysis, reader, _) = setup().await;
+    let own = enqueue(&state, analysis, 1, "u1", 1).await;
+
+    claim_foreign_analysis(&state).await;
 
     let snapshot = activity(&state, &reader).await;
     assert_eq!(snapshot["running"], json!([]));
@@ -284,7 +288,6 @@ async fn waits_for_usage_limit_until_own_only() {
 #[tokio::test]
 async fn ranking_waits_for_active_analysis_in_its_tenant() {
     let (state, analysis, reader, _) = setup().await;
-    let job = enqueue(&state, analysis, 1, "u1", 1).await;
     let refresh = seed_ranking_refresh(&state.db).await.unwrap();
     let mut spec = judge_spec(refresh);
     spec.payer = UserId("u1".to_owned());
@@ -303,12 +306,42 @@ async fn ranking_waits_for_active_analysis_in_its_tenant() {
         .await
         .unwrap();
 
+    assert_eq!(
+        activity(&state, &reader).await["queued"][0]["waits_for"],
+        json!({"kind":"runner"}),
+        "a ranking without an active analysis waits for a runner"
+    );
+    claim_foreign_analysis(&state).await;
+    assert_eq!(
+        activity(&state, &reader).await["queued"][0]["waits_for"],
+        json!({"kind":"runner"}),
+        "an active analysis in another tenant does not affect the wait"
+    );
+
+    let job = enqueue(&state, analysis, 1, "u1", 1).await;
     claim(&state, "u1", job).await;
     let snapshot = activity(&state, &reader).await;
     let ranking = &snapshot["queued"][0];
     assert_eq!(ranking["kind"], "ranking");
     assert_eq!(ranking["subject"], json!({"label":"My work","href":"/"}));
     assert_eq!(ranking["waits_for"], json!({"kind":"analysis_running"}));
+}
+
+#[tokio::test]
+async fn activity_stream_starts_with_the_current_snapshot_on_every_connection() {
+    let (state, analysis, reader, _) = setup().await;
+    let mut first = read(&state, &reader, "/api/v1/events").await;
+    assert_eq!(
+        next_activity(&mut first).await["activity"]["queued"],
+        json!([])
+    );
+    drop(first);
+
+    let job = enqueue(&state, analysis, 1, "u1", 1).await;
+    let mut reconnected = read(&state, &reader, "/api/v1/events").await;
+    let snapshot = next_activity(&mut reconnected).await;
+    assert_eq!(snapshot["activity"], activity(&state, &reader).await);
+    assert_eq!(snapshot["activity"]["queued"][0]["id"], job.to_string());
 }
 
 #[tokio::test]
@@ -345,8 +378,14 @@ async fn activity_event_on_job_state_change_throttled() {
     let stream = read_as_token("/api/v1/events").await.unwrap();
     assert_eq!(stream.status(), StatusCode::OK);
     let mut events = stream.into_body();
+    assert_eq!(
+        next_activity(&mut events).await["activity"]["queued"],
+        json!([])
+    );
+    let connected_at = tokio::time::Instant::now();
     let job = enqueue(&state, analysis, 1, "u2", 1).await;
     let first = next_activity(&mut events).await;
+    assert!(connected_at.elapsed() >= Duration::from_millis(950));
     assert_eq!(
         first["activity"]["queued"][0],
         json!({"owner":"other","id":"0","kind":"analysis"})

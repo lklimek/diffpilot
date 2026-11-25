@@ -682,14 +682,16 @@ impl Jobs<'_> {
             JobTarget::PullRequest(target) => (
                 "INSERT INTO jobs (id, tenant_id, analysis_id, kind, priority, state, spec, payer_id, pull_request_id, stage,
                      generation, flow_id, question_id, created_at, round)
-                 SELECT ?, tenant_id, id, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, round FROM analyses WHERE id = ?",
+                 SELECT ?, tenant_id, id, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, round FROM analyses WHERE id = ?
+                 RETURNING tenant_id",
                 target.analysis_id.to_string(),
             ),
             JobTarget::PullRequestAsk(target) => (
                 "INSERT INTO jobs (id,tenant_id,private_question_id,kind,priority,state,spec,payer_id,pull_request_id,stage,
                      generation,flow_id,question_id,created_at,round)
                  SELECT ?,tenant_id,id,?,?,'queued',?,?,?,?,?,?,?,?,0 FROM questions
-                 WHERE id=? AND analysis_id IS NULL AND private_ask=1 AND kind='comment_item' AND pull_request_id IS NOT NULL",
+                 WHERE id=? AND analysis_id IS NULL AND private_ask=1 AND kind='comment_item' AND pull_request_id IS NOT NULL
+                 RETURNING tenant_id",
                 match &job.stage {
                     JobStage::Ask(question) if spec.kind == JobKind::Ask && target.pull_request_id > 0 => question.to_string(),
                     _ => return Err(DbError::Conflict),
@@ -699,19 +701,20 @@ impl Jobs<'_> {
                 "INSERT INTO jobs (id, tenant_id, refresh_id, kind, priority, state, spec, payer_id, pull_request_id, stage,
                      generation, flow_id, question_id, created_at, round)
                  SELECT ?, tenant_id, id, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ranking_attempt
-                 FROM dashboard_refreshes WHERE id = ? AND state = 'ranking'",
+                 FROM dashboard_refreshes WHERE id = ? AND state = 'ranking'
+                 RETURNING tenant_id",
                 refresh_id.to_string(),
             ),
             JobTarget::PullRequestComments(target) => (
                 "INSERT INTO jobs (id, tenant_id, pass_id, kind, priority, state, spec, payer_id, pull_request_id, stage,
                      generation, flow_id, question_id, created_at, round)
                  SELECT ?, tenant_id, id, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, 0
-                 FROM comment_passes WHERE id = ? AND state IN ('queued', 'running')",
+                 FROM comment_passes WHERE id = ? AND state IN ('queued', 'running')
+                 RETURNING tenant_id",
                 target.pass_id.to_string(),
             ),
         };
-        let sql = format!("{sql} RETURNING tenant_id");
-        let tenant: Option<String> = sqlx::query_scalar(&sql)
+        let tenant: Option<String> = sqlx::query_scalar(sql)
             .bind(spec.job_id.to_string())
             .bind(wire_name(spec.kind)?)
             .bind(priority_value(job.priority))
@@ -2088,6 +2091,7 @@ mod tests {
                 .record_output(job, attempt, &json!({"draft": attempt}), at(start + 60))
                 .await
                 .expect("output");
+            let activity = db.jobs().subscribe_activity(crate::repo::DEFAULT_TENANT);
             assert!(
                 db.jobs()
                     .expire_leases(at(start + 60))
@@ -2096,11 +2100,13 @@ mod tests {
                     .is_empty(),
                 "the lease ends only after lease_expires_at"
             );
+            assert!(!activity.has_changed().unwrap());
             let expired = db
                 .jobs()
                 .expire_leases(at(start + 61))
                 .await
                 .expect("expire");
+            assert!(activity.has_changed().unwrap(), "expired lease publishes");
             let expected = if attempt < 3 {
                 JobState::Queued
             } else {
@@ -2164,6 +2170,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn releasing_a_claim_publishes_the_requeued_job() {
+        let db = db().await;
+        let analysis = seed_analysis(&db).await.unwrap();
+        let job = enqueue(&db, analysis, "f1", 0).await;
+        claim(&db, 0).await.unwrap();
+        let activity = db.jobs().subscribe_activity(crate::repo::DEFAULT_TENANT);
+
+        assert_eq!(
+            db.jobs().release_claim(job, 1, at(2)).await.unwrap(),
+            Some(JobState::Queued)
+        );
+        assert_eq!(db.jobs().get(job).await.unwrap().state, JobState::Queued);
+        assert!(activity.has_changed().unwrap());
+    }
+
+    #[tokio::test]
     async fn released_claim_of_a_job_flagged_for_cancel_ends_cancelled() {
         let db = db().await;
         let analysis = seed_analysis(&db).await.expect("seed");
@@ -2174,6 +2196,7 @@ mod tests {
             JobState::Claimed,
             "a claimed job is only flagged"
         );
+        let mut activity = db.jobs().subscribe_activity(crate::repo::DEFAULT_TENANT);
         assert_eq!(
             db.jobs()
                 .release_claim(job, 1, at(2))
@@ -2181,6 +2204,8 @@ mod tests {
                 .expect("release"),
             Some(JobState::Cancelled)
         );
+        assert!(activity.has_changed().unwrap(), "released claim publishes");
+        activity.changed().await.unwrap();
         let record = db.jobs().get(job).await.expect("get");
         assert_eq!(record.state, JobState::Cancelled);
         assert_eq!(
@@ -2193,6 +2218,7 @@ mod tests {
             None,
             "no longer claimed: nothing changes"
         );
+        assert!(!activity.has_changed().unwrap());
     }
 
     #[tokio::test]
@@ -2391,16 +2417,23 @@ mod tests {
         let job = enqueue(&db, analysis, "f1", 0).await;
         claim(&db, 0).await.expect("claim");
         let result = succeeded(job, 1);
+        let mut activity = db.jobs().subscribe_activity(crate::repo::DEFAULT_TENANT);
         assert_eq!(
             db.jobs().complete(&result, at(5)).await.expect("complete"),
             Completion::Applied {
                 state: JobState::Succeeded
             }
         );
+        assert!(
+            activity.has_changed().unwrap(),
+            "first completion publishes"
+        );
+        activity.changed().await.unwrap();
         assert_eq!(
             db.jobs().complete(&result, at(9)).await.expect("repeat"),
             Completion::AlreadyRecorded
         );
+        assert!(!activity.has_changed().unwrap());
         let record = db.jobs().get(job).await.expect("get");
         assert_eq!(record.result, Some(result));
         assert_eq!(record.finished_at, Some(at(5)));
@@ -2549,6 +2582,7 @@ mod tests {
                 state: JobState::Paused
             }
         );
+        let activity = db.jobs().subscribe_activity(crate::repo::DEFAULT_TENANT);
         let paused = db.jobs().get(job).await.expect("get");
         assert_eq!(paused.resumes_at, Some(at(10) + PAUSE_WITHOUT_RESET));
         assert_eq!(paused.finished_at, None);
@@ -2559,6 +2593,7 @@ mod tests {
                 .expect("too early")
                 .is_empty()
         );
+        assert!(!activity.has_changed().unwrap());
         assert_eq!(
             db.jobs()
                 .resume_paused(at(10) + PAUSE_WITHOUT_RESET)
@@ -2566,6 +2601,7 @@ mod tests {
                 .expect("resume"),
             [job]
         );
+        assert!(activity.has_changed().unwrap(), "usage reset publishes");
         let reclaimed = claim(&db, 4000).await.expect("claim");
         assert_eq!(reclaimed.attempt, 2);
         assert_eq!(reclaimed.result, None);
@@ -3020,10 +3056,15 @@ mod tests {
             running,
             "the running job is untouched"
         );
+        let activity = db.jobs().subscribe_activity(crate::repo::DEFAULT_TENANT);
         db.jobs()
             .complete(&succeeded(ranking, 1), at(5))
             .await
             .expect("complete");
+        assert!(
+            activity.has_changed().unwrap(),
+            "ranking completion publishes"
+        );
         assert_eq!(claim(&db, 6).await, None, "Ask still owns the PR container");
     }
 

@@ -1064,9 +1064,9 @@ mod tests {
 
     use super::testing::{self, seed_analysis};
     use super::*;
-    use crate::repo::Db;
     use crate::repo::documents::DocumentKind;
     use crate::repo::jobs::{JobStage, NewJob};
+    use crate::repo::{DEFAULT_TENANT, Db};
 
     fn at(minute: u32) -> Timestamp {
         format!("2026-11-16T12:{minute:02}:00Z")
@@ -1195,6 +1195,26 @@ mod tests {
             .get(id, DocumentKind::MemcanProfile, "")
             .await
             .expect("read")
+    }
+
+    #[tokio::test]
+    async fn analysis_retry_publishes_after_cancelling_the_old_queued_job() {
+        let db = db().await;
+        let id = seed_analysis(&db).await.unwrap();
+        enqueue(&db, id, JobStage::Plan { batch: 1 }, JobKind::Plan, 0).await;
+        db.analyses().set_state(id, &failed(), at(1)).await.unwrap();
+        let activity = db.jobs().subscribe_activity(DEFAULT_TENANT);
+
+        assert!(db.analyses().retry(id, at(2)).await.unwrap());
+        assert!(activity.has_changed().unwrap());
+        assert!(
+            db.jobs()
+                .activity(DEFAULT_TENANT, "u1")
+                .await
+                .unwrap()
+                .jobs
+                .is_empty()
+        );
     }
 
     /// A not-checked MemCan profile lookup is gone when the Retry's `planning` becomes visible, so no driver of
