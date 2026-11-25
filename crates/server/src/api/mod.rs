@@ -7,8 +7,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use contracts::api::error::{ApiError, ApiErrorCode};
 use contracts::routes::{
-    GET_GITHUB_WEBHOOK, GET_LLM_ACTIVITY, GET_RANKING_USAGE, GET_REPOSITORY_INSTALLATIONS,
-    GITHUB_WEBHOOK, LIST_MY_PRS, REJUDGE_DASHBOARD_ITEM, RESET_RANKING_USAGE,
+    GET_GITHUB_WEBHOOK, GET_LLM_ACTIVITY, GET_REPOSITORY_INSTALLATIONS, GITHUB_WEBHOOK,
+    REJUDGE_DASHBOARD_ITEM,
 };
 
 use crate::auth::{Session, SessionCsrf, TokenGate, access_tokens};
@@ -117,11 +117,8 @@ fn reserved_routes() -> Router<AppState> {
     Router::new()
         .route(GET_GITHUB_WEBHOOK.path, read.clone())
         .route(GET_REPOSITORY_INSTALLATIONS.path, read.clone())
-        .route(GET_LLM_ACTIVITY.path, read.clone())
-        .route(LIST_MY_PRS.path, read.clone())
-        .route(GET_RANKING_USAGE.path, read)
-        .route(REJUDGE_DASHBOARD_ITEM.path, write.clone())
-        .route(RESET_RANKING_USAGE.path, write)
+        .route(GET_LLM_ACTIVITY.path, read)
+        .route(REJUDGE_DASHBOARD_ITEM.path, write)
 }
 
 fn not_implemented() -> Response {
@@ -362,8 +359,6 @@ mod tests {
             ("GET", "/api/v1/llm/activity"),
             ("GET", "/api/v1/settings/repository-installations"),
             ("GET", "/api/v1/settings/github-webhook"),
-            ("GET", "/api/v1/me/prs"),
-            ("POST", "/api/v1/settings/ranking-usage/reset"),
             ("POST", "/api/v1/dashboard/items/acme~repo~pr~1/rejudge"),
         ] {
             let request = |cookie: Option<&str>, csrf: Option<&str>| {
