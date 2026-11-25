@@ -41,6 +41,7 @@ import {
   mockDependenciesNotes,
   mockDependenciesNotRust,
 } from "./dependencies";
+import { codeViewLines, codeViewTour } from "./code-view-v14";
 import { seedFor, seedNow } from "./fixtures";
 import { REAL_QUESTIONS, REAL_TOURS } from "./real";
 
@@ -371,6 +372,7 @@ const SCENARIOS = {
   "comments-watched": { comments: "watched" },
   "show-less": { showLess: true },
   // Owner screenshot: one remark over a replaced line, unchanged lines and added comment lines that fold.
+  "code-view-v14": { tour: codeViewTour, lines: codeViewLines },
   "remark-layout": { tour: remarkLayoutTour, lines: remarkLayoutLines },
   // Rating and remark pills: a rated step without remarks (f1.3) and an unrated one with remarks (f2.2).
   "remark-pills": {

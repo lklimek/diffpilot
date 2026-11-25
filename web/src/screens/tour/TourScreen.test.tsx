@@ -589,9 +589,7 @@ describe("Tour screen (brief §4.3)", () => {
     const chat = screen.getByRole("dialog", { name: "Ask" });
     const field = within(chat).getByRole("textbox", { name: "Your question" });
     await waitFor(() => expect(field).toHaveFocus());
-    expect(chat).toHaveTextContent(
-      /About:\s*Flows src\/rpc\/client\.rs:99 flow 1 · step 5 · Retry allowed\?/,
-    );
+    expect(chat).toHaveTextContent(/About:\s*Step 1\.5 · client\.rs 99/);
     await user().type(field, "Is the retry idempotent?{Enter}");
     const thread = await within(chat).findByRole("listitem", { name: "Question: Is the retry idempotent?" });
     const asked = readStore("questions").at(-1)!;
@@ -672,13 +670,13 @@ describe("Tour screen (brief §4.3)", () => {
     await openStep("1", "6");
     expect(screen.getByRole("dialog", { name: "Ask" })).toBe(chat);
     expect(within(chat).getByRole("textbox", { name: "Your question" })).toHaveValue("draft");
-    expect(chat).toHaveTextContent(/About:\s*Flows src\/rpc\/client\.rs:100–103 flow 1 · step 6/);
+    expect(chat).toHaveTextContent(/About:\s*Step 1\.6 · client\.rs 100–103/);
     await user().click(
       within(chat).getByRole("button", { name: "Remove the subject: ask about the whole PR" }),
     );
     expect(chat).toHaveTextContent(/About:\s*Whole PR/);
     await user().click(within(chat).getByRole("button", { name: "about this step instead" }));
-    expect(chat).toHaveTextContent(/About:\s*Flows src\/rpc\/client\.rs:100–103/);
+    expect(chat).toHaveTextContent(/About:\s*Step 1\.6 · client\.rs 100–103/);
     // Esc hides it; the launcher brings it back with the draft.
     await user().click(within(chat).getByRole("textbox", { name: "Your question" }));
     await user().keyboard("{Escape}");
@@ -882,12 +880,16 @@ describe("Tour screen (brief §4.3)", () => {
 describe("Use as review comment (owner request F31): anchors and availability", () => {
   const chat = () => screen.getByRole("dialog", { name: "Ask" });
   const useButtons = () => within(chat()).queryAllByRole("button", { name: "Use as review comment" });
-  const thread = (id: string) =>
-    waitFor(() => {
-      const found = chat().querySelector(`[data-thread="${id}"]`);
+  const thread = async (id: string) => {
+    const item = await waitFor(() => {
+      const found = chat().querySelector<HTMLElement>(`[data-thread="${id}"]`);
       expect(found).not.toBeNull();
-      return found as HTMLElement;
+      return found!;
     });
+    const show = within(item).queryByRole("button", { name: /^Show Q\d+$/ });
+    if (show) await user().click(show);
+    return item;
+  };
   const composer = () => within(inspector()).getByRole("textbox", { name: /^Comment on / });
 
   it("an answer with no comment open goes on the step's first changed line", async () => {
@@ -1032,7 +1034,7 @@ describe("Use as review comment (owner request F31): anchors and availability", 
     await open();
     await openStep("1", "5");
     await user().keyboard("a");
-    await waitFor(() => expect(chat()).toHaveTextContent("Potential double send"));
+    expect(await thread("t1")).toHaveTextContent("Potential double send");
     await waitFor(() => expect(inspector()).toHaveTextContent("Potential double broadcast on a late reply"));
     expect(useButtons()).toHaveLength(0);
   });

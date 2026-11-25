@@ -15,11 +15,13 @@ import { commentStatusText } from "./QueueList";
 export function CommentOverviewCard({
   item,
   duplicates,
+  inPass,
   since,
   now,
 }: {
   item: ReviewComment;
   duplicates: ReviewComment[];
+  inPass?: number;
   since?: string | null;
   now: Date;
 }) {
@@ -27,7 +29,7 @@ export function CommentOverviewCard({
   useEffect(() => focusQuestionHeading(heading.current), [item.id]);
   const last = item.decisions.at(-1);
   const imported = item.imported_decision || item.state === "outside";
-  const status = commentStatusText(item, since, now);
+  const status = commentStatusText(item, inPass, since, now);
   return (
     <article
       aria-label={itemId(item)}

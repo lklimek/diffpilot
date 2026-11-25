@@ -9,7 +9,9 @@ for (const width of [1280, 2560]) {
     await expect(page.getByRole("main").getByRole("heading", { name: /^2 / })).toBeVisible();
     await expect(page.getByText("Assessment (LLM)")).toHaveCount(0);
     await expect(inspector.getByRole("button", { name: /Call hierarchy/ })).toHaveCount(0);
-    const hide = page.getByRole("checkbox", { name: "Hide comment and import changes" });
+    const hide = page.getByRole("checkbox", {
+      name: width === 1280 ? "Hide imports and comment changes" : "Hide comment and import changes",
+    });
     await expect(hide).toBeChecked();
     await expect(page.getByText("2 comment/import lines hidden — in the classic diff")).toBeVisible();
     const mainColumn = page.locator("[data-column=main]");

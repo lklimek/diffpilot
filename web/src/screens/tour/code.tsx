@@ -1,6 +1,6 @@
 // Code of the review screen: ranges fetched here and drawn by the code-view components (rule A7).
 import type { UseQueryResult } from "@tanstack/react-query";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { CodeViewProps } from "../../components/code-view/CodeView";
 import { ApiError } from "../../api/client";
 import type {
@@ -15,6 +15,7 @@ import type {
   LineSide,
   LinesResponse,
   PendingComment,
+  PrFile,
   RangeQuery,
   RiskBand,
 } from "../../api/generated/types";
@@ -24,6 +25,9 @@ import { ClassicDiff } from "../../components/code-view/ClassicDiff";
 import { CodeView } from "../../components/code-view/CodeView";
 import type { MarkerTarget } from "../../components/code-view/markers";
 import { StatusMessage } from "../../components/status/StatusMessage";
+import { pathOn } from "../../components/files/model";
+import { githubLineUrls, type PrLinkBase } from "../../components/github/links";
+import type { LineGithubLink } from "../../components/code-view/LineGithub";
 import { Tooltip } from "../../components/tooltip/Tooltip";
 
 /** "Hide comment and import changes" of the review views, remembered per user (default on). */
@@ -70,6 +74,8 @@ export function rangeChunks(path: string, side: LineSide, ranges: readonly LineR
 export interface CodeContext {
   hideContextChanges?: boolean;
   analysisId: AnalysisId;
+  pr?: PrLinkBase;
+  files?: readonly PrFile[];
   threads: readonly GithubThread[];
   comments: readonly PendingComment[];
   /** The line a comment is being written on (its file only is marked). */
@@ -89,6 +95,7 @@ export interface CodeContext {
   flash?: Evidence | null;
   /** "Show in Inspector" of a remark or GitHub thread popover. */
   onShowInInspector?: (target: MarkerTarget) => void;
+  onAskRemark?: (annotation: Annotation) => void;
   /** "N.M" of a thread's step when it is not the step shown. */
   otherThreadStep?: (thread: GithubThread) => string | null;
 }
@@ -105,6 +112,11 @@ interface LinesCodeProps extends Pick<
   | "remarkStartOnly"
   | "removedMarkerLine"
   | "askLineHint"
+  | "before"
+  | "after"
+  | "beforeControl"
+  | "afterControl"
+  | "leadingControl"
 > {
   ctx: CodeContext;
   revealLine?: number;
@@ -120,6 +132,7 @@ interface LinesCodeProps extends Pick<
 export function LinesCode({ ctx, lines, ...view }: LinesCodeProps) {
   // Removed blocks whose rest the user asked for, by their first base line.
   const [opened, setOpened] = useState<readonly number[]>([]);
+  const githubLine = useGithubLines(ctx, lines.data?.path);
   if (lines.isPending) return <StatusMessage kind="loading">Loading the code…</StatusMessage>;
   if (lines.isError) {
     return <StatusMessage kind="error">Cannot show the code: {errorText(lines.error)}</StatusMessage>;
@@ -139,6 +152,7 @@ export function LinesCode({ ctx, lines, ...view }: LinesCodeProps) {
         hideContextChanges={ctx.hideContextChanges}
         lines={data}
         flashLine={flash}
+        githubLine={githubLine}
         {...view}
         threads={ctx.threads}
         comments={ctx.comments}
@@ -147,12 +161,19 @@ export function LinesCode({ ctx, lines, ...view }: LinesCodeProps) {
         onDeleteComment={ctx.onDeleteComment}
         activeLine={active && { side: active.side, line: active.line }}
         highlight={highlight}
-        onLineAction={(target, how) =>
-          ctx.onLineSelect ? ctx.onLineSelect(target, how, data) : ctx.onComment(target, data)
-        }
+        onLineAction={(target, how) => {
+          const source =
+            [...(view.before ?? []), ...(view.after ?? [])].find(
+              ({ lines: context }) =>
+                target.side === context.side && context.from <= target.line && target.line <= context.to,
+            )?.lines ?? data;
+          if (ctx.onLineSelect) ctx.onLineSelect(target, how, source);
+          else ctx.onComment(target, source);
+        }}
         onAskLine={ctx.onAskLine}
         onLoadDeleted={(block) => setOpened((all) => [...all, block.base_start])}
         onShowInInspector={ctx.onShowInInspector}
+        onAskRemark={ctx.onAskRemark}
         otherThreadStep={ctx.otherThreadStep}
       />
       {data.deleted
@@ -173,6 +194,31 @@ export function LinesCode({ ctx, lines, ...view }: LinesCodeProps) {
         ))}
     </>
   );
+}
+
+function useGithubLines(
+  { pr, files }: Pick<CodeContext, "pr" | "files">,
+  path: string | undefined,
+): LineGithubLink | undefined {
+  return useMemo(() => {
+    if (!pr || !path) return;
+    const file = files?.find((f) => f.path === path) ?? files?.find((f) => f.old_path === path);
+    const diffPath = file?.path ?? path;
+    const head = githubLineUrls(pr, file ? pathOn(file, "head") : path, "head", false);
+    const base = githubLineUrls(pr, file ? pathOn(file, "base") : path, "base", false);
+    const headDiff = githubLineUrls(pr, diffPath, "head", true);
+    const baseDiff = githubLineUrls(pr, diffPath, "base", true);
+    return (side, line, inDiff) =>
+      inDiff && !file?.not_rendered
+        ? {
+            url: (side === "head" ? headDiff : baseDiff)(line),
+            tip: "GitHub shows the latest commits, which may differ from the analysed ones.",
+          }
+        : {
+            url: (side === "head" ? head : base)(line),
+            tip: `Open line ${line} on GitHub at the analysed commit (new tab)`,
+          };
+  }, [files, path, pr]);
 }
 
 /** Code view of one range of at most `MAX_RANGE_LINES` lines. */
@@ -196,7 +242,7 @@ export function ChunkedCode({
   const [shown, setShown] = useState(1);
   const next = chunks[shown];
   return (
-    <div className="grid gap-1.5">
+    <div data-code-path={path} className="grid gap-1.5">
       {chunks.slice(0, shown).map((query) => (
         <RangeCode key={`${query.from}-${query.to}`} ctx={ctx} query={query} />
       ))}
@@ -231,7 +277,7 @@ export function FileDiffCode({ ctx, path, side }: { ctx: CodeContext; path: stri
   ]);
   const next = chunks[shown];
   return (
-    <div className="grid gap-1.5">
+    <div data-code-path={path} className="grid gap-1.5">
       {chunks.slice(0, shown).map((query) => (
         <DiffCode key={query.from} analysisId={ctx.analysisId} query={query} comments={ctx} />
       ))}
@@ -259,9 +305,13 @@ export function DiffCode({
   analysisId: AnalysisId;
   query: RangeQuery;
   /** The reviewer's pending comments with edit and delete, marked on their lines. */
-  comments?: Pick<CodeContext, "comments" | "onEditComment" | "onDeleteComment" | "onAskLine">;
+  comments?: Pick<
+    CodeContext,
+    "comments" | "onEditComment" | "onDeleteComment" | "onAskLine" | "pr" | "files"
+  >;
 }) {
   const diff = useDiff(analysisId, query);
+  const githubLine = useGithubLines(comments ?? {}, query.path);
   if (diff.isPending) return <StatusMessage kind="loading">Loading the diff…</StatusMessage>;
   if (diff.isError) {
     return <StatusMessage kind="error">Cannot show the diff: {errorText(diff.error)}</StatusMessage>;
@@ -269,6 +319,7 @@ export function DiffCode({
   return (
     <ClassicDiff
       diff={diff.data}
+      githubLine={githubLine}
       highlight={highlight}
       comments={comments?.comments}
       onEditComment={comments?.onEditComment}

@@ -4,7 +4,7 @@ import { Fragment, useEffect, useState } from "react";
 import type { Annotation, LineRange, LineSide, PrFile } from "../../api/generated/types";
 import { useLines } from "../../api/queries";
 import type { CodeViewProps } from "../../components/code-view/CodeView";
-import { UnchangedFold } from "../../components/code-view/UnchangedFold";
+import { ContextFold } from "../../components/code-view/ContextFold";
 import { displaySide, fileRegions, pathOn } from "../../components/files/model";
 import { DiffCode, LinesCode, MAX_RANGE_LINES, rangeChunks, type CodeContext } from "../tour/code";
 
@@ -96,7 +96,7 @@ function RegionCode({
         />
       )}
       {last && lines.data && lines.data.to < lines.data.total_lines && (
-        <UnchangedFold
+        <ContextFold
           from={lines.data.to + 1}
           to={lines.data.total_lines}
           onExpand={() => onShow(capped(lines.data!.to + 1, lines.data!.total_lines))}
@@ -127,7 +127,7 @@ export function FileCode({ file, show, ...props }: FileCodeProps) {
         return (
           <Fragment key={range.start_line}>
             {range.start_line > before + 1 && (
-              <UnchangedFold
+              <ContextFold
                 from={before + 1}
                 to={range.start_line - 1}
                 onExpand={() => onShow(capped(before + 1, range.start_line - 1))}

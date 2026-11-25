@@ -98,7 +98,9 @@ for (const state of ["default", "wrong", "missed", "noq", "noprofile", "resume"]
       const count = await steps.count();
       for (let i = 0; i < count; i += 1) {
         await steps.nth(i).click();
-        await expect(page.getByRole("status")).toHaveCount(0);
+        const statuses = page.getByRole("status");
+        await expect(statuses.and(page.locator("[data-ask-announcement]"))).toBeEmpty();
+        await expect(statuses).toHaveCount(1);
         await expectTrustWording(page);
       }
     }
@@ -333,10 +335,7 @@ test("every top-bar control explains itself in a tooltip", async ({ page }) => {
   await expect(banner.getByRole("button", { name: "View: Flows" })).toHaveAccessibleDescription(/Files/);
   // The chip (link or span) carries the tooltip; its text may sit in an inner truncating span.
   await expect(
-    banner
-      .locator("[aria-describedby]")
-      .filter({ hasText: /^Check runs:/ })
-      .first(),
+    banner.locator("[aria-describedby]").filter({ hasText: /^CI:/ }).first(),
   ).toHaveAccessibleDescription(/Failing checks/);
   await expect(banner.getByText(/^Your progress/)).toHaveAccessibleDescription(/No percentage/);
   await expect(banner.getByRole("button", { name: /^Pending review/ })).toHaveAccessibleDescription(

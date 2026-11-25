@@ -121,7 +121,7 @@ export function RefreshControl({
       : `Not live · ${scanText}`;
 
   const rankingLabel = rankingNotices[0]?.label;
-  const statusLabel = latest?.state === "cancelled" ? "Scan cancelled" : rankingLabel;
+  const scanLabel = latest?.state === "cancelled" ? "Scan cancelled" : null;
   const statusRef = useRef<HTMLSpanElement>(null);
   const retryDescription =
     "Rank the current snapshot again. Only items that still need judging count toward the limits.";
@@ -152,7 +152,7 @@ export function RefreshControl({
           tabIndex={0}
           className="block cursor-help truncate text-xs text-muted"
         >
-          {statusLabel ? `${statusLabel} · ${status}` : status}
+          {[rankingLabel, scanLabel, status].filter(Boolean).join(" · ")}
         </span>
       </Tooltip>
       {onRetryRanking && (

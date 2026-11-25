@@ -1,4 +1,5 @@
 import type { MouseEvent } from "react";
+import { inApp } from "../../inApp";
 
 /** Called with an in-app href instead of a full page load (the screen routes); absent = a normal link. */
 export type Navigate = (href: string) => void;
@@ -10,16 +11,5 @@ export type Navigate = (href: string) => void;
 export const navigateOnClick =
   (href: string, onNavigate?: Navigate) =>
   (event: MouseEvent<HTMLAnchorElement>): void => {
-    if (
-      !onNavigate ||
-      event.button !== 0 ||
-      event.metaKey ||
-      event.ctrlKey ||
-      event.shiftKey ||
-      event.altKey
-    ) {
-      return;
-    }
-    event.preventDefault();
-    onNavigate(href);
+    if (onNavigate) inApp(event, () => onNavigate(href));
   };

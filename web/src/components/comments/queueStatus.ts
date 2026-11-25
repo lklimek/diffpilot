@@ -14,6 +14,10 @@ export const QUEUE_STATUS = {
 
 export type QueueStatus = keyof typeof QUEUE_STATUS;
 
+export function queueStatusLabel(status: QueueStatus, inPass?: number): string {
+  return status === "assessing" && inPass === undefined ? "Pending or assessing" : QUEUE_STATUS[status];
+}
+
 export const queueStatusOf = (value: string | null): QueueStatus =>
   value && Object.hasOwn(QUEUE_STATUS, value) ? (value as QueueStatus) : "needs_you";
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AskAnchor, AskQuestion } from "./generated/types";
-import { withoutRetried } from "./queries";
+import { withoutRetried } from "./questionHistory";
 
 const q = (id: string, minute: number, anchor: AskAnchor, extra: Partial<AskQuestion> = {}): AskQuestion => ({
   id,
@@ -29,6 +29,18 @@ describe("withoutRetried: a failed question asked again is replaced by its retry
     expect(withoutRetried([failed, retry, failedFollowUp, retriedFollowUp]).map((x) => x.id)).toEqual([
       "b",
       "d",
+    ]);
+  });
+
+  it("carries the first ask to the first surviving retry after consecutive failures", () => {
+    const place = step("f1.5");
+    const failed = q("a", 1, place, { state: "failed", answer: null, failure: "x" });
+    const failedAgain = q("b", 3, place, { ...failed, id: "b", created_at: "2026-11-19T10:03:00Z" });
+    const retry = q("c", 4, place, { text: failed.text });
+    const newAsk = q("d", 5, place, { text: failed.text });
+    expect(withoutRetried([newAsk, failedAgain, retry, failed])).toEqual([
+      newAsk,
+      { ...retry, firstAsk: { id: failed.id, created_at: failed.created_at } },
     ]);
   });
 

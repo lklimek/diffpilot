@@ -31,6 +31,7 @@ describe("HelpDialog", () => {
       "aopen the Ask chat about the current step, flow or PR context",
       "rnext step with LLM remarks (its first remark flashes)",
       "sswitch to the Files view at this step's lines",
+      "gopen the current line on GitHub (new tab)",
       "?this help",
       "Escclose",
     ]);
@@ -41,7 +42,7 @@ describe("HelpDialog", () => {
     const keys = within(screen.getByRole("table", { name: "Keyboard shortcuts" }))
       .getAllByRole("row")
       .map((row) => row.querySelector("kbd")?.textContent);
-    expect(keys).toEqual(["j", "k", "n", "p", "v", "r", "d", "c", "a", "s", "?", "Esc"]);
+    expect(keys).toEqual(["j", "k", "n", "p", "v", "r", "d", "c", "a", "s", "g", "?", "Esc"]);
   });
 
   it("has the legend of how code is drawn (brief §4.3)", () => {

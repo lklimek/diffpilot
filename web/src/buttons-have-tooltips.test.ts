@@ -18,6 +18,11 @@ const ALLOWED: { file: string; match: string; reason: string }[] = [
       "Line numbers: one per displayed line (hundreds); each has an aria-label and a native title naming the action.",
   },
   {
+    file: "components/code-view/ClassicDiff.tsx",
+    match: "data-line-action",
+    reason: "One keyboard line number per row, each with a native title explaining its GitHub action.",
+  },
+  {
     file: "components/code-view/CodeView.tsx",
     match: "aria-describedby={descriptionId}",
     reason:

@@ -208,3 +208,10 @@ read with tokens (ADR-019).
   recorded decision pre-filled (`import_proposal`, OQ7). **Invariant: an imported decision never has effects**; only a
   later decision of the owner acts. Stored in `comment_decision_origins` (migration 0033), so `comment_decisions`
   keeps its CHECK. OQ6 and OQ7 decided (owner 2026-11-25).
+- **"Not a review point"** (owner TODO `81a75cdb`, plan §7a, C19): an owner-only internal disposition for an item
+  that is not a real review point — no effects, no feed entry, out of Needs you and of later assessment passes,
+  logged with who and when, undoable, superseded by a later decision, followed by non-gate duplicates. Stored as an
+  append-only mark (`comment_item_marks`, migration 0035), not as a `comment_decisions` row, so the kind CHECK stays.
+- **Assessment starts only on an explicit trigger** (owner 2026-11-25, plan §6a, C20): reading a PR (PR page,
+  Comments, items, "Read GitHub again") never queues a pass; the Comments view starts one with
+  `POST …/comments/assess`; watched PRs keep their automatic passes.

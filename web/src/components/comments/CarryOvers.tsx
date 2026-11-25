@@ -161,7 +161,11 @@ export function CarryOvers({
                 </td>
                 <td className={TD}>
                   {itemHref && e.kind === "asked_again" ? (
-                    <a href={itemHref(e.item_no)} onClick={navigateOnClick(itemHref(e.item_no), onNavigate)}>
+                    <a
+                      href={itemHref(e.item_no)}
+                      onClick={navigateOnClick(itemHref(e.item_no), onNavigate)}
+                      className="inline-flex min-h-6 min-w-6 items-center"
+                    >
                       C{e.item_no}
                     </a>
                   ) : (

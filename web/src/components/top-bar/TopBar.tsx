@@ -1,6 +1,7 @@
 import type { MouseEvent, ReactNode } from "react";
+import { inApp } from "../inApp";
 import { GithubMark } from "../github/GithubMark";
-import { CHECKS_LINK_TIP, ciText, ciTip } from "../section/ci";
+import { CHECKS_LINK_TIP, ciBadgeText, ciText, ciTip } from "../section/ci";
 import type { CiStatus, LlmLanguage, PrSummary } from "../../api/generated/types";
 import { LanguageTag } from "../language-tag/LanguageTag";
 import { PENDING_INCOMPLETE } from "../section/format";
@@ -12,6 +13,7 @@ interface TopBarProps {
   onHideContextChanges?: (hide: boolean) => void;
   /** The pull request under review; absent outside the review. */
   pr?: TopBarPr;
+  currentPath?: string;
   /** CI status of the head commit. */
   ci?: CiStatus;
   /** The PR's checks page on GitHub; the CI summary links to it (new tab) when given. */
@@ -55,13 +57,6 @@ export interface ReviewViews {
 
 const VIEW_NAMES = { flows: "Flows", files: "Files", deps: "Dependencies", comments: "Comments" } as const;
 
-// A plain left click stays in the app; a modified or middle click opens the link the browser's way.
-const inApp = (event: MouseEvent, follow: () => void) => {
-  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-  event.preventDefault();
-  follow();
-};
-
 const SEP = (
   <span aria-hidden className="text-muted">
     ›
@@ -85,8 +80,8 @@ function Breadcrumb({
   };
   const label = (
     <>
-      <span aria-hidden className="hidden truncate sm:inline">
-        <span className="hidden min-[1440px]:inline">{pr.repo.owner}/</span>
+      <span aria-hidden className="review-repo hidden truncate sm:inline">
+        <span className="review-owner hidden min-[1440px]:inline">{pr.repo.owner}/</span>
         {pr.repo.name}
       </span>{" "}
       <span aria-hidden className="shrink-0">
@@ -99,10 +94,14 @@ function Breadcrumb({
   return (
     <nav
       aria-label="Breadcrumb"
-      className="flex min-w-max shrink-0 items-center gap-1.5 sm:min-w-0 sm:shrink"
+      className="review-crumb flex min-w-max shrink-0 items-center gap-1.5 sm:min-w-0 sm:shrink"
     >
       <span className="hidden shrink-0 items-center gap-1.5 sm:inline-flex">
-        <a href="/" onClick={(event) => follow(event, "/")} className="font-bold text-text no-underline">
+        <a
+          href="/"
+          onClick={(event) => follow(event, "/")}
+          className="review-brand font-bold text-text no-underline"
+        >
           diff<span className="text-accent">pilot</span>
         </a>
         {SEP}
@@ -206,6 +205,7 @@ export function TopBar({
   hideContextChanges = true,
   onHideContextChanges,
   pr,
+  currentPath,
   ci,
   checksHref,
   language,
@@ -218,8 +218,13 @@ export function TopBar({
   onNavigate,
   progressMenu,
 }: TopBarProps) {
+  const codeReview = view?.current === "flows" || view?.current === "files";
+  const split = currentPath ? currentPath.lastIndexOf("/") + 1 : 0;
   return (
-    <header className="sticky top-0 z-30 flex min-h-12 flex-none flex-wrap items-center gap-2 border-b border-border bg-surface px-2 py-1 whitespace-nowrap sm:h-12 sm:flex-nowrap sm:gap-3.5 sm:px-3.5 sm:py-0">
+    <header
+      data-code-review={codeReview || undefined}
+      className="sticky top-0 z-30 flex min-h-12 flex-none flex-wrap items-center gap-2 border-b border-border bg-surface px-2 py-1 whitespace-nowrap sm:h-12 sm:flex-nowrap sm:gap-3.5 sm:px-3.5 sm:py-0"
+    >
       {pr ? (
         <Breadcrumb pr={pr} view={view} prsHref={prsHref} onNavigate={onNavigate} />
       ) : (
@@ -229,15 +234,35 @@ export function TopBar({
       )}
       {pr && (
         <div
-          className={`flex min-w-0 flex-1 items-center gap-2 overflow-hidden ${
+          className={`review-pr-line flex min-w-0 flex-1 items-center gap-2 overflow-hidden ${
             // Separates the PR's own line from the breadcrumb (page path).
             view ? "sm:ml-1.5 sm:border-l-2 sm:border-border sm:pl-5" : ""
           }`}
         >
           {pr.title && (
-            <strong title={pr.title} className="min-w-0 truncate font-semibold sm:min-w-[16ch]">
+            <strong title={pr.title} className="review-pr-title min-w-0 truncate font-semibold">
               {pr.title}
             </strong>
+          )}
+          {codeReview && currentPath && (
+            <Tooltip tip={currentPath} className="review-path-tip">
+              <code
+                className="review-current-path items-baseline text-xs font-normal text-muted"
+                role="group"
+                aria-label={`Current file: ${currentPath}`}
+                tabIndex={0}
+              >
+                <span className="review-path-dot" aria-hidden>
+                  ·&nbsp;
+                </span>
+                <span className="review-path-directory" aria-hidden>
+                  <bdi>{currentPath.slice(0, split)}</bdi>
+                </span>
+                <bdi className="text-text" aria-hidden>
+                  {currentPath.slice(split)}
+                </bdi>
+              </code>
+            </Tooltip>
           )}
           {pr.head_sha && (
             <Tooltip
@@ -253,7 +278,7 @@ export function TopBar({
             <LanguageTag language={language} />
           </span>
           {ci && checksHref && (
-            <Tooltip tip={`${CHECKS_LINK_TIP} ${ciTip(ci)}`} className="min-w-0">
+            <Tooltip tip={`${CHECKS_LINK_TIP} ${ciTip(ci)}`} className={codeReview ? "shrink-0" : "min-w-0"}>
               <a
                 href={checksHref}
                 target="_blank"
@@ -262,57 +287,65 @@ export function TopBar({
                   ci.state === "failing" ? "border-high-bd bg-high-bg text-high" : "border-border text-text"
                 }`}
               >
-                <span className="truncate">{ciText(ci)}</span>
+                <span className={codeReview ? "review-ci-counts" : "truncate"}>
+                  {codeReview ? ciBadgeText(ci) : ciText(ci)}
+                </span>
                 <GithubMark />
               </a>
             </Tooltip>
           )}
           {ci && !checksHref && (
-            <Tooltip tip={ciTip(ci)} className="min-w-0">
+            <Tooltip tip={ciTip(ci)} className={codeReview ? "shrink-0" : "min-w-0"}>
               <span
                 tabIndex={0}
-                className={`block max-w-full cursor-help truncate rounded border px-1.5 text-[11px] leading-[18px] font-semibold ${
+                className={`block max-w-full cursor-help rounded border px-1.5 text-[11px] leading-[18px] font-semibold ${codeReview ? "review-ci-counts" : "truncate"} ${
                   ci.state === "failing" ? "border-high-bd bg-high-bg text-high" : "border-border text-text"
                 }`}
               >
-                {ciText(ci)}
+                {codeReview ? ciBadgeText(ci) : ciText(ci)}
               </span>
             </Tooltip>
           )}
         </div>
       )}
       {!pr && <span className="flex-1" />}
-      {progressMenu}
-      {progress && !progressMenu && (
-        <Tooltip tip="Flows you have ticked as reviewed (all their steps ticked, in the Flows view), out of all flows in this PR. No percentage and no weighting by risk.">
-          <span tabIndex={0} className="cursor-help text-[12.5px]">
-            Your progress <b>{progress.reviewed}</b> / {progress.total}
-          </span>
-        </Tooltip>
-      )}
-      {pendingCount !== undefined && (
-        <Tooltip
-          tip={`Comments in your GitHub pending review for this PR; opens the list.${
-            typeof pendingCount === "string" && pendingCount.endsWith("+") ? ` ${PENDING_INCOMPLETE}` : ""
-          }`}
-        >
-          <button type="button" onClick={onOpenPending} className={BUTTON}>
-            Pending review <b>{pendingText(pendingCount)}</b>
-          </button>
-        </Tooltip>
-      )}
-      {onHideContextChanges && (
-        <Tooltip tip="Hides Rust comment and import changes in the main code view. The classic diff always shows them. Other languages are unchanged.">
-          <label className="flex cursor-pointer items-center gap-1 text-xs whitespace-normal">
-            <input
-              type="checkbox"
-              checked={hideContextChanges}
-              onChange={(e) => onHideContextChanges(e.target.checked)}
-            />
-            Hide comment and import changes
-          </label>
-        </Tooltip>
-      )}
+      <div className="review-controls contents">
+        {progressMenu}
+        {progress && !progressMenu && (
+          <Tooltip tip="Flows you have ticked as reviewed (all their steps ticked, in the Flows view), out of all flows in this PR. No percentage and no weighting by risk.">
+            <span tabIndex={0} className="cursor-help text-[12.5px]">
+              Your progress <b>{progress.reviewed}</b> / {progress.total}
+            </span>
+          </Tooltip>
+        )}
+        {pendingCount !== undefined && (
+          <Tooltip
+            tip={`Comments in your GitHub pending review for this PR; opens the list.${
+              typeof pendingCount === "string" && pendingCount.endsWith("+") ? ` ${PENDING_INCOMPLETE}` : ""
+            }`}
+          >
+            <button type="button" onClick={onOpenPending} className={BUTTON}>
+              Pending review <b>{pendingText(pendingCount)}</b>
+            </button>
+          </Tooltip>
+        )}
+        {onHideContextChanges && (
+          <Tooltip tip="Hides Rust comment and import changes in the main code view. The classic diff always shows them. Other languages are unchanged.">
+            <label className="review-context-toggle flex cursor-pointer items-center gap-1 text-xs whitespace-normal">
+              <input
+                type="checkbox"
+                checked={hideContextChanges}
+                onChange={(e) => onHideContextChanges(e.target.checked)}
+              />
+              <span className="review-context-label">Hide comment and import changes</span>
+              <span className="review-context-label-short">
+                <span>Hide imports</span>
+                <span className="sr-only"> and comment changes</span>
+              </span>
+            </label>
+          </Tooltip>
+        )}
+      </div>
       {userMenu}
     </header>
   );

@@ -63,7 +63,6 @@ import {
   ChunkedCode,
   DiffCode,
   FileDiffCode,
-  LinesCode,
   errorText,
   useHideContextChanges,
   type CodeContext,
@@ -88,7 +87,16 @@ import { useNow } from "../../app/now";
 import { FlowsMenu } from "./FlowsMenu";
 import { Workspace } from "./Workspace";
 import { useAskChat, useAskPlace, type AnswerDraft } from "../review/askChat";
-import { checksHref, isTyping, pendingCountOf, transient, useNoPageScroll } from "./review";
+import { StepCode } from "./StepCode";
+import {
+  checksHref,
+  isTyping,
+  openGithubLine,
+  pendingCountOf,
+  transient,
+  useNoPageScroll,
+  useVisibleCodePath,
+} from "./review";
 
 const PR_CONTEXT: BlockRef = { block: "pr_context" };
 
@@ -253,6 +261,12 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   const next = index >= 0 ? sequence[index + 1] : undefined;
   const found = current.block === "step" ? findStep(tour, current.step_id) : undefined;
   const step = found?.step;
+  const currentPath = useVisibleCodePath(
+    mainRef,
+    location.key,
+    layout.full === "main" || (layout.full === null && !layout.hidden.main),
+    lineView?.file ?? step?.facts.file,
+  );
   const flow =
     found?.flow ??
     (current.block === "flow_intro" ? tour.flows.find((f) => f.id === current.flow_id) : undefined);
@@ -449,6 +463,9 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         case "toggle_old_code":
           if (offersOldCode) setOldCode((shown) => !shown);
           return;
+        case "github_line":
+          event.preventDefault();
+          return openGithubLine(mainRef.current, currentLine()?.target ?? lineView);
         case "comment":
           event.preventDefault();
           return commentOnCurrentLine();
@@ -547,9 +564,17 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   });
   const pendingComments = pending.data?.comments ?? [];
   const pendingCount = pendingCountOf(pending);
+  const askRemark = (remark: Annotation) => {
+    const owner = tour.flows
+      .flatMap((flow) => flow.steps)
+      .find((s) => s.llm.annotations.some((annotation) => annotation.id === remark.id));
+    if (owner) chat.open({ anchor: { kind: "step", step_id: owner.id, lines: remark.range }, remark });
+  };
   const ctx: CodeContext = {
     hideContextChanges,
     analysisId,
+    pr: tour.analysis.pr,
+    files: files.data?.files,
     threads: tour.threads,
     comments: pendingComments,
     activeLine: commentLine?.target ?? null,
@@ -576,6 +601,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
     onDeleteComment: comments.remove,
     flash: evidence ?? null,
     onShowInInspector: showInInspector,
+    onAskRemark: askRemark,
     otherThreadStep: (t) => {
       const owner = t.step_id && t.step_id !== step?.id ? findStep(tour, t.step_id) : undefined;
       return owner ? `${owner.flow.position}.${owner.step.number}` : null;
@@ -699,8 +725,15 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
             {oldCode ? (
               <DiffCode analysisId={analysisId} query={stepQuery(step)} comments={ctx} />
             ) : (
-              <LinesCode
+              <StepCode
                 key={location.key}
+                step={step}
+                siblings={found.flow.steps.map((other) => ({
+                  step: other,
+                  label: `Step ${found.flow.position}.${other.number}`,
+                  href: `#${blockFragment({ block: "step", step_id: other.id })}`,
+                }))}
+                onStep={(id) => void go({ block: "step", step_id: id })}
                 ctx={ctx}
                 revealLine={evidence?.line ?? firstShownChange}
                 lines={stepLines}
@@ -944,6 +977,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
       </a>
       <ReviewTopBar
         pr={tour.analysis.pr}
+        currentPath={currentPath}
         ci={tour.pr_context.facts.ci}
         checksHref={checksHref(tour.analysis.pr)}
         language={tour.analysis.language}
@@ -1038,6 +1072,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
             sections={sections}
             commentRef={commentRef}
             onAskLine={ctx.onAskLine}
+            onAskRemark={askRemark}
             onFlagAsComment={onFlagAsComment}
             commentPrefill={commentPrefill}
             onCommentPrefilled={() => setCommentPrefill(null)}

@@ -1,3 +1,4 @@
+import { AskRemarkButton } from "../ask/AskRemarkButton";
 import { GithubCommentText } from "../comments/GithubCommentText";
 import type { Annotation, AnnotationId, GithubThread } from "../../api/generated/types";
 import { MARKER, SpeechBubble } from "../comment/LineComments";
@@ -78,12 +79,14 @@ export function RemarkMarker({
   owner,
   unrated = false,
   onShowInInspector,
+  onAskRemark,
 }: {
   annotation: Annotation;
   line: number;
   owner?: string | null;
   /** The remark carries no risk rating; the popover says so. */
   unrated?: boolean;
+  onAskRemark?: (annotation: Annotation) => void;
   onShowInInspector?: (target: MarkerTarget) => void;
 }) {
   const name = `LLM remark at line ${line}: ${annotationName(a)}${owner ? ` (${owner})` : ""}`;
@@ -94,7 +97,7 @@ export function RemarkMarker({
       label={name}
       tag="llm"
       hint="LLM remark. Hover or click for its text."
-      content={(pinned) => (
+      content={(pinned, close) => (
         <>
           {unrated && <span className="block text-muted">Risk not rated by the LLM.</span>}
           <span className="block">
@@ -106,10 +109,10 @@ export function RemarkMarker({
             {a.type === "behaviour" ? (
               <>
                 <span className="block">
-                  <span className="font-semibold">Was:</span> {a.was}
+                  <span className="font-semibold">Was:</span> <CodeText text={a.was} />
                 </span>
                 <span className="mt-1 block">
-                  <span className="font-semibold">Is:</span> {a.is}
+                  <span className="font-semibold">Is:</span> <CodeText text={a.is} />
                 </span>
               </>
             ) : (
@@ -127,12 +130,22 @@ export function RemarkMarker({
               </span>
             )}{" "}
             <span className="text-muted">({a.basis})</span>
-            {pinned && onShowInInspector && (
-              <span className="block">
-                <ShowInInspector
-                  name={title}
-                  onClick={() => onShowInInspector({ kind: "annotation", id: a.id })}
-                />
+            {pinned && (onShowInInspector || onAskRemark) && (
+              <span className="flex flex-wrap items-baseline gap-x-3">
+                {onShowInInspector && (
+                  <ShowInInspector
+                    name={title}
+                    onClick={() => onShowInInspector({ kind: "annotation", id: a.id })}
+                  />
+                )}
+                {onAskRemark && (
+                  <AskRemarkButton
+                    onAsk={() => {
+                      close();
+                      onAskRemark(a);
+                    }}
+                  />
+                )}
               </span>
             )}
           </span>

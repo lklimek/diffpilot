@@ -88,15 +88,16 @@ export const fileDiffUrl = (pr: PrLinkBase, path: string) =>
  * lines are in the diff, else the file at the analysed commit of their side (`blob/<sha>/<path>#L<a>-L<b>`).
  */
 export function githubLineUrl(pr: PrLinkBase, span: LineSpan, inDiff: boolean): string {
-  const lines = (prefix: string) =>
-    span.end > span.start ? `${prefix}${span.start}-${prefix}${span.end}` : `${prefix}${span.start}`;
-  if (inDiff) {
-    const side = span.side === "base" ? "L" : "R";
-    return `${repoUrl(pr)}/pull/${pr.number}/changes#diff-${sha256Hex(span.path)}${lines(side)}`;
-  }
-  const sha = span.side === "base" ? pr.base_sha : pr.head_sha;
-  const path = span.path.split("/").map(encodeURIComponent).join("/");
-  return `${repoUrl(pr)}/blob/${sha}/${path}#${lines("L")}`;
+  return githubLineUrls(pr, span.path, span.side, inDiff)(span.start, span.end);
+}
+
+/** Builds line links for one GitHub file without rehashing its path for every line. */
+export function githubLineUrls(pr: PrLinkBase, path: string, side: LineSide, inDiff: boolean) {
+  const prefix = inDiff && side === "head" ? "R" : "L";
+  const base = inDiff
+    ? fileDiffUrl(pr, path)
+    : `${repoUrl(pr)}/blob/${side === "base" ? pr.base_sha : pr.head_sha}/${path.split("/").map(encodeURIComponent).join("/")}#`;
+  return (start: number, end = start) => `${base}${prefix}${start}${end > start ? `-${prefix}${end}` : ""}`;
 }
 
 /** The step's changed lines (first to last) in the PR's changes view; null without changed lines. */

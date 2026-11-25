@@ -26,7 +26,7 @@ test("Ask about this line opens the chat about the line from the code view and t
   await page.keyboard.press("Enter");
   await main.getByRole("button", { name: "Ask about this line" }).click();
   await expect(field).toBeFocused();
-  await expect(chat).toContainText(/About:\s*Files\s*src\/rpc\/client\.rs:89\s*flow 1 · step 2/);
+  await expect(chat).toContainText(/About:\s*Step 1\.2 · client\.rs 89/);
   await page.keyboard.type("is this the retry?");
 
   // The classic diff in the Inspector offers it too; the draft stays.
@@ -36,7 +36,7 @@ test("Ask about this line opens the chat about the line from the code view and t
     .first()
     .click();
   await diff.getByRole("button", { name: "Ask about this line" }).click();
-  await expect(chat).toContainText(/About:\s*Files\s*src\/rpc\/client\.rs:\d+/);
+  await expect(chat).toContainText(/About:\s*Step 1\.2 · client\.rs 88/);
   await expect(field).toHaveValue("is this the retry?");
   await expect(field).toBeFocused();
   expect(posts).toEqual([]);

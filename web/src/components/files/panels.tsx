@@ -55,6 +55,7 @@ export interface FilesPanelContext {
   diff?: ReactNode;
   onEvidence?: (evidence: Evidence) => void;
   onFlagAsComment?: (flag: Annotation) => void;
+  onAskRemark?: (annotation: Annotation) => void;
   /** Goes to an LLM flag: its step in its hunk, flashed in the Inspector. */
   onFlag?: (flag: Annotation) => void;
 }
@@ -333,6 +334,7 @@ export function hunkPanel(ctx: FilesPanelContext, hunk: FileHunk): InspectorPane
             sections={ctx.sections}
             onEvidence={ctx.onEvidence}
             onFlagAsComment={ctx.onFlagAsComment}
+            onAskRemark={ctx.onAskRemark}
           />
         ) : (
           <HunkFlags ctx={ctx} hunk={hunk} steps={steps} />
@@ -393,6 +395,7 @@ function HunkFlags({
                 ctx.onEvidence!({ file: step.facts.file, side: step.facts.side, line: a.range.start_line }))
             }
             onUseAsComment={ctx.onFlagAsComment && (() => ctx.onFlagAsComment!(a))}
+            onAskRemark={ctx.onAskRemark && (() => ctx.onAskRemark!(a))}
           />
         ))}
       </ul>
@@ -455,6 +458,7 @@ export function stepInHunkPanel(
           sections={ctx.sections}
           onEvidence={ctx.onEvidence}
           onFlagAsComment={ctx.onFlagAsComment}
+          onAskRemark={ctx.onAskRemark}
         />
         <ThreadsSection
           threads={threads}

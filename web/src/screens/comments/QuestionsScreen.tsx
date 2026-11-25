@@ -376,6 +376,7 @@ export function QuestionsScreen() {
         head={overview.head}
         now={now}
         deferred={deferred}
+        inPass={overview.assessment.in_pass}
         onStatus={changeStatus}
       >
         <StartAgentHelp
@@ -425,6 +426,7 @@ export function QuestionsScreen() {
         key={single.id}
         item={single}
         duplicates={duplicates.get(single.no) ?? []}
+        inPass={overview.assessment.in_pass}
         since={overview.assessment.since}
         now={now}
       />
@@ -496,6 +498,7 @@ export function QuestionsScreen() {
         status={status}
         onStatus={changeStatus}
         statusHost={statusHost}
+        inPass={overview.assessment.in_pass}
         since={overview.assessment.since}
         now={now}
         restCount={decideRest.data?.rows.length ?? 0}

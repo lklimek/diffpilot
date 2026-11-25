@@ -71,6 +71,7 @@ export interface InspectorProps {
   sections?: SectionControl;
   /** "Use as review comment" on a flag of the step; no button without it. */
   onFlagAsComment?: (flag: Annotation) => void;
+  onAskRemark?: (annotation: Annotation) => void;
   /** What to show instead of the block's own panel (the Files view's file, hunk or selected lines). */
   panel?: InspectorPanel;
   /** A way back above the heading ("← Back to hunk"), e.g. from a step narrowed in the Files view. */
@@ -128,8 +129,7 @@ function stepPanel(
   annotation: Annotation | undefined,
   diff: ReactNode,
   sections: SectionControl,
-  onEvidence?: (evidence: Evidence) => void,
-  onFlagAsComment?: (flag: Annotation) => void,
+  actions: Pick<InspectorProps, "onEvidence" | "onFlagAsComment" | "onAskRemark">,
 ): Panel {
   const stepTitle = `Step ${step.number} · ${step.llm.title}`;
   const github = stepGithubLink(tour.analysis.pr, step.facts);
@@ -152,8 +152,7 @@ function stepPanel(
         annotation={annotation}
         diff={diff}
         sections={sections}
-        onEvidence={onEvidence}
-        onFlagAsComment={onFlagAsComment}
+        {...actions}
       />
     ),
   };
@@ -169,6 +168,7 @@ export interface StepDetailsProps {
   sections: SectionControl;
   onEvidence?: (evidence: Evidence) => void;
   onFlagAsComment?: (flag: Annotation) => void;
+  onAskRemark?: (annotation: Annotation) => void;
   /** The Files view: no Called by / Goes next, no diff, no threads (its panel shows those of the lines). */
   files?: boolean;
 }
@@ -182,6 +182,7 @@ export function StepDetails({
   sections,
   onEvidence,
   onFlagAsComment,
+  onAskRemark,
   files = false,
 }: StepDetailsProps) {
   const anns = annotation ? [annotation] : step.llm.annotations;
@@ -227,12 +228,14 @@ export function StepDetails({
       <BehaviourSection
         currentFile={step.facts.file}
         onEvidence={onEvidence}
+        onAskRemark={onAskRemark}
         annotations={annotation ? anns : byType("behaviour")}
         sections={sections}
       />
       <WhySection
         currentFile={step.facts.file}
         onEvidence={onEvidence}
+        onAskRemark={onAskRemark}
         why={step.llm.why}
         notes={byType("note")}
         sections={sections}
@@ -240,6 +243,7 @@ export function StepDetails({
       <ConsequencesSection
         currentFile={step.facts.file}
         onEvidence={onEvidence}
+        onAskRemark={onAskRemark}
         annotations={byType("consequence")}
         sections={sections}
       />
@@ -248,6 +252,7 @@ export function StepDetails({
         currentFile={step.facts.file}
         step={step}
         onEvidence={onEvidence}
+        onAskRemark={onAskRemark}
         annotations={byType("flag")}
         sections={sections}
         onUseAsComment={onFlagAsComment}
@@ -273,7 +278,11 @@ function panelFor(props: InspectorProps, sections: SectionControl): Panel {
       const found = findStep(tour, block.step_id);
       if (!found) break;
       const annotation = found.step.llm.annotations.find((a) => a.id === annotationId);
-      return stepPanel(tour, found.step, annotation, diff, sections, props.onEvidence, props.onFlagAsComment);
+      return stepPanel(tour, found.step, annotation, diff, sections, {
+        onEvidence: props.onEvidence,
+        onFlagAsComment: props.onFlagAsComment,
+        onAskRemark: props.onAskRemark,
+      });
     }
     case "flow_intro": {
       const flow = tour.flows.find((f) => f.id === block.flow_id);
