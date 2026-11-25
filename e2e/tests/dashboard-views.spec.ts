@@ -1,5 +1,5 @@
-// What My work shows of one ranked snapshot of the world (v1.1 plan §F): excluded items with their reason, a PR
-// waiting only on others outside Needs you, change-size pills and the "Sizes shown" filter, the kind toggles
+// What My work shows of one ranked snapshot: excluded items with their reason, a PR waiting only on others
+// outside Needs you, change-size pills and filter chips, the kind toggles
 // remembered over a reload; and Recent reviews on the review start page.
 import { analyze, checkScreen, signIn } from "../support/app";
 import {
@@ -32,10 +32,19 @@ test("a ranked snapshot of the world", async ({ page, stack }) => {
 
 test("Excluded lists the excluded author's pull request with its reason", async ({ page }) => {
   await signIn(page);
-  const disclosure = page.getByRole("button", { name: "Excluded: 1 — 1 excluded author" });
-  await expect(disclosure).toHaveAttribute("aria-expanded", "false");
-  await disclosure.click();
-  await expect(disclosure).toHaveAttribute("aria-expanded", "true");
+  const status = page.getByRole("button", { name: "Status: All", exact: true });
+  await expect(status).toHaveAttribute("aria-expanded", "false");
+  expect(await rowIds(page)).not.toContain("NC-495");
+  await status.click();
+  await expect(status).toHaveAttribute("aria-expanded", "true");
+  const excluded = page.getByRole("menuitemradio", { name: "Excluded and snoozed · 1" });
+  await expect(excluded).toHaveAttribute("aria-checked", "false");
+  await expect(excluded).toHaveAccessibleDescription("1 excluded author");
+  await excluded.click();
+  await expect(page.getByRole("button", { name: "Status: Excluded and snoozed" })).toHaveAttribute(
+    "aria-expanded",
+    "false",
+  );
   const group = page.getByRole("group", { name: "Excluded authors: 1" });
   await expect(group).toContainText("Pull requests and issues written by an excluded author.");
   const row = group.getByRole("listitem");
@@ -65,23 +74,30 @@ test("a PR waiting only on others is not in Needs you but in Waiting on others",
   await checkScreen(page);
 });
 
-test("size pills; Sizes shown hides a size of pull requests only", async ({ page }) => {
+test("size pills add a filter chip; excluding a size keeps issues and TODOs", async ({ page }) => {
   await signIn(page);
   const row = (id: string) => workList(page).locator("li[data-item]", { hasText: id });
-  await expect(row("WUI-320").getByLabel("Change size: tiny, 40 changed lines")).toBeVisible();
-  await expect(row("NC-482").getByLabel(/^Change size: small, /)).toBeVisible();
-  await expect(row("PLAT-1187").getByLabel(/^Change size: /)).toHaveCount(0);
+  const tiny = row("WUI-320").getByRole("button", { name: "Filter by size tiny" });
+  await expect(tiny).toBeVisible();
+  await expect(tiny).toHaveAccessibleDescription(/40 changed lines/);
+  const small = row("NC-482").getByRole("button", { name: "Filter by size small" });
+  await expect(small).toBeVisible();
+  await expect(small).toHaveAccessibleDescription(/changed lines/);
+  await expect(row("PLAT-1187").getByRole("button", { name: /^Filter by size / })).toHaveCount(0);
 
-  const sizes = workList(page).getByRole("group", { name: "Sizes shown" });
-  const tiny = sizes.getByRole("button", { name: /^tiny\b/ });
-  await expect(tiny).toHaveAttribute("aria-pressed", "true");
   await tiny.click();
-  await expect(tiny).toHaveAttribute("aria-pressed", "false");
+  const filters = workList(page).getByRole("region", { name: "Active filters" });
+  const size = filters.getByRole("button", { name: "size: tiny" });
+  await expect(size).toHaveAttribute("aria-pressed", "false");
+  expect(await rowIds(page)).toEqual(expect.arrayContaining(["WUI-320", "OPS-14", "NC-476", "NC-490"]));
+  expect(await rowIds(page)).not.toContain("NC-482");
+  await size.click();
+  await expect(size).toHaveAttribute("aria-pressed", "true");
   const shown = await rowIds(page);
   for (const id of ["WUI-320", "OPS-14", "NC-476", "NC-490"]) expect(shown).not.toContain(id);
   expect(shown).toEqual(expect.arrayContaining(["NC-482", "PLAT-1203", ...ISSUES, "TODO-3fa91c2e"]));
   await checkScreen(page);
-  await tiny.click();
+  await filters.getByRole("button", { name: "Remove filter size tiny" }).click();
   await expect(row("WUI-320")).toBeVisible();
 });
 
