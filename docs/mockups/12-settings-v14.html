@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings v1.4 - diffpilot mockup</title>
+<!-- docs/v1.4-ui-plan.md U29-U33 win on behaviour. Fictional data. -->
+<link rel="stylesheet" href="mockup.css">
+<link rel="stylesheet" href="mockup-v14.css">
+</head>
+<body data-page="settings14">
+<a class="skip" href="#main">Skip to content</a>
+<noscript><p style="padding:8px">This mockup needs JavaScript for its tabs.</p></noscript>
+<header class="topbar">
+ <a class="brand" href="index.html">diff<span>pilot</span></a><span class="crumb">/ Settings</span><span class="sp"></span>
+ <button class="llmind" type="button" aria-label="LLM activity: 1 running" data-tip="LLM: 1 running (Ranking, since 10:42). Opens the list (see 13).">&#9684; LLM 1</button>
+ <button class="usermenu" type="button" aria-label="alice: user menu"><span class="avatar" aria-hidden="true">a</span>alice <span class="car" aria-hidden="true">&#9662;</span></button>
+</header>
+<div class="states" role="group" aria-label="Mockup states (tabs)"><b>tab:</b>
+ <button type="button" data-s="llm" aria-pressed="true">LLM &amp; usage</button>
+ <button type="button" data-s="account" aria-pressed="false">Account</button>
+ <button type="button" data-s="mywork" aria-pressed="false">My work</button>
+ <button type="button" data-s="review" aria-pressed="false">Review loop</button>
+ <button type="button" data-s="repos" aria-pressed="false">Repositories</button>
+ <button type="button" data-s="install" aria-pressed="false">Installation</button>
+ <span class="muted">&middot; same layout at 1440, 2000 and 3440 px (block max 1480 px, centred from 2000 px); help moves into a right rail when the content is &ge; 1100 px wide</span>
+</div>
+<div class="shell">
+<nav class="app" aria-label="Main"><a href="11-dashboard-v14.html">My work <span class="count">1</span></a><a href="#">Review a PR</a><a href="#">Watched PRs</a><a href="#" aria-current="page">Settings</a></nav>
+<main class="main" id="main">
+ <div class="set14">
+  <div>
+   <h1 style="margin-bottom:12px">Settings</h1>
+   <nav class="subnav" aria-label="Settings sections">
+    <a href="#account" data-tab="account">Account</a>
+    <a href="#llm" data-tab="llm" aria-current="page">LLM &amp; usage</a>
+    <a href="#mywork" data-tab="mywork">My work</a>
+    <a href="#review" data-tab="review">Review loop</a>
+    <a href="#repos" data-tab="repos">Repositories</a>
+    <a href="#install" data-tab="install">Installation</a>
+   </nav>
+   <p class="small" style="margin-top:12px"><a href="#">Settings help</a></p>
+  </div>
+  <div class="setc">
+   <div class="subsel"><label for="subsel">Section</label><select id="subsel"><option value="account">Account</option><option value="llm" selected>LLM &amp; usage</option><option value="mywork">My work</option><option value="review">Review loop</option><option value="repos">Repositories</option><option value="install">Installation</option></select></div>
+   <p class="annot"><b>U29</b> tabs with a URL each (<code>/settings/llm</code>). <b>U30</b> one column of full-width sections, label &middot; control &middot; help rail. <b>U31</b> usage and limits first. <b>U33</b> LLM status and plan usage folded in.</p>
+
+   <!-- ============ LLM & USAGE ============ -->
+   <div data-for="llm">
+    <section class="sec14" aria-labelledby="ul-h"><h2 id="ul-h">Usage and limits</h2><p class="lead">Your usage today. Limits are fixed by diffpilot and shown here; they reset at your local midnight (Europe/Warsaw, from Settings &rsaquo; My work).</p>
+     <div class="tiles">
+      <div class="tile"><h3>Ranking today</h3>
+       <div class="big">37 <small>of 120 items sent for judgement</small></div>
+       <div class="meter14" role="meter" aria-valuemin="0" aria-valuemax="120" aria-valuenow="37" aria-label="Items sent for judgement today"><i style="width:30.8%"></i></div>
+       <div>Up to <b>48</b> items per refresh</div>
+       <div>Resets at <b>00:00</b> (in 13 h 14 min)</div>
+       <div data-tip="Items whose judgement waits because a limit was reached: they keep their earlier judgement or are scored from computed parts.">Left provisional by a limit: <b>3</b></div>
+       <details style="margin-top:4px"><summary class="btn sm" style="list-style:none;display:inline-flex">Reset my limits</summary>
+        <div class="banner info small" style="margin:6px 0 0;display:block">Sets today&rsquo;s count to 0 for you only. A ranking that is running continues; the per-refresh cap stays. <button class="btn sm pri" type="button" data-toast="Limits reset (mock): 0 of 120 today.">Reset now</button></div></details>
+      </div>
+      <div class="tile"><h3>Comment assessment today</h3>
+       <div class="big">1 <small>of 80 passes</small></div>
+       <div class="meter14" role="meter" aria-valuemin="0" aria-valuemax="80" aria-valuenow="1" aria-label="Assessment passes today"><i style="width:1.25%"></i></div>
+       <div>A/B runs both methods: one pass each.</div><div>Resets at <b>00:00</b></div>
+      </div>
+      <div class="tile"><h3>Tokens</h3>
+       <div data-tip="Reported by the provider for completed jobs, including Ask. Cached input is part of input.">Today: <b>1.2 M</b> input (0.9 M cached), <b>48 k</b> output &middot; 14 jobs</div>
+       <div>Last 7 days: <b>9.8 M</b> input (7.1 M cached), <b>390 k</b> output &middot; 102 jobs</div>
+       <div>This month: <b>31 M</b> input, <b>1.3 M</b> output</div>
+      </div>
+      <div class="tile"><h3>Codex plan <span class="muted" style="text-transform:none;letter-spacing:0">reported by the plan</span></h3>
+       <div>Plan: <b>Pro</b> &middot; linked as alice@example.org</div>
+       <div data-tip="Provider-observed usage of the 5-hour window, as ChatGPT reports it.">5-hour window: <b>34%</b> used &middot; resets 13:00</div>
+       <div>Weekly window: <b>12%</b> used &middot; resets Mon 00:00</div>
+      </div>
+      <div class="tile"><h3>Last LLM call</h3>
+       <div><span class="b b-ok" data-tip="The most recent LLM call succeeded.">working</span> 10:46 today</div>
+       <div class="small muted">Outcome of the most recent call; there is no on-demand check. Credentials stay on the server.</div>
+      </div>
+     </div>
+    </section>
+    <section class="sec14" aria-labelledby="me-h"><h2 id="me-h">Model and effort</h2><p class="lead">Applies to everyone on this installation.</p>
+     <div class="frow"><label class="lab" for="m1">Model</label><div><select id="m1"><option>Sol 6.1</option><option>Astra</option></select></div><p class="help">Used for analyses, comment assessment and ranking jobs started from now on, including the remaining jobs of running analyses.</p></div>
+     <div class="frow"><label class="lab" for="m2">Reasoning effort</label><div class="row"><select id="m2"><option>high</option><option>medium</option></select><button class="btn pri sm" type="button" data-toast="Saved (mock)">Save model and effort</button></div><p class="help">A job already submitted keeps its choice.</p></div>
+     <div class="frow"><label class="lab" for="m3">Ask effort</label><div><select id="m3"><option>medium</option><option>high</option></select></div><p class="help">Saved when changed; questions asked from now on use it.</p></div>
+     <div class="frow"><label class="lab" for="m4">Dashboard ranking effort</label><div><select id="m4"><option>low</option><option>medium</option></select></div><p class="help">Saved when changed; rankings started from now on use it.</p></div>
+    </section>
+    <section class="sec14" aria-labelledby="la-h"><h2 id="la-h">Language of LLM texts</h2>
+     <div class="frow"><label class="lab" for="m5">Write explanations in</label><div><select id="m5"><option>English</option><option>Polski</option></select></div><p class="help">The interface stays English. Analyses started after a change use the new language.</p></div>
+    </section>
+   </div>
+
+   <!-- ============ ACCOUNT ============ -->
+   <div data-for="account" hidden>
+    <section class="sec14" aria-labelledby="ac-h"><h2 id="ac-h">GitHub sign-in</h2>
+     <div class="frow"><span class="lab">Signed in as</span><div><b>alice</b> (GitHub)</div><p class="help">Sign out is in the user menu (top right).</p></div>
+     <div class="frow"><span class="lab">All sessions</span><div><button class="btn danger" type="button" data-toast="Asks first (mock)">Sign out everywhere&hellip;</button></div><p class="help">Ends every session of yours, revokes your personal access tokens and deletes the GitHub sign-in kept for the nightly scan. Nothing changes on GitHub.</p></div>
+    </section>
+    <section class="sec14" aria-labelledby="cx-h"><h2 id="cx-h">Codex account</h2>
+     <div class="frow"><span class="lab">Linked</span><div>alice@example.org &middot; Pro <button class="btn sm" type="button">Unlink</button></div><p class="help">Jobs you start use your ChatGPT plan. Plan usage is under LLM &amp; usage.</p></div>
+    </section>
+    <section class="sec14" aria-labelledby="tk-h"><h2 id="tk-h">Personal access tokens</h2>
+     <table class="tbl small"><thead><tr><th>Name</th><th>Created</th><th>Last used</th><th></th></tr></thead><tbody><tr><td>dispatch</td><td>20 Nov</td><td>10:12 today</td><td><button class="btn sm danger" type="button">Revoke</button></td></tr></tbody></table>
+     <p style="margin-top:8px"><button class="btn sm" type="button">Create token</button></p>
+    </section>
+   </div>
+
+   <!-- ============ MY WORK ============ -->
+   <div data-for="mywork" hidden>
+    <section class="sec14" aria-labelledby="sc-h"><h2 id="sc-h">Scope</h2>
+     <div class="frow"><label class="lab" for="w1">Linked GitHub logins</label><div><input id="w1" type="text" value="alice, alice-bot"></div><p class="help">Work of these logins counts as yours.</p></div>
+     <div class="frow"><label class="lab" for="w2">Look back</label><div><select id="w2"><option>60 days</option></select></div><p class="help">Older items are not listed.</p></div>
+    </section>
+    <section class="sec14" aria-labelledby="rp-h"><h2 id="rp-h">Repositories</h2>
+     <table class="tbl small"><thead><tr><th>Repository</th><th>Live</th><th>Release branches</th><th>Ignored checks</th></tr></thead><tbody>
+      <tr><td>acme/platform</td><td><span class="b b-ok" data-tip="The GitHub App is installed: GitHub events update its items as they happen.">live</span></td><td><input type="text" value="release/*" aria-label="Release branches of acme/platform"></td><td>&mdash;</td></tr>
+      <tr><td>acme/docs-site</td><td><span class="ft notlive" data-tip="No GitHub App installation: nightly scan and Refresh only.">&#9719; not live</span></td><td><input type="text" placeholder="built-in: main, release/*" aria-label="Release branches of acme/docs-site"></td><td>&mdash;</td></tr></tbody></table>
+    </section>
+    <section class="sec14" aria-labelledby="ns-h"><h2 id="ns-h">Nightly scan</h2><p class="lead">Updates between scans come from GitHub events (repositories with the App) and from Refresh.</p>
+     <div class="frow"><span class="lab">Run</span><div><label class="opt" style="display:flex;gap:6px;font-weight:400;font-size:13px"><input type="checkbox" checked> Scan my dashboard every night</label></div><p class="help">Judges only items the LLM never judged; outdated judgements stay until you re-judge them.</p></div>
+     <div class="frow"><label class="lab" for="w3">Time</label><div><select id="w3"><option>03:00</option></select></div><p class="help">Local time in the zone below.</p></div>
+     <div class="frow"><label class="lab" for="w4">Time zone</label><div><select id="w4"><option>Europe/Warsaw</option></select></div><p class="help">Also defines &ldquo;today&rdquo; for the headline and the usage limits.</p></div>
+    </section>
+    <section class="sec14" aria-labelledby="td-h"><h2 id="td-h">TODOs and Slack names</h2><p class="lead">Unchanged content, same row layout.</p></section>
+   </div>
+
+   <!-- ============ REVIEW LOOP ============ -->
+   <div data-for="review" hidden>
+    <section class="sec14" aria-labelledby="ca-h"><h2 id="ca-h">Comment assessment</h2>
+     <div class="frow"><label class="lab" for="r1">Primary method</label><div><select id="r1"><option>claudius_host (default)</option></select></div><p class="help">Comment cards show only the primary assessment. Changes apply to new passes.</p></div>
+     <div class="frow"><span class="lab">A/B comparison</span><div><input type="text" placeholder="Optional deadline (UTC), e.g. 2026-11-30T00:00Z" aria-label="A/B deadline"></div><p class="help">Runs both methods (about 2&times; tokens and time). Toggle per PR on its Comments page; a deadline enables it on all PRs until then.</p></div>
+    </section>
+    <section class="sec14" aria-labelledby="nt-h"><h2 id="nt-h">Notifications</h2>
+     <div class="frow"><span class="lab">Browser</span><div>On, while a diffpilot tab is open</div><p class="help">Questions ready on a watched PR; all decisions of a round executed.</p></div>
+     <div class="frow"><span class="lab">ntfy</span><div><span class="b b-ok">delivered 10:52</span> diffpilot-alice <button class="btn sm" type="button">Edit</button></div><p class="help">Messages carry a short text and a link, never comment text.</p></div>
+     <div class="frow"><span class="lab">Webhook</span><div><span class="b b-h" data-tip="Connection refused, 3 attempts">failing since 11:02</span> <button class="btn sm" type="button">Edit</button></div><p class="help">Only http and https; redirects are not followed.</p></div>
+    </section>
+   </div>
+
+   <!-- ============ REPOSITORIES ============ -->
+   <div data-for="repos" hidden>
+    <section class="sec14" aria-labelledby="rr-h"><h2 id="rr-h">Repository <select aria-label="Repository" style="width:auto;font-size:14px"><option>acme/node-client</option><option>dashpay/platform</option></select> <span class="small muted" style="font-weight:400">read-only</span></h2>
+     <div class="frow"><span class="lab">Not analysed: built-in rules</span><div><table class="tbl small"><tbody><tr><td class="mono">tests/**</td><td>Tests</td></tr><tr><td class="mono">docs/**, *.md</td><td>Docs</td></tr><tr><td class="mono">Cargo.lock</td><td>Mechanical</td></tr></tbody></table></div><p class="help">From the repository&rsquo;s project profile or built in.</p></div>
+     <div class="frow"><span class="lab">Related repositories</span><div><code>acme/node-sdk</code></div><p class="help"></p></div>
+     <div class="frow"><span class="lab">Project profile</span><div><code>.claudius/project-profile.md</code> on the base ref</div><p class="help">MemCan profile: not checked.</p></div>
+    </section>
+   </div>
+
+   <!-- ============ INSTALLATION ============ -->
+   <div data-for="install" hidden>
+    <section class="sec14" aria-labelledby="ga-h"><h2 id="ga-h">GitHub App</h2>
+     <div class="frow"><span class="lab">Installations</span><div><span class="b b-ok">active</span> acme &middot; 2 repositories <a class="btn sm" href="https://github.com/settings/installations" target="_blank" rel="noopener noreferrer">Manage on GitHub &#8599;</a></div><p class="help">Repositories without an installation are not live-updated.</p></div>
+     <div class="frow"><span class="lab">Webhook URL</span><div class="copy"><code>https://webhooks.manago.cloud/diffpilot/github</code><button class="btn sm" type="button" data-toast="Copied (mock)">Copy</button></div><p class="help">Set this URL in the GitHub App&rsquo;s webhook settings so that GitHub events update My work. <span class="annot" style="display:inline;padding:0 4px"><b>U32</b></span></p></div>
+     <div class="frow"><label class="lab" for="i1">Controlled owners</label><div><input id="i1" type="text" value="acme"></div><p class="help">Owners whose repositories this installation may read.</p></div>
+    </section>
+    <section class="sec14" aria-labelledby="mm-h"><h2 id="mm-h">Memory</h2>
+     <div class="frow"><span class="lab">MemCan</span><div><span class="b b-ok">reachable</span> checked 10:40</div><p class="help">Used for TODOs and project profiles.</p></div>
+    </section>
+   </div>
+  </div>
+ </div>
+</main>
+</div>
+<footer class="mock-foot">Mockup &mdash; static example data &middot; v1.4 plan: docs/v1.4-ui-plan.md</footer>
+<dialog id="help" aria-labelledby="help-t"><h2 id="help-t">Keyboard shortcuts</h2><p class="small">Settings has no page shortcuts.</p><form method="dialog"><button class="btn pri">Close</button></form></dialog>
+<div id="tip" role="tooltip" hidden></div><div id="toast" role="status" hidden></div>
+<script src="mockup.js"></script>
+<script src="mockup-v14.js"></script>
+</body>
+</html>

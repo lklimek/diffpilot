@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shell: LLM activity and user menu v1.4 - diffpilot mockup</title>
+<!-- docs/v1.4-ui-plan.md U2-U5, U34 win on behaviour. Fictional data. -->
+<link rel="stylesheet" href="mockup.css">
+<link rel="stylesheet" href="mockup-v14.css">
+</head>
+<body data-page="shell14">
+<a class="skip" href="#main">Skip to content</a>
+<noscript><p style="padding:8px">This mockup needs JavaScript for its menus.</p></noscript>
+<header class="topbar">
+ <a class="brand" href="index.html">diff<span>pilot</span></a><span class="crumb">/ Comments &middot; acme/node-client #482</span><span class="sp"></span>
+ <div class="mb" data-for="running popover user-menu">
+  <button class="llmind" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="p-llm" data-open-on="popover" aria-label="LLM activity: 2 running, 3 queued"><span aria-hidden="true">&#9684;</span> LLM 2 <span class="q">&middot; 3 queued</span></button>
+  <div class="pop" id="p-llm" role="dialog" aria-label="LLM activity" hidden>
+   <h3>Running now (2)</h3>
+   <ul class="joblist">
+    <li><span class="g" aria-hidden="true">&#9684;</span><span>Comment assessment &middot; <a href="14-comments-v14.html">acme/node-client#482</a><small>7 comments in this pass</small></span><span class="t">since 10:44</span></li>
+    <li><span class="g" aria-hidden="true">&#9684;</span><span>Ranking &middot; <a href="11-dashboard-v14.html">My work</a><small>6 items</small></span><span class="t">since 10:42</span></li></ul>
+   <h3>Queued (3)</h3>
+   <ul class="joblist">
+    <li><span class="w" aria-hidden="true">&#9676;</span><span>Re-judge &middot; <a href="11-dashboard-v14.html">NC-482</a><small>you asked</small></span><span class="t">queued 10:45</span></li>
+    <li><span class="w" aria-hidden="true">&#9676;</span><span>Flow analysis &middot; <a href="#">acme/platform#1203</a><small>5 flows left &middot; waits for a free runner</small></span><span class="t">queued 10:30</span></li>
+    <li><span class="w" aria-hidden="true">&#9676;</span><span>1 job of another user<small>no subject shown</small></span><span class="t">queued 10:40</span></li></ul>
+   <p class="small muted" style="margin:8px 0 0">Last LLM call 10:46: working. <a href="12-settings-v14.html">Usage and limits &rsaquo;</a></p>
+  </div></div>
+ <div class="mb" data-for="paused" hidden><button class="llmind warn" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="p-paused" aria-label="LLM paused at the usage limit until 13:00"><span aria-hidden="true">&#9208;</span> LLM paused until 13:00</button>
+  <div class="pop" id="p-paused" role="dialog" aria-label="LLM activity" hidden><h3>Paused (2 jobs wait)</h3><p class="small">The Codex plan&rsquo;s 5-hour window is used up (reported by the plan). Ranking and one comment assessment continue by themselves at 13:00.</p><p class="small"><a href="12-settings-v14.html">Usage and limits &rsaquo;</a></p></div></div>
+ <div class="mb" data-for="failing" hidden><button class="llmind err" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="p-fail" aria-label="LLM not working: the last call failed"><span aria-hidden="true">&#10005;</span> LLM not working</button>
+  <div class="pop" id="p-fail" role="dialog" aria-label="LLM activity" hidden><h3>Last LLM call failed &middot; 10:46</h3><p class="small">Codex sign-in expired on the runner. Jobs wait until an administrator signs in again (see the runbook).</p><p class="small"><a href="12-settings-v14.html">Usage and limits &rsaquo;</a></p></div></div>
+ <div class="mb"><button class="usermenu" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="m-user" data-open-on="user-menu"><span class="avatar" aria-hidden="true">a</span>alice <span class="car" aria-hidden="true">&#9662;</span></button>
+  <div class="menu" id="m-user" role="menu" aria-label="alice" hidden>
+   <div class="mh">Signed in as alice (GitHub)</div>
+   <button role="menuitem" type="button" data-toast="Opens the LLM activity list (mock)"><span class="ck"></span><span class="k">LLM activity<small data-for="running popover user-menu">2 running &middot; 3 queued</small><small data-for="idle" hidden>nothing running</small><small data-for="paused" hidden>paused until 13:00</small><small data-for="failing" hidden>not working: last call failed</small></span></button>
+   <a role="menuitem" href="12-settings-v14.html"><span class="ck"></span><span class="k">Settings</span></a>
+   <button role="menuitem" type="button" data-toast="Keyboard shortcuts (mock)"><span class="ck"></span><span class="k">Keyboard shortcuts</span><kbd>?</kbd></button>
+   <hr><button role="menuitem" type="button" data-toast="Signed out (mock)"><span class="ck"></span><span class="k">Sign out</span></button>
+  </div></div>
+</header>
+<div class="states" role="group" aria-label="Mockup states"><b>mockup states:</b>
+ <button type="button" data-s="running" aria-pressed="true">jobs running</button>
+ <button type="button" data-s="popover" aria-pressed="false">popover open</button>
+ <button type="button" data-s="user-menu" aria-pressed="false">user menu open</button>
+ <button type="button" data-s="idle" aria-pressed="false">idle (hidden)</button>
+ <button type="button" data-s="paused" aria-pressed="false">paused at limit (U4)</button>
+ <button type="button" data-s="failing" aria-pressed="false">not working (U4)</button>
+</div>
+<main class="page" id="main">
+ <h1>Shell: LLM activity indicator and user menu</h1>
+ <p class="annot"><b>U2</b> indicator (only while jobs run or wait; hidden below 640 px) &middot; <b>U3</b> user menu (its &ldquo;LLM activity&rdquo; item is the phone&rsquo;s way in) &middot; <b>U4</b> optional problem states while idle &middot; <b>U5</b> optional: <kbd>?</kbd> moves into the menu.</p>
+
+ <div class="tiles" style="margin-bottom:16px">
+  <section class="card"><h2>LlmActivity <span class="small muted">components/app-shell/LlmActivity.tsx</span></h2>
+   <table class="tbl small"><thead><tr><th>State</th><th>Trigger</th><th>Colour</th></tr></thead><tbody>
+    <tr><td>idle, last call ok</td><td>not rendered</td><td>&mdash;</td></tr>
+    <tr><td>running / queued</td><td>&#9684; LLM 2 &middot; 3 queued</td><td>blue</td></tr>
+    <tr><td>queued only</td><td>&#9676; LLM &middot; 3 queued</td><td>neutral</td></tr>
+    <tr><td>paused at a limit</td><td>&#9208; LLM paused until 13:00</td><td>amber</td></tr>
+    <tr><td>last call failed</td><td>&#10005; LLM not working</td><td>red</td></tr></tbody></table>
+   <p class="small" style="margin-top:8px"><b>Props:</b> <code>activity</code> (running, queued, paused_until, last_call), <code>now</code>, <code>usageHref</code>. <b>A11y:</b> button, <code>aria-haspopup="dialog"</code>, name states the counts; Esc closes; count changes are not announced, a failure is announced once. <b>Trust:</b> counts and clock times only &mdash; no percentage, no ETA.</p></section>
+  <section class="card"><h2>LlmActivityList <span class="small muted">shared by the popover and the user menu</span></h2>
+   <p class="small">Sections <i>Running now</i> and <i>Queued</i>; each job: kind (Analysis, Flow analysis, Ranking, Re-judge, Comment assessment, Ask), subject link, &ldquo;since&rdquo; or &ldquo;queued&rdquo; time, why it waits. Jobs of other users: &ldquo;1 job of another user&rdquo;, no subject (private repositories). Footer: last call outcome and a link to Settings &rsaquo; LLM &amp; usage.</p></section>
+  <section class="card"><h2>UserMenu <span class="small muted">components/app-shell/UserMenu.tsx</span></h2>
+   <p class="small">Menu button with the login. Items: header &ldquo;Signed in as &hellip;&rdquo;, LLM activity (opens the list), Settings, Keyboard shortcuts (U5), Sign out. WAI-ARIA menu: arrows, Home/End, Esc returns focus.</p></section>
+ </div>
+
+ <h2>Phone width (&lt; 640 px)</h2>
+ <div class="phone" aria-label="Phone example">
+  <div class="topbar" style="gap:8px"><a class="brand" href="#">diff<span>pilot</span></a><span class="sp"></span>
+   <span class="split"><button class="mbtn" type="button" aria-label="Refresh">&#10227;</button><span class="mb"><button class="mbtn" type="button" aria-label="More refresh options"><span class="car">&#9662;</span></button></span></span>
+   <button class="usermenu" type="button" aria-label="alice: user menu"><span class="avatar" aria-hidden="true">a</span><span class="car" aria-hidden="true">&#9662;</span></button></div>
+  <div style="padding:10px 12px;font-size:13px"><p class="small muted">The indicator is hidden; the user menu&rsquo;s <b>LLM activity</b> item shows the same list. Refresh is icon-only with an accessible name.</p>
+   <div class="card" style="padding:6px"><div class="mh small muted" style="padding:4px 8px">Signed in as alice (GitHub)</div><div style="padding:4px 8px">LLM activity <span class="small muted">2 running &middot; 3 queued</span></div><div style="padding:4px 8px">Settings</div><div style="padding:4px 8px">Sign out</div></div></div>
+ </div>
+</main>
+<footer class="mock-foot">Mockup &mdash; static example data &middot; v1.4 plan: docs/v1.4-ui-plan.md</footer>
+<dialog id="help" aria-labelledby="help-t"><h2 id="help-t">Keyboard shortcuts</h2><p class="small">Each page lists its own.</p><form method="dialog"><button class="btn pri">Close</button></form></dialog>
+<div id="tip" role="tooltip" hidden></div><div id="toast" role="status" hidden></div>
+<script src="mockup.js"></script>
+<script src="mockup-v14.js"></script>
+</body>
+</html>
