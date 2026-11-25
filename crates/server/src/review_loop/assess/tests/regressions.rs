@@ -571,8 +571,8 @@ async fn host_new_ids_retire_unreused_server_placeholders() {
 }
 
 #[tokio::test]
-async fn host_gone_items_are_not_offered_for_reuse() {
-    let (f, items) = host_fixture(1).await;
+async fn host_gone_and_status_items_are_not_offered_for_reuse() {
+    let (f, items) = host_fixture(2).await;
     let mut frozen = frozen::Frozen {
         data: serde_json::from_value(
             f.state
@@ -587,10 +587,16 @@ async fn host_gone_items_are_not_offered_for_reuse() {
                 .clone(),
         )
         .unwrap(),
-        items: vec![ItemRecord {
-            gone_at: Some(Timestamp::now()),
-            ..items[0].clone()
-        }],
+        items: vec![
+            ItemRecord {
+                gone_at: Some(Timestamp::now()),
+                ..items[0].clone()
+            },
+            ItemRecord {
+                status_comment: true,
+                ..items[1].clone()
+            },
+        ],
         sent: vec![],
         native: golden_input(),
         standing: Default::default(),

@@ -98,6 +98,17 @@ pub mod testing {
         Ok(())
     }
 
+    /// Injects a malformed saved read timestamp to test error isolation.
+    pub async fn corrupt_comment_read_timestamp(db: &Db, pr: i64) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE comment_prs SET read_at = 'invalid timestamp' WHERE pull_request_id = ?",
+        )
+        .bind(pr)
+        .execute(&db.pool)
+        .await?;
+        Ok(())
+    }
+
     /// Makes the next `count` writes of a pass's job link change nothing (so each reports a conflict), as links
     /// lost while the database is busy right after a job was submitted; later links are written.
     pub async fn lose_pass_job_links(db: &Db, count: u32) -> Result<(), DbError> {

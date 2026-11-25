@@ -163,6 +163,7 @@ fn observed(key: &str) -> ObservedItem {
         stable_key: key.to_owned(),
         author: "thepastaclaw".to_owned(),
         author_kind: AuthorKind::Bot,
+        status_comment: false,
         url: None,
         location: Some(ItemLocation {
             path: "src/rpc/client.rs".to_owned(),
@@ -1624,6 +1625,7 @@ async fn assess_again_sends_its_item_although_unchanged() {
         stable_key: "pr:3:merge".to_owned(),
         author: "diffpilot".to_owned(),
         author_kind: AuthorKind::Diffpilot,
+        status_comment: false,
         url: None,
         location: None,
         title: "Merge now, or another round?".to_owned(),
@@ -1953,6 +1955,55 @@ async fn question_without_analysis_is_answered_by_a_question_pass() {
             .as_ref()
             .map(|answer| answer.answer.as_str()),
         Some(answer)
+    );
+}
+
+#[tokio::test]
+async fn status_comment_ask_answers_without_storing_an_assessment() {
+    let f = fixture(HEAD).await;
+    let rl = f.state.db.review_loop();
+    let status = ObservedItem {
+        kind: CommentItemKind::PrComment,
+        status_comment: true,
+        body: "Review skipped because automatic review is disabled.".into(),
+        location: None,
+        ..observed("status")
+    };
+    let UpsertOutcome::New(status) = rl
+        .upsert_item(
+            DEFAULT_TENANT,
+            PR,
+            &status,
+            ItemState::Undecided,
+            Timestamp::now(),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("new status comment")
+    };
+    let id = question(&f.state, status.id, "Why was the review skipped?").await;
+    assert_eq!(
+        request_pass(&f.state, PR, PassReason::Ask).await.unwrap(),
+        PassQueued::Queued
+    );
+    let pass = live_pass(&f.state).await;
+    let answer = "The repository has disabled automatic review.";
+    ingest_all(&f.state, &pass, Some(answer)).await;
+    let question = f
+        .state
+        .db
+        .questions()
+        .get(id, Timestamp::now())
+        .await
+        .unwrap()
+        .question;
+    assert_eq!(question.state, AskState::Answered);
+    assert_eq!(question.answer.unwrap().answer, answer);
+    assert!(rl.latest_assessment(status.id).await.unwrap().is_none());
+    assert_eq!(
+        rl.item(status.id).await.unwrap().state,
+        ItemState::Undecided
     );
 }
 

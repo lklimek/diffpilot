@@ -54,8 +54,21 @@ pub(super) async fn apply(
         .filter(|p| p.duplicate.is_none())
         .chain(points.iter().filter(|p| p.duplicate.is_some()))
     {
+        if let Some((url, _, _)) = &point.source
+            && sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM comment_items WHERE pull_request_id = ? AND url = ?
+                   AND status_comment AND gone_at IS NULL)",
+            )
+            .bind(pass.input.pull_request_id)
+            .bind(url)
+            .fetch_one(&mut **tx)
+            .await?
+        {
+            mark_missing(rows, &point.key);
+            continue;
+        }
         let id = if let Some((id, hash)) = &point.existing {
-            let current: Option<String> = sqlx::query_scalar("SELECT body_hash FROM comment_items WHERE id=? AND tenant_id=? AND pull_request_id=?")
+            let current: Option<String> = sqlx::query_scalar("SELECT body_hash FROM comment_items WHERE id=? AND tenant_id=? AND pull_request_id=? AND NOT status_comment")
                 .bind(id.to_string()).bind(tenant).bind(pass.input.pull_request_id).fetch_optional(&mut **tx).await?;
             if current.as_ref() != Some(hash) {
                 mark_missing(rows, &point.key);

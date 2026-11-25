@@ -55,6 +55,11 @@ fn host_rows(
             SourceKind::Inline | SourceKind::ReviewBody | SourceKind::PrComment
         )
     }) {
+        if frozen.items.iter().any(|item| {
+            item.status_comment && item.url.as_deref() == Some(row.comment_url.as_str())
+        }) {
+            continue;
+        }
         let Some(source) = source(frozen, row) else {
             continue;
         };
@@ -134,6 +139,7 @@ fn host_rows(
                 },
                 stable_key: format!("{prefix}{ordinal}"),
                 author: row.reviewer.clone(),
+                status_comment: false,
                 author_kind: if frozen
                     .data
                     .manifest
@@ -506,7 +512,7 @@ fn existing<'a>(frozen: &'a Frozen, row: &ReportRow) -> Option<&'a ItemRecord> {
     let item = frozen
         .items
         .iter()
-        .find(|i| i.no == no && i.gone_at.is_none())?;
+        .find(|i| i.no == no && !i.status_comment && i.gone_at.is_none())?;
     if !item.author.eq_ignore_ascii_case(&row.reviewer) {
         return None;
     }

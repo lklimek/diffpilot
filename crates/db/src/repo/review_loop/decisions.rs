@@ -164,12 +164,12 @@ pub struct DecisionOwner {
     pub decision: DecisionId,
 }
 
-const DECISION_COLUMNS: &str ="d.id, d.item_id, i.item_no, d.kind, d.reason, d.target, d.override, d.resolve_ticked,
+pub(super) const DECISION_COLUMNS: &str ="d.id, d.item_id, i.item_no, d.kind, d.reason, d.target, d.override, d.resolve_ticked,
     d.reply_text, d.comment, d.recommendation, d.via, d.carried_from, d.supersedes, d.head, d.body_hash,
     d.start_line, d.end_line, u.login, d.decided_at,
     (SELECT un.at FROM comment_decision_undos un WHERE un.decision_id = d.id) AS undone_at";
 
-fn decision_from_row(row: &SqliteRow) -> Result<StoredDecision, DbError> {
+pub(super) fn decision_from_row(row: &SqliteRow) -> Result<StoredDecision, DbError> {
     let start: Option<i64> = row.try_get("start_line")?;
     let end: Option<i64> = row.try_get("end_line")?;
     let lines = match (start, end) {
@@ -217,7 +217,7 @@ fn decision_from_row(row: &SqliteRow) -> Result<StoredDecision, DbError> {
     })
 }
 
-fn effect_from_row(row: &SqliteRow) -> Result<Effect, DbError> {
+pub(super) fn effect_from_row(row: &SqliteRow) -> Result<Effect, DbError> {
     let after: Option<i64> = row.try_get("after_seq")?;
     let token_name: Option<String> = row.try_get("claim_token_name")?;
     let lease = opt_ts_col(row, "lease_until")?;

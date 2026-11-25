@@ -1,22 +1,24 @@
 //! Read views of the review loop (RC1, RC2, RC4, RC5, RC10, RC11, RC16, RC17): built from the stored read, items,
 //! assessments and decisions; no GitHub call.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use contracts::api::analyses::AnalysisSummary;
 use contracts::api::deps::{CrateChanges, DependencyView, RepositoryKind};
 use contracts::api::files::{PartOwner, PrFile};
 use contracts::api::review_loop::{
-    AssessmentProgress, AssessmentState, CarryOverPage, CodeContext, CodeLine, CommentCounts,
-    CommentItem, CommentLog, CommentsOverview, CommentsSummary, ContextQuery, DecideRest,
-    DecideRestRow, DecisionBatchRow, EffectState, EffectsPreview, FeedSubscriber, FlowStepRef,
-    GithubRead, ItemState, ItemsQuery, KindCount, NotAssessedReason, NoteElsewhere, NoteSource,
-    PrBadgeView, PrPage, Round, WatchState,
+    AssessmentProgress, AssessmentState, AuthorKind, CarryOverPage, CodeContext, CodeLine,
+    CommentCounts, CommentItem, CommentItemKind, CommentLog, CommentsOverview, CommentsSummary,
+    ContextQuery, DecideRest, DecideRestRow, DecisionBatchRow, DecisionVia, EffectState,
+    EffectsPreview, FeedSubscriber, FlowStepRef, GithubRead, ImportedGithubDecision, ItemState,
+    ItemsQuery, KindCount, NotAssessedReason, NoteElsewhere, NoteSource, PrBadgeView, PrPage,
+    QueueEntry, Round, WatchState,
 };
 use contracts::api::tour::{CiState, Tour};
 use contracts::common::{AnnotationType, LineRange, LineSide, PrRef};
 use contracts::ids::{AnalysisId, CarryEventId, CommentItemId, CommitSha, StepId};
 use contracts::time::Timestamp;
+use db::error::DbError;
 use db::repo::review_loop::{ItemRecord, PassRecord, PassState, StoredDecision};
 
 use super::badge::{self, BadgeInputs, MyWork};
@@ -38,8 +40,8 @@ const MAX_CONTEXT_LINES: u32 = 400;
 /// Carry events per page (RC11).
 const CARRY_PAGE: u32 = 50;
 
-fn pass_live(pass: Option<&PassRecord>) -> bool {
-    pass.is_some_and(|pass| matches!(pass.state, PassState::Queued | PassState::Running))
+fn pass_live(pass: Option<PassState>) -> bool {
+    matches!(pass, Some(PassState::Queued | PassState::Running))
 }
 
 /// The reader watches the pull request and today's limit stopped its automatic passes (plan §2.8, §4.2).
@@ -53,17 +55,18 @@ async fn limit_reached(state: &AppState, session: &Session, pr_id: i64) -> Resul
         .any(|watch| watch.pull_request_id == pr_id && watch.state == WatchState::LimitReached))
 }
 
-/// The item as the API shows it; `ask_answers` counts the reader's answered Ask questions about it; `limited`: the
-/// daily limit holds the reader's automatic passes back.
-pub(crate) fn item_view(
-    loaded: &Loaded,
+fn assessment_state(
     record: &ItemRecord,
-    pass: Option<&PassRecord>,
-    ask_answers: u32,
+    assessed: bool,
+    pass: Option<PassState>,
     limited: bool,
-) -> CommentItem {
-    let assessment = loaded.assessments.get(&record.no);
-    let assessment_state = if assessment.is_some() {
+) -> AssessmentState {
+    if record.status_comment {
+        return AssessmentState::NotAssessed {
+            reason: NotAssessedReason::NotRun,
+        };
+    }
+    if assessed {
         AssessmentState::Assessed
     } else if record.kind == contracts::api::review_loop::CommentItemKind::PrQuestion {
         AssessmentState::NotAssessed {
@@ -77,26 +80,72 @@ pub(crate) fn item_view(
         }
     } else {
         AssessmentState::NotAssessed {
-            reason: match pass.map(|pass| pass.state) {
+            reason: match pass {
                 Some(PassState::Failed) => NotAssessedReason::Failed,
                 Some(PassState::Finished) => NotAssessedReason::Missing,
                 Some(PassState::Queued | PassState::Running) | None => NotAssessedReason::NotRun,
             },
         }
-    };
-    let repeat_of = record.repeat_of.and_then(|id| {
-        loaded
-            .items
-            .iter()
-            .find(|item| item.id == id)
-            .map(|item| item.no)
+    }
+}
+
+fn item_status(
+    loaded: &Loaded,
+    record: &ItemRecord,
+    standing: &HashMap<String, &StoredDecision>,
+    pass: Option<PassState>,
+    limited: bool,
+) -> queue::StatusItem {
+    let imported_decision = standing.get(&record.id.to_string()).and_then(|stored| {
+        let decision = &stored.decision;
+        if decision.via != DecisionVia::ImportedGithub {
+            return None;
+        }
+        let imported = decision.imported.as_ref()?;
+        Some(ImportedGithubDecision {
+            kind: decision.kind,
+            by: imported.by.clone(),
+            at: imported.at,
+            evidence_url: imported.evidence_url.clone(),
+        })
     });
+    queue::StatusItem {
+        no: record.no,
+        kind: record.kind,
+        state: record.state,
+        assessment_state: assessment_state(
+            record,
+            loaded.assessments.contains_key(&record.no),
+            pass,
+            limited,
+        ),
+        status_comment: record.status_comment,
+        imported_decision,
+        duplicate_of: record.duplicate_of.and_then(|id| loaded.number_of(id)),
+        decision_follows_primary: false,
+        gone_at: record.gone_at,
+        gates: loaded.gates(record),
+    }
+}
+
+/// The item as the API shows it, including the reader's Ask answer count.
+fn item_view(
+    loaded: &Loaded,
+    record: &ItemRecord,
+    status: queue::StatusItem,
+    ask_answers: u32,
+) -> CommentItem {
+    let assessment = loaded
+        .assessments
+        .get(&record.no)
+        .filter(|_| !record.status_comment);
+    let repeat_of = record.repeat_of.and_then(|id| loaded.number_of(id));
     CommentItem {
-        status_comment: false,
-        imported_decision: None,
+        status_comment: status.status_comment,
+        imported_decision: status.imported_decision,
         import_proposal: None,
         llm_title: None,
-        decision_follows_primary: false,
+        decision_follows_primary: status.decision_follows_primary,
         point: record
             .quote
             .as_ref()
@@ -117,16 +166,10 @@ pub(crate) fn item_view(
                     quote: quote.clone(),
                 })
             }),
-        duplicate_of: record.duplicate_of.and_then(|id| {
-            loaded
-                .items
-                .iter()
-                .find(|item| item.id == id)
-                .map(|item| item.no)
-        }),
+        duplicate_of: status.duplicate_of,
         id: record.id,
-        no: record.no,
-        kind: record.kind,
+        no: status.no,
+        kind: status.kind,
         stable_key: record.stable_key.clone(),
         author: record.author.clone(),
         author_kind: record.author_kind,
@@ -135,8 +178,8 @@ pub(crate) fn item_view(
         title: record.title.clone(),
         body: record.body.clone(),
         bot_severity: record.bot_severity.clone(),
-        gates: loaded.gates(record),
-        state: record.state,
+        gates: status.gates,
+        state: status.state,
         revision: record.revision,
         first_seen_head: record.first_seen_head.clone(),
         first_round: record.first_round,
@@ -147,9 +190,9 @@ pub(crate) fn item_view(
             .cloned(),
         github: record.github.clone(),
         outside: record.outside.clone(),
-        gone_at: record.gone_at,
+        gone_at: status.gone_at,
         repeat_of,
-        assessment_state,
+        assessment_state: status.assessment_state,
         assessment: assessment.map(|stored| stored.assessment.clone()),
         decisions: loaded
             .decisions
@@ -178,6 +221,8 @@ pub async fn items(
         .into_iter()
         .collect();
     let limited = limit_reached(state, session, loaded.handle.id).await?;
+    let pass = pass.map(|record| record.state);
+    let standing = loaded.standing();
     Ok(loaded
         .items
         .iter()
@@ -185,7 +230,8 @@ pub async fn items(
         .filter(|record| query.kind.is_none_or(|wanted| record.kind == wanted))
         .map(|record| {
             let asked = answers.get(&record.id).copied().unwrap_or(0);
-            item_view(&loaded, record, pass.as_ref(), asked, limited)
+            let status = item_status(&loaded, record, &standing, pass, limited);
+            item_view(&loaded, record, status, asked)
         })
         .collect())
 }
@@ -231,11 +277,45 @@ fn count(n: usize) -> u32 {
     u32::try_from(n).unwrap_or(u32::MAX)
 }
 
-fn counts(loaded: &Loaded, waiting: usize) -> CommentCounts {
+fn needs_you(
+    loaded: &Loaded,
+    entries: &[QueueEntry],
+    pass: Option<PassState>,
+    limited: bool,
+) -> (u32, u32) {
+    let standing = loaded.standing();
+    let items = loaded
+        .items
+        .iter()
+        .map(|record| {
+            (
+                record.no,
+                item_status(loaded, record, &standing, pass, limited),
+            )
+        })
+        .collect();
+    queue::needs_you(entries, &items)
+}
+
+/// The Needs you count from one dashboard PR's batched data.
+pub(crate) fn dashboard_needs_you(
+    handle: PrHandle,
+    view: db::repo::review_loop::PrTallyView,
+) -> Result<u32, DbError> {
+    let loaded = Loaded::from_view(handle, view.pr).ok_or(DbError::NotFound)?;
+    let entries = queue::queue(&loaded.queue_items(&[]));
+    Ok(needs_you(&loaded, &entries, view.latest_pass, false).0)
+}
+
+fn counts(
+    loaded: &Loaded,
+    waiting: usize,
+    (needs_you, needs_you_gates): (u32, u32),
+) -> CommentCounts {
     let standing = loaded.standing();
     CommentCounts {
-        needs_you: None,
-        needs_you_gates: None,
+        needs_you: Some(needs_you),
+        needs_you_gates: Some(needs_you_gates),
         imported_unseen: None,
         unresolved_threads: loaded
             .snapshot
@@ -271,6 +351,7 @@ fn progress(loaded: &Loaded, pass: Option<&PassRecord>, limited: bool) -> Assess
         .filter(|item| {
             item.kind != contracts::api::review_loop::CommentItemKind::PrQuestion
                 && item.state != ItemState::Outside
+                && !item.status_comment
                 && item.gone_at.is_none()
         })
         .collect();
@@ -288,7 +369,7 @@ fn progress(loaded: &Loaded, pass: Option<&PassRecord>, limited: bool) -> Assess
         .assessments
         .values()
         .max_by_key(|stored| stored.assessment.assessed_at);
-    let running = pass_live(pass);
+    let running = pass_live(pass.map(|pass| pass.state));
     AssessmentProgress {
         in_pass: None,
         waiting: None,
@@ -308,7 +389,7 @@ fn progress(loaded: &Loaded, pass: Option<&PassRecord>, limited: bool) -> Assess
 
 /// Open and still produced by the read: an item marked `gone_at` (such as a superseded body finding) waits for nobody.
 fn waits(item: &ItemRecord) -> bool {
-    queue::is_open(item.state) && item.gone_at.is_none()
+    queue::is_open(item.state) && item.gone_at.is_none() && !item.status_comment
 }
 
 fn rounds(loaded: &Loaded, events: &[contracts::api::review_loop::CarryEvent]) -> Vec<Round> {
@@ -374,7 +455,14 @@ fn rounds(loaded: &Loaded, events: &[contracts::api::review_loop::CarryEvent]) -
 }
 
 /// The badge of a loaded PR, with the reader's [`MyWork`] rules.
-fn badge_of(state: &AppState, loaded: &Loaded, waiting: usize, my_work: &MyWork) -> PrBadgeView {
+fn badge_of(
+    state: &AppState,
+    loaded: &Loaded,
+    queue_items: &[queue::QueueItem],
+    needs_you: u32,
+    pass: Option<&PassRecord>,
+    my_work: &MyWork,
+) -> PrBadgeView {
     let standing = loaded.standing();
     let snapshot = loaded.snapshot.as_ref();
     let now = Timestamp::now();
@@ -386,6 +474,10 @@ fn badge_of(state: &AppState, loaded: &Loaded, waiting: usize, my_work: &MyWork)
             badge::without_ignored(ci, pending, |name| my_work.is_ignored_check(&pr.repo, name))
         })
         .unzip();
+    let waiting: HashSet<u32> = queue::waiting(queue_items)
+        .into_iter()
+        .map(|item| item.no)
+        .collect();
     badge::badge(&BadgeInputs {
         open: snapshot.is_none_or(|snapshot| snapshot.state == "OPEN"),
         read_failed: loaded.row.read_failure.is_some() || snapshot.is_none(),
@@ -403,7 +495,17 @@ fn badge_of(state: &AppState, loaded: &Loaded, waiting: usize, my_work: &MyWork)
         draft: snapshot.is_some_and(|snapshot| snapshot.draft),
         unresolved_threads: snapshot.map_or(0, |snapshot| snapshot.unresolved_threads),
         failed_effects: standing.values().map(|s| failed(s)).sum(),
-        undecided: count(waiting),
+        needs_you,
+        pending_human_review: loaded.items.iter().any(|item| {
+            waiting.contains(&item.no)
+                && item.kind != CommentItemKind::PrQuestion
+                && item.author_kind != AuthorKind::Bot
+                && (!loaded.assessments.contains_key(&item.no)
+                    || pass.is_some_and(|pass| {
+                        pass.state == PassState::Running
+                            && pass.sent.iter().any(|sent| sent.item == item.id)
+                    }))
+        }),
         executing: count(standing.values().filter(|s| effects_open(s)).count()),
         bot_round: super::bot_round_running(state, pr, snapshot),
         changes_requested: snapshot.map_or_else(Vec::new, |s| s.changes_requested_by.clone()),
@@ -428,8 +530,24 @@ pub(crate) async fn badge(
     my_work: &MyWork,
 ) -> Result<PrBadgeView, LoopError> {
     let loaded = Loaded::of(state, handle).await?;
-    let waiting = queue::waiting(&loaded.queue_items(&[])).len();
-    Ok(badge_of(state, &loaded, waiting, my_work))
+    let pass = state.db.review_loop().latest_pass(loaded.handle.id).await?;
+    let queue_items = loaded.queue_items(&[]);
+    let entries = queue::queue(&queue_items);
+    let needs_you = needs_you(
+        &loaded,
+        &entries,
+        pass.as_ref().map(|pass| pass.state),
+        false,
+    )
+    .0;
+    Ok(badge_of(
+        state,
+        &loaded,
+        &queue_items,
+        needs_you,
+        pass.as_ref(),
+        my_work,
+    ))
 }
 
 async fn latest_analysis(
@@ -474,8 +592,16 @@ pub async fn overview(
     let rl = state.db.review_loop();
     let skips = rl.skips(&session.user_id, loaded.handle.id).await?;
     let queue_items = loaded.queue_items(&skips);
-    let waiting = queue::waiting(&queue_items).len();
+    let entries = queue::queue(&queue_items);
+    let waiting = entries.iter().map(|entry| entry.item_nos.len()).sum();
     let pass = rl.latest_pass(loaded.handle.id).await?;
+    let limited = limit_reached(state, session, loaded.handle.id).await?;
+    let needs_you = needs_you(
+        &loaded,
+        &entries,
+        pass.as_ref().map(|pass| pass.state),
+        limited,
+    );
     let events = rl
         .carry_events(&session.tenant_id, Some(loaded.handle.id), None, u32::MAX)
         .await?;
@@ -491,18 +617,16 @@ pub async fn overview(
         head: CommitSha(snapshot.head.clone()),
         purpose: loaded.row.purpose.clone(),
         read: read_view(&loaded),
-        counts: counts(&loaded, waiting),
+        counts: counts(&loaded, waiting, needs_you),
         rounds: rounds(&loaded, &events),
-        assessment: progress(
-            &loaded,
-            pass.as_ref(),
-            limit_reached(state, session, loaded.handle.id).await?,
-        ),
-        queue: queue::queue(&queue_items),
+        assessment: progress(&loaded, pass.as_ref(), limited),
+        queue: entries,
         badge: badge_of(
             state,
             &loaded,
-            waiting,
+            &queue_items,
+            needs_you.0,
+            pass.as_ref(),
             &badge::my_work(state, &session.tenant_id, &session.user_id).await?,
         ),
         analysis: latest_analysis(state, session, loaded.handle.id)
@@ -522,21 +646,35 @@ pub async fn pr_page(
     let snapshot = loaded.snapshot.as_ref();
     let rl = state.db.review_loop();
     let queue_items = loaded.queue_items(&[]);
-    let waiting = queue::waiting(&queue_items).len();
+    let entries = queue::queue(&queue_items);
+    let waiting = entries.iter().map(|entry| entry.item_nos.len()).sum();
     let pass = rl.latest_pass(loaded.handle.id).await?;
     let my_work = badge::my_work(state, &session.tenant_id, &session.user_id).await?;
-    let badge = badge_of(state, &loaded, waiting, &my_work);
     let pr = &loaded.handle.pr;
     let stored = state.db.pull_requests().get(loaded.handle.id).await?.pr;
     let watch = rl
         .watches(&session.user_id)
         .await?
         .into_iter()
-        .find(|watch| watch.pull_request_id == loaded.handle.id)
-        .map(|watch| super::watch::view(watch, badge.clone()));
+        .find(|watch| watch.pull_request_id == loaded.handle.id);
     let limited = watch
         .as_ref()
         .is_some_and(|watch| watch.state == WatchState::LimitReached);
+    let needs_you = needs_you(
+        &loaded,
+        &entries,
+        pass.as_ref().map(|pass| pass.state),
+        limited,
+    );
+    let badge = badge_of(
+        state,
+        &loaded,
+        &queue_items,
+        needs_you.0,
+        pass.as_ref(),
+        &my_work,
+    );
+    let watch = watch.map(|watch| super::watch::view(watch, badge.clone()));
     let url = snapshot.map_or_else(|| stored.html_url.clone(), |snapshot| snapshot.url.clone());
     let url = if url.is_empty() { pr_url(pr) } else { url };
     Ok(PrPage {
@@ -561,7 +699,7 @@ pub async fn pr_page(
         badge: badge.clone(),
         analysis: latest_analysis(state, session, loaded.handle.id).await?,
         comments: CommentsSummary {
-            counts: counts(&loaded, waiting),
+            counts: counts(&loaded, waiting, needs_you),
             rounds: snapshot.map_or(0, |s| count(s.rounds.len())),
             assessment: progress(&loaded, pass.as_ref(), limited),
             read: read_view(&loaded),

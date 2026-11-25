@@ -1,5 +1,4 @@
 use contracts::api::access_tokens::AccessTokenId;
-use contracts::api::dashboard::CommentTally;
 use contracts::api::review_loop::{
     AuthorKind, CarryEvidence, CarryKind, ChannelKind, CommentAssessment, CommentItemKind,
     DecisionKind, DecisionVia, DeliveryOutcome, EffectKind, EffectParams, EffectState, Executor,
@@ -58,6 +57,7 @@ fn observed(key: &str, body: &str) -> ObservedItem {
         stable_key: key.into(),
         author: "thepastaclaw".into(),
         author_kind: AuthorKind::Bot,
+        status_comment: false,
         url: Some(format!(
             "https://github.com/acme/node-client/pull/482#{key}"
         )),
@@ -895,55 +895,23 @@ async fn items_no_longer_read_are_marked_gone_and_kept() {
     assert_eq!((back.gone_at, back.revision), (None, gone.revision + 1));
 }
 
-/// My work's comment counts (R1b `WorkItem.comments`): read PRs only, no PR-level questions or gone items; waiting
-/// as the queue counts it, without items a standing "merge now" decision hands to its follow-up PR.
+/// Read PRs count current comments and report watches even for PRs without a successful read.
 #[tokio::test]
-async fn comment_tallies_count_comments_and_the_waiting_ones_per_read_pull_request_and_name_watches()
- {
+async fn comment_tallies_count_current_comments_per_read_pull_request_and_name_watches() {
     let db = db().await;
     let rl = db.review_loop();
-    let waiting = new_item(&db, "dedupe-waiting").await;
+    new_item(&db, "dedupe-waiting").await;
     let decided = new_item(&db, "dedupe-decided").await;
-    let gone = new_item(&db, "dedupe-gone").await;
-    let followed = new_item(&db, "dedupe-followed").await;
+    new_item(&db, "dedupe-gone").await;
     decide_one(&db, fix_decision(&decided), at(2)).await;
-    rl.mark_gone(
-        PR,
-        &["dedupe-waiting", "dedupe-decided", "dedupe-followed"],
-        at(3),
-    )
-    .await
-    .expect("gone");
+    rl.mark_gone(PR, &["dedupe-waiting", "dedupe-decided"], at(3))
+        .await
+        .expect("gone");
     let mut question = observed("pr:3:merge", "Merge now?");
     question.kind = CommentItemKind::PrQuestion;
-    let UpsertOutcome::New(question) = rl
-        .upsert_item(T, PR, &question, ItemState::Undecided, at(4))
+    rl.upsert_item(T, PR, &question, ItemState::Undecided, at(4))
         .await
-        .expect("question")
-    else {
-        panic!("a new question");
-    };
-    let merge = decide_one(
-        &db,
-        NewDecision {
-            kind: DecisionKind::MergeWithFollowUps,
-            reply_text: None,
-            comment: None,
-            effects: vec![NewEffect {
-                seq: 1,
-                after: None,
-                kind: EffectKind::FollowUpPr,
-                executor: Executor::Agent,
-                params: EffectParams {
-                    item_nos: vec![followed.no],
-                    ..EffectParams::default()
-                },
-            }],
-            ..fix_decision(&question)
-        },
-        at(5),
-    )
-    .await;
+        .expect("question");
     let acme = |owner: &str, name: &str, number| {
         (
             RepoRef {
@@ -981,46 +949,35 @@ async fn comment_tallies_count_comments_and_the_waiting_ones_per_read_pull_reque
     )
     .await
     .expect("read");
+    let mut views = rl.comment_tally_views(T, &[PR, 2]).await.expect("batch");
+    let ready = views.remove(&PR).expect("read PR").expect("valid rows");
+    assert_eq!(
+        ready.pr.items.len(),
+        4,
+        "queue inputs include gone items and PR questions"
+    );
+    assert_eq!(ready.latest_pass, None);
+    assert!(
+        views.is_empty(),
+        "the watched, unread PR needs no queue view"
+    );
     let tallies = rl.comment_tallies(T, "u1", &wanted).await.expect("tallies");
     assert_eq!(
         tallies,
         [
             PrCommentTally {
                 index: 1,
-                counts: Some(CommentTally {
-                    total: 3,
-                    needs_you: 1,
-                }),
+                pull_request_id: PR,
+                total: Some(2),
                 watched: false,
             },
-            // Watched, its comments never read (the watch's first read failed).
             PrCommentTally {
                 index: 3,
-                counts: None,
+                pull_request_id: 2,
+                total: None,
                 watched: true,
             },
         ],
-        "C{} waits; C{} is decided, C{} gone, C{} followed up",
-        waiting.no,
-        decided.no,
-        gone.no,
-        followed.no
-    );
-    let question = rl
-        .item_by_no(PR, question.no)
-        .await
-        .expect("read")
-        .expect("question");
-    rl.undo(T, question.id, question.revision, "u1", at(7))
-        .await
-        .expect("undo");
-    assert_eq!(
-        rl.comment_tallies(T, "u1", &wanted).await.expect("tallies")[0]
-            .counts
-            .map(|counts| counts.needs_you),
-        Some(2),
-        "an undone merge decision {} hands nothing over",
-        merge.id
     );
     assert_eq!(
         rl.comment_tallies(T, "u2", &wanted)

@@ -17,10 +17,12 @@ use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use contracts::api::dashboard::{
-    DashboardEvent, DashboardSummary, ItemKey, ItemKind, ItemPage, ItemQuery, RefreshStatus,
-    RefreshTrigger, ReviewLink, ScheduleStatus, ScheduledRun, SummaryQuery, WorkItem,
+    CommentTally, DashboardEvent, DashboardSummary, ItemKey, ItemKind, ItemPage, ItemQuery,
+    RefreshStatus, RefreshTrigger, ReviewLink, ScheduleStatus, ScheduledRun, SummaryQuery,
+    WorkItem,
 };
 use contracts::api::error::ApiErrorCode;
+use contracts::common::PrRef;
 use contracts::ids::RefreshId;
 use contracts::routes::{
     CANCEL_DASHBOARD_REFRESH, DASHBOARD_REFRESH_EVENTS, GET_DASHBOARD, GET_DASHBOARD_REFRESH,
@@ -41,6 +43,7 @@ use crate::dashboard::refresh::rank::ItemJudgement;
 use crate::dashboard::refresh::{self, ControlError, Scope, StartError};
 use crate::dashboard::schedule::{Schedule, counted_run_date};
 use crate::dashboard::snapshot::{self, CursorError, Snapshot, View};
+use crate::review_loop::{PrHandle, views};
 use crate::state::AppState;
 
 /// Interval of the `heartbeat` event, which also re-checks the session.
@@ -427,7 +430,7 @@ async fn review_links(
 }
 
 /// Fills `comments` and `watched` of the pull requests on the page from the tenant's review-loop tables and the
-/// user's watches, read now in one statement; a pull request whose comments diffpilot never read keeps no counts.
+/// user's watches. The queue inputs for read PRs are loaded together.
 /// Part of the page's `ETag` like `review`.
 async fn comment_tallies(
     state: &AppState,
@@ -448,11 +451,68 @@ async fn comment_tallies(
         .review_loop()
         .comment_tallies(&session.tenant_id, &session.user_id, &wanted)
         .await?;
-    for tally in tallies {
-        if let Some(&row) = rows.get(tally.index) {
-            items[row].comments = tally.counts;
-            items[row].watched = tally.watched;
+    let read: Vec<_> = tallies
+        .iter()
+        .filter_map(|row| row.total.map(|_| row.pull_request_id))
+        .collect();
+    let mut batch = match state
+        .db
+        .review_loop()
+        .comment_tally_views(&session.tenant_id, &read)
+        .await
+    {
+        Ok(batch) => Some(batch),
+        Err(error) => {
+            if state.dashboard.tally_warning_due(None) {
+                tracing::warn!(?error, "dashboard comment tally batch could not be read");
+            }
+            None
         }
+    };
+    let mut needs_you = HashMap::new();
+    for tally in tallies {
+        let Some((&row, (repo, number))) = rows.get(tally.index).zip(wanted.get(tally.index))
+        else {
+            continue;
+        };
+        items[row].watched = tally.watched;
+        items[row].comments = if let Some(total) = tally.total {
+            needs_you
+                .entry(tally.pull_request_id)
+                .or_insert_with(|| {
+                    let batch = batch.as_mut()?;
+                    let handle = PrHandle {
+                        pr: PrRef {
+                            repo: repo.clone(),
+                            number: *number,
+                        },
+                        id: tally.pull_request_id,
+                    };
+                    match batch
+                        .remove(&handle.id)
+                        .unwrap_or(Err(DbError::NotFound))
+                        .and_then(|view| views::dashboard_needs_you(handle, view))
+                    {
+                        Ok(needs_you) => Some(needs_you),
+                        Err(error) => {
+                            if state
+                                .dashboard
+                                .tally_warning_due(Some(tally.pull_request_id))
+                            {
+                                tracing::warn!(
+                                    ?error,
+                                    pr = tally.pull_request_id,
+                                    "dashboard comment tally omitted"
+                                );
+                            }
+                            None
+                        }
+                    }
+                })
+                .map(|needs_you| CommentTally { total, needs_you })
+        } else {
+            None
+        };
     }
     Ok(())
 }

@@ -44,6 +44,18 @@ impl BotRule {
             _ => AuthorKind::Human,
         }
     }
+
+    /// Bot identity and status classification for a fallback PR comment.
+    pub(super) fn pr_comment(
+        &self,
+        comment: &crate::github::review_loop::PrComment,
+    ) -> (AuthorKind, bool) {
+        let kind = self.kind(comment.author.as_ref());
+        let status_comment = kind == AuthorKind::Bot
+            && markers::finding_marker(&comment.body).is_none()
+            && markers::body_findings(&comment.body).is_empty();
+        (kind, status_comment)
+    }
 }
 
 /// A bot round (plan §2.6, spike S13-1 R1).
@@ -397,6 +409,7 @@ pub fn observe(read: &PrRead, bots: &BotRule) -> (Vec<Observed>, Snapshot) {
                 stable_key,
                 author: login(first.author.as_ref()),
                 author_kind,
+                status_comment: false,
                 url: github_web_url(&first.url),
                 location: Some(ItemLocation {
                     path: thread.path.clone(),
@@ -489,6 +502,7 @@ pub fn observe(read: &PrRead, bots: &BotRule) -> (Vec<Observed>, Snapshot) {
                     stable_key,
                     author: login(review.author.as_ref()),
                     author_kind,
+                    status_comment: false,
                     url: url.clone(),
                     location,
                     title,
@@ -580,6 +594,7 @@ pub fn observe(read: &PrRead, bots: &BotRule) -> (Vec<Observed>, Snapshot) {
                 stable_key: format!("comment:{id}:1"),
                 author: login(comment.author.as_ref()),
                 author_kind,
+                status_comment: false,
                 url: github_web_url(&comment.url),
                 location: None,
                 title: markers::title_of(&text),

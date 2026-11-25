@@ -342,6 +342,7 @@ async fn assess_again_snapshot_failure_returns_an_error_without_charging_quota()
         stable_key: "T1".into(),
         author: "reviewer".into(),
         author_kind: AuthorKind::Human,
+        status_comment: false,
         url: None,
         location: None,
         title: "Bound retries".into(),
@@ -476,7 +477,7 @@ async fn codex_status_enriches_gateway_observations_without_credentials_or_auth_
 }
 
 #[tokio::test]
-async fn comments_reads_omit_uncomputed_assessment_progress_and_counts() {
+async fn comments_reads_send_counts_and_omit_uncomputed_assessment_progress() {
     let w = world().await;
     let page = w.get(PR).await;
     let overview = w.get(&format!("{PR}/comments")).await;
@@ -485,9 +486,9 @@ async fn comments_reads_omit_uncomputed_assessment_progress_and_counts() {
         assert_eq!(progress["running"], true);
         assert!(progress.get("in_pass").is_none());
         assert!(progress.get("waiting").is_none());
-        for key in ["needs_you", "needs_you_gates", "imported_unseen"] {
-            assert!(comments["counts"].get(key).is_none(), "{key}");
-        }
+        assert!(comments["counts"]["needs_you"].is_u64());
+        assert!(comments["counts"]["needs_you_gates"].is_u64());
+        assert!(comments["counts"].get("imported_unseen").is_none());
     }
 }
 
@@ -520,8 +521,9 @@ async fn fixture_status_sources_are_omitted_and_new_prose_sources_explain_review
         15,
         "8 threads, legacy body findings, three newly eligible prose sources and merge question"
     );
-    assert_eq!(page["comments"]["counts"]["undecided"], 13);
-    assert_eq!(page["comments"]["assessment"]["total"], 12);
+    assert_eq!(w.item("comment:5000000104:1").await["status_comment"], true);
+    assert_eq!(page["comments"]["counts"]["undecided"], 12);
+    assert_eq!(page["comments"]["assessment"]["total"], 11);
     w.get(&format!("{PR}/comments")).await;
     let pending = w.state.db.review_loop().live_passes().await.unwrap();
     assert_eq!(

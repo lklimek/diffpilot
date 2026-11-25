@@ -82,7 +82,10 @@ impl Frozen {
         let mut code = super::CodeReader::new(state, summary);
         let purpose = super::purpose_hash(&self.native.title, self.native.description.as_deref());
         for item in &self.items {
-            if item.kind == CommentItemKind::PrQuestion || item.gone_at.is_some() {
+            if item.status_comment
+                || item.kind == CommentItemKind::PrQuestion
+                || item.gone_at.is_some()
+            {
                 continue;
             }
             let decision = standing.get(&item.id.to_string()).and_then(|d| {

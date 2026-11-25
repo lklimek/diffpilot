@@ -2,14 +2,16 @@
 //! recommendation (resolved review-body items in one group), and the "Decide the rest per recommendation" selection.
 //! Pure. Gate items are never grouped and never decided in bulk (RQ4, RQ5).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use contracts::api::review_loop::{
-    DecideRequest, DecisionKind, ItemState, LeftOutItem, LeftOutReason, QueueEntry, QueueReason,
+    AssessmentState, CommentItemKind, DecideRequest, DecisionKind, GateMark,
+    ImportedGithubDecision, ItemState, LeftOutItem, LeftOutReason, QueueEntry, QueueReason,
     Recommendation,
 };
 
 use super::effects::PrQuestion;
+use contracts::time::Timestamp;
 
 /// What the queue needs of one item.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,6 +66,91 @@ pub fn waiting(items: &[QueueItem]) -> Vec<&QueueItem> {
             None => true,
         })
         .collect()
+}
+
+/// The facts used to classify an item in the Comments list.
+#[cfg_attr(test, derive(serde::Deserialize))]
+pub(super) struct StatusItem {
+    pub no: u32,
+    pub kind: CommentItemKind,
+    pub state: ItemState,
+    pub assessment_state: AssessmentState,
+    #[cfg_attr(test, serde(default))]
+    pub status_comment: bool,
+    pub imported_decision: Option<ImportedGithubDecision>,
+    pub duplicate_of: Option<u32>,
+    #[cfg_attr(test, serde(default))]
+    pub decision_follows_primary: bool,
+    pub gone_at: Option<Timestamp>,
+    pub gates: Vec<GateMark>,
+}
+
+/// The Comments list status, in N1 precedence order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(serde::Deserialize), serde(rename_all = "snake_case"))]
+enum CommentStatus {
+    StatusComments,
+    Decided,
+    Duplicates,
+    All,
+    NeedsYou,
+    Waiting,
+    Assessing,
+    NotAssessed,
+}
+
+fn comment_status(item: &StatusItem) -> CommentStatus {
+    let linked = item.duplicate_of.is_some_and(|no| no != item.no);
+    let awaits = item.gone_at.is_none()
+        && matches!(
+            item.state,
+            ItemState::Undecided | ItemState::Reopened | ItemState::AskedBack
+        );
+    if item.status_comment {
+        CommentStatus::StatusComments
+    } else if item.imported_decision.is_some() || item.state == ItemState::Outside {
+        CommentStatus::Decided
+    } else if linked && item.decision_follows_primary && item.gates.is_empty() {
+        CommentStatus::Duplicates
+    } else if matches!(
+        item.state,
+        ItemState::Decided | ItemState::Executing | ItemState::Done | ItemState::Repeat
+    ) {
+        CommentStatus::Decided
+    } else if item.gone_at.is_some() {
+        CommentStatus::All
+    } else if linked && (awaits || (!item.gates.is_empty() && item.state == ItemState::Assessing)) {
+        CommentStatus::NeedsYou
+    } else if item.assessment_state == AssessmentState::Queued {
+        CommentStatus::Waiting
+    } else if item.assessment_state == AssessmentState::Running {
+        CommentStatus::Assessing
+    } else if item.kind != CommentItemKind::PrQuestion
+        && matches!(item.assessment_state, AssessmentState::NotAssessed { .. })
+    {
+        CommentStatus::NotAssessed
+    } else if awaits {
+        CommentStatus::NeedsYou
+    } else {
+        CommentStatus::All
+    }
+}
+
+/// Counts the Needs you items in the queue and those among them with a gate.
+pub(super) fn needs_you(entries: &[QueueEntry], items: &HashMap<u32, StatusItem>) -> (u32, u32) {
+    let mut total = 0u32;
+    let mut gates = 0u32;
+    for item in entries
+        .iter()
+        .flat_map(|entry| &entry.item_nos)
+        .filter_map(|no| items.get(no))
+    {
+        if comment_status(item) == CommentStatus::NeedsYou {
+            total = total.saturating_add(1);
+            gates = gates.saturating_add(u32::from(!item.gates.is_empty()));
+        }
+    }
+    (total, gates)
 }
 
 /// The key two items share to form a group: the recommended kind and the target, else the reason class.
@@ -240,6 +327,112 @@ mod tests {
     use contracts::api::review_loop::DecisionTarget;
 
     use super::*;
+
+    #[test]
+    fn needs_you_matches_fixture() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../docs/contracts/fixtures/needs-you-cases.json"
+        ))
+        .unwrap();
+        let defaults = fixture["defaults"].as_object().unwrap();
+        let items: Vec<_> = fixture["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|overrides| {
+                let mut data = defaults.clone();
+                data.extend(overrides.as_object().unwrap().clone());
+                serde_json::from_value::<StatusItem>(data.into()).unwrap()
+            })
+            .collect();
+        let expected: Vec<CommentStatus> =
+            serde_json::from_value(fixture["expected_statuses"].clone()).unwrap();
+        assert_eq!(items.len(), expected.len());
+        for (item, status) in items.iter().zip(expected) {
+            assert_eq!(comment_status(item), status, "C{}", item.no);
+        }
+        let entries: Vec<QueueEntry> = serde_json::from_value(fixture["queue"].clone()).unwrap();
+        let items = items.into_iter().map(|item| (item.no, item)).collect();
+        let (total, gates) = needs_you(&entries, &items);
+        assert_eq!(fixture["expected_needs_you"], total);
+        assert_eq!(fixture["expected_needs_you_gates"], gates);
+    }
+
+    #[test]
+    fn rust_dashcore_1336_regression() {
+        use contracts::api::review_loop::NotAssessedReason;
+        use serde::Deserialize;
+
+        #[derive(Deserialize)]
+        struct Item {
+            no: u32,
+            kind: CommentItemKind,
+            #[serde(default)]
+            assessed: bool,
+            duplicate_of: Option<u32>,
+            comment: Option<crate::github::review_loop::PrComment>,
+        }
+
+        let fixture: Vec<Item> = serde_json::from_value(
+            serde_json::from_str::<serde_json::Value>(include_str!(
+                "../../../../fixtures/review-loop/regressions/rust-dashcore-1336.json"
+            ))
+            .unwrap()["items"]
+                .clone(),
+        )
+        .unwrap();
+        let bots =
+            super::super::observe::BotRule::new(&contracts::api::dashboard::default_known_bots());
+        let by_no: HashMap<_, _> = fixture
+            .iter()
+            .map(|item| {
+                let status_comment = item
+                    .comment
+                    .as_ref()
+                    .is_some_and(|comment| bots.pr_comment(comment).1);
+                (
+                    item.no,
+                    StatusItem {
+                        no: item.no,
+                        kind: item.kind,
+                        state: ItemState::Undecided,
+                        assessment_state: if item.assessed {
+                            AssessmentState::Assessed
+                        } else {
+                            AssessmentState::NotAssessed {
+                                reason: NotAssessedReason::Missing,
+                            }
+                        },
+                        status_comment,
+                        imported_decision: None,
+                        duplicate_of: item.duplicate_of,
+                        decision_follows_primary: false,
+                        gone_at: None,
+                        gates: vec![],
+                    },
+                )
+            })
+            .collect();
+        let item_nos: Vec<_> = fixture.iter().map(|item| item.no).collect();
+        let status: Vec<_> = item_nos
+            .iter()
+            .copied()
+            .filter(|no| by_no[no].status_comment)
+            .collect();
+        assert_eq!(status, (29..=49).collect::<Vec<_>>());
+        let actual: Vec<_> = item_nos
+            .iter()
+            .copied()
+            .filter(|no| comment_status(&by_no[no]) == CommentStatus::NeedsYou)
+            .collect();
+        assert_eq!(actual, [21, 23, 24, 25, 28, 50, 51, 52]);
+        let entries = [QueueEntry {
+            item_nos,
+            reason: QueueReason::Group,
+            skipped: false,
+        }];
+        assert_eq!(needs_you(&entries, &by_no), (8, 0));
+    }
 
     fn item(no: u32) -> QueueItem {
         QueueItem {

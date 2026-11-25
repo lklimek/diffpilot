@@ -376,7 +376,8 @@ async fn read_now(
         .settings(tenant, user)
         .await?
         .map_or_else(default_known_bots, |stored| stored.settings.known_bots);
-    let (mut observed, mut snapshot) = observe::observe(&read, &BotRule::new(&known_bots));
+    let bots = BotRule::new(&known_bots);
+    let (mut observed, mut snapshot) = observe::observe(&read, &bots);
     let (mut pr_data, sources) = handin::build(
         &read,
         &format!("{}/{}", summary.repo.owner, summary.repo.name),
@@ -418,6 +419,30 @@ async fn read_now(
             .map(str::to_owned)
             .unwrap_or_else(|| raw["id"].to_string());
         let review = source.kind == contracts::api::review_loop::CommentSourceKind::ReviewBody;
+        let comment = if review {
+            None
+        } else {
+            read.comments
+                .iter()
+                .find(|comment| comment.url == source.url)
+        };
+        let (author_kind, status_comment) = if let Some(comment) = comment {
+            bots.pr_comment(comment)
+        } else {
+            let kind = if known_bots
+                .iter()
+                .any(|bot| bot.eq_ignore_ascii_case(&source.author))
+                || source.author.ends_with("[bot]")
+            {
+                AuthorKind::Bot
+            } else {
+                AuthorKind::Human
+            };
+            (kind, false)
+        };
+        if status_comment {
+            pr_data.scope.sources.retain(|url| *url != source.url);
+        }
         observed.push(Observed {
             thread: None,
             item: ObservedItem {
@@ -428,15 +453,8 @@ async fn read_now(
                 },
                 stable_key: format!("{}:{raw_id}:1", if review { "review" } else { "comment" }),
                 author: source.author.clone(),
-                author_kind: if known_bots
-                    .iter()
-                    .any(|b| b.eq_ignore_ascii_case(&source.author))
-                    || source.author.ends_with("[bot]")
-                {
-                    AuthorKind::Bot
-                } else {
-                    AuthorKind::Human
-                },
+                author_kind,
+                status_comment,
                 url: Some(source.url.clone()),
                 location: None,
                 title: markers::title_of(&source.body),
@@ -477,7 +495,9 @@ async fn read_now(
         })
         .map(|item| item.stable_key.as_str())
         .collect();
-    observed.retain(|entry| !zero_keys.contains(entry.item.stable_key.as_str()));
+    observed.retain(|entry| {
+        entry.item.status_comment || !zero_keys.contains(entry.item.stable_key.as_str())
+    });
     snapshot.pr_data = Some(pr_data);
     snapshot.ci = ci;
     snapshot.pending_checks = pending_checks;
@@ -636,7 +656,8 @@ async fn apply(
         // carried from there.
         let raised = before
             .filter(|record| {
-                item.outside.is_none()
+                !item.status_comment
+                    && item.outside.is_none()
                     && !queue::is_open(record.state)
                     && (record.state != ItemState::Outside || record.author_kind != AuthorKind::Bot)
             })
@@ -996,6 +1017,7 @@ async fn add_pr_questions(
         stable_key: key,
         author: "diffpilot".to_owned(),
         author_kind: AuthorKind::Diffpilot,
+        status_comment: false,
         url: None,
         location: None,
         title: title.to_owned(),
@@ -1067,7 +1089,11 @@ fn stale_reviews<'a>(
             let raised: Vec<&ItemRecord> = items
                 .iter()
                 .filter(|item| item.author.eq_ignore_ascii_case(&request.login))
-                .filter(|item| item.state != ItemState::Outside && item.gone_at.is_none())
+                .filter(|item| {
+                    item.state != ItemState::Outside
+                        && item.gone_at.is_none()
+                        && !item.status_comment
+                })
                 .collect();
             !raised.is_empty()
                 && raised.iter().all(|item| {
@@ -1102,6 +1128,7 @@ pub(crate) struct Loaded {
     pub(crate) row: db::repo::review_loop::CommentPrRecord,
     pub(crate) snapshot: Option<Snapshot>,
     pub(crate) items: Vec<ItemRecord>,
+    item_numbers: HashMap<contracts::ids::CommentItemId, u32>,
     pub(crate) decisions: Vec<StoredDecision>,
     pub(crate) assessments: BTreeMap<u32, StoredAssessment>,
 }
@@ -1109,12 +1136,12 @@ pub(crate) struct Loaded {
 impl Loaded {
     pub(crate) async fn of(state: &AppState, handle: PrHandle) -> Result<Self, LoopError> {
         let view = state.db.review_loop().pr_view(handle.id).await?;
-        Self::from_view(handle, view)
+        Self::from_view(handle, view).ok_or(LoopError::NotFound)
     }
 
     /// The pull request as `view` read it.
-    fn from_view(handle: PrHandle, view: PrView) -> Result<Self, LoopError> {
-        let row = view.row.ok_or(LoopError::NotFound)?;
+    fn from_view(handle: PrHandle, view: PrView) -> Option<Self> {
+        let row = view.row?;
         let snapshot = row
             .github_snapshot
             .clone()
@@ -1128,12 +1155,13 @@ impl Loaded {
                 numbers.get(&item).map(|no| (*no, stored))
             })
             .collect();
-        Ok(Self {
+        Some(Self {
             decisions: view.decisions,
             handle,
             row,
             snapshot,
             items: view.items,
+            item_numbers: numbers,
             assessments,
         })
     }
@@ -1151,6 +1179,10 @@ impl Loaded {
             .iter()
             .find(|item| item.no == no)
             .ok_or(LoopError::NotFound)
+    }
+
+    fn number_of(&self, id: contracts::ids::CommentItemId) -> Option<u32> {
+        self.item_numbers.get(&id).copied()
     }
 
     pub(crate) fn standing(&self) -> HashMap<String, &StoredDecision> {
@@ -1189,7 +1221,7 @@ impl Loaded {
         self.items
             .iter()
             // An item the read no longer produces waits for nobody (plan §2.1).
-            .filter(|record| record.gone_at.is_none())
+            .filter(|record| record.gone_at.is_none() && !record.status_comment)
             .map(|record| queue::QueueItem {
                 no: record.no,
                 state: record.state,
@@ -1363,7 +1395,9 @@ pub async fn decide(
         .db
         .review_loop()
         .decide_planned(&session.tenant_id, pr, Timestamp::now(), |view| {
-            Loaded::from_view(handle, view)?.new_decisions(&session.user_id, rows, via)
+            Loaded::from_view(handle, view)
+                .ok_or(LoopError::NotFound)?
+                .new_decisions(&session.user_id, rows, via)
         })
         .await?;
     match outcome {
