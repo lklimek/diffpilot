@@ -87,6 +87,11 @@
     if (j) { j.outerHTML = '<span class="jm run" data-tip="The LLM is judging this item again; the old text stays until it is done.">◔ judging…</span>'; toast('Re-judging ' + j.dataset.rejudge + ' (mock): 1 of today’s 120 items.'); return; }
     var w = e.target.closest('[data-watch]');
     if (w) { var on = w.getAttribute('aria-pressed') !== 'true'; w.setAttribute('aria-pressed', on); w.querySelector('.eye').textContent = on ? '◉' : '○'; w.querySelector('.wt').textContent = on ? 'Watching' : (w.dataset.off || 'Watch'); return; }
+    /* Addendum: [data-reveal="id id"] shows elements (and hides [data-gone] ids); [data-disclose] toggles aria-controls. */
+    var rv = e.target.closest('[data-reveal]');
+    if (rv) { rv.dataset.reveal.split(' ').forEach(function (id) { var el = document.getElementById(id); if (el) el.hidden = false; }); (rv.dataset.gone || '').split(' ').forEach(function (id) { var el = document.getElementById(id); if (el) el.hidden = true; }); if (rv.dataset.toast) toast(rv.dataset.toast); return; }
+    var dc = e.target.closest('[data-disclose]');
+    if (dc) { var tg = document.getElementById(dc.getAttribute('aria-controls')), op = dc.getAttribute('aria-expanded') !== 'true'; dc.setAttribute('aria-expanded', op); if (tg) tg.hidden = !op; var card = dc.closest('.thr'); if (card) card.classList.toggle('closed', !op); dc.textContent = op ? '▾' : '▸'; return; }
     var nc = e.target.closest('[data-navc]');
     if (nc) { var on2 = document.querySelector('.shell').classList.toggle('navc'); nc.setAttribute('aria-pressed', on2); return; }
     var x = e.target.closest('[data-hide]');

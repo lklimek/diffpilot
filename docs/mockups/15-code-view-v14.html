@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Code view v1.4 addendum - diffpilot mockup</title>
+<!-- docs/v1.4-ui-plan.md §12.1 (U48-U52) wins on behaviour. Fictional data. -->
+<link rel="stylesheet" href="mockup.css">
+<link rel="stylesheet" href="mockup-v14.css">
+<style>
+ .nb{border:0;background:none;font:inherit;color:var(--muted);cursor:pointer;padding:0;min-width:4ch;text-align:right}
+ .nb:hover,.nb:focus-visible{color:var(--accent);text-decoration:underline}
+ .l .n{padding-right:8px}
+ .stephead{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:baseline;margin:0 0 6px}
+ .wrap14{max-width:1180px;margin:0 auto;padding:14px 18px 40px}
+</style>
+</head>
+<body data-page="code14">
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><symbol id="gh" viewBox="0 0 16 16"><path d="M6.766 11.328c-2.063-.25-3.516-1.734-3.516-3.656 0-.781.281-1.625.75-2.188-.203-.515-.172-1.609.063-2.062.625-.078 1.468.25 1.968.703.594-.187 1.219-.281 1.985-.281.765 0 1.39.094 1.953.265.484-.437 1.344-.765 1.969-.687.218.422.25 1.515.046 2.047.5.593.766 1.39.766 2.203 0 1.922-1.453 3.375-3.547 3.64.531.344.89 1.094.89 1.954v1.625c0 .468.391.734.86.547C13.781 14.359 16 11.53 16 8.03 16 3.61 12.406 0 7.984 0 3.563 0 0 3.61 0 8.031a7.88 7.88 0 0 0 5.172 7.422c.422.156.828-.125.828-.547v-1.25c-.219.094-.5.156-.75.156-1.031 0-1.64-.562-2.078-1.609-.172-.422-.36-.672-.719-.719-.187-.015-.25-.093-.25-.187 0-.188.313-.328.625-.328.453 0 .844.281 1.25.86.313.452.64.655 1.031.655s.641-.14 1-.5c.266-.265.47-.5.657-.656"/></symbol></svg>
+<a class="skip" href="#main">Skip to content</a>
+<noscript><p style="padding:8px">This mockup needs JavaScript for its states.</p></noscript>
+
+<header class="rbar">
+ <nav class="crumbs" aria-label="Breadcrumb">
+  <a class="c-long" href="index.html">diff<span style="color:var(--accent)">pilot</span></a><span class="sepc c-long" aria-hidden="true">&rsaquo;</span>
+  <a class="c-long" href="17-prs-v14.html">Pull requests</a><span class="sepc c-long" aria-hidden="true">&rsaquo;</span>
+  <a class="prn" href="17-prs-v14.html?s=pr-new" data-tip="dashpay/platform #5536: opens the PR main page (U62)."><span class="c-long"><span class="c-owner">dashpay/</span>platform </span>#5536</a>
+  <a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" aria-label="Pull request #5536 on GitHub (opens on GitHub in a new tab)"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a>
+  <span class="sepc" aria-hidden="true">&rsaquo;</span>
+  <button class="mbtn" type="button" style="border-color:var(--accent)"><span data-for="files">Files</span><span data-for="flows narrow" hidden>Flows</span> <span class="car" aria-hidden="true">&#9662;</span></button>
+ </nav>
+ <div class="prline">
+  <strong class="prt">feat(sdk): adopt invitations that already landed on chain</strong>
+  <span class="cp" data-for="files" tabindex="0" aria-label="Current file: packages/rs-sdk/src/provider/appserver/rpc.rs" data-tip="packages/rs-sdk/src/provider/appserver/rpc.rs"><span class="dot" aria-hidden="true">&middot;&nbsp;</span><span class="dir"><bdi>packages/rs-sdk/src/provider/appserver/</bdi></span><span class="fn">rpc.rs</span></span>
+  <span class="cp" data-for="flows narrow" hidden tabindex="0" aria-label="Current file: packages/rs-sdk/src/platform/dashpay/invitation.rs" data-tip="packages/rs-sdk/src/platform/dashpay/invitation.rs"><span class="dot" aria-hidden="true">&middot;&nbsp;</span><span class="dir"><bdi>packages/rs-sdk/src/platform/dashpay/</bdi></span><span class="fn">invitation.rs</span></span>
+  <code class="badge0 small muted" tabindex="0" data-tip="Head commit analysed: 9f3c2e1a…">9f3c2e1</code>
+  <span class="b b-cls badge0">EN</span>
+  <a class="b badge0" href="https://github.com/" target="_blank" rel="noopener noreferrer" style="text-decoration:none">CI: 14 passed, 1 pending <svg class="ghi" aria-hidden="true"><use href="#gh"/></svg><span class="vh">(opens on GitHub in a new tab)</span></a>
+ </div>
+ <span class="small p-opt">Your progress <b>2</b> / 7</span>
+ <button class="hb p-opt" type="button">Pending review <b>1</b></button>
+ <span class="usermenu" aria-label="alice"><span class="avatar" aria-hidden="true">a</span><span class="un">alice</span></span>
+</header>
+
+<div class="states" role="group" aria-label="Mockup states"><b>mockup states:</b>
+ <button type="button" data-s="flows" aria-pressed="true">Flows: step with doc comment</button>
+ <button type="button" data-s="files" aria-pressed="false">Files: another file in view</button>
+ <button type="button" data-s="narrow" aria-pressed="false">top bar at 1280 px (resize the window)</button>
+</div>
+
+<main class="wrap14" id="main">
+ <p class="annot"><b>U49</b> the file in view, after the PR title, in the code font: the beginning of the path is cut (&ldquo;&hellip;/dashpay/invitation.rs&rdquo;), never the file name; full path in the tooltip. The title shrinks first; SHA, language and CI never disappear. <b>U62</b> &ldquo;Pull requests &rsaquo; dashpay/platform #5536&rdquo; returns to the PR main page.</p>
+
+ <section class="card" aria-labelledby="st-h">
+  <div class="stephead"><h2 id="st-h" style="margin:0">Step 2.3 &middot; <code>adopt_already_landed_claim</code></h2><span class="small muted">packages/rs-sdk/src/platform/dashpay/invitation.rs &middot; lines 1507&ndash;1541</span></div>
+  <div class="code" role="region" aria-label="Code of step 2.3"><div class="ci">
+   <div class="xfold" id="up2"><span aria-hidden="true">&#8943;</span><button type="button" data-reveal="more-up" data-gone="up2">Show 10 more lines above (1488&ndash;1497)</button></div>
+   <div id="more-up" hidden class="ctxblk">
+    <div class="l cx"><span class="n"><a class="lgh" href="https://github.com/" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-label="Open line 1496 on GitHub at the analysed commit, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a><button class="nb" type="button" tabindex="-1">1496</button></span><span class="g"></span><code>}</code></div>
+    <div class="l cx"><span class="n"><a class="lgh" href="https://github.com/" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-label="Open line 1497 on GitHub at the analysed commit, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a><button class="nb" type="button" tabindex="-1">1497</button></span><span class="g"></span><code></code></div>
+   </div>
+   <div class="ctxblk" id="doc" data-for="flows narrow">
+    <div class="ctxlab">doc comment and attributes &middot; 1498&ndash;1506 &middot; unchanged, shown automatically <button type="button" data-reveal="doc-off" data-gone="doc">Hide</button></div>
+    <div class="l cx"><span class="n"><a class="lgh" href="https://github.com/" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-label="Open line 1498 on GitHub at the analysed commit, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a><button class="nb" type="button" tabindex="-1">1498</button></span><span class="g"></span><code>/// Adopts an invitation claim that another device already published.</code></div>
+    <div class="l cx"><span class="n"><a class="lgh" href="https://github.com/" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-label="Open line 1499 on GitHub at the analysed commit, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a><button class="nb" type="button" tabindex="-1">1499</button></span><span class="g"></span><code>///</code></div>
+    <div class="l cx"><span class="n"><a class="lgh" href="https://github.com/" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-label="Open line 1500 on GitHub at the analysed commit, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a><button class="nb" type="button" tabindex="-1">1500</button></span><span class="g"></span><code>/// Returns the stored contact when the claim's transition is already final;</code></div>
+    <div class="l cx"><span class="n"><a class="lgh" href="https://github.com/" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-label="Open line 1501 on GitHub at the analysed commit, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a><button class="nb" type="button" tabindex="-1">1501</button></span><span class="g"></span><code>/// never broadcasts again.</code></div>
+    <div class="l cx"><span class="n"><a class="lgh" href="https://github.com/" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-label="Open line 1505 on GitHub at the analysed commit, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a><button class="nb" type="button" tabindex="-1">1505</button></span><span class="g"></span><code>#[instrument(skip(self, sdk), level = "debug")]</code></div>
+    <div class="l cx"><span class="n"><a class="lgh" href="https://github.com/" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-label="Open line 1506 on GitHub at the analysed commit, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a><button class="nb" type="button" tabindex="-1">1506</button></span><span class="g"></span><code>#[must_use = "the adopted contact must be stored"]</code></div>
+   </div>
+   <div class="xfold" id="doc-off" hidden><span aria-hidden="true">&#8943;</span><button type="button" data-reveal="doc" data-gone="doc-off">Show the doc comment and attributes (1498&ndash;1506)</button></div>
+   <div class="l"><span class="n"><a class="lgh" href="https://github.com/" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-label="Open line 1507 of invitation.rs on GitHub at the analysed commit, new tab" data-tip="Open line 1507 on GitHub at the analysed commit (new tab). Unchanged line: GitHub's PR view would not show it."><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a><button class="nb" type="button" tabindex="-1" aria-label="Comment on line 1507">1507</button></span><span class="g"></span><code>pub async fn adopt_already_landed_claim(&amp;self, sdk: &amp;Sdk, claim: &amp;Claim) -&gt; Result&lt;Contact, Error&gt; {</code></div>
+   <div class="l c"><span class="n"><a class="lgh" href="https://github.com/" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-label="Open line 1508 of invitation.rs in the pull request diff on GitHub, new tab" data-tip="Open this changed line in the pull request diff on GitHub (new tab). GitHub shows the latest commits, which may differ from the analysed ones."><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a><button class="nb" type="button" tabindex="-1">1508</button></span><span class="g"><b>+</b></span><code>    let state = sdk.wait_for_transition(claim.transition_id()).await?;</code></div>
+   <div class="l c cur"><span class="n"><a class="lgh" href="https://github.com/" target="_blank" rel="noopener noreferrer" tabindex="0" aria-label="Open line 1509 of invitation.rs in the pull request diff on GitHub, new tab" data-tip="Open this changed line in the pull request diff on GitHub (new tab). Keyboard: Tab from the line number, or g."><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a><button class="nb" type="button" tabindex="0" aria-label="Comment on line 1509" style="color:var(--accent);font-weight:700">1509</button></span><span class="g"><b>+</b></span><code>    if state.is_final() {</code></div>
+   <div class="l c"><span class="n"><a class="lgh" href="https://github.com/" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-label="Open line 1510 of invitation.rs in the pull request diff on GitHub, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a><button class="nb" type="button" tabindex="-1">1510</button></span><span class="g"><b>+</b></span><code>        return self.store.contact_for(claim).await;</code></div>
+   <div class="l c"><span class="n"><a class="lgh" href="https://github.com/" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-label="Open line 1511 of invitation.rs in the pull request diff on GitHub, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a><button class="nb" type="button" tabindex="-1">1511</button></span><span class="g"><b>+</b></span><code>    }</code></div>
+   <div class="l"><span class="n"><a class="lgh" href="https://github.com/" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-label="Open line 1512 on GitHub at the analysed commit, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a><button class="nb" type="button" tabindex="-1">1512</button></span><span class="g"></span><code>    self.publish_claim(sdk, claim).await</code></div>
+   <div class="fold" style="padding-left:71px">&#8943; lines 1513&ndash;1540 of this step (folded in this mockup)</div>
+   <div class="l"><span class="n"><a class="lgh" href="https://github.com/" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-label="Open line 1541 on GitHub at the analysed commit, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a><button class="nb" type="button" tabindex="-1">1541</button></span><span class="g"></span><code>}</code></div>
+   <div class="xfold" id="down2"><span aria-hidden="true">&#8943;</span><button type="button" data-reveal="more-down" data-gone="down2">Show 10 more lines below (1542&ndash;1551)</button></div>
+   <div id="more-down" hidden class="ctxblk">
+    <div class="l cx"><span class="n"><a class="lgh" href="https://github.com/" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-label="Open line 1542 on GitHub at the analysed commit, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a><button class="nb" type="button" tabindex="-1">1542</button></span><span class="g"></span><code></code></div>
+    <div class="l cx"><span class="n"><a class="lgh" href="https://github.com/" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-label="Open line 1543 on GitHub at the analysed commit, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a><button class="nb" type="button" tabindex="-1">1543</button></span><span class="g"></span><code>/// Step 2.4 starts at line 1548. <span class="muted">(further expansion stops there: &ldquo;Step 2.4 continues below&rdquo;)</span></code></div>
+   </div>
+  </div></div>
+  <p class="annot" style="margin-top:8px"><b>U48</b> hover a line (or focus its number, line 1509 here) to see the GitHub icon left of the number: changed lines open the PR diff, other lines the file at the analysed commit; <kbd>g</kbd> opens the current line. <b>U50</b> &ldquo;Show 10 more lines above / below&rdquo;, repeatable, up to the file edge or the neighbouring step. <b>U51</b> the doc comment and attributes above the function are shown automatically (from the Rust tech plugin, C16), with Hide.</p>
+ </section>
+
+ <div class="tiles" style="margin-top:14px">
+  <section class="card" aria-labelledby="rp-h">
+   <h2 id="rp-h">LLM remark popover (U58)</h2>
+   <div class="rpop" role="dialog" aria-label="LLM remark at line 345">
+    <p class="small" style="margin:0 0 4px"><span class="llmtag">LLM</span> <b style="color:var(--llm)">Behaviour &middot; lines 345&ndash;383</b> <span class="muted">&middot; flow 3 &middot; step 2</span></p>
+    <p class="small" style="margin:0"><b>Was:</b> a failed broadcast was retried three times.</p>
+    <p class="small" style="margin:0"><b>Is:</b> a failed broadcast is retried until the claim is final.</p>
+    <div class="acts"><a class="linkbtn" href="16-ask-v14.html?s=from-remark">Ask about this remark</a><button class="linkbtn" type="button" data-toast="Inspector opens at this remark (mock)">Show in Inspector</button><span class="sp"></span><button class="hb" type="button" aria-label="Close">&times;</button></div>
+   </div>
+   <p class="small muted" style="margin-top:8px">Opens the Ask window with the remark&rsquo;s step and lines as subject and a quoted context line in the draft; nothing is sent until you press Ask.</p>
+  </section>
+  <section class="card" aria-labelledby="pl-h">
+   <h2 id="pl-h">File paths in LLM text (U52)</h2>
+   <p class="small" style="margin:0 0 4px"><span class="llmtag">LLM</span> answer to Q3</p>
+   <p style="font-size:13px">The retry is bounded only by finality: see <a class="plink" href="#" data-tip="Open packages/rs-sdk/src/platform/dashpay/invitation.rs at line 974 in Files">packages/rs-sdk/src/platform/dashpay/invitation.rs:974</a>. The cap that used to apply lives in <a class="plink" href="#" data-tip="Open packages/rs-sdk/src/sdk/retry.rs at lines 40&ndash;58 in Files (unique suffix match)">sdk/retry.rs:40-58</a>. The config default in <code>docs/sdk/retries.md</code> is not part of this pull request.</p>
+   <p class="small muted" style="margin:0">Linked only when the path matches a file of this analysis (exact, or a unique suffix with a <code>/</code>); the last path is not in the PR and stays plain text. Links are built from the file list, never from URLs in the text.</p>
+  </section>
+ </div>
+</main>
+<footer class="mock-foot">Mockup &mdash; static example data &middot; v1.4 plan &sect;12.1</footer>
+<dialog id="help" aria-labelledby="help-t"><h2 id="help-t">Keyboard shortcuts</h2><table><tbody><tr><td><kbd>j</kbd> <kbd>k</kbd></td><td>next / previous block</td></tr><tr><td><kbd>c</kbd></td><td>comment on the current line</td></tr><tr><td><kbd>g</kbd></td><td>open the current line on GitHub (new tab)</td></tr><tr><td><kbd>a</kbd></td><td>ask about the current step</td></tr><tr><td><kbd>Esc</kbd></td><td>close</td></tr></tbody></table><form method="dialog"><button class="btn pri">Close</button></form></dialog>
+<div id="tip" role="tooltip" hidden></div><div id="toast" role="status" hidden></div>
+<script src="mockup.js"></script>
+<script src="mockup-v14.js"></script>
+</body>
+</html>
