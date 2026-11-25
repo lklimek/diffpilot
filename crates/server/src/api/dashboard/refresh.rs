@@ -38,11 +38,11 @@ use tokio::time::MissedTickBehavior;
 use crate::api::error::{ApiErrorSource, ApiFailure};
 use crate::api::events::{StreamSlot, holding};
 use crate::auth::{Session, SessionCsrf};
-use crate::dashboard::judge;
 use crate::dashboard::refresh::rank::ItemJudgement;
 use crate::dashboard::refresh::{self, ControlError, Scope, StartError};
 use crate::dashboard::schedule::{Schedule, counted_run_date};
 use crate::dashboard::snapshot::{self, CursorError, Snapshot, View};
+use crate::dashboard::{installations, judge};
 use crate::review_loop::{PrHandle, views};
 use crate::state::AppState;
 
@@ -182,16 +182,6 @@ pub(crate) fn mark_present(state: &AppState, session: &Session) {
     }
 }
 
-/// Counts a summary read in a browser session as My work being open (plan §M); never an access token read.
-fn mark_open(state: &AppState, session: &Session) {
-    if !session.is_access_token() {
-        state
-            .dashboard
-            .readers()
-            .mark_open(&scope(session), state.dashboard.now());
-    }
-}
-
 /// The current snapshot scored with the judgements present now, and how many of those judgements an older ranking
 /// prompt made; `None` without a readable snapshot.
 async fn current_view(
@@ -217,12 +207,14 @@ async fn current_view(
         .judgements(state, scope, &snapshot)
         .await?;
     let older = judgements.values().filter(|j| j.older_prompt).count();
-    let view = snapshot::build(
+    let mut view = snapshot::build(
         &snapshot,
         &judgements,
         state.config.memcan_ui_url.as_deref(),
         &state.plugins.overlay(state.dashboard.now()),
     );
+    let live = installations::live(state, &scope.tenant_id).await?;
+    view.apply_installations(&live);
     Ok(Some((
         snapshot::revision(&record, &snapshot, &view),
         snapshot,
@@ -241,7 +233,6 @@ async fn summary(
     let list_excluded = query.excluded.unwrap_or(false);
     let scope = scope(&session);
     mark_present(&state, &session);
-    mark_open(&state, &session);
     let dashboard = state.db.dashboard();
     let latest_refresh = match dashboard
         .latest_refresh(&scope.tenant_id, &scope.user_id)
@@ -250,31 +241,43 @@ async fn summary(
         Some(record) => Some(judge::status(&state, &record).await),
         None => None,
     };
-    let (revision, meta, older_prompt_judgements, scanned_at, mentions, mention_coverage) =
-        match current_view(&state, &scope).await? {
-            Some((revision, snapshot, view, record, older)) => (
-                revision,
-                Some(view.meta(&snapshot, &record, list_excluded)),
-                older,
-                record.scanned_at,
-                snapshot.mentions,
-                snapshot.mention_coverage,
-            ),
-            None => (
-                snapshot::NO_SNAPSHOT.to_owned(),
-                None,
-                0,
-                None,
-                Vec::new(),
-                Default::default(),
-            ),
-        };
+    let (
+        revision,
+        meta,
+        older_prompt_judgements,
+        scanned_at,
+        mentions,
+        mention_coverage,
+        (live_repositories, not_live_repositories),
+        last_event_at,
+    ) = match current_view(&state, &scope).await? {
+        Some((revision, snapshot, view, record, older)) => (
+            revision,
+            Some(view.meta(&snapshot, &record, list_excluded)),
+            older,
+            record.scanned_at,
+            snapshot.mentions,
+            snapshot.mention_coverage,
+            view.repository_counts,
+            snapshot.last_event_at,
+        ),
+        None => (
+            snapshot::NO_SNAPSHOT.to_owned(),
+            None,
+            0,
+            None,
+            Vec::new(),
+            Default::default(),
+            (0, 0),
+            None,
+        ),
+    };
     let stored = dashboard.settings(&scope.tenant_id, &scope.user_id).await?;
     Ok(Json(DashboardSummary {
         status_counts: None,
-        live_repositories: None,
-        not_live_repositories: None,
-        last_event_at: None,
+        live_repositories: Some(live_repositories),
+        not_live_repositories: Some(not_live_repositories),
+        last_event_at,
         mentions,
         mention_coverage,
         revision,

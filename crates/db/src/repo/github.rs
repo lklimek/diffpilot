@@ -1,5 +1,6 @@
 //! Durable GitHub App deliveries and installation coverage (ADR-026).
 
+use contracts::api::settings::RepositoryInstallation;
 use contracts::common::RepoRef;
 use contracts::time::Timestamp;
 use jiff::SignedDuration;
@@ -247,14 +248,18 @@ impl Github<'_> {
                 if !tracked.bind(&mut tx).await? {
                     return Ok(Outcome::NotAllowed);
                 }
-                (changes, None)
+                (serde_json::to_string(changes)?, None)
             }
             Admitted::Installation(installation, update) => {
-                let Some(capped) = installations::apply(&mut tx, installation, update, now).await?
+                let Some(applied) =
+                    installations::apply(&mut tx, installation, update, now).await?
                 else {
                     return Ok(Outcome::NotAllowed);
                 };
-                (&[][..], capped.then_some(DeliveryError::InstallationCap))
+                (
+                    applied.removed,
+                    applied.capped.then_some(DeliveryError::InstallationCap),
+                )
             }
         };
         let state = if error.is_some() { "done" } else { "pending" };
@@ -267,7 +272,7 @@ impl Github<'_> {
                  received_at = excluded.received_at, attempts = 0, error = excluded.error",
         )
         .bind(id).bind(delivery.hash).bind(delivery.event).bind(delivery.action).bind(delivery.installation_id)
-        .bind(serde_json::to_string(changes)?).bind(state).bind(ts(now)).bind(error.map(|_| ts(now)))
+        .bind(changes).bind(state).bind(ts(now)).bind(error.map(|_| ts(now)))
         .bind(error.map(|code| code.to_string()))
         .execute(&mut *tx).await?;
         tx.commit().await?;
@@ -331,8 +336,11 @@ impl Github<'_> {
 
     /// Oldest eligible delivery. For a pending retry, processed_at stores its next eligible time.
     pub async fn next_pending(&self, now: Timestamp) -> Result<Option<PendingDelivery>, DbError> {
+        // Coverage is applied at receipt. Removed repositories only fence in-flight REST lookups.
         let row: Option<(String, String, i64, String)> = sqlx::query_as(
-            "SELECT delivery_id, changes, attempts, received_at FROM github_deliveries
+            "SELECT delivery_id,
+                    CASE WHEN event = 'installation_repositories' AND action = 'removed' THEN '[]' ELSE changes END,
+                    attempts, received_at FROM github_deliveries
              WHERE state = 'pending' AND received_at >= ? AND (processed_at IS NULL OR processed_at <= ?)
              ORDER BY received_at, rowid LIMIT 1",
         ).bind(ts(now - RESUME_WINDOW)).bind(ts(now)).fetch_optional(self.pool).await?;
@@ -397,6 +405,71 @@ impl Github<'_> {
         .bind(delivery.id.to_string()).bind(&delivery.received_at).bind(delivery.attempts)
         .execute(self.pool).await?;
         Ok(result.rows_affected() != 0)
+    }
+
+    /// Known tracked repositories, with installation state independent of webhook configuration.
+    pub async fn repository_installations(
+        &self,
+        tenant: Option<&str>,
+    ) -> Result<Vec<RepositoryInstallation>, DbError> {
+        tracking::list(self.pool, tenant).await
+    }
+
+    /// Removes installations whose repositories are no longer tracked by any tenant.
+    pub async fn prune_installations(&self) -> Result<(), DbError> {
+        tracking::prune(self.pool).await
+    }
+
+    /// Applies the result of the repository installation lookup, unless a newer lifecycle event already won.
+    pub async fn record_installation_lookup(
+        &self,
+        repo: &RepoRef,
+        found: Option<(i64, bool)>,
+        started: Timestamp,
+    ) -> Result<(), DbError> {
+        let mut tx = write_tx(self.pool).await?;
+        if let Some((installation, suspended)) = found {
+            let offered = [Repository {
+                name: repo.clone(),
+                id: None,
+            }];
+            if !tracking::resolve(&mut tx, &offered, 1).await?.is_empty() {
+                sqlx::query(
+                    "INSERT INTO app_repositories (owner, name, installation_id, suspended, checked_at)
+                     SELECT ?1, ?2, ?3, ?4, ?5
+                     WHERE NOT EXISTS (
+                       SELECT 1 FROM github_deliveries d
+                       WHERE d.installation_id = ?3 AND d.received_at >= ?5 AND d.state IN ('pending', 'done', 'failed')
+                         AND ((d.event = 'installation' AND d.action IN ('deleted', 'suspend', 'unsuspend'))
+                           OR (d.event = 'installation_repositories' AND d.action = 'removed' AND EXISTS (
+                               SELECT 1 FROM json_each(d.changes) removed
+                               WHERE (removed.value ->> '$.name.owner') = ?1 COLLATE NOCASE
+                                 AND (removed.value ->> '$.name.name') = ?2 COLLATE NOCASE
+                           )))
+                     )
+                     AND (EXISTS (SELECT 1 FROM app_repositories WHERE owner = ?1 AND name = ?2)
+                          OR (SELECT COUNT(*) FROM app_repositories) < ?6)
+                     ON CONFLICT(owner, name) DO UPDATE SET
+                       repository_id = CASE WHEN installation_id = excluded.installation_id THEN repository_id END,
+                       installation_id = excluded.installation_id,
+                       suspended = excluded.suspended, checked_at = excluded.checked_at
+                     WHERE app_repositories.checked_at < excluded.checked_at",
+                )
+                .bind(&repo.owner).bind(&repo.name).bind(installation).bind(suspended)
+                .bind(ts(started)).bind(INSTALLATION_CAP).execute(&mut *tx).await?;
+            }
+        } else {
+            sqlx::query(
+                "DELETE FROM app_repositories WHERE owner = ?1 AND name = ?2 AND checked_at < ?3",
+            )
+            .bind(&repo.owner)
+            .bind(&repo.name)
+            .bind(ts(started))
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
     }
 
     /// When the last stored verified webhook delivery was received.

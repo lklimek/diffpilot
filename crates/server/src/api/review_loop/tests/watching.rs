@@ -192,6 +192,94 @@ async fn watch_probe_batches_ten_prs() {
     );
 }
 
+async fn install_watched_repo(w: &World, now: Timestamp) {
+    use db::repo::github::{Effect, InstallationUpdate, NewDelivery, Repository};
+
+    let repo = pr_482().repo;
+    w.state
+        .db
+        .repos()
+        .upsert(DEFAULT_TENANT, &repo, Some(42))
+        .await
+        .expect("repository");
+    let repositories = [Repository {
+        name: repo,
+        id: Some(42),
+    }];
+    w.state
+        .db
+        .github()
+        .record(
+            &NewDelivery {
+                id: uuid::Uuid::new_v4(),
+                hash: &"b".repeat(64),
+                event: "installation",
+                action: Some("created"),
+                installation_id: Some(123),
+                effect: Effect::Installation(123, InstallationUpdate::Add(&repositories)),
+            },
+            now,
+        )
+        .await
+        .expect("installation");
+}
+
+#[tokio::test]
+async fn watch_probe_skips_live_repos() {
+    let w = world_with(|state| {
+        std::sync::Arc::get_mut(&mut state.config)
+            .unwrap()
+            .github_webhook_secret = Some(secrecy::SecretString::from(
+            "test webhook secret at least 32 bytes",
+        ));
+    })
+    .await;
+    let pr = watched_482(&w).await;
+    let now = Timestamp::now();
+    install_watched_repo(&w, now).await;
+    mount_probe(&w.server, probe_answer("2026-11-12T10:40:12Z")).await;
+    watch::tick_at(&w.state, now).await.expect("tick");
+    assert!(received(&w.server, PROBE_MARKER).await.is_empty());
+    assert!(the_watch(&w, pr).await.last_probe_at.is_none());
+}
+
+#[tokio::test]
+async fn watch_probe_runs_hourly_for_non_live() {
+    let w = world().await;
+    let pr = watched_482(&w).await;
+    mount_probe(&w.server, json!({"data": {}})).await;
+    let now = "2026-11-25T12:00:00Z".parse::<Timestamp>().expect("time");
+    watch::tick_at(&w.state, now).await.expect("first tick");
+    assert_eq!(the_watch(&w, pr).await.last_probe_at, Some(now));
+    watch::tick_at(&w.state, now + SignedDuration::from_secs(3599))
+        .await
+        .expect("early tick");
+    assert_eq!(received(&w.server, PROBE_MARKER).await.len(), 1);
+    watch::tick_at(&w.state, now + SignedDuration::from_hours(1))
+        .await
+        .expect("hourly tick");
+    assert_eq!(received(&w.server, PROBE_MARKER).await.len(), 2);
+}
+
+#[tokio::test]
+async fn watch_probe_runs_hourly_for_installed_repo_without_webhook() {
+    let w = world().await;
+    let pr = watched_482(&w).await;
+    let now = "2026-11-25T12:00:00Z".parse::<Timestamp>().unwrap();
+    install_watched_repo(&w, now).await;
+    mount_probe(&w.server, json!({"data": {}})).await;
+    watch::tick_at(&w.state, now).await.unwrap();
+    assert_eq!(the_watch(&w, pr).await.last_probe_at, Some(now));
+    watch::tick_at(&w.state, now + SignedDuration::from_secs(3599))
+        .await
+        .unwrap();
+    assert_eq!(received(&w.server, PROBE_MARKER).await.len(), 1);
+    watch::tick_at(&w.state, now + SignedDuration::from_hours(1))
+        .await
+        .unwrap();
+    assert_eq!(received(&w.server, PROBE_MARKER).await.len(), 2);
+}
+
 /// A probe whose values did not change since the last one reads nothing more from GitHub and makes no pass due.
 #[tokio::test]
 async fn unchanged_probe_reads_nothing_more() {

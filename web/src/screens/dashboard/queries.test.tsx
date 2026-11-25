@@ -244,7 +244,7 @@ describe("useStartRefresh (R2)", () => {
   });
 });
 
-describe("summaryRefetchInterval (ADR-022, plan §M)", () => {
+describe("summaryRefetchInterval (ADR-022)", () => {
   const summary = { revision: "r", latest_refresh: null } as unknown as DashboardSummary;
   const plugin = {
     plugin: "pr-hygiene",

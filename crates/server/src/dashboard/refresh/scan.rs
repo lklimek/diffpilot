@@ -370,6 +370,7 @@ pub(super) async fn scan<T: TokenSource>(
         checked,
         merge_states_recorded: true,
         prs_reread_at: None,
+        last_event_at: input.previous.and_then(|snapshot| snapshot.last_event_at),
         todos_hidden: false,
         snoozes: Vec::new(),
     })
@@ -403,9 +404,6 @@ async fn recheck_merge_states<T: TokenSource>(
     for pr in pulls.iter_mut() {
         if let Some(state) = states.get(&item(pr)) {
             pr.facts.merge_state = facts::merge_state(state);
-            if let Some(mark) = pr.mark.as_mut() {
-                mark.merge_state.clone_from(state);
-            }
         }
     }
     let unknown = pulls

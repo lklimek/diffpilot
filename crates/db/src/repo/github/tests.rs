@@ -597,3 +597,227 @@ async fn webhook_audits_typed_payload_error_without_queuing() {
         1
     );
 }
+
+async fn lifecycle(db: &Db, action: &str, update: InstallationUpdate<'_>, at: Timestamp) {
+    let id = Uuid::new_v4();
+    let names = ["deleted", "suspend", "unsuspend"];
+    assert_eq!(
+        db.github()
+            .record(
+                &NewDelivery {
+                    id,
+                    hash: &format!("{:064x}", id.as_u128()),
+                    event: if names.contains(&action) {
+                        "installation"
+                    } else {
+                        "installation_repositories"
+                    },
+                    action: Some(action),
+                    installation_id: Some(42),
+                    effect: Effect::Installation(42, update),
+                },
+                at
+            )
+            .await
+            .unwrap(),
+        Outcome::Queued
+    );
+}
+
+async fn lookup_row(db: &Db, name: &RepoRef) -> Option<(Option<i64>, i64, bool)> {
+    sqlx::query_as("SELECT repository_id, installation_id, suspended FROM app_repositories WHERE owner = ? AND name = ?")
+        .bind(&name.owner).bind(&name.name).fetch_optional(&db.pool).await.unwrap()
+}
+
+#[tokio::test]
+async fn lookup_older_than_installation_event_does_not_reinsert() {
+    for (delete, known) in [(false, true), (true, true), (false, false)] {
+        let db = test_db().await;
+        let now = Timestamp::now();
+        let tracked = repo(7, "acme", "node-client");
+        let github = db.github();
+        if known {
+            github
+                .record_installation_lookup(&tracked.name, Some((42, false)), now)
+                .await
+                .unwrap();
+        }
+        let (action, update) = if delete {
+            ("deleted", InstallationUpdate::Delete)
+        } else {
+            (
+                "removed",
+                InstallationUpdate::Remove(std::slice::from_ref(&tracked)),
+            )
+        };
+        let received_at = now + SignedDuration::from_secs(2);
+        lifecycle(&db, action, update, received_at).await;
+        assert!(
+            github
+                .next_pending(received_at)
+                .await
+                .unwrap()
+                .unwrap()
+                .changes
+                .is_empty()
+        );
+        github
+            .record_installation_lookup(
+                &tracked.name,
+                Some((42, false)),
+                now + SignedDuration::from_secs(1),
+            )
+            .await
+            .unwrap();
+        assert_eq!(lookup_row(&db, &tracked.name).await, None);
+    }
+}
+
+#[tokio::test]
+async fn unrelated_repository_delivery_does_not_block_lookup() {
+    let db = test_db().await;
+    let now = Timestamp::now();
+    let other = repo(8, "acme", "other");
+    sqlx::query("INSERT INTO dashboard_settings (user_id,tenant_id,enumerate_owners,updated_at) VALUES ('u1','default',?,?)").bind(json!(["acme"]).to_string())
+        .bind(ts(now)).execute(&db.pool).await.unwrap();
+    let github = db.github();
+    github
+        .record_installation_lookup(&other.name, Some((42, false)), now)
+        .await
+        .unwrap();
+    lifecycle(
+        &db,
+        "removed",
+        InstallationUpdate::Remove(&[other]),
+        now + SignedDuration::from_secs(2),
+    )
+    .await;
+    let tracked = repo(7, "acme", "node-client");
+    github
+        .record_installation_lookup(
+            &tracked.name,
+            Some((42, false)),
+            now + SignedDuration::from_secs(1),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        lookup_row(&db, &tracked.name).await,
+        Some((None, 42, false))
+    );
+}
+
+#[tokio::test]
+async fn lookup_does_not_overwrite_newer_webhook_row() {
+    let db = test_db().await;
+    let now = Timestamp::now();
+    let tracked = repo(7, "acme", "node-client");
+    lifecycle(
+        &db,
+        "added",
+        InstallationUpdate::Add(std::slice::from_ref(&tracked)),
+        now + SignedDuration::from_secs(2),
+    )
+    .await;
+    db.github()
+        .record_installation_lookup(&tracked.name, Some((23, true)), now)
+        .await
+        .unwrap();
+    assert_eq!(
+        lookup_row(&db, &tracked.name).await,
+        Some((Some(7), 42, false))
+    );
+}
+
+#[tokio::test]
+async fn lookup_not_found_keeps_row_added_after_start() {
+    let db = test_db().await;
+    let now = Timestamp::now();
+    let tracked = repo(7, "acme", "node-client");
+    lifecycle(
+        &db,
+        "added",
+        InstallationUpdate::Add(std::slice::from_ref(&tracked)),
+        now + SignedDuration::from_secs(2),
+    )
+    .await;
+    db.github()
+        .record_installation_lookup(&tracked.name, None, now)
+        .await
+        .unwrap();
+    assert_eq!(
+        lookup_row(&db, &tracked.name).await,
+        Some((Some(7), 42, false))
+    );
+}
+
+#[tokio::test]
+async fn removed_event_matches_rest_learned_row_by_name() {
+    let db = test_db().await;
+    let now = Timestamp::now();
+    let tracked = repo(7, "ACME", "Node-Client");
+    db.github()
+        .record_installation_lookup(&repo(7, "acme", "node-client").name, Some((42, false)), now)
+        .await
+        .unwrap();
+    assert_eq!(
+        lookup_row(&db, &tracked.name).await,
+        Some((None, 42, false))
+    );
+    lifecycle(
+        &db,
+        "removed",
+        InstallationUpdate::Remove(std::slice::from_ref(&tracked)),
+        now + SignedDuration::from_secs(1),
+    )
+    .await;
+    assert_eq!(lookup_row(&db, &tracked.name).await, None);
+}
+
+#[tokio::test]
+async fn added_event_binds_id_to_rest_learned_row() {
+    let db = test_db().await;
+    let now = Timestamp::now();
+    let tracked = repo(7, "ACME", "Node-Client");
+    db.github()
+        .record_installation_lookup(&repo(7, "acme", "node-client").name, Some((42, true)), now)
+        .await
+        .unwrap();
+    assert_eq!(lookup_row(&db, &tracked.name).await, Some((None, 42, true)));
+    lifecycle(
+        &db,
+        "added",
+        InstallationUpdate::Add(std::slice::from_ref(&tracked)),
+        now + SignedDuration::from_secs(1),
+    )
+    .await;
+    assert_eq!(
+        lookup_row(&db, &tracked.name).await,
+        Some((Some(7), 42, false))
+    );
+}
+
+#[tokio::test]
+async fn prune_installations_keeps_tracked_rows() {
+    let db = test_db().await;
+    let now = Timestamp::now();
+    let tracked = repo(7, "acme", "node-client");
+    db.github()
+        .record_installation_lookup(&tracked.name, Some((42, false)), now)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO app_repositories VALUES ('acme', 'untracked', 8, 42, 0, ?)")
+        .bind(ts(now))
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    db.github().prune_installations().await.unwrap();
+    assert_eq!(
+        lookup_row(&db, &tracked.name).await,
+        Some((None, 42, false))
+    );
+    assert_eq!(
+        lookup_row(&db, &repo(8, "acme", "untracked").name).await,
+        None
+    );
+}

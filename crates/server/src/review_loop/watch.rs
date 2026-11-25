@@ -1,9 +1,9 @@
-//! Watch (ADR-023, plan §2.8, RW1–RW2): a user's watched pull requests (at most [`WATCH_LIMIT`]) are probed every
-//! [`PROBE_INTERVAL`] from the ADR-020 scheduler task with the watcher's own token, one alias-batched GraphQL query
+//! Watch (ADR-023, plan §2.8, RW1–RW2): the scheduler probes watched pull requests without live webhook
+//! updates every [`PROBE_INTERVAL`] with the watcher's own token, one alias-batched GraphQL query
 //! per [`PROBE_BATCH`] pull requests; only a pull request whose probe values changed is read in full. A change makes
 //! an automatic assessment pass due: it waits while thepastaclaw reviews the pull request (at most
 //! [`BOT_ROUND_WAIT`]), then goes through [`assess::request_pass`] (one pass per pull request, spacing, daily cap). A
-//! plug-in change signal probes its watched pull requests at once. A pass that leaves undecided questions writes one
+//! plug-in change signal probes its watched pull requests without live updates at once. A pass that leaves undecided questions writes one
 //! `questions_ready` user event per round and watcher; delivering it is the notification task's work. A user whose
 //! GitHub rate limit is used up is not probed until GitHub's reset or retry time.
 
@@ -25,15 +25,17 @@ use super::assess::{self, AssessError, PassQueued, PassReason};
 use super::observe::Snapshot;
 use super::{Loaded, LoopError, PrHandle, ReadOutcome, queue};
 use crate::auth::{Session, UserTokenError};
-use crate::dashboard::plugin::PrKey;
+use crate::dashboard::{installations, plugin::PrKey};
 use crate::github::work::{UserTokens, WorkClient, WorkError};
 use crate::state::AppState;
 
 /// Most pull requests one user watches (plan §2.8).
 // TODO(S13-2 follow-up): confirm the Watch constants against the owner's usage (plan §12).
 pub const WATCH_LIMIT: u32 = 20;
-/// Least time between two probes of one watch.
-pub const PROBE_INTERVAL: SignedDuration = SignedDuration::from_mins(5);
+/// Least time between two periodic probes of one watch.
+pub const PROBE_INTERVAL: SignedDuration = SignedDuration::from_hours(1);
+/// Fallback backoff when GitHub does not return a rate limit expiry.
+const RATE_LIMIT_BACKOFF: SignedDuration = SignedDuration::from_mins(5);
 /// Pull requests per probe query (spike S13-2: 10 or 20 cost one point; 10 keeps a failed request small).
 pub const PROBE_BATCH: usize = 10;
 /// Longest wait of a due automatic pass for the bot's round to end.
@@ -240,9 +242,7 @@ pub async fn presence(state: &AppState) -> Result<(), DbError> {
     Ok(())
 }
 
-fn by_user<'a>(
-    watches: impl IntoIterator<Item = &'a WatchRecord>,
-) -> BTreeMap<&'a str, Vec<&'a WatchRecord>> {
+fn by_user<'a>(watches: &[&'a WatchRecord]) -> BTreeMap<&'a str, Vec<&'a WatchRecord>> {
     let mut users: BTreeMap<&str, Vec<&WatchRecord>> = BTreeMap::new();
     for watch in watches {
         users.entry(watch.user_id.as_str()).or_default().push(watch);
@@ -260,15 +260,16 @@ pub async fn tick(state: AppState) -> Result<(), DbError> {
 pub(crate) async fn tick_at(state: &AppState, now: Timestamp) -> Result<(), DbError> {
     let watches = state.db.review_loop().live_watches().await?;
     state.plugins.set_watching(!watches.is_empty());
-    let due = watches
+    let due: Vec<_> = watches
         .iter()
         .filter(|watch| {
-            watch
-                .last_probe_at
-                .is_none_or(|at| now.duration_since(at) >= PROBE_INTERVAL)
+            watch.state != WatchState::Ended
+                && watch
+                    .last_probe_at
+                    .is_none_or(|at| now.duration_since(at) >= PROBE_INTERVAL)
         })
-        .filter(|watch| watch.state != WatchState::Ended);
-    for (user, list) in by_user(due) {
+        .collect();
+    for (user, list) in by_user(&without_live_updates(state, &due).await?) {
         if !waits_for_limit(user, now) {
             probe(state, user, &list, now).await;
         }
@@ -276,8 +277,28 @@ pub(crate) async fn tick_at(state: &AppState, now: Timestamp) -> Result<(), DbEr
     settle_all(state, None, now).await
 }
 
+async fn without_live_updates<'a>(
+    state: &AppState,
+    watches: &[&'a WatchRecord],
+) -> Result<Vec<&'a WatchRecord>, DbError> {
+    let mut covered = HashMap::new();
+    let mut due = Vec::new();
+    for &watch in watches {
+        let live = match covered.entry(watch.tenant_id.as_str()) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(installations::live(state, watch.tenant_id.as_str()).await?)
+            }
+        };
+        if !live.contains(&installations::key(&watch.pr.repo)) {
+            due.push(watch);
+        }
+    }
+    Ok(due)
+}
+
 /// A plug-in change signal (a PR Hygiene change mark, thepastaclaw's round end): the watched pull requests among
-/// `changed` are probed and settled at once.
+/// `changed` without live updates are probed at once, and all changed watches are settled.
 pub async fn plugin_changed(state: &AppState, changed: &HashSet<PrKey>) {
     let watches = match state.db.review_loop().live_watches().await {
         Ok(watches) => watches,
@@ -294,19 +315,22 @@ pub async fn plugin_changed(state: &AppState, changed: &HashSet<PrKey>) {
         return;
     }
     let now = Timestamp::now();
-    for (user, list) in by_user(hit.iter().copied()) {
-        if !waits_for_limit(user, now) {
-            probe(state, user, &list, now).await;
+    match without_live_updates(state, &hit).await {
+        Ok(watches) => {
+            for (user, list) in by_user(&watches) {
+                if !waits_for_limit(user, now) {
+                    probe(state, user, &list, now).await;
+                }
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "watch installation coverage could not be checked after a plug-in change")
         }
     }
     let prs: HashSet<i64> = hit.iter().map(|watch| watch.pull_request_id).collect();
     if let Err(error) = settle_all(state, Some(&prs), now).await {
         tracing::warn!(%error, "watches could not be settled after a plug-in change signal");
     }
-    tracing::debug!(
-        watches = hit.len(),
-        "watched pull requests probed after a plug-in change signal"
-    );
 }
 
 /// Probes `watches` of `user` and handles each answer; a user without a usable token pair is paused.
@@ -334,13 +358,13 @@ async fn probe(state: &AppState, user: &str, watches: &[&WatchRecord], now: Time
             return;
         }
         Err(WorkError::PrimaryRateLimit { reset }) => {
-            rate_limited(user, reset.unwrap_or(now + PROBE_INTERVAL), now);
+            rate_limited(user, reset.unwrap_or(now + RATE_LIMIT_BACKOFF), now);
             return;
         }
         Err(WorkError::SecondaryRateLimit { retry_after }) => {
             let wait = retry_after
                 .and_then(|wait| SignedDuration::try_from(wait).ok())
-                .unwrap_or(PROBE_INTERVAL);
+                .unwrap_or(RATE_LIMIT_BACKOFF);
             rate_limited(user, now + wait, now);
             return;
         }
@@ -379,7 +403,7 @@ fn rate_limited(user: &str, until: Timestamp, now: Timestamp) {
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .insert(user.to_owned(), until);
-    if was.is_some_and(|was| was > now - PROBE_INTERVAL) {
+    if was.is_some_and(|was| was > now - RATE_LIMIT_BACKOFF) {
         tracing::debug!(user, %until, "GitHub's rate limit still stops this user's watch probes");
     } else {
         tracing::warn!(user, %until,

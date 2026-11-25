@@ -740,7 +740,8 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
 - **Refreshes.** One per user is `scanning` or `ranking` at a time. R2 and a scheduled start supersede a refresh in
   `ranking` and are refused only by one in `scanning` (R2: 409 `refresh_running`; schedule: counts as done), so a
   `paused` or `waiting_for_analysis` ranking never blocks a new scan. `trigger` is `manual` (R2), `scheduled`
-  (ADR-020) or `automatic` (started while the user had My work open, plan §M; never while a refresh is live). Transitions: "Refresh states" below. `failure.retry_at` is GitHub's
+  (ADR-020). Historical v1.3 refreshes may have `automatic`, the trigger used while My work was open.
+  Transitions: "Refresh states" below. `failure.retry_at` is GitHub's
   rate-limit reset. `ranking` is null until the snapshot is stored; its `state` follows plan §B.3
   (`waiting_for_analysis` while a review analysis holds the LLM credential). `log` holds at most 200 plain lines
   without tokens or query strings. The newest 10 refreshes per user are kept, plus the one holding the current
@@ -986,7 +987,8 @@ once any required session, token or CSRF checks pass.
   `ItemText.inherited` and `older_prompt_judgements` fields remain readable. The optional R2 request defaults
   `rejudge_outdated` to false. B1 accepts the request with its existing refresh behaviour.
 - `WorkItem.live` and the summary's repository counts and `last_event_at` describe live webhook coverage.
-  `SnapshotMeta` omits `facts_checked_at`. Repository installations come from the database and cover repositories
+  The counts deduplicate repositories of visible ranked items. `SnapshotMeta` omits `facts_checked_at`.
+  Repository installations come from the database and cover repositories
   tracked by the reader's tenant through owners to list, repository rules, watches, analyses or current snapshots.
   Webhook settings show secret configuration, the optional public URL, the last verified delivery and the
   installation-wide count of verified deliveries dropped for untracked repositories since the last restart, at most

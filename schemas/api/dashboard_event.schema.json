@@ -164,7 +164,7 @@
           "const": "scheduled"
         },
         {
-          "description": "My work was open and the newest refresh was old (plan §M).",
+          "description": "Legacy trigger recorded by v1.3 while My work was open.",
           "type": "string",
           "const": "automatic"
         }
