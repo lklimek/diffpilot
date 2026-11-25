@@ -36,8 +36,7 @@ use crate::state::AppState;
 
 /// Plain sentences of a failed LLM call, by typed cause.
 const USAGE_LIMIT: &str = "The LLM provider's usage limit was reached.";
-const SIGN_IN_NEEDED: &str = "Sign-in to the LLM provider is needed: sign in to Codex again in the runner \
-     container (see the runbook).";
+const SIGN_IN_NEEDED: &str = "Link your Codex account in Settings";
 const PROVIDER_REJECTED: &str = "The LLM provider rejected the request or could not answer it.";
 const ANSWER_FORMAT: &str = "The LLM answer was not in the expected format.";
 const TIMED_OUT: &str = "The LLM call took too long and was stopped.";
@@ -47,6 +46,12 @@ const OTHER_FAILURE: &str =
 /// A settings request failed.
 #[derive(Debug, thiserror::Error)]
 pub enum SettingsApiError {
+    /// The deployment has no credentials administration connection.
+    #[error("the Codex gateway is not configured")]
+    GatewayNotConfigured,
+    /// The gateway did not return a common status or challenge.
+    #[error("the Codex gateway is unavailable")]
+    Gateway(#[from] crate::gateway::client::Error),
     /// Malformed JSON body, or a value outside the allowed list.
     #[error("the request body is not valid")]
     Json(#[from] JsonRejection),
@@ -73,6 +78,7 @@ pub enum SettingsApiError {
 impl ApiErrorSource for SettingsApiError {
     fn code(&self) -> ApiErrorCode {
         match self {
+            Self::GatewayNotConfigured | Self::Gateway(_) => ApiErrorCode::Unavailable,
             Self::Json(rejection) => rejection.code(),
             Self::Path(rejection) => rejection.code(),
             Self::InvalidRepository | Self::InvalidModel | Self::InvalidOwners => {
@@ -85,6 +91,9 @@ impl ApiErrorSource for SettingsApiError {
 
     fn public_message(&self) -> Cow<'static, str> {
         match self {
+            Self::GatewayNotConfigured | Self::Gateway(_) => {
+                Cow::Borrowed("The Codex connection is unavailable. Try again later.")
+            }
             Self::Json(rejection) => rejection.public_message(),
             Self::Path(rejection) => rejection.public_message(),
             Self::Db(error) => error.public_message(),
@@ -293,11 +302,15 @@ async fn read_repo(
 /// The signed-in user's settings: LLM status, language, App installations, the tenant's analysed repositories.
 async fn settings(state: &AppState, session: &Session) -> Result<Settings, SettingsApiError> {
     let user = state.db.users().get(&session.user_id).await?;
-    let last_call = state.db.settings().last_call(&session.tenant_id).await?;
+    let last_call = state
+        .db
+        .settings()
+        .last_call(&session.tenant_id, &session.user_id)
+        .await?;
     let unusable_since = state
         .db
         .settings()
-        .credential_unusable_since(&session.tenant_id)
+        .credential_unusable_since(&session.tenant_id, &session.user_id)
         .await?;
     Ok(Settings {
         llm_selection: Some(crate::model::selection(
@@ -388,14 +401,26 @@ pub(crate) fn plain_failure(failure: Option<CallFailure>) -> &'static str {
     match failure {
         Some(CallFailure::UsageLimited) => USAGE_LIMIT,
         Some(CallFailure::Failed(kind)) => match kind {
-            JobFailureKind::CredentialUnusable => SIGN_IN_NEEDED,
+            JobFailureKind::CredentialUnusable
+            | JobFailureKind::CredentialMissing
+            | JobFailureKind::CredentialRelink => SIGN_IN_NEEDED,
             JobFailureKind::Configuration => {
                 "The server is misconfigured: a required agent skill is missing. Ask the administrator."
             }
             JobFailureKind::ProviderFailed => PROVIDER_REJECTED,
             JobFailureKind::OutputNotJson => ANSWER_FORMAT,
             JobFailureKind::Timeout => TIMED_OUT,
-            JobFailureKind::CheckoutFailed | JobFailureKind::Internal => OTHER_FAILURE,
+            JobFailureKind::InvalidJsonSchema => ANSWER_FORMAT,
+            JobFailureKind::AskCompactionUnconfirmed => {
+                "The answer was discarded because the required context shortening was not confirmed."
+            }
+            JobFailureKind::WorkerUnavailable
+            | JobFailureKind::WorkerLost
+            | JobFailureKind::ModelUnavailable
+            | JobFailureKind::UpstreamRejected
+            | JobFailureKind::ReportVersionUnsupported
+            | JobFailureKind::CheckoutFailed
+            | JobFailureKind::Internal => OTHER_FAILURE,
         },
         None => OTHER_FAILURE,
     }
@@ -419,7 +444,7 @@ async fn repo_facts(state: &AppState, repo: AnalysedRepo) -> Result<Option<RepoS
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::path::Path;
 
     use axum::body::Body;
@@ -427,9 +452,10 @@ mod tests {
     use contracts::agent::JobKind;
     use contracts::api::tour::SourceCheck;
     use contracts::common::LlmLanguage;
-    use contracts::job::protocol::{ClaimRequest, ClaimResponse, CredentialStatus};
+    use contracts::ids::UserId;
+    use contracts::job::protocol::{ClaimRequest, ClaimResponse};
     use contracts::job::result::{JobOutcome, JobResult};
-    use contracts::job::spec::{CredentialKind, JobPriority, LlmCredentialRef};
+    use contracts::job::spec::JobPriority;
     use contracts::routes::{
         GET_DIFF, GET_REPO_SETTINGS, GET_REVIEW_STATE, GET_SETTINGS, PUT_REVIEW_STATE,
         RUNNER_CLAIM, RUNNER_RESULT, Route, RouteAuth, SET_LANGUAGE,
@@ -458,10 +484,10 @@ mod tests {
 
     const ACCESS: &str = "ghu_settings_access_canary";
 
-    struct Harness {
-        state: AppState,
+    pub(super) struct Harness {
+        pub(super) state: AppState,
         github: MockServer,
-        cookie: String,
+        pub(super) cookie: String,
     }
 
     fn fixture(name: &str) -> Value {
@@ -477,13 +503,17 @@ mod tests {
 
     /// User `u1` signed in to the default tenant with GitHub tokens, one analysis of `acme/node-client`, and a
     /// fake GitHub answering `/user/installations` with the recorded fixture.
-    async fn harness() -> Harness {
+    pub(super) async fn harness() -> Harness {
         let github = MockServer::start().await;
         let mut config = test_config();
         config.github.api_url = Url::parse(&format!("{}/api", github.uri())).expect("url");
         let db = Db::in_memory().await.expect("db");
+
         let state = AppState::with_queue(config, db);
         seed_analysis(&state.db).await.expect("analysis");
+        db::repo::analyses::testing::seed_payer(&state.db, "codex-1")
+            .await
+            .unwrap();
         let lock = lock_user("u1").await;
         let grant = TokenGrant {
             access_token: SecretString::from(ACCESS),
@@ -511,7 +541,7 @@ mod tests {
     }
 
     impl Harness {
-        async fn send(
+        pub(super) async fn send(
             &self,
             method: &str,
             uri: &str,
@@ -552,7 +582,7 @@ mod tests {
             (status, body)
         }
 
-        async fn get(&self, uri: &str) -> (StatusCode, Value) {
+        pub(super) async fn get(&self, uri: &str) -> (StatusCode, Value) {
             self.send("GET", uri, Some(&self.cookie), false, None).await
         }
 
@@ -567,18 +597,15 @@ mod tests {
             .await
         }
 
-        async fn llm_status(&self) -> Value {
+        pub(super) async fn llm_status(&self) -> Value {
             let (status, settings) = self.get(GET_SETTINGS.path).await;
             assert_eq!(status, StatusCode::OK, "{settings}");
             settings["llm_status"].clone()
         }
     }
 
-    fn credential(id: &str) -> LlmCredentialRef {
-        LlmCredentialRef {
-            id: id.to_owned(),
-            kind: CredentialKind::CodexChatgpt,
-        }
+    fn credential(id: &str) -> UserId {
+        contracts::ids::UserId(id.to_owned())
     }
 
     #[tokio::test]
@@ -586,17 +613,12 @@ mod tests {
         let h = harness().await;
         let credentials = h.state.db.llm_credentials();
         credentials
-            .register(
-                DEFAULT_TENANT,
-                &credential("codex-1"),
-                true,
-                Timestamp::now(),
-            )
+            .register(DEFAULT_TENANT, &credential("u1"), true, Timestamp::now())
             .await
             .expect("credential");
         credentials
             .record_call(
-                "codex-1",
+                "u1",
                 &LlmCallOutcome {
                     at: at("2026-11-16T09:31:00Z"),
                     status: LlmCallStatus::Working,
@@ -610,17 +632,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn llm_status_is_private_to_the_signed_in_payer() {
+        let h = harness().await;
+        let credentials = h.state.db.llm_credentials();
+        crate::test_support::link_payer(&h.state.db, DEFAULT_TENANT, "codex-1").await;
+        credentials
+            .record_call(
+                "codex-1",
+                &LlmCallOutcome {
+                    at: Timestamp::now(),
+                    status: LlmCallStatus::Working,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(h.llm_status().await, Value::Null);
+        credentials
+            .mark_unusable("codex-1", Timestamp::now())
+            .await
+            .unwrap();
+        assert_eq!(h.llm_status().await, Value::Null);
+    }
+
+    #[tokio::test]
     async fn llm_status_reflects_last_call() {
         let h = harness().await;
         assert_eq!(h.llm_status().await, Value::Null, "nothing checked yet");
         let credentials = h.state.db.llm_credentials();
         credentials
-            .register(
-                DEFAULT_TENANT,
-                &credential("codex-1"),
-                true,
-                Timestamp::now(),
-            )
+            .register(DEFAULT_TENANT, &credential("u1"), true, Timestamp::now())
             .await
             .expect("credential");
         assert_eq!(
@@ -630,7 +670,7 @@ mod tests {
         );
         credentials
             .record_call(
-                "codex-1",
+                "u1",
                 &LlmCallOutcome {
                     at: at("2026-11-17T08:00:00Z"),
                     status: LlmCallStatus::Working,
@@ -647,7 +687,7 @@ mod tests {
             "status": { "state": "not_working", "message": "codex: stream error 0x1f (internal detail)" },
         });
         credentials
-            .record_call("codex-1", &serde_json::from_value(raw).expect("outcome"))
+            .record_call("u1", &serde_json::from_value(raw).expect("outcome"))
             .await
             .expect("call");
         // Without a typed cause the status says so plainly; the raw text never reaches the user.
@@ -661,7 +701,7 @@ mod tests {
         credentials
             .register(
                 DEFAULT_TENANT,
-                &credential("codex-1"),
+                &credential("u1"),
                 false,
                 at("2026-11-17T09:00:00Z"),
             )
@@ -671,20 +711,18 @@ mod tests {
         assert_eq!(status["at"], json!("2026-11-17T09:00:00Z"));
         assert_eq!(status["status"]["state"], json!("not_working"));
         let message = status["status"]["message"].as_str().expect("message");
-        assert!(message.contains("sign in to Codex again"), "{message}");
+        assert!(
+            message.contains("Link your Codex account in Settings"),
+            "{message}"
+        );
         credentials
-            .register(
-                DEFAULT_TENANT,
-                &credential("codex-1"),
-                true,
-                Timestamp::now(),
-            )
+            .register(DEFAULT_TENANT, &credential("u1"), true, Timestamp::now())
             .await
             .expect("usable again");
         assert_eq!(h.llm_status().await, failed);
         credentials
             .record_call(
-                "codex-1",
+                "u1",
                 &LlmCallOutcome {
                     at: at("2026-11-17T10:00:00Z"),
                     status: LlmCallStatus::Working,
@@ -714,10 +752,14 @@ mod tests {
 
     /// Runs one job on credential `id` through the runner protocol (claim, result) ending with `outcome` and an LLM
     /// call that failed with `raw`, as the runner reports it.
-    async fn fail_one_job(h: &Harness, id: &str, outcome: JobOutcome, raw: &str) {
+    pub(super) async fn fail_one_job(h: &Harness, id: &str, outcome: JobOutcome, raw: &str) {
+        db::repo::analyses::testing::seed_payer(&h.state.db, id)
+            .await
+            .unwrap();
         let analysis = seed_analysis(&h.state.db).await.expect("analysis");
+        crate::test_support::link_payer(&h.state.db, DEFAULT_TENANT, id).await;
         let mut spec = job_spec(analysis, JobKind::Plan);
-        spec.credential.id = id.to_owned();
+        spec.payer.0 = id.to_owned();
         h.state
             .db
             .jobs()
@@ -741,12 +783,9 @@ mod tests {
             api::runner_router(h.state.clone()).oneshot(request)
         };
         let claim = ClaimRequest {
+            accept_job: true,
             runner_id: "runner-1".to_owned(),
-            credentials: vec![CredentialStatus {
-                credential: credential(id),
-                usable: true,
-            }],
-            dropped_sessions: Vec::new(),
+            retired: Vec::new(),
         };
         let response = runner(
             RUNNER_CLAIM.path,
@@ -765,6 +804,8 @@ mod tests {
         let claimed: ClaimResponse = serde_json::from_slice(&bytes).expect("claim response");
         let claimed = claimed.claim.expect("a claimed job");
         let result = JobResult {
+            assessment: None,
+            report: None,
             job_id: claimed.spec.job_id,
             attempt: claimed.spec.attempt,
             outcome,
@@ -793,26 +834,22 @@ mod tests {
     #[tokio::test]
     async fn llm_status_shows_plain_messages_for_real_provider_failures() {
         let logs = LogCapture::start();
-        let h = harness().await;
         let raw = fixture_schema_error();
         assert!(raw.contains("codex_output_schema"), "{raw}");
         let failed = |kind| JobOutcome::Failed {
             kind,
             message: raw.clone(),
         };
-        for (case, (outcome, plain)) in [
+        for (outcome, plain) in [
             (failed(JobFailureKind::ProviderFailed), PROVIDER_REJECTED),
             (JobOutcome::UsageLimited { resets_at: None }, USAGE_LIMIT),
             (failed(JobFailureKind::OutputNotJson), ANSWER_FORMAT),
             (failed(JobFailureKind::Timeout), TIMED_OUT),
             (failed(JobFailureKind::Internal), OTHER_FAILURE),
             (failed(JobFailureKind::CredentialUnusable), SIGN_IN_NEEDED),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            // One credential per case: a usage limit pauses its credential, a sign-in failure blocks it.
-            fail_one_job(&h, &format!("codex-{case}"), outcome.clone(), &raw).await;
+        ] {
+            let h = harness().await;
+            fail_one_job(&h, "u1", outcome.clone(), &raw).await;
             let status = h.llm_status().await;
             assert_eq!(
                 status["status"]["state"],
@@ -1004,17 +1041,12 @@ mod tests {
         let h = harness().await;
         let credentials = h.state.db.llm_credentials();
         credentials
-            .register(
-                DEFAULT_TENANT,
-                &credential("codex-1"),
-                true,
-                Timestamp::now(),
-            )
+            .register(DEFAULT_TENANT, &credential("u1"), true, Timestamp::now())
             .await
             .expect("credential");
         credentials
             .record_call(
-                "codex-1",
+                "u1",
                 &LlmCallOutcome {
                     at: Timestamp::now(),
                     status: LlmCallStatus::Working,
@@ -1259,3 +1291,42 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod codex_route_tests {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+    #[tokio::test]
+    async fn codex_routes_require_a_signed_in_user() {
+        let state = crate::state::tests::test_state().await;
+        for (method, path) in [
+            ("GET", "/api/v1/settings/codex"),
+            ("DELETE", "/api/v1/settings/codex"),
+            ("POST", "/api/v1/settings/codex/link"),
+            ("GET", "/api/v1/settings/codex/link"),
+        ] {
+            let response = crate::api::router(state.clone())
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "{method} {path}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "codex_tests.rs"]
+mod codex_tests;

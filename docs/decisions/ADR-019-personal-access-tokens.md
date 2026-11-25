@@ -74,3 +74,19 @@ Accepted by the owner (AR-10): his agents already hold his GitHub access.
 | GitHub tokens as API credentials | user tokens never leave the server (T3) |
 | Argon2/bcrypt hashing | no benefit for 256-bit random secrets; costs CPU on every request |
 | Tokens accepted on mutating routes with CSRF exemption | not wanted now; a write scope can be added later per route (plan §E.5 E5-8) |
+
+## Amendment (ADR-023, 2026-11-22): the scope `review_loop_execute`
+- **Scope.** A second scope, `review_loop_execute`, lets an external implementing agent work the review loop's
+  decision feed: claim a decision (RF3), report an effect of its own claim (RF4) and set or remove its own push
+  target (RF5). Settings creates a token with `read` alone or with `read` and `review_loop_execute` (the feed's
+  reads RF1, RF1b and RF2 are `read` routes); `review_loop_execute` alone is refused.
+- **Rule change of §4 and §5.** A token may call a mutating route only when the route names its scope:
+  `RouteAuth::TokenOnly(scope)` (RF3–RF5, any method). The central check admits a token there with that scope (else
+  403 `insufficient_scope`) and refuses a session: a request without a bearer token answers 401 `unauthenticated`
+  with `WWW-Authenticate: Bearer`. Every other non-`GET` route stays session + CSRF and answers a token 403
+  `token_not_accepted`. Tokens never decide: decisions, batches, undo, reopen, gate marks, watches and channel
+  settings take a session with CSRF only (T22, T25).
+- **Presence.** An open RF2 stream of a `review_loop_execute` token marks it connected; RF1 and RF2 record its
+  capabilities and last activity (the decision log lists them). A connected agent is not pushed.
+- **Unchanged:** prefix, hashing, lifecycle, limits, audit line per request (claims and reports add one `audit`
+  line each), and the runner listener's refusal of `srp_` values.

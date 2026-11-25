@@ -1,6 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AccessToken, CreatedAccessToken } from "../../../api/generated/types";
 import tokensJson from "../../../../../fixtures/dashboard/api/access-tokens.json";
 import createdJson from "../../../../../fixtures/dashboard/api/access-token-created.json";
@@ -20,6 +20,28 @@ function renderCard(props: Partial<Parameters<typeof AccessTokensCard>[0]> = {})
   render(<AccessTokensCard tokens={TOKENS} onCreate={onCreate} onRevoke={onRevoke} now={NOW} {...props} />);
   return { onCreate, onRevoke };
 }
+
+/** `document.execCommand("copy")` firing a copy event as a browser does; returns what it wrote, by type. */
+function fakeExecCommand(works: boolean): Map<string, string> {
+  const data = new Map<string, string>();
+  const execCommand = (command: string) => {
+    if (!works || command !== "copy") return false;
+    const event = new Event("copy", { cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(event, "clipboardData", {
+      value: { setData: (type: string, value: string) => data.set(type, value) },
+    });
+    document.dispatchEvent(event);
+    return true;
+  };
+  Object.defineProperty(document, "execCommand", { value: execCommand, configurable: true });
+  return data;
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  Reflect.deleteProperty(navigator, "clipboard");
+  Reflect.deleteProperty(document, "execCommand");
+});
 
 async function createToken(name = "ci agent") {
   await userEvent.click(screen.getByRole("button", { name: "New token" }));
@@ -50,6 +72,7 @@ describe("AccessTokensCard (ADR-019, plan §F.6)", () => {
 
   it("creates a read token (90 days by default) and shows its secret once with a copy button", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("isSecureContext", true);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
     const { onCreate } = renderCard();
     await userEvent.click(screen.getByRole("button", { name: "New token" }));
@@ -75,6 +98,31 @@ describe("AccessTokensCard (ADR-019, plan §F.6)", () => {
     await userEvent.click(screen.getByRole("button", { name: "New token" }));
     expect(screen.getByRole("dialog", { name: "New access token" })).not.toHaveTextContent(SECRET);
     expect(JSON.stringify({ ...localStorage, ...sessionStorage })).not.toContain(SECRET);
+  });
+
+  it("adds the review-loop execute scope only when ticked", async () => {
+    const { onCreate } = renderCard();
+    await userEvent.click(screen.getByRole("button", { name: "New token" }));
+    await userEvent.type(screen.getByLabelText("Name"), "implementing agent");
+    await userEvent.click(screen.getByRole("checkbox", { name: /review_loop_execute/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Create token" }));
+    expect(onCreate).toHaveBeenCalledWith({
+      name: "implementing agent",
+      scopes: ["read", "review_loop_execute"],
+      expires_in_days: 90,
+    });
+  });
+
+  it("says what review_loop_execute allows: any current decision in this diffpilot, not only yours", async () => {
+    renderCard();
+    await userEvent.click(screen.getByRole("button", { name: "New token" }));
+    const dialog = screen.getByRole("dialog", { name: "New access token" });
+    expect(dialog).toHaveTextContent("cannot change anything");
+    const execute = within(dialog).getByRole("checkbox", { name: /review_loop_execute/ });
+    expect(execute).toHaveAccessibleName(/any current decision .*yours and other users'/);
+    await userEvent.click(execute);
+    expect(dialog).not.toHaveTextContent("cannot change anything");
+    expect(dialog).toHaveTextContent("Scope: read and review_loop_execute.");
   });
 
   it("Escape closes the form, but on the secret view only Done closes", async () => {
@@ -110,11 +158,33 @@ describe("AccessTokensCard (ADR-019, plan §F.6)", () => {
     expect(screen.getByText("expired")).toHaveAccessibleDescription(/stopped working/);
   });
 
-  it("when copying fails says to copy by hand", async () => {
-    Object.defineProperty(navigator, "clipboard", {
-      value: { writeText: vi.fn().mockRejectedValue(new Error("denied")) },
-      configurable: true,
-    });
+  it("over plain HTTP (no Clipboard API) copies the token as plain text only; the field keeps its selection", async () => {
+    vi.stubGlobal("isSecureContext", false);
+    const data = fakeExecCommand(true);
+    renderCard();
+    await createToken();
+    const secret = screen.getByLabelText<HTMLInputElement>("Your new token");
+    expect([secret.selectionStart, secret.selectionEnd]).toEqual([0, SECRET.length]);
+    const copy = screen.getByRole("button", { name: "Copy" });
+    await userEvent.click(copy);
+    expect(Object.fromEntries(data)).toEqual({ "text/plain": SECRET });
+    expect(screen.getByRole("status")).toHaveTextContent("Copied to the clipboard.");
+    expect(copy).toHaveFocus();
+    expect([secret.selectionStart, secret.selectionEnd]).toEqual([0, SECRET.length]);
+    expect(document.querySelectorAll("textarea")).toHaveLength(0);
+  });
+
+  it.each([
+    ["the Clipboard API refuses and the copy event does not work", true],
+    ["over plain HTTP the copy event does not work", false],
+  ])("when %s says to copy by hand", async (_, secure) => {
+    vi.stubGlobal("isSecureContext", secure);
+    if (secure)
+      Object.defineProperty(navigator, "clipboard", {
+        value: { writeText: vi.fn().mockRejectedValue(new Error("denied")) },
+        configurable: true,
+      });
+    fakeExecCommand(false);
     renderCard();
     await createToken();
     await userEvent.click(screen.getByRole("button", { name: "Copy" }));

@@ -9,7 +9,7 @@ use contracts::time::Timestamp;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::batch::{PR_BATCH, literal};
+use super::batch::{MAX_PR_BATCH, PR_BATCH, literal};
 use super::client::{TokenSource, WorkClient, WorkError};
 use super::{Fetched, ItemRef, Milestone, note, repo_name, timestamp};
 
@@ -18,22 +18,35 @@ const ISSUE_BATCH: usize = 50;
 /// Repositories and owners per reach batch (Q15).
 const REACH_BATCH: usize = 50;
 
-/// The selection of Q2 (the skill's `PR_DETAIL_QUERY` plus the head, the repository's privacy and name).
+/// The selection of Q2 (the skill's `PR_DETAIL_QUERY` plus the head and base commits, the repository's privacy and
+/// name).
 const PULL_FRAGMENT: &str = " fragment Pull on PullRequest { number title url state isDraft \
 isCrossRepository body additions deletions createdAt updatedAt mergeable mergeStateStatus reviewDecision \
-baseRefName headRefName headRefOid milestone { title number state } \
+baseRefName baseRefOid headRefName headRefOid milestone { title number state } \
 baseRepository { nameWithOwner isPrivate viewerPermission defaultBranchRef { name } } author { __typename login } \
 labels(first: 20) { nodes { name } } participants { totalCount } \
 closingIssuesReferences(first: 5) { nodes { number title labels(first: 10) { nodes { name } } } } \
 assignees(first: 10) { nodes { login } } \
-reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login } \
+reviewRequests(first: 20) { totalCount nodes { requestedReviewer { __typename ... on User { login } \
 ... on Bot { login } ... on Team { name } } } } \
-reviews(last: 20) { totalCount nodes { author { __typename login } state submittedAt } } \
+reviews(last: 20) { totalCount nodes { author { __typename login } state submittedAt commit { oid } } } \
 comments(last: 30) { nodes { author { __typename login } body createdAt } } \
 reviewThreads(first: 100) { nodes { isResolved isOutdated \
 comments(first: 5) { nodes { author { __typename login } body createdAt } } } } \
 timelineItems(last: 50, itemTypes: [REVIEW_REQUESTED_EVENT]) { nodes { ... on ReviewRequestedEvent { \
 createdAt requestedReviewer { __typename ... on User { login } ... on Bot { login } } } } } \
+commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 100) { \
+pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion startedAt \
+checkSuite { workflowRun { workflow { name } } } } ... on StatusContext { context state createdAt } } } } } } } }";
+
+/// Pull requests per change probe (Q18): 25 answered in about 4 s for 2 points, 100 in one query failed with HTTP 502
+/// (`dashpay/platform`, 2026-11-23).
+pub const PROBE_BATCH: usize = MAX_PR_BATCH;
+
+/// The selection of Q18: what moves a pull request's change mark (plan §M), the same fields as in Q2.
+const PROBE_FRAGMENT: &str = " fragment Probe on PullRequest { state updatedAt headRefOid mergeable \
+mergeStateStatus reviewDecision isDraft labels(first: 20) { nodes { name } } \
+reviewRequests(first: 20) { totalCount } reviewThreads(first: 100) { nodes { isResolved } } \
 commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 100) { \
 pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion startedAt \
 checkSuite { workflowRun { workflow { name } } } } ... on StatusContext { context state createdAt } } } } } } } }";
@@ -69,6 +82,13 @@ pub struct Actor {
 pub struct Login {
     /// Login.
     pub login: String,
+}
+
+/// A node with an `oid`.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct Oid {
+    /// Object id.
+    pub oid: String,
 }
 
 /// A node with a `name`.
@@ -150,6 +170,9 @@ pub struct ReviewNode {
     pub state: String,
     /// Submission time (null for a pending review).
     pub submitted_at: Option<Timestamp>,
+    /// Commit reviewed (null when GitHub no longer has it or the query does not select it).
+    #[serde(default)]
+    pub commit: Option<Oid>,
 }
 
 /// A comment (conversation or thread).
@@ -315,6 +338,9 @@ pub struct PullDetail {
     pub head_ref_name: String,
     /// Head commit.
     pub head_ref_oid: String,
+    /// Base commit.
+    #[serde(default)]
+    pub base_ref_oid: Option<String>,
     /// Milestone.
     pub milestone: Option<Milestone>,
     /// Base repository.
@@ -341,6 +367,66 @@ pub struct PullDetail {
     pub timeline_items: Nodes<TimelineRequest>,
     /// The head commit's CI.
     pub commits: Nodes<CommitNode>,
+}
+
+/// A pull request's change probe (Q18): the fields of its change mark (plan §M).
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PullProbe {
+    /// `OPEN`, `CLOSED`, `MERGED`.
+    pub state: String,
+    /// Last update.
+    pub updated_at: Timestamp,
+    /// Head commit.
+    pub head_ref_oid: String,
+    /// `MERGEABLE`, `CONFLICTING`, `UNKNOWN`.
+    pub mergeable: String,
+    /// `CLEAN`, `BLOCKED`, `BEHIND`, …
+    pub merge_state_status: String,
+    /// `APPROVED`, `CHANGES_REQUESTED`, `REVIEW_REQUIRED` or null.
+    pub review_decision: Option<String>,
+    /// Draft.
+    pub is_draft: bool,
+    /// Labels (first 20).
+    pub labels: Nodes<Name>,
+    /// Pending review requests.
+    pub review_requests: Count,
+    /// Review threads (first 100).
+    pub review_threads: Nodes<Resolved>,
+    /// The head commit's CI rollup and contexts.
+    pub commits: Nodes<ProbeCommit>,
+}
+
+/// A review thread's `isResolved`.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Resolved {
+    /// Resolved.
+    pub is_resolved: bool,
+}
+
+/// The last commit's CI rollup and contexts.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct ProbeCommit {
+    /// The commit.
+    pub commit: ProbeRollup,
+}
+
+/// A commit's CI rollup and contexts.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProbeRollup {
+    /// Null without any check or status.
+    pub status_check_rollup: Option<RollupState>,
+}
+
+/// The rollup inputs of the change mark, like Q2.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct RollupState {
+    /// `SUCCESS`, `FAILURE`, `PENDING`, `ERROR`, `EXPECTED`.
+    pub state: String,
+    /// Context states and recency used by effective CI (K12), like Q2.
+    pub contexts: Contexts,
 }
 
 /// History facts of one pull request (Q13).
@@ -426,6 +512,35 @@ impl<T: TokenSource> WorkClient<T> {
             fetched.notes.push(left_out(&pr, "Details", false));
         }
         Ok(fetched)
+    }
+
+    /// Change probes of pull requests (Q18), [`PROBE_BATCH`] per query. A pull request GitHub does not resolve, or
+    /// whose batch fails, is absent.
+    pub async fn pr_probes(
+        &self,
+        pulls: &[ItemRef],
+    ) -> Result<BTreeMap<ItemRef, PullProbe>, WorkError> {
+        let answers = self
+            .batched(pulls, PROBE_BATCH, PROBE_FRAGMENT, |pr| {
+                repository(
+                    &pr.repo,
+                    &format!("pullRequest(number: {}) {{ ...Probe }}", pr.number),
+                )
+            })
+            .await?;
+        Ok(answers
+            .resolved
+            .into_iter()
+            .filter_map(|(pr, value)| {
+                match serde_json::from_value::<Option<PullProbe>>(value["pullRequest"].clone()) {
+                    Ok(probe) => Some((pr, probe?)),
+                    Err(error) => {
+                        tracing::debug!(%pr, %error, "GitHub pull request probe did not parse");
+                        None
+                    }
+                }
+            })
+            .collect())
     }
 
     /// `mergeStateStatus` of open pull requests, read again (Q17), ten per query. A pull request GitHub does not

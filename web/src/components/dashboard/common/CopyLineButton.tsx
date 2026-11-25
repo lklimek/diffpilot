@@ -1,16 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { Tooltip } from "../../tooltip/Tooltip";
 import { copyText, writeClipboard, type CopyLine } from "./copyList";
-import { CopyIcon } from "./icons";
+import { CopyIcon, SlackIcon } from "./icons";
 
 /** How long the result stays shown, in ms. */
 const SHOWN_MS = 3000;
 
 /**
  * Copy icon of one list row: copies the row's linked line (as Copy list does) to paste into Slack and says whether
- * it worked (announced; a ✓ or ✗ next to the icon).
+ * it worked (announced; a ✓ or ✗ next to the icon). `slack`: the Slack icon, for a line with Slack names (K19).
  */
-export function CopyLineButton({ line, id }: { line: CopyLine; id: string }) {
+export function CopyLineButton({ line, id, slack = false }: { line: CopyLine; id: string; slack?: boolean }) {
   const [result, setResult] = useState<"" | "copied" | "failed">("");
   const timer = useRef<number | undefined>(undefined);
   useEffect(() => () => window.clearTimeout(timer.current), []);
@@ -22,10 +22,16 @@ export function CopyLineButton({ line, id }: { line: CopyLine; id: string }) {
   };
   return (
     <span className="inline-flex items-center">
-      <Tooltip tip={`Copies the line of ${id} with its GitHub link, to paste into Slack.`}>
+      <Tooltip
+        tip={
+          slack
+            ? `Copies the line of ${id} with its GitHub link and the Slack names of Settings › Dashboard for GitHub logins; a login without one stays @login.`
+            : `Copies the line of ${id} with its GitHub link, to paste into Slack.`
+        }
+      >
         <button
           type="button"
-          aria-label={`Copy line of ${id}`}
+          aria-label={slack ? `Copy line of ${id} for Slack` : `Copy line of ${id}`}
           onClick={(event) => {
             event.stopPropagation();
             void copy();
@@ -33,7 +39,7 @@ export function CopyLineButton({ line, id }: { line: CopyLine; id: string }) {
           // Glyph-height mark, 24 px target (WCAG 2.5.8), like the GitHub link next to it.
           className="-my-1 inline-flex min-h-6 min-w-6 shrink-0 cursor-pointer items-center justify-center rounded border-0 bg-transparent p-0 text-accent hover:bg-accent-bg"
         >
-          <CopyIcon />
+          {slack ? <SlackIcon /> : <CopyIcon />}
         </button>
       </Tooltip>
       <span role="status" className="text-xs text-muted">

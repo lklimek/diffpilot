@@ -1,0 +1,76 @@
+#!/usr/bin/python3
+"""Read-only gh entry point; each call reads the current per-job token."""
+
+import os
+from pathlib import Path
+import sys
+
+args = sys.argv[1:]
+allowed = {
+    "pr": {"view", "diff", "list", "checks", "status"},
+    "issue": {"view", "list"},
+    "repo": {"view"},
+    "search": {"prs", "issues", "code", "commits", "repos"},
+}
+valid = len(args) >= 2 and args[1] in allowed.get(args[0], set())
+if args and args[0] == "api":
+    # Fixed GET: no body, GraphQL, custom host, header or method overrides.
+    flags = {"--paginate", "--slurp", "--silent", "--include", "-i"}
+    values = {"--jq", "-q", "--template", "-t"}
+    valid = True
+    endpoints = []
+    index = 1
+    while index < len(args):
+        arg = args[index]
+        if arg in values and index + 1 < len(args):
+            index += 2
+            continue
+        if arg.startswith("-"):
+            valid = valid and arg in flags
+        else:
+            endpoints.append(arg)
+        index += 1
+    valid = valid and len(endpoints) == 1
+    if valid:
+        endpoint = endpoints[0].lstrip("/")
+        valid = (
+            bool(endpoint)
+            and ":" not in endpoint
+            and endpoint.split("?")[0] != "graphql"
+        )
+    args = ["api", "--method", "GET", *args[1:]]
+for index, arg in enumerate(args):
+    repo = None
+    if arg in ("--repo", "-R") and index + 1 < len(args):
+        repo = args[index + 1]
+    elif arg.startswith("--repo="):
+        repo = arg.split("=", 1)[1]
+    elif arg.startswith("-R") and len(arg) > 2:
+        repo = arg[2:]
+    if repo is not None:
+        # owner/repo, or an explicit github.com URL/slug, never an enterprise host.
+        if "://" in repo and not repo.startswith(
+            ("https://github.com/", "http://github.com/")
+        ):
+            valid = False
+        repo = (
+            repo.removeprefix("https://")
+            .removeprefix("http://")
+            .removeprefix("github.com/")
+        )
+        valid = valid and len(repo.strip("/").split("/")) == 2 and ":" not in repo
+if not valid or any(a == "--hostname" or a.startswith("--hostname=") for a in args):
+    sys.exit("gh: only read operations on github.com are allowed")
+token = Path("/run/dp/github-token").read_text().strip()
+if not token:
+    sys.exit("gh: no active job token")
+env = dict(os.environ)
+for key in (
+    "GH_HOST",
+    "GITHUB_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+):
+    env.pop(key, None)
+env.update(GH_TOKEN=token, GH_HOST="github.com", GH_PROMPT_DISABLED="1", GH_PAGER="cat")
+os.execve("/usr/bin/gh", ["/usr/bin/gh", *args], env)

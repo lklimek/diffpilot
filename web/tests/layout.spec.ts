@@ -247,9 +247,44 @@ test("long Ask prose and fenced code wrap inside the Ask chat", async ({ page })
   }
 });
 
-// Owner review: the flow rows' tick toggle and markers must not squeeze the titles into mid-word breaks.
-// Room of a flow title (button content width) at each menu width: what the risk label beside it leaves.
-const TITLE_ROOM = { 240: 105, 200: 70 } as const;
+// Owner review: the flow rows' tick toggle, markers and labels must not squeeze the titles into mid-word breaks.
+// Least room (button content width) of a flow title: a label that would leave less goes under the title.
+const TITLE_ROOM = 120;
+
+/** Flow titles of the menu with less than `TITLE_ROOM` px, and words broken across lines that would fit. */
+async function squeezedTitles(page: Page): Promise<string[]> {
+  const nav = page.getByRole("navigation", { name: "Flows and steps" });
+  await expect(nav.getByRole("button", { name: /^Flow 1:/ })).toBeVisible();
+  return nav.evaluate((root, least) => {
+    const found: string[] = [];
+    for (const button of root.querySelectorAll<HTMLElement>("button[data-row='menu']")) {
+      if (!button.getAttribute("aria-label")?.startsWith("Flow ")) continue;
+      const style = getComputedStyle(button);
+      const room = button.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      if (room < least) found.push(`${button.getAttribute("aria-label")}: ${Math.round(room)} px of room`);
+      const walker = document.createTreeWalker(button, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        // A hyphen is a normal break opportunity ("single-|attempt"), not a break inside a word.
+        for (const word of node.textContent!.matchAll(/[^\s-]+-?/g)) {
+          const range = document.createRange();
+          range.setStart(node, word.index);
+          range.setEnd(node, word.index + word[0].length);
+          const lines = new Set([...range.getClientRects()].map((r) => Math.round(r.top)));
+          if (lines.size < 2) continue;
+          const probe = document.createElement("span");
+          probe.style.cssText = `position:absolute;white-space:nowrap;font:${getComputedStyle(node.parentElement!).font}`;
+          probe.textContent = word[0];
+          document.body.append(probe);
+          const natural = probe.getBoundingClientRect().width;
+          probe.remove();
+          if (natural <= room) found.push(`${word[0]} (${Math.round(natural)} px in ${Math.round(room)} px)`);
+        }
+      }
+    }
+    return found;
+  }, TITLE_ROOM);
+}
+
 for (const navWidth of [240, 200] as const) {
   test(`menu at ${navWidth} px: flow titles keep their room and break only between words (unless one word is wider)`, async ({
     page,
@@ -271,36 +306,24 @@ for (const navWidth of [240, 200] as const) {
     );
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto(`/analyses/${ANALYSIS_ID}`);
-    const nav = page.getByRole("navigation", { name: "Flows and steps" });
-    await expect(nav.getByRole("button", { name: /^Flow 1:/ })).toBeVisible();
-    const broken = await nav.evaluate((root, least) => {
-      const found: string[] = [];
-      for (const button of root.querySelectorAll<HTMLElement>("button[data-row='menu']")) {
-        if (!button.getAttribute("aria-label")?.startsWith("Flow ")) continue;
-        const style = getComputedStyle(button);
-        const room = button.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
-        if (room < least) found.push(`${button.getAttribute("aria-label")}: ${Math.round(room)} px of room`);
-        const walker = document.createTreeWalker(button, NodeFilter.SHOW_TEXT);
-        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-          for (const word of node.textContent!.matchAll(/\S+/g)) {
-            const range = document.createRange();
-            range.setStart(node, word.index);
-            range.setEnd(node, word.index + word[0].length);
-            const lines = new Set([...range.getClientRects()].map((r) => Math.round(r.top)));
-            if (lines.size < 2) continue;
-            const probe = document.createElement("span");
-            probe.style.cssText = `position:absolute;white-space:nowrap;font:${getComputedStyle(node.parentElement!).font}`;
-            probe.textContent = word[0];
-            document.body.append(probe);
-            const natural = probe.getBoundingClientRect().width;
-            probe.remove();
-            if (natural <= room)
-              found.push(`${word[0]} (${Math.round(natural)} px in ${Math.round(room)} px)`);
-          }
-        }
-      }
-      return found;
-    }, TITLE_ROOM[navWidth]);
-    expect(broken).toEqual([]);
+    expect(await squeezedTitles(page)).toEqual([]);
+  });
+}
+
+// Owner (2026-11-19, 1280×800): titles beside "Not analysed yet" wrapped one word per line and the Flows column
+// scrolled sideways.
+for (const [name, query] of [
+  ["flows not analysed yet", "?scenario=lazy-flows"],
+  ["risk labels", ""],
+] as const) {
+  test(`1280×800, ${name}: flow titles keep their room and the Flows column does not scroll sideways`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`/analyses/${ANALYSIS_ID}${query}`);
+    expect(await squeezedTitles(page)).toEqual([]);
+    const column = page.locator("[data-column=nav] .overflow-auto");
+    expect(await column.evaluate((el) => el.scrollWidth - el.clientWidth)).toBe(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1280);
   });
 }

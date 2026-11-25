@@ -34,13 +34,25 @@ const READ: RouteAuth = RouteAuth::SessionOrToken(TokenScope::Read);
 fn dashboard_routes_follow_the_plan() {
     use HttpMethod::{Delete, Get, Post, Put};
     use RouteAuth::{Session, SessionCsrf};
-    let expected: [(Route, HttpMethod, &str, RouteAuth); 14] = [
+    let expected: [(Route, HttpMethod, &str, RouteAuth); 16] = [
         (routes::GET_DASHBOARD, Get, "/api/v1/dashboard", READ),
         (
             routes::LIST_DASHBOARD_ITEMS,
             Get,
             "/api/v1/dashboard/items",
             READ,
+        ),
+        (
+            routes::SNOOZE_DASHBOARD_ITEM,
+            Put,
+            "/api/v1/dashboard/items/{key}/snooze",
+            SessionCsrf,
+        ),
+        (
+            routes::WAKE_DASHBOARD_ITEM,
+            Delete,
+            "/api/v1/dashboard/items/{key}/snooze",
+            SessionCsrf,
         ),
         (
             routes::START_DASHBOARD_REFRESH,
@@ -226,7 +238,7 @@ fn dashboard_settings_default_to_plan_f6() {
             "ready_label": "ready-for-human", "skip_authors": ["dependabot", "dependabot[bot]"],
             "known_bots": ["thepastaclaw", "Claudius-Maginificent", "DCG-Claude"],
             "include_todos": true, "memcan_extra_projects": [], "schedule_enabled": true,
-            "schedule_time": "06:00", "time_zone": null
+            "schedule_time": "06:00", "time_zone": null, "slack_names": []
         })
     );
 }

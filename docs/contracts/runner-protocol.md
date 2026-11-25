@@ -1,5 +1,10 @@
 # Runner protocol (v1)
 
+> v1.3 common amendment: [container contracts](containers.md) and [ADR-025](../decisions/ADR-025-container-runtime.md)
+> govern payer/container identity, gateway boundaries, in-place 0030 cleanup and report 4.2. Runtime integration is
+> owned by W3/W4/W5/W8; the older runtime description below applies until those packages replace it.
+
+
 Types: `crates/contracts/src/job/**`. Served only on the runner listener (`SR_RUNNER_LISTEN_ADDR`); never routed
 through the reverse proxy. The runner is long-lived and pulls work; the server never calls the runner.
 
@@ -16,8 +21,8 @@ job; 409 `conflict` for a stale attempt, a job that is no longer claimed or runn
 the same attempt; 400 malformed body.
 
 ## Claim
-- The runner polls `claim` every 1 s while idle (5 s after a failed claim), reporting the credentials it holds (`usable` false after a
-  failed refresh, ADR-003) and the sessions it deleted (`dropped_sessions`).
+- The runner polls `claim` every 1 s while idle (5 s after a failed claim), reporting successfully retired PRs
+  in `retired`. `accept_job` defaults to true; false requests housekeeping and retirement only.
 - The server picks the next runnable job: `queued`, credential usable, not paused and idle, no running job of
   the same PR (claim exclusion and triggers), analysis or credential (partial unique indexes), interactive (`priority` 0) before batch (1), Ask before dashboard ranking within interactive, then oldest; a claimed or running job is never pre-empted. It increments
   `attempt` (every claim, including after a pause or a lease expiry), mints a random job token (stored hashed),
@@ -33,10 +38,12 @@ the same attempt; 400 malformed body.
     is stored encrypted like any other and revoked;
   - `memcan`: URL and token from configuration, plus `allow_write` (default false). The runner offers search tools;
     `add_memory` only when `allow_write` is true, which the server sets for analytic jobs and never for Ask.
-- `drop_sessions`: PR database keys whose session files the runner deletes on explicit removal (ADR-004); it
-  acknowledges in the next claim's `dropped_sessions` (at least once; idempotent).
-- A claim with an empty `credentials` list gets no job but still its `drop_sessions`; the runner polls this way
-  while its scratch disk is below the free-space reserve (ADR-013 "Scratch volumes").
+- `retire`: PR database keys whose worker containers/volumes and local gateway keys the runner removes;
+  it acknowledges successful retirement in the next claim's `retired` (at least once; idempotent).
+  Retirement failure is retried without acknowledgement; an unrelated job from the same claim still executes.
+- A claim with `accept_job: false` gets no job and mints no job or installation token, but still expires leases,
+  resumes paused jobs, acknowledges `retired` and returns pending `retire` entries. The runner polls this way
+  below its disk reserve, so removing retired worker volumes can restore free space.
 - The job token is for the runner only: never placed in the agent's environment, config, logs or events.
 - **Dashboard jobs** (`JobSpec.target` = `{"type":"dashboard","refresh_id":…}`, kind `judge_work`, ADR-018) get
   nothing at claim: `access` stays empty (no installation token is minted, no MemCan endpoint), and `session`,
@@ -283,3 +290,12 @@ The result transports the text as a JSON string; the server ignores any checker 
 and repeats parsing/verification from trusted context. Only canonical JSON is stored.
 Repairs restore the rejected file explicitly because session archives do not contain
 job working files. Plan, PR context and Ask continue using schema-constrained JSON.
+
+## Standalone private comment Ask (v1.3 W8 amendment)
+
+`JobTarget::PullRequestAsk` serializes as `{type: "pull_request_ask", pull_request_id, repo}` and is valid only
+for `JobKind::Ask`. It has no analysis/pass ID. The claim carries the authenticated payer, no analytic session,
+`working_session.kind = verify`, a context-pack seed and the payer's private working thread when available.
+MemCan is absent; GitHub remains read-only and scoped to the target PR repository. The working checkpoint is
+stored per (PR, payer, verify). Quota admission applies to assessment passes only; this job is independent.
+See [container contracts](containers.md#private-comment-ask-without-an-analysis-approved-w8-contract-amendment).

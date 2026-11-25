@@ -17,8 +17,7 @@ use contracts::ids::{AnalysisId, FlowId, JobId};
 use contracts::job::access::AgentAccess;
 use contracts::job::result::{JobFailureKind, JobOutcome, JobResult};
 use contracts::job::spec::{
-    CredentialKind, JobLimits, JobPriority, JobSpec, JobTarget, LlmCredentialRef,
-    PullRequestTarget, RepoCheckout,
+    JobLimits, JobPriority, JobSpec, JobTarget, PullRequestTarget, RepoCheckout,
 };
 use contracts::time::Timestamp;
 use db::error::DbError;
@@ -36,10 +35,7 @@ use super::batching;
 use super::context::StoredResults;
 use super::unsent::{self, Unsent};
 use super::verdict::{self, Facts, Outputs};
-use super::{
-    CREDENTIAL_ID, DriverEnd, PipelineError, control, deps, diff_files, prepare, prepass,
-    statistics,
-};
+use super::{DriverEnd, PipelineError, control, deps, diff_files, prepare, prepass, statistics};
 use crate::api::settings::plain_failure;
 use crate::github::oauth::endpoint;
 use crate::jobs::executor::{ExecutorError, JobHandle, JobRequest, JobUpdate};
@@ -470,7 +466,7 @@ impl Driver<'_> {
             }
             JobStage::PrContext => self.results.pr_context.is_some(),
             JobStage::Flow(id) => self.ended.contains_key(id),
-            JobStage::Ask(_) | JobStage::Judge { .. } => true,
+            JobStage::Ask(_) | JobStage::Judge { .. } | JobStage::Verify(_) => true,
         }
     }
 
@@ -556,8 +552,10 @@ impl Driver<'_> {
         let verified = match checked {
             Ok(verified) => verified,
             Err(issues) => {
-                tracing::error!(analysis = %self.analysis, issues = issues.len(),
-                    "the merged plan fails verification against every agent hunk");
+                let codes: Vec<&str> = issues.iter().map(|issue| issue.kind.code()).collect();
+                let first = issues.first().map_or("", |issue| issue.message.as_str());
+                tracing::error!(analysis = %self.analysis, ?from, issues = ?codes, first_issue = %first,
+                    "the whole plan fails verification over the listed hunks; the analysis fails without a repair run");
                 return Err(PipelineError::RepairExhausted {
                     stage: "plan".to_owned(),
                     what: "plan of the flows",
@@ -622,7 +620,11 @@ impl Driver<'_> {
                 if let JobStage::Flow(id) = &stage
                     && !matches!(
                         kind,
-                        JobFailureKind::Configuration | JobFailureKind::CredentialUnusable
+                        JobFailureKind::Configuration
+                            | JobFailureKind::CredentialUnusable
+                            | JobFailureKind::CredentialMissing
+                            | JobFailureKind::CredentialRelink
+                            | JobFailureKind::InvalidJsonSchema
                     )
                 {
                     tracing::warn!(analysis = %self.analysis, flow = %id, ?kind,
@@ -725,7 +727,7 @@ impl Driver<'_> {
                         Err(issues) => Some(issues),
                     }
                 }
-                JobStage::Ask(_) | JobStage::Judge { .. } => {
+                JobStage::Ask(_) | JobStage::Judge { .. } | JobStage::Verify(_) => {
                     return Err(self.invalid(&stage, "not a pipeline stage"));
                 }
             }
@@ -805,12 +807,13 @@ impl Driver<'_> {
                 stage: stage.key(),
                 what: "plan of the flows",
             }),
-            JobStage::PrContext | JobStage::Ask(_) | JobStage::Judge { .. } => {
-                Err(PipelineError::RepairExhausted {
-                    stage: stage.key(),
-                    what: "PR context",
-                })
-            }
+            JobStage::PrContext
+            | JobStage::Ask(_)
+            | JobStage::Judge { .. }
+            | JobStage::Verify(_) => Err(PipelineError::RepairExhausted {
+                stage: stage.key(),
+                what: "PR context",
+            }),
         }
     }
 
@@ -961,7 +964,7 @@ impl Driver<'_> {
                 };
                 finish(RepairOf::Flow(&input), &|| prompts::analyse_flow(&input))?
             }
-            JobStage::Ask(_) | JobStage::Judge { .. } => {
+            JobStage::Ask(_) | JobStage::Judge { .. } | JobStage::Verify(_) => {
                 return Err(self.invalid(stage, "not a pipeline stage"));
             }
         };
@@ -1069,16 +1072,17 @@ impl Driver<'_> {
                 }),
                 _ => None,
             },
+            assessment: None,
+            pr_data: None,
             model: select_model(
                 kind,
                 &ModelContext { changed_lines },
                 self.state.db.settings().llm_selection().await?.as_ref(),
             ),
             limits: JobLimits::default(),
-            credential: LlmCredentialRef {
-                id: CREDENTIAL_ID.to_owned(),
-                kind: CredentialKind::CodexChatgpt,
-            },
+            payer: contracts::ids::UserId(
+                self.state.db.analyses().get(self.analysis).await?.payer_id,
+            ),
             session: None,
             // Built at claim from the results stored then (`context::StoredPacks`).
             working_session: None,

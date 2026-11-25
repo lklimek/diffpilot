@@ -3,7 +3,9 @@
 //! authoritative and adds the time zone and the policy-path characters), the effective MemCan projects (G17) and
 //! the settings a refresh reads.
 
-use contracts::api::dashboard::{DashboardSettings, DashboardSettingsView, RepositoryRule};
+use contracts::api::dashboard::{
+    DashboardSettings, DashboardSettingsView, RepositoryRule, SlackName,
+};
 use contracts::common::RepoRef;
 use db::error::DbError;
 use db::repo::Db;
@@ -12,8 +14,16 @@ use db::repo::Db;
 const MAX_REPOSITORIES: usize = 50;
 /// Most release branch patterns per row.
 const MAX_BRANCH_PATTERNS: usize = 10;
+/// Most Ignored checks per row.
+const MAX_IGNORED_CHECKS: usize = 20;
+/// Most characters of an Ignored checks entry.
+const MAX_CHECK_CHARS: usize = 100;
 /// Most characters of the ready label.
 const MAX_READY_LABEL_CHARS: usize = 50;
+/// Most rows of the Slack names table (G18).
+const MAX_SLACK_NAMES: usize = 100;
+/// Most characters of a Slack name (Slack's display name limit).
+const MAX_SLACK_NAME_CHARS: usize = 80;
 
 /// A rule of plan §F.6 is broken; the message names the field and the rule (422 `invalid_dashboard_settings`).
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -118,6 +128,7 @@ pub fn validated(
     if !valid_time(&settings.schedule_time) {
         return invalid("Time of day: use HH:MM in steps of 15 minutes.");
     }
+    check_slack_names(&settings.slack_names)?;
     if let Some(zone) = &settings.time_zone {
         check_time_zone(zone)?;
     }
@@ -217,7 +228,8 @@ fn check_list(field: ListField, list: &[String], own_login: &str) -> Result<(), 
     Ok(())
 }
 
-/// G3–G7 (repository rows), in the client's order: count, then per row repository, short name, policy, branches.
+/// G3–G7 (repository rows), in the client's order: count, then per row repository, short name, policy, branches,
+/// ignored checks.
 fn check_repositories(rows: &[RepositoryRule]) -> Result<(), InvalidSettings> {
     if rows.len() > MAX_REPOSITORIES {
         return invalid(format!("Repositories: at most {MAX_REPOSITORIES}."));
@@ -301,6 +313,43 @@ fn check_repositories(rows: &[RepositoryRule]) -> Result<(), InvalidSettings> {
                 "{label}: \"{bad}\" may use only letters, digits, . _ / - and *."
             ));
         }
+        if row.ignored_checks.len() > MAX_IGNORED_CHECKS {
+            return invalid(format!(
+                "{label}: at most {MAX_IGNORED_CHECKS} ignored checks."
+            ));
+        }
+        if let Some(bad) = row.ignored_checks.iter().find(|c| !valid_check(c)) {
+            return invalid(format!(
+                "{label}: \"{bad}\" is not a check name (1 to {MAX_CHECK_CHARS} characters, no commas)."
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// G18, per row in the client's order: login, its uniqueness (case-insensitive), then the Slack name.
+fn check_slack_names(rows: &[SlackName]) -> Result<(), InvalidSettings> {
+    if rows.len() > MAX_SLACK_NAMES {
+        return invalid(format!("Slack names: at most {MAX_SLACK_NAMES}."));
+    }
+    for (index, row) in rows.iter().enumerate() {
+        let login = &row.login;
+        if !valid_login(login) {
+            return invalid(format!(
+                "Slack names: \"{login}\" is not a GitHub login (letters, digits, - or _, up to 39)."
+            ));
+        }
+        if rows[..index]
+            .iter()
+            .any(|earlier| same(&earlier.login, login))
+        {
+            return invalid(format!("Slack names: \"{login}\" is listed twice."));
+        }
+        if !valid_slack_name(&row.slack) {
+            return invalid(format!(
+                "Slack names: the Slack name of \"{login}\" uses 1 to {MAX_SLACK_NAME_CHARS} characters, without control characters or white space at either end."
+            ));
+        }
     }
     Ok(())
 }
@@ -361,6 +410,22 @@ fn valid_branch(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'/' | b'*' | b'-'))
 }
 
+/// An Ignored checks entry: 1 to [`MAX_CHECK_CHARS`] characters, no comma (the list separator) or control
+/// character, no white space at either end (the client trims).
+fn valid_check(value: &str) -> bool {
+    (1..=MAX_CHECK_CHARS).contains(&value.chars().count())
+        && js_trim(value) == value
+        && !value.chars().any(|c| c == ',' || c.is_control())
+}
+
+/// A Slack name: 1 to [`MAX_SLACK_NAME_CHARS`] characters, no control character, no white space at either end (the
+/// client trims). Any other text is the user's choice (`@name`, `<@U01ABC>`, a plain name).
+fn valid_slack_name(value: &str) -> bool {
+    (1..=MAX_SLACK_NAME_CHARS).contains(&value.chars().count())
+        && js_trim(value) == value
+        && !value.chars().any(char::is_control)
+}
+
 /// Relative, ending `.json`, no `..` segment once a backslash counts as a separator (the client's rule).
 fn valid_policy_path(path: &str) -> bool {
     let normalised = path.replace('\\', "/");
@@ -399,6 +464,7 @@ mod tests {
             watch_issues: false,
             ownership_policy: None,
             branch_patterns: Vec::new(),
+            ignored_checks: Vec::new(),
         }
     }
 
@@ -442,6 +508,15 @@ mod tests {
         values.iter().map(|v| (*v).to_owned()).collect()
     }
 
+    fn slack(rows: &[(&str, &str)]) -> Vec<SlackName> {
+        rows.iter()
+            .map(|(login, slack)| SlackName {
+                login: (*login).to_owned(),
+                slack: (*slack).to_owned(),
+            })
+            .collect()
+    }
+
     #[test]
     fn absent_settings_are_defaults() {
         let defaults = DashboardSettings::default();
@@ -459,6 +534,7 @@ mod tests {
         assert!(defaults.schedule_enabled);
         assert_eq!(defaults.schedule_time, "06:00");
         assert_eq!(defaults.time_zone, None);
+        assert!(defaults.slack_names.is_empty());
         assert_eq!(validated(defaults.clone(), OWN), Ok(defaults));
     }
 
@@ -476,6 +552,7 @@ mod tests {
         platform.ownership_policy =
             with_policy("acme", "policies", "policies/platform.json").ownership_policy;
         platform.branch_patterns = strings(&["release/*", "vX.Y-dev", "main"]);
+        platform.ignored_checks = strings(&["*hygiene*", "PastaClaw review", "CI / lint (x.y)"]);
         assert_eq!(
             problem(|s| {
                 s.linked_logins = strings(&["alice-ci", "Corp_EMU"]);
@@ -485,6 +562,7 @@ mod tests {
                 s.skip_authors = strings(&["renovate[bot]"]);
                 s.memcan_extra_projects = strings(&["release-notes", "a.b_c"]);
                 s.schedule_time = "23:45".to_owned();
+                s.slack_names = slack(&[("bob", "@bob.k"), ("Carol-2", "<@U01ABC>")]);
             }),
             None
         );
@@ -531,6 +609,10 @@ mod tests {
                 "Time of day: use HH:MM in steps of 15 minutes.",
             ),
             (
+                Box::new(|s| s.slack_names = slack(&[("a b", "@ab")])),
+                "Slack names: \"a b\" is not a GitHub login (letters, digits, - or _, up to 39).",
+            ),
+            (
                 Box::new(|s| s.time_zone = Some("Mars/Olympus Mons".to_owned())),
                 "Time zone: \"Mars/Olympus Mons\" is not a known time zone.",
             ),
@@ -562,6 +644,46 @@ mod tests {
             .as_deref(),
             Some("Repository 2: use owner/name.")
         );
+    }
+
+    #[test]
+    fn g18_slack_names_login_syntax_unique_text_without_control_characters_at_most_100() {
+        let many: Vec<(String, String)> = (0..101)
+            .map(|i| (format!("user{i}"), format!("@user{i}")))
+            .collect();
+        let many: Vec<(&str, &str)> = many.iter().map(|(l, n)| (l.as_str(), n.as_str())).collect();
+        assert_eq!(
+            problem(|s| s.slack_names = slack(&many)).as_deref(),
+            Some("Slack names: at most 100.")
+        );
+        assert_eq!(problem(|s| s.slack_names = slack(&many[..100])), None);
+        assert_eq!(
+            problem(|s| s.slack_names = slack(&[("bob", "@bob"), ("Bob", "@bobby")])).as_deref(),
+            Some("Slack names: \"Bob\" is listed twice.")
+        );
+        let rule = "Slack names: the Slack name of \"bob\" uses 1 to 80 characters, without control characters or white space at either end.";
+        for bad in ["", " @bob", "@bob ", "@bo\nb", "@bo\u{7}b", &"x".repeat(81)] {
+            assert_eq!(
+                problem(|s| s.slack_names = slack(&[("bob", bad)])).as_deref(),
+                Some(rule),
+                "{bad:?}"
+            );
+        }
+        // Counted in characters; any text Slack shows is allowed, including a member ID mention.
+        for good in [
+            "ż".repeat(80).as_str(),
+            "<@U01ABC>",
+            "@jan.kowalski",
+            "Jan Kowalski",
+        ] {
+            assert_eq!(
+                problem(|s| s.slack_names = slack(&[("bob", good)])),
+                None,
+                "{good:?}"
+            );
+        }
+        // Any login may be mapped, the own one included.
+        assert_eq!(problem(|s| s.slack_names = slack(&[(OWN, "@me")])), None);
     }
 
     #[test]
@@ -741,6 +863,44 @@ mod tests {
             patterns(&eleven).as_deref(),
             Some("Repository 1: at most 10 release branch patterns.")
         );
+    }
+
+    /// Ignored checks: at most 20 names of 1 to 100 characters, without commas (the list separator), control
+    /// characters or white space at either end.
+    #[test]
+    fn ignored_checks_at_most_20_names_without_commas() {
+        let checks = |values: &[&str]| {
+            let rule = RepositoryRule {
+                ignored_checks: strings(values),
+                ..row("acme/x")
+            };
+            problem(|s| s.repositories = vec![rule])
+        };
+        let long = "x".repeat(100);
+        assert_eq!(
+            checks(&["PR Hygiene", "policy*", "ünïcode check", &long]),
+            None
+        );
+        assert_eq!(
+            checks(&["a, b"]).as_deref(),
+            Some("Repository 1: \"a, b\" is not a check name (1 to 100 characters, no commas).")
+        );
+        for bad in ["", " lead", "trail ", "tab\tin", &"x".repeat(101)] {
+            assert!(checks(&[bad]).is_some(), "{bad:?}");
+        }
+        let many: Vec<String> = (0..21).map(|i| format!("c{i}")).collect();
+        let many: Vec<&str> = many.iter().map(String::as_str).collect();
+        assert_eq!(
+            checks(&many).as_deref(),
+            Some("Repository 1: at most 20 ignored checks.")
+        );
+        let stored = serde_json::json!({
+            "repo": {"owner": "acme", "name": "x"}, "alias": null, "watch_issues": false,
+            "ownership_policy": null, "branch_patterns": []
+        });
+        let old: RepositoryRule =
+            serde_json::from_value(stored).expect("a row stored before loads");
+        assert!(old.ignored_checks.is_empty(), "empty = the built-ins");
     }
 
     #[test]

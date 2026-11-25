@@ -1,12 +1,9 @@
 //! Review repro for migration 0010 (`language_ru`): a database built by the real migrator through 0009, seeded
-//! in every user/analysis child table, upgraded by `Db::open` (the production path).
+//! in every user/analysis child table, upgraded through 0010 with the production migrator construction.
 #![expect(clippy::expect_used, reason = "test helpers outside #[test] functions")]
 
 use std::path::Path;
 
-use contracts::common::LlmLanguage;
-use contracts::time::Timestamp;
-use db::repo::Db;
 use sqlx::migrate::{Migration, MigrationType, Migrator};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 use sqlx::{AssertSqlSafe, SqlSafeStr};
@@ -180,7 +177,7 @@ async fn table_sql(pool: &SqlitePool, table: &str) -> String {
         .expect("table sql")
 }
 
-/// 0010 through `Db::open` on a seeded 0009 database: data, schema objects and checks intact, `ru` accepted on
+/// Historical 0010 on a seeded 0009 database: data, schema objects and checks intact, `ru` accepted on
 /// both tables (new, already-open and other-pool connections), an unknown language still refused.
 #[tokio::test]
 async fn migration_0010_on_a_seeded_v9_database() {
@@ -217,16 +214,13 @@ async fn migration_0010_on_a_seeded_v9_database() {
         .await
         .expect("prepared before");
 
-    let db = Db::open(&path).await.expect("Db::open applies 0010");
-
+    // Pin the historical migration: the later v1.3 cut-over intentionally cleans runtime data.
+    migrate(&old, 10).await.expect("0010 applies");
     let version_after: i64 = sqlx::query_scalar("PRAGMA schema_version")
         .fetch_one(&mut *held)
         .await
         .expect("version");
-    assert!(
-        version_after > version_before,
-        "{version_before} -> {version_after}"
-    );
+    assert!(version_after > version_before);
     assert_eq!(
         table_sql(&old, "users").await,
         users_before.replace("('en', 'pl')", "('en', 'pl', 'ru')")
@@ -236,100 +230,24 @@ async fn migration_0010_on_a_seeded_v9_database() {
         analyses_before.replace("('en', 'pl')", "('en', 'pl', 'ru')")
     );
     let (rows_after, schema_after) = snapshot(&old).await;
-    // Db::open also applies 0011 (a new empty table and its index) and 0014 (the `questions_by_parent` index): additive
-    // to this 0010 preservation check.
-    assert_eq!(
-        rows_after
-            .iter()
-            .find(|(t, _)| t == "dashboard_hidden_mentions")
-            .map(|(_, rows)| rows.len()),
-        Some(0)
-    );
-    // 0015 adds `controlled_owners` and `controlled_owners_changed` (with their primary-key indexes) and widens the
-    // document kinds in place.
-    assert_eq!(schema_after.len(), schema_before.len() + 7);
-    let added_0015 = |entry: &String| {
-        matches!(
-            entry.split('|').nth(2),
-            Some("controlled_owners" | "controlled_owners_changed")
-        )
+    let data = |rows: Vec<(String, Vec<String>)>| {
+        rows.into_iter()
+            .filter(|(table, _)| table != "_sqlx_migrations")
+            .collect::<Vec<_>>()
     };
-    // 0012 rebuilds `questions` with four anchor columns after `step_id`, 0013 appends `touched_steps` and 0014
-    // `kind`, `flow_id` and `parent_id`, all empty for existing step questions except `kind`; the repository and
-    // schema tests check that table, so here it is compared without them.
-    let rebuilt = |entry: &String| entry.split('|').nth(2) == Some("questions");
-    let schema_before: Vec<_> = schema_before
-        .into_iter()
-        .filter(|entry| !rebuilt(entry))
-        .map(|entry| entry.replace("'memcan_profile'))", "'memcan_profile', 'dependencies'))"))
-        .collect();
-    let schema_after: Vec<_> = schema_after
-        .into_iter()
-        .filter(|entry| {
-            entry.split('|').nth(2) != Some("dashboard_hidden_mentions")
-                && !rebuilt(entry)
-                && !added_0015(entry)
-        })
-        .collect();
-    let rows_after: Vec<_> = rows_after
-        .into_iter()
-        .filter(|(t, _)| {
-            !matches!(
-                t.as_str(),
-                "_sqlx_migrations"
-                    | "dashboard_hidden_mentions"
-                    | "controlled_owners"
-                    | "controlled_owners_changed"
-            )
-        })
-        .map(|(table, rows)| {
-            if table != "questions" {
-                return (table, rows);
-            }
-            let rows = rows
-                .into_iter()
-                .map(|row| {
-                    let fields: Vec<&str> = row.splitn(9, '|').collect();
-                    assert_eq!(fields[4..8], ["NULL"; 4], "{row}");
-                    let row = [&fields[..4], &fields[8..]].concat().join("|");
-                    row.strip_suffix("|NULL|'step'|NULL|NULL")
-                        .unwrap_or_else(|| panic!("{row}"))
-                        .to_owned()
-                })
-                .collect();
-            (table, rows)
-        })
-        .collect();
-    // 0016 drops the allowlist logins 0001 seeded, still unbound here.
-    let rows_before: Vec<_> = rows_before
-        .into_iter()
-        .filter(|(t, _)| t != "_sqlx_migrations")
-        .map(|(table, rows)| {
-            if table == "tenant_allowed_logins" {
-                (table, Vec::new())
-            } else {
-                (table, rows)
-            }
-        })
-        .collect();
-    assert_eq!(rows_before, rows_after, "row contents changed");
-    assert_eq!(schema_before, schema_after, "other schema entries changed");
+    assert_eq!(data(rows_before), data(rows_after));
+    assert_eq!(schema_before, schema_after);
     let integrity: Vec<String> = sqlx::query_scalar("PRAGMA integrity_check")
         .fetch_all(&old)
         .await
         .expect("integrity");
-    assert_eq!(integrity, vec!["ok".to_owned()]);
+    assert_eq!(integrity, ["ok"]);
     let fk: Vec<String> = sqlx::query_scalar("SELECT \"table\" FROM pragma_foreign_key_check")
         .fetch_all(&old)
         .await
-        .expect("fk");
-    assert!(fk.is_empty(), "{fk:?}");
+        .expect("foreign keys");
+    assert!(fk.is_empty());
 
-    // The production API on the new pool.
-    db.settings()
-        .set_language("u2", LlmLanguage::Ru, Timestamp::now())
-        .await
-        .expect("ru via Db");
     // The connection held across the migration, with its cached statement.
     sqlx::query("UPDATE users SET language = ?1 WHERE id = 'u1'")
         .bind("ru")

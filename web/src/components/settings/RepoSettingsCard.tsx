@@ -57,7 +57,7 @@ export function RepoSettingsCard({ settings }: { settings: RepoSettings }) {
       ) : (
         <details>
           <summary className="cursor-pointer text-sm">Show the {rules.length} built-in rules</summary>
-          <div className="max-h-80 overflow-auto">
+          <div className="relative max-h-80 overflow-auto">
             <table className="w-full table-fixed border-collapse text-xs">
               <thead>
                 <tr>

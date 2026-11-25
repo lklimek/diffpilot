@@ -23,10 +23,24 @@ const page = (
 // Home's form (web/src/components/pr-form/PrUrlForm.tsx): a URL field and its submit control.
 const home = (submit: string) =>
   `<form><label>GitHub pull request URL <input type="url"></label>${submit.replace('type="button"', 'type="submit"')}</form>`;
+// A Settings → Notifications channel (web/src/components/settings/NotificationChannelCard.tsx): another URL form,
+// not Home even with its field required.
+const channel = `<form novalidate><label>URL <input type="url" required></label>${tooltip("Save", "Saves the channel.")}</form>`;
 
 const cases: [string, string, RegExp | null][] = [
   ["a clean screen", page(tooltip("Ticks", "Steps you marked reviewed."), "<p>3 of 7 steps</p>"), null],
   ["a banned phrase in the page", page("", "<p>No risk here.</p>"), /banned wording on the page/],
+  ["observed Codex plan usage", page("", "<p data-codex-plan-usage>Primary plan usage: 12.5%</p>"), null],
+  [
+    "a banned word in plan usage",
+    page("", "<p data-codex-plan-usage>confidence: 12.5%</p>"),
+    /banned wording on the page/,
+  ],
+  [
+    "plan usage percentage in the top bar",
+    page("<p data-codex-plan-usage>Plan usage: 12.5%</p>", ""),
+    /top bar/,
+  ],
   ["a percentage in the page", page("", "<p>Covered: 80 %</p>"), /banned wording on the page/],
   ["any % in the top bar", page("<span>progress 3/7 (%)</span>", ""), /top bar/],
   ["a banned word in a tooltip", page(tooltip("Fact", "Verified by the LLM."), ""), /banned wording/],
@@ -70,6 +84,7 @@ const cases: [string, string, RegExp | null][] = [
     page("", home(tooltip("Open", "Opens the pull request."))),
     /required control missing: Check \(0 of 1 rendered\)/,
   ],
+  ["a notification channel's URL form (not Home: no Check)", page("", channel), null],
   [
     "a trigger without keyboard focus",
     page(

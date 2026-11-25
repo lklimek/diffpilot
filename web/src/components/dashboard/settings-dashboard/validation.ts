@@ -4,6 +4,15 @@ import type { DashboardSettings, RepoRef } from "../../../api/generated/types";
 /** Built-in release and long-lived branch patterns (plan §C.2 K9), used when a row lists none. */
 export const BUILT_IN_BRANCHES = ["main", "master", "release/*", "hotfix/*", "vX.Y", "vX.Y-dev"];
 
+/** Most Ignored checks per row, and characters per name (plan K17 R4). */
+const MAX_CHECKS = 20;
+const MAX_CHECK_CHARS = 100;
+/** Most Slack names rows, and characters per Slack name (G18). */
+export const MAX_SLACK_NAMES = 100;
+const MAX_SLACK_NAME_CHARS = 80;
+// eslint-disable-next-line no-control-regex -- control characters are what the rule rejects
+const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
+
 /** Messages by field key (`linked_logins`, `repositories.0.alias`, …), in form order. */
 export type FieldErrors = Record<string, string>;
 
@@ -157,6 +166,20 @@ export function validateSettings(settings: DashboardSettings, ownLogin: string):
         );
       }
     }
+    if (row.ignored_checks.length > MAX_CHECKS) {
+      put(`repositories.${i}.ignored_checks`, `${label}: at most ${MAX_CHECKS} ignored checks.`);
+    } else {
+      const bad = row.ignored_checks.find(
+        (c) =>
+          c === "" || c !== c.trim() || [...c].length > MAX_CHECK_CHARS || c.includes(",") || CONTROL.test(c),
+      );
+      if (bad !== undefined) {
+        put(
+          `repositories.${i}.ignored_checks`,
+          `${label}: "${bad}" is not a check name (1 to ${MAX_CHECK_CHARS} characters, no commas).`,
+        );
+      }
+    }
   });
   put("enumerate_owners", checkList("enumerate_owners", settings.enumerate_owners, ownLogin));
   const days = settings.lookback_days;
@@ -173,6 +196,25 @@ export function validateSettings(settings: DashboardSettings, ownLogin: string):
   if (!TIME.test(settings.schedule_time)) {
     put("schedule_time", "Time of day: use HH:MM in steps of 15 minutes.");
   }
+  const named = settings.slack_names;
+  if (named.length > MAX_SLACK_NAMES) put("slack_names", `Slack names: at most ${MAX_SLACK_NAMES}.`);
+  named.forEach(({ login, slack }, i) => {
+    if (!LOGIN.test(login)) {
+      put(
+        `slack_names.${i}.login`,
+        `Slack names: "${login}" is not a GitHub login (letters, digits, - or _, up to 39).`,
+      );
+    } else if (named.slice(0, i).some((earlier) => same(earlier.login, login))) {
+      put(`slack_names.${i}.login`, `Slack names: "${login}" is listed twice.`);
+    }
+    const chars = [...slack].length;
+    if (chars < 1 || chars > MAX_SLACK_NAME_CHARS || slack !== slack.trim() || CONTROL.test(slack)) {
+      put(
+        `slack_names.${i}.slack`,
+        `Slack names: the Slack name of "${login}" uses 1 to ${MAX_SLACK_NAME_CHARS} characters, without control characters or white space at either end.`,
+      );
+    }
+  });
   return errors;
 }
 
@@ -200,6 +242,8 @@ export interface RepositoryDraft {
   policy_path: string;
   /** Patterns separated by spaces or commas; empty = the built-ins. */
   branch_patterns: string;
+  /** Check names separated by commas; empty = the built-ins. */
+  ignored_checks: string;
 }
 
 /** The settings form as edited. */
@@ -221,6 +265,7 @@ export const EMPTY_ROW: RepositoryDraft = {
   policy_repo: "",
   policy_path: "",
   branch_patterns: "",
+  ignored_checks: "",
 };
 
 /** The form of stored settings. */
@@ -234,6 +279,7 @@ export function toDraft(settings: DashboardSettings): SettingsDraft {
       policy_repo: row.ownership_policy ? repoText(row.ownership_policy.repo) : "",
       policy_path: row.ownership_policy?.path ?? "",
       branch_patterns: row.branch_patterns.join(", "),
+      ignored_checks: row.ignored_checks.join(", "),
     })),
     lookback_days: String(settings.lookback_days),
     time_zone: settings.time_zone ?? "",
@@ -264,10 +310,15 @@ export function fromDraft(draft: SettingsDraft): DashboardSettings {
             ? null
             : { repo: policyRepo === "" ? { owner: "", name: "" } : parseRepo(policyRepo), path: policyPath },
         branch_patterns: row.branch_patterns.split(/[\s,]+/).filter((p) => p !== ""),
+        ignored_checks: row.ignored_checks
+          .split(",")
+          .map((c) => c.trim())
+          .filter((c) => c !== ""),
       };
     }),
     lookback_days: /^[0-9]+$/.test(days) ? Number(days) : Number.NaN,
     ready_label: draft.ready_label.trim(),
     time_zone: draft.time_zone === "" ? null : draft.time_zone,
+    slack_names: draft.slack_names.map(({ login, slack }) => ({ login: login.trim(), slack: slack.trim() })),
   };
 }

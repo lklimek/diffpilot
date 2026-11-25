@@ -503,6 +503,33 @@ describe("Inspector trust rules", () => {
     expect(container).toHaveTextContent('<img src=x onerror="alert(1)">');
   });
 
+  it("normalises GitHub thread excerpts without changing the LLM reason", () => {
+    const t = structuredClone(tour);
+    const thread = t.threads[0]!;
+    thread.excerpt =
+      "<!-- hidden --><b>Finding</b> [docs](https://example.com) <details><summary>Prompt for AI agents</summary>Drop.</details>";
+    thread.llm_reason = "**LLM reason**";
+    render(<Inspector tour={t} block={atStep(thread.step_id!)} />);
+    const item = document.querySelector(`[data-thread-id="${thread.id}"]`)!;
+    expect(item).toHaveTextContent("Finding docs (https://example.com)");
+    expect(item).not.toHaveTextContent(/hidden|<b>|Prompt|Drop/);
+    expect(item).toHaveTextContent("**LLM reason**");
+    expect(item.querySelectorAll("a")).toHaveLength(1);
+  });
+
+  it("keeps literal code in a flattened excerpt cut inside a fence", () => {
+    const t = structuredClone(tour);
+    const thread = t.threads[0]!;
+    const body = ["Finding.", "```html", "<details>", "Vec<u8>", "literal **code** ".repeat(30), "```"].join(
+      "\n",
+    );
+    thread.excerpt = body.trim().split(/\s+/).join(" ").slice(0, 200) + "…";
+    render(<Inspector tour={t} block={atStep(thread.step_id!)} />);
+    const item = document.querySelector(`[data-thread-id="${thread.id}"]`)!;
+    expect(item).toHaveTextContent(thread.excerpt);
+    expect(item.querySelector("details")).toBeNull();
+  });
+
   it("separates LLM sections from fact sections visually", () => {
     render(<Inspector tour={tour} block={atStep("f1.5")} />);
     expect(region(/^Why/)).toHaveAttribute("data-tone", "llm");

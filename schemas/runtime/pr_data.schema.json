@@ -1,0 +1,349 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PrData",
+  "description": "Self-contained host-supplied review files; GitHub shapes are opaque to contracts.",
+  "type": "object",
+  "properties": {
+    "manifest": {
+      "description": "manifest.json.",
+      "$ref": "#/$defs/Manifest"
+    },
+    "threads": {
+      "description": "threads.json in the gh script shape."
+    },
+    "review_comments": {
+      "description": "review-comments.json in the gh script shape.",
+      "type": "array",
+      "items": true
+    },
+    "reviews": {
+      "description": "reviews.json in the gh script shape.",
+      "type": "array",
+      "items": true
+    },
+    "comments": {
+      "description": "comments.json in the gh script shape.",
+      "type": "array",
+      "items": true
+    },
+    "conventions": {
+      "description": "Base-branch convention files, relative paths below conventions/.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "ids": {
+      "description": "ids.json, preserving durable point identities and standing decisions.",
+      "$ref": "#/$defs/ItemIds"
+    },
+    "scope": {
+      "description": "scope.json; all other handed-in material is context.",
+      "$ref": "#/$defs/ReviewScope"
+    }
+  },
+  "required": [
+    "manifest",
+    "threads",
+    "review_comments",
+    "reviews",
+    "comments",
+    "conventions",
+    "ids",
+    "scope"
+  ],
+  "$defs": {
+    "Manifest": {
+      "description": "Host provenance and author facts.",
+      "type": "object",
+      "properties": {
+        "repo": {
+          "description": "owner/repo.",
+          "type": "string"
+        },
+        "pr": {
+          "description": "PR number.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "head": {
+          "description": "Assessed head.",
+          "type": "string"
+        },
+        "base_ref": {
+          "description": "Base branch name.",
+          "type": "string"
+        },
+        "base_sha": {
+          "description": "Frozen base commit for pre-existing checks.",
+          "type": "string"
+        },
+        "title": {
+          "description": "Author-stated PR intent.",
+          "type": "string"
+        },
+        "body": {
+          "description": "Author-stated PR description.",
+          "type": "string"
+        },
+        "delegates": {
+          "description": "Trusted maintainer relays.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "pr_author": {
+          "description": "PR author's login; only their own text is author context.",
+          "type": "string"
+        },
+        "maintainers": {
+          "description": "Tenant members' logins, independent of source roles.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "bots": {
+          "description": "Known bot logins.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "repo",
+        "pr",
+        "head",
+        "base_ref",
+        "base_sha",
+        "title",
+        "body",
+        "pr_author",
+        "maintainers",
+        "bots"
+      ]
+    },
+    "ItemIds": {
+      "description": "Durable CMT number allocation and previous item identities.",
+      "type": "object",
+      "properties": {
+        "next_id": {
+          "description": "Next unused number.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "items": {
+          "description": "Known point identities.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PrDataItem"
+          }
+        }
+      },
+      "required": [
+        "next_id",
+        "items"
+      ]
+    },
+    "PrDataItem": {
+      "description": "One stable point in ids.json.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "CMT identifier.",
+          "type": "string"
+        },
+        "key": {
+          "description": "Thread node id, review:id:k or comment:id:k.",
+          "type": "string"
+        },
+        "source_kind": {
+          "description": "Original source kind, inferred from the key when absent.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "quote": {
+          "description": "Quote only for open and decided items.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "decision": {
+          "description": "Standing maintainer decision.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StandingDecision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "key"
+      ]
+    },
+    "SourceKind": {
+      "description": "A row's source role in the upstream report.",
+      "oneOf": [
+        {
+          "description": "An inline review thread.",
+          "type": "string",
+          "const": "inline"
+        },
+        {
+          "description": "A point in a submitted review body.",
+          "type": "string",
+          "const": "review_body"
+        },
+        {
+          "description": "A point in a PR comment.",
+          "type": "string",
+          "const": "pr_comment"
+        },
+        {
+          "description": "Reply context only.",
+          "type": "string",
+          "const": "reply"
+        },
+        {
+          "description": "Status context only.",
+          "type": "string",
+          "const": "status"
+        }
+      ]
+    },
+    "StandingDecision": {
+      "description": "Standing choice offered to the skill, without invented reply-chain provenance.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "Stored decision kind.",
+          "$ref": "#/$defs/RecordedDecisionKind"
+        },
+        "target_pr": {
+          "description": "Existing PR target.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "target_url": {
+          "description": "Existing issue or PR target.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "description": "Follow-up or TODO title.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    "RecordedDecisionKind": {
+      "description": "Recorded decision kind, including deferral and withdrawal.",
+      "anyOf": [
+        {
+          "description": "Maintainer deferred this point.",
+          "type": "string",
+          "const": "deferred"
+        },
+        {
+          "description": "Source author withdrew this point.",
+          "type": "string",
+          "const": "withdrawn"
+        },
+        {
+          "description": "Ordinary item decision.",
+          "$ref": "#/$defs/ProposedDecisionKind"
+        }
+      ]
+    },
+    "ProposedDecisionKind": {
+      "description": "Proposed decision kind; independent of PR-level decisions.",
+      "oneOf": [
+        {
+          "description": "Resolve as fixed.",
+          "type": "string",
+          "const": "resolve"
+        },
+        {
+          "description": "Fix in this PR.",
+          "type": "string",
+          "const": "fix_here"
+        },
+        {
+          "description": "Reject with a reason.",
+          "type": "string",
+          "const": "reject"
+        },
+        {
+          "description": "Existing PR handles it.",
+          "type": "string",
+          "const": "handled_in_pr"
+        },
+        {
+          "description": "Follow-up PR handles it.",
+          "type": "string",
+          "const": "follow_up_pr"
+        },
+        {
+          "description": "Upstream issue handles it.",
+          "type": "string",
+          "const": "upstream_issue"
+        },
+        {
+          "description": "Record a TODO.",
+          "type": "string",
+          "const": "todo"
+        }
+      ]
+    },
+    "ReviewScope": {
+      "description": "What a pass may assess (10 points/threads and 5 new sources, with continuations).",
+      "type": "object",
+      "properties": {
+        "threads": {
+          "description": "Open thread node ids.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sources": {
+          "description": "Versioned source URLs.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "threads",
+        "sources"
+      ]
+    }
+  }
+}

@@ -1,0 +1,100 @@
+import { Tooltip } from "../tooltip/Tooltip";
+import type { AssessmentProgress, CommentsSummary } from "../../api/generated/types";
+import { buttonClass } from "../button/button";
+import { navigateOnClick, type Navigate } from "../dashboard/common/navigate";
+import { clockText } from "../format/time";
+import { CollapsibleSection } from "../collapsible/CollapsibleSection";
+import { FactChip, READ_FAILURE } from "./parts";
+
+/** "LLM assessment running: 4 of 9 comments" or "14 of 14 comments assessed at 52d2da1". */
+export function assessmentText(a: AssessmentProgress): string {
+  const head = a.head ? ` at ${a.head.slice(0, 7)}` : "";
+  const limited = a.limited ? `; ${a.limited} not assessed yet: daily limit` : "";
+  if (a.running) return `LLM assessment running: ${a.assessed} of ${a.total} comments${limited}`;
+  return `${a.assessed} of ${a.total} comments assessed${head}${limited}`;
+}
+
+interface ProcessCommentsCardProps {
+  summary: CommentsSummary;
+  now: Date;
+  questionsHref: string;
+  tableHref: string;
+  onNavigate: Navigate;
+  /** Where the section's open state is remembered. */
+  storageKey: string;
+}
+
+/** V0 "Process PR comments": GitHub facts, questions, agents, assessment, round, and the way in (US1). */
+export function ProcessCommentsCard({
+  summary,
+  now,
+  questionsHref,
+  tableHref,
+  onNavigate,
+  storageKey,
+}: ProcessCommentsCardProps) {
+  const { counts, read } = summary;
+  return (
+    <div className="rounded-lg border border-border bg-surface px-4 pb-3.5">
+      <CollapsibleSection title="Process PR comments" level={2} storageKey={storageKey}>
+        <dl className="m-0 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-[13px]">
+          <dt className="text-muted">Unresolved threads on GitHub</dt>
+          <dd className="m-0">
+            {counts.unresolved_threads}{" "}
+            {read.read_at && (
+              <FactChip
+                text={`read ${clockText(read.read_at, now)}`}
+                tip={`Read from GitHub at ${clockText(read.read_at, now)}.`}
+              />
+            )}
+            {read.failure && (
+              <p role="status" className="m-0 text-xs text-high">
+                GitHub could not be read ({READ_FAILURE[read.failure] ?? read.failure}).{" "}
+                {read.read_at ? "The last read stays shown." : "Nothing was read from GitHub yet."}
+              </p>
+            )}
+          </dd>
+          <dt className="text-muted">Questions for you</dt>
+          <dd className="m-0">
+            <b>{counts.undecided}</b>
+            {counts.asked_again > 0 && ` (${counts.asked_again} asked again)`}
+          </dd>
+          <dt className="text-muted">Waiting for agents</dt>
+          <dd className="m-0">
+            {counts.waiting_for_agents} {counts.waiting_for_agents === 1 ? "decision" : "decisions"}
+            {counts.failed_effects > 0 && ` · ${counts.failed_effects} failed`}
+          </dd>
+          <dt className="text-muted">LLM assessment</dt>
+          <dd className="m-0">{assessmentText(summary.assessment)}</dd>
+          <dt className="text-muted">Round</dt>
+          <dd className="m-0">
+            {summary.rounds === 0 ? "no bot round yet" : `${summary.rounds} (thepastaclaw)`}
+          </dd>
+        </dl>
+        <p className="mt-2 text-xs text-muted">
+          Comments need no analysis: diffpilot&apos;s LLM assesses each comment on its own.
+        </p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <Tooltip tip="Opens the questions on this pull request's review comments, one at a time.">
+            <a
+              href={questionsHref}
+              onClick={navigateOnClick(questionsHref, onNavigate)}
+              className={buttonClass("primary")}
+            >
+              Open Comments →
+            </a>
+          </Tooltip>
+          <Tooltip tip="Opens every comment in one table with a decision per row.">
+            <a
+              href={tableHref}
+              onClick={navigateOnClick(tableHref, onNavigate)}
+              className={buttonClass("plain")}
+            >
+              Table
+            </a>
+          </Tooltip>
+        </div>
+      </CollapsibleSection>
+    </div>
+  );
+}

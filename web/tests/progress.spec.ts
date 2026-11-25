@@ -1,7 +1,9 @@
 import { type Page } from "@playwright/test";
-import { expect, test } from "./fixtures";
+import { pauseClock, settle } from "./clock-support";
+import { PINNED_NOW, expect, test } from "./fixtures";
 import { expectAccessible, expectTooltips } from "./screens-support";
 import { ANALYSIS_ID, expectTrustWording } from "./support";
+import { contrastRatio } from "../src/components/code-view/highlight";
 
 const open = (page: Page, scenario: string) =>
   page.goto(`/analyses/${ANALYSIS_ID}/progress?scenario=${scenario}`);
@@ -93,20 +95,31 @@ test("unknown analysis: plain error and a way back", async ({ page }) => {
 // from the server (sse-events.md); the mocks send a heartbeat every 15 s.
 test.describe("stage and liveness", () => {
   const indicator = (page: Page) => page.locator("[data-activity]");
+  // The part of the bar still to do: it moves only while a job works.
+  const rest = (page: Page) => bar(page).locator(":scope > span");
 
   test("the stage line follows the server: planning, PR context, flow 1 with its title; time is real", async ({
     page,
   }) => {
+    await pauseClock(page);
     await open(page, "first-flow");
-    await expect(page.getByText("Planning flows…")).toBeVisible();
-    await expect(page.getByText("Reading the PR context.")).toBeVisible();
+    await settle(page, (quick) => quick(page.getByText("Planning flows…")).toBeVisible());
+    await page.clock.runFor(400);
+    await settle(page, (quick) => quick(page.getByText("Reading the PR context.")).toBeVisible());
     await expect(page.getByText("0 of 1 flow analysed")).toBeVisible();
     // The first heartbeat gives the server's clock; only then is a time shown.
     await expect(indicator(page)).toHaveText("Working");
     await page.clock.runFor(16_000);
-    await expect(indicator(page)).toHaveText("Working · this stage started less than a minute ago");
+    await settle(page, (quick) =>
+      quick(indicator(page)).toHaveText("Working · this stage started less than a minute ago"),
+    );
     await page.clock.runFor(15_000);
-    await expect(page.getByText("Analysing flow 1 of 1: Send an RPC request with retry")).toBeVisible();
+    await settle(page, (quick) =>
+      quick(page.getByText("Analysing flow 1 of 1: Send an RPC request with retry")).toBeVisible(),
+    );
+    await expect(bar(page)).toHaveAttribute("aria-valuenow", "0");
+    await expect(rest(page)).not.toHaveCSS("animation-name", "none");
+    await page.clock.resume();
     await expectTrustWording(page);
     await expectAccessible(page);
   });
@@ -135,20 +148,74 @@ test.describe("stage and liveness", () => {
     await page.clock.runFor(60_000);
     await expect(page.getByText(/^No signal from the server for \d+ s; reconnecting…$/)).toBeVisible();
     await expect(indicator(page)).toHaveCount(0);
+    await expect(rest(page)).toHaveCSS("animation-name", "none");
     await expect(page.getByText(/^Analysing flow 3 of 5: /)).toBeVisible();
     await expectTrustWording(page);
     await expectAccessible(page);
   });
 
-  test("reduced motion: the indicator does not move and says Working in text", async ({ page }) => {
+  test("reduced motion: the indicator and the bar do not move and Working is said in text", async ({
+    page,
+  }) => {
     await page.emulateMedia({ reducedMotion: "reduce" });
     await open(page, "running");
     await expect(indicator(page)).toContainText("Working");
     const dot = indicator(page).locator("span[aria-hidden]");
     await expect(dot).toHaveCSS("animation-name", "none");
+    await expect(rest(page)).toHaveCSS("animation-name", "none");
     await page.emulateMedia({ reducedMotion: "no-preference" });
     await expect(dot).not.toHaveCSS("animation-name", "none");
+    await expect(rest(page)).not.toHaveCSS("animation-name", "none");
   });
+
+  for (const colorScheme of ["light", "dark"] as const) {
+    test(`activity pattern contrasts at least 3:1 throughout the pulse and without motion: ${colorScheme}`, async ({
+      page,
+    }) => {
+      await page.emulateMedia({ colorScheme });
+      await open(page, "running");
+      await expect(indicator(page)).toContainText("Working");
+      for (const reducedMotion of ["no-preference", "reduce"] as const) {
+        await page.emulateMedia({ reducedMotion });
+        for (const phase of [0, 0.5, 1]) {
+          const { image, opacity, track, solid } = await rest(page).evaluate((element, phase) => {
+            for (const animation of element.getAnimations()) {
+              animation.pause();
+              animation.currentTime = Number(animation.effect!.getTiming().duration) * phase;
+            }
+            const style = getComputedStyle(element);
+            return {
+              image: style.backgroundImage,
+              solid: style.backgroundColor,
+              opacity: Number(style.opacity),
+              track: getComputedStyle(element.parentElement!).backgroundColor,
+            };
+          }, phase);
+          const rgb = (color: string) =>
+            color
+              .match(/[\d.]+/g)!
+              .slice(0, 3)
+              .map(Number);
+          const hex = (channels: number[]) =>
+            `#${channels.map((c) => Math.round(c).toString(16).padStart(2, "0")).join("")}`;
+          const background = rgb(track);
+          const swatches = [...new Set(image.match(/rgb\([^)]+\)/g) ?? [solid])];
+          const ratios = swatches.map((color) =>
+            contrastRatio(
+              hex(rgb(color).map((c, i) => c * opacity + background[i]! * (1 - opacity))),
+              hex(background),
+            ),
+          );
+          expect(
+            Math.max(...ratios),
+            `${colorScheme}, ${reducedMotion}, phase ${phase}`,
+          ).toBeGreaterThanOrEqual(3);
+          expect(image).toContain("repeating-linear-gradient");
+          expect(contrastRatio(hex(rgb(swatches[0]!)), hex(rgb(swatches[1]!)))).toBeGreaterThanOrEqual(3);
+        }
+      }
+    });
+  }
 
   // Light and dark at 1440 with SCREENSHOT_DIR set, e.g. /data/artifacts/diffpilot/<date>/wp3-tour-9.
   for (const colorScheme of ["light", "dark"] as const) {
@@ -156,6 +223,7 @@ test.describe("stage and liveness", () => {
       const dir = process.env.SCREENSHOT_DIR;
       test.skip(!dir, "SCREENSHOT_DIR not set");
       const page = await browser.newPage({ colorScheme, viewport: { width: 1440, height: 900 } });
+      await page.clock.install({ time: PINNED_NOW });
       const shoot = async (scenario: string, name: string, wait: number, expected: RegExp) => {
         await page.goto(`/analyses/${ANALYSIS_ID}/progress?scenario=${scenario}`);
         await expect(

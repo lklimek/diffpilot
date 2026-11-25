@@ -12,8 +12,9 @@ use axum::response::Response;
 use contracts::api::access_tokens::TokenScope;
 use contracts::ids::{AnalysisId, QuestionId, StepId};
 use contracts::routes::{
-    CREATE_ACCESS_TOKEN, GET_ME, GET_REVIEW_STATE, HttpMethod, LIST_ACCESS_TOKENS, LIST_QUESTIONS,
-    Listener, REVOKE_ACCESS_TOKEN, ROUTES, RUNNER_CLAIM, Route, RouteAuth,
+    CREATE_ACCESS_TOKEN, GET_ME, GET_NOTIFICATION_SETTINGS, GET_REVIEW_STATE, HttpMethod,
+    LIST_ACCESS_TOKENS, LIST_QUESTIONS, Listener, REVOKE_ACCESS_TOKEN, ROUTES, RUNNER_CLAIM, Route,
+    RouteAuth,
 };
 use contracts::time::Timestamp;
 use db::repo::DEFAULT_TENANT;
@@ -83,7 +84,10 @@ fn uri(route: &Route, analysis: AnalysisId) -> String {
         .replace("{step_id}", "f1.1")
         .replace("{flow}", "f1")
         .replace("{feedback_id}", "00000000-0000-4000-8000-000000000000")
-        .replace("{comment_id}", "1");
+        .replace("{comment_id}", "1")
+        .replace("{number}", "482")
+        .replace("{item}", "C1")
+        .replace("{kind}", "ntfy");
     if path.ends_with("/lines") || path.ends_with("/diff") {
         path + "?path=src/lib.rs&side=head&from=1&to=5"
     } else {
@@ -177,8 +181,8 @@ fn malformed_tokens_have_no_id() {
     );
 }
 
-/// No route is left unclassified: every route of the table either accepts a token as a read with its scope,
-/// identifies the user (`/api/v1/me`) or refuses it; a new `RouteAuth` variant fails to compile here.
+/// No route is left unclassified: every route of the table either accepts a token as a read or a `TokenOnly`
+/// route with its scope, identifies the user (`/api/v1/me`) or refuses it; a new `RouteAuth` variant fails to compile here.
 #[test]
 fn every_route_has_a_token_classification() {
     for route in ROUTES {
@@ -191,6 +195,7 @@ fn every_route_has_a_token_classification() {
                 TokenUse::Read(scope)
             }
             (Listener::Public, RouteAuth::Public) if *route == GET_ME => TokenUse::Identify,
+            (Listener::Public, RouteAuth::TokenOnly(scope)) => TokenUse::Execute(scope),
             (
                 Listener::Public,
                 RouteAuth::Public
@@ -222,10 +227,15 @@ fn every_route_has_a_token_classification() {
     );
 }
 
-/// ADR-019 §5: every `GET` route with session auth is `read`, except the token list (R8).
+/// Sensitive credential and notification settings stay session-only alongside the token list.
 #[tokio::test]
 async fn every_session_get_route_accepts_read_tokens_except_listed() {
-    const SESSION_ONLY: [Route; 1] = [LIST_ACCESS_TOKENS];
+    const SESSION_ONLY: [Route; 4] = [
+        LIST_ACCESS_TOKENS,
+        GET_NOTIFICATION_SETTINGS,
+        contracts::routes::GET_CODEX,
+        contracts::routes::GET_CODEX_LINK,
+    ];
     for route in ROUTES.iter().filter(|route| {
         route.listener == Listener::Public
             && route.method == HttpMethod::Get
@@ -270,7 +280,8 @@ async fn every_session_get_route_accepts_read_tokens_except_listed() {
     assert!(served >= 11, "too few read routes served: {served}");
 }
 
-/// Every mutating route answers a token with 403 `token_not_accepted` before its handler runs.
+/// Every mutating route answers a `read` token with 403 before its handler runs: `token_not_accepted`, or on the
+/// feed's `TokenOnly` routes (ADR-019 amendment) `insufficient_scope`.
 #[tokio::test]
 async fn no_mutating_route_accepts_a_token() {
     let s = setup().await;
@@ -289,7 +300,11 @@ async fn no_mutating_route_accepts_a_token() {
             continue;
         }
         assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: {body}");
-        assert_eq!(body["code"], "token_not_accepted", "{uri}");
+        let expected = match route.auth {
+            RouteAuth::TokenOnly(_) => "insufficient_scope",
+            _ => "token_not_accepted",
+        };
+        assert_eq!(body["code"], expected, "{uri}");
         checked += 1;
     }
     assert!(checked >= 20, "too few mutations checked: {checked}");
@@ -457,6 +472,8 @@ async fn token_limit_per_user() {
         json!({"name": "a", "scopes": [], "expires_in_days": 90}),
         json!({"name": "a", "scopes": ["read", "read"], "expires_in_days": 90}),
         json!({"name": "a", "scopes": ["write"], "expires_in_days": 90}),
+        json!({"name": "a", "scopes": ["review_loop_execute"], "expires_in_days": 90}),
+        json!({"name": "a", "scopes": ["read", "review_loop_execute", "read"], "expires_in_days": 90}),
         json!({"name": "a", "scopes": ["read"], "expires_in_days": 7}),
         json!({"name": "a", "scopes": ["read"]}),
     ] {
@@ -466,6 +483,14 @@ async fn token_limit_per_user() {
     }
     let (status, _) = create_token(&s, create_body(&"é".repeat(60))).await;
     assert_eq!(status, StatusCode::CREATED, "60 characters");
+    let agent =
+        json!({"name": "agent", "scopes": ["read", "review_loop_execute"], "expires_in_days": 90});
+    let (status, created) = create_token(&s, agent).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    assert_eq!(
+        created["access_token"]["scopes"],
+        json!(["read", "review_loop_execute"])
+    );
     for days in [30, 365] {
         let body = json!({"name": format!("d{days}"), "scopes": ["read"], "expires_in_days": days});
         assert_eq!(create_token(&s, body).await.0, StatusCode::CREATED);
@@ -475,8 +500,8 @@ async fn token_limit_per_user() {
         (status, &error["code"]),
         (StatusCode::CONFLICT, &json!("conflict"))
     );
-    // setup's token + 3 = 4 live; six more reach the limit.
-    for n in 0..6 {
+    // setup's token + 4 = 5 live; five more reach the limit.
+    for n in 0..5 {
         assert_eq!(
             create_token(&s, create_body(&format!("n{n}"))).await.0,
             StatusCode::CREATED
@@ -1183,3 +1208,42 @@ async fn token_session_liveness_follows_revocation() {
 }
 
 mod sec_review;
+
+/// ADR-019 amendment (T22, T25): a token with `review_loop_execute` reaches no mutating route but the feed's
+/// `TokenOnly` ones; decisions, batches, undo, reopen, gate marks, watches, channel settings and snoozes answer it
+/// 403 `token_not_accepted` exactly as a `read` token.
+#[tokio::test]
+async fn an_execute_token_reaches_only_the_token_only_mutations() {
+    let s = setup().await;
+    let (execute, _) = stored_token(
+        &s.state.db,
+        "u1",
+        vec![TokenScope::Read, TokenScope::ReviewLoopExecute],
+        Timestamp::now() + SignedDuration::from_hours(24),
+    )
+    .await;
+    let mut checked = 0;
+    for route in ROUTES.iter().filter(|route| {
+        route.listener == Listener::Public
+            && route.method != HttpMethod::Get
+            && !matches!(route.auth, RouteAuth::TokenOnly(_))
+    }) {
+        let uri = uri(route, s.analysis);
+        let (status, body) = status_and_body(
+            &s.app,
+            request(route.method.as_str(), &uri, Some(&execute), None),
+        )
+        .await;
+        if status == StatusCode::NOT_FOUND && body.is_null() {
+            continue;
+        }
+        assert_eq!(
+            (status, &body["code"]),
+            (StatusCode::FORBIDDEN, &json!("token_not_accepted")),
+            "{} {uri}",
+            route.method.as_str()
+        );
+        checked += 1;
+    }
+    assert!(checked >= 20, "too few mutations checked: {checked}");
+}

@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LauncherResponse",
+  "description": "Correlated response; attach upgrades the connection to a raw relay after acknowledgement.",
+  "type": "object",
+  "properties": {
+    "fetch": {
+      "description": "Dependency-source outcome, including automatic fetch failures and no-lock resolution.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DependencySources"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "error": {
+      "description": "Typed failure; an attachment upgrades only when this is absent.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LauncherFailure"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "id": {
+      "description": "Original request id.",
+      "type": "string"
+    },
+    "workers": {
+      "description": "Managed workers (list), otherwise empty.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/WorkerStatus"
+      }
+    }
+  },
+  "required": [
+    "id",
+    "workers"
+  ],
+  "$defs": {
+    "DependencySources": {
+      "description": "Dependency-source result from the fixed CS3 fetch image.",
+      "oneOf": [
+        {
+          "description": "Fetch succeeded; no assertion about a Cargo.lock is made.",
+          "type": "string",
+          "const": "available"
+        },
+        {
+          "description": "Fetch succeeded after resolving sources without a lock file.",
+          "type": "string",
+          "const": "resolved_without_lock"
+        },
+        {
+          "description": "Fetch failed; the job can continue without dependency sources.",
+          "type": "string",
+          "const": "unavailable"
+        }
+      ]
+    },
+    "LauncherFailure": {
+      "description": "Safe launcher failure category; engine diagnostics remain in launcher logs.",
+      "oneOf": [
+        {
+          "description": "No slot or attachment is available yet.",
+          "type": "string",
+          "const": "busy"
+        },
+        {
+          "description": "Identity or fixed security template was rejected.",
+          "type": "string",
+          "const": "invalid_template"
+        },
+        {
+          "description": "Container engine or runtime configuration failed.",
+          "type": "string",
+          "const": "worker_unavailable"
+        },
+        {
+          "description": "Dependency fetching failed; the job may continue without dependency sources.",
+          "type": "string",
+          "const": "fetch_unavailable"
+        }
+      ]
+    },
+    "WorkerStatus": {
+      "description": "Managed worker identity and current lifecycle state.",
+      "type": "object",
+      "properties": {
+        "container": {
+          "description": "Worker identity derived from managed labels.",
+          "$ref": "#/$defs/ContainerId"
+        },
+        "running": {
+          "description": "Whether it is currently running.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "container",
+        "running"
+      ]
+    },
+    "ContainerId": {
+      "description": "A worker's identity; each identity owns at most one running job.",
+      "oneOf": [
+        {
+          "description": "Persistent PR worker (CS1).",
+          "type": "object",
+          "properties": {
+            "shape": {
+              "type": "string",
+              "const": "pr"
+            },
+            "pull_request_id": {
+              "description": "Database PR key.",
+              "type": "integer",
+              "format": "int64"
+            },
+            "payer": {
+              "description": "User paying for this worker's turns.",
+              "$ref": "#/$defs/UserId"
+            }
+          },
+          "required": [
+            "shape",
+            "pull_request_id",
+            "payer"
+          ]
+        },
+        {
+          "description": "Ephemeral answer-only worker (CS2).",
+          "type": "object",
+          "properties": {
+            "shape": {
+              "type": "string",
+              "const": "judge"
+            },
+            "payer": {
+              "description": "Dashboard user paying for the turn.",
+              "$ref": "#/$defs/UserId"
+            }
+          },
+          "required": [
+            "shape",
+            "payer"
+          ]
+        }
+      ]
+    },
+    "UserId": {
+      "description": "Stable authenticated user id, also the payer key.",
+      "type": "string"
+    }
+  }
+}

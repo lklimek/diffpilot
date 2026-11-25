@@ -18,6 +18,7 @@ job tokens are known only by that shape: the server keeps just their hash) and a
 | --------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | `check-screen.spec.ts`            | self-test of `checkScreen` on static pages (no stack): it fails on each kind of violation                             |
 | `secrets.spec.ts`                 | self-test of the leak check's token shape (no stack): any 43-character base64url run, known non-secrets excluded      |
+| `stack-pool.spec.ts`              | self-test of the stack pool's rule (no stack): one stack per file and its options; other options in the same file fail |
 | `slice.spec.ts`                   | sign in, analyse PR 482, flow 1 step 1; a read-only installation token per job, revoked; no secret in the logs so far |
 | `analysis-cancel.spec.ts`         | planning, cancel → "Check the PR to start again"; failure before any flow → Retry → `k of n` → finished                             |
 | `analysis-cancel-running.spec.ts` | cancel while a flow job runs: the job stops, stored flows and session discarded, a clean new analysis                 |
@@ -37,6 +38,7 @@ job tokens are known only by that shape: the server keeps just their hash) and a
 | `dashboard-views.spec.ts`         | Excluded disclosure with its reason; a PR waiting only on others; size pills and Sizes shown; kind toggles kept over a reload; Recent reviews |
 | `dashboard-language.spec.ts`      | Polish chosen: every ranking job's prompt asks for Polish                                                             |
 | `dashboard-settings.spec.ts`      | Dashboard settings validation and save, ranking effort; access token: bearer reads, writes 403, revoked 401; second user |
+| `review-loop.spec.ts`             | PR page "Process PR comments" → Comments → the verify_comments assessment → a decision whose preview is what is stored → Decision log; an execute token claims it (RF3) and reports its fix done (RF4) |
 
 ## Run
 
@@ -94,6 +96,10 @@ What a test can reach of a local stack (`Stack` in `support/stack.ts`):
   ranked order the specs expect holds on any day, with no clock in the server.
 - `stack.moveHead()` pushes a commit onto the PR head in the clone base and moves fake GitHub's head
   (`POST /_fake/head`).
+- `test.use({ reviewLoop: true })` at the top of a file: its stack's fake GitHub serves the review-loop reads of
+  PR 482 (`startStack` sets `SR_DEV_REVIEW_LOOP_RECORDINGS` to `fixtures/review-loop/github`; `stack.sh` serves none
+  by default). Off for the other files: opening the PR page then reads its comments and queues a `verify_comments`
+  job. A file's tests share its stack, so a test asking for other options than its file's stack fails.
 
 ## Against already-running services
 

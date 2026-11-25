@@ -199,8 +199,9 @@ test("a second user sees none of the first user's dashboard, refreshes, events o
   await signIn(page);
   await saveSettings(page, worldSettings());
   await seedTodos(page, stack);
+  const previous = (await latestRefresh(page))?.id;
   await refreshButton(page).click();
-  const refresh = await waitForRefresh(page, ranked);
+  const refresh = await waitForRefresh(page, (current) => current.id !== previous && ranked(current));
   const created = await api(page, "POST", "/api/v1/settings/access-tokens", {
     name: "alice agent",
     scopes: ["read"],

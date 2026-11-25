@@ -67,14 +67,6 @@ ERROR_PATTERN='Result<.*,[[:space:]]*String[[:space:]]*>|Box<dyn [A-Za-z_:]*Erro
 # TODO: temporary allow-list of existing String errors, to be replaced by thiserror enums; remove each entry with
 # its fix. Entries: "path|trimmed line".
 ERROR_ALLOW=(
-  'crates/runner/src/supervisor_main.rs|fn config() -> Result<ServeConfig, String> {'
-  'crates/runner/src/supervisor_main.rs|let id = |key: &str, default: u32| -> Result<Ids, String> {'
-  'crates/runner/src/supervisor/serve.rs|fn signal_child(pid: i32, signal: i32) -> Result<u32, String> {'
-  'crates/runner/src/supervisor/serve.rs|fn sweep(&mut self) -> Result<Reply, String> {'
-  'crates/runner/src/supervisor/serve.rs|) -> Result<i32, String> {'
-  'crates/runner/src/supervisor/serve.rs|fn quarantine(&mut self, path: &Path) -> Result<(), String> {'
-  'crates/runner/src/supervisor/serve.rs|fn per_job_dir(&self, path: &Path) -> Result<(), String> {'
-  'crates/runner/src/supervisor/serve.rs|fn handover(&self, path: &Path) -> Result<(), String> {'
   'tools/fake-github/src/app.rs|fn scope(&self, body: &[u8]) -> Result<BTreeMap<String, String>, String> {'
 )
 

@@ -11,6 +11,8 @@ import type { Navigate } from "../common/navigate";
 import { FactTags, ProvisionalPill, SizePill } from "../common/Tags";
 import { ScoreBreakdown } from "../score-breakdown/ScoreBreakdown";
 import { ScoreTip } from "../score-breakdown/ScoreTip";
+import { CommentsInfo, type WatchState } from "./CommentsInfo";
+import { SnoozeMenu } from "../snooze-menu/SnoozeMenu";
 import { ItemAction } from "./ItemAction";
 
 interface WorkItemRowProps {
@@ -27,6 +29,16 @@ interface WorkItemRowProps {
   expanderRef?: Ref<HTMLButtonElement>;
   /** State of the MemCan TODOs in the snapshot: a TODO row kept from an earlier scan says so (plan §G). */
   todos?: TodosState;
+  /** In-app href of a pull request's Comments (owner 2026-11-23); built by the screen. */
+  commentsHref?: string;
+  /** Watch chosen on a pull request diffpilot has no comment counts for (RW1); without it no Watch. */
+  onWatch?: () => void;
+  /** Watch of this pull request: being saved, or saved in this visit. */
+  watch?: WatchState;
+  /** Snooze chosen in the row's menu (days); without it no menu. */
+  onSnooze?: (days: number) => void;
+  /** A snooze of this item is being saved. */
+  snoozing?: boolean;
   now: Date;
 }
 
@@ -75,6 +87,11 @@ export function WorkItemRow({
   onNavigate,
   expanderRef,
   todos,
+  commentsHref,
+  onWatch,
+  watch,
+  onSnooze,
+  snoozing = false,
   now,
 }: WorkItemRowProps) {
   const detailId = `detail-${item.key}`;
@@ -130,6 +147,15 @@ export function WorkItemRow({
             <FactTags tags={item.tags} />
             {provisionalPill(item)}
             {notRefreshedPill(item, todos, now)}
+            {item.kind === "pr" && (
+              <CommentsInfo
+                item={item}
+                href={commentsHref}
+                onNavigate={onNavigate}
+                onWatch={onWatch}
+                watch={watch}
+              />
+            )}
           </div>
           <PluginNotes notes={item.plugin_notes} itemId={item.id} full={expanded} now={now} />
         </div>
@@ -153,7 +179,13 @@ export function WorkItemRow({
         )}
         <div className="col-start-4 row-start-1 flex items-center justify-end gap-2 pt-px @min-[1600px]:col-start-6">
           <ScoreButton item={item} expanded={expanded} onToggle={onToggle} controls={detailId} />
-          <ItemAction item={item} reviewHref={reviewHref} onNavigate={onNavigate} />
+          <ItemAction
+            item={item}
+            reviewHref={reviewHref}
+            commentsHref={commentsHref}
+            onNavigate={onNavigate}
+          />
+          {onSnooze && <SnoozeMenu itemId={item.id} onSnooze={onSnooze} pending={snoozing} />}
         </div>
       </div>
       <div

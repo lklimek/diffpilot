@@ -1,5 +1,13 @@
 // The Ask chat's threads, subjects and unread answers: plain functions of the questions and the tour.
-import type { AskAnchor, AskQuestion, LineSide, QuestionId, Step, Tour } from "../../../api/generated/types";
+import type {
+  AskAnchor,
+  AskQuestion,
+  CommentItemId,
+  LineSide,
+  QuestionId,
+  Step,
+  Tour,
+} from "../../../api/generated/types";
 import { rangeText } from "../../section/format";
 
 /** A first question with its follow-ups, oldest first. */
@@ -35,7 +43,7 @@ export function threadsOf(questions: readonly AskQuestion[]): ChatThread[] {
 /** How a subject is named: in a chip, the field's placeholder and the Ask buttons. */
 export interface Subject {
   /** The view its chip opens; null for the whole PR. */
-  view: "Flows" | "Files" | null;
+  view: "Flows" | "Files" | "Comments" | null;
   /** `path:lines` (or the path), drawn as code; null without lines. */
   code: string | null;
   text: string;
@@ -50,8 +58,35 @@ const findStep = (tour: Tour, id: string): Step | undefined =>
 const flowOfStep = (tour: Tour, id: string) => tour.flows.find((f) => f.steps.some((s) => s.id === id));
 const old = (side: LineSide) => (side === "base" ? " (old code)" : "");
 
-/** The name of what a question is about. */
-export function subjectOf(anchor: AskAnchor, tour: Tour): Subject {
+/** The per-PR numbers (`C<no>`) of the review-comment items the chat knows. */
+export type ItemNumbers = ReadonlyMap<CommentItemId, number>;
+
+const NO_NUMBERS: ItemNumbers = new Map();
+
+/** The name of a review-comment item subject: "Comment C14" when its number is known. */
+export function commentSubject(item: CommentItemId, numbers: ItemNumbers = NO_NUMBERS): Subject {
+  const no = numbers.get(item);
+  const name = no === undefined ? "a review comment" : `review comment C${no}`;
+  return {
+    view: "Comments",
+    code: null,
+    text: no === undefined ? "Review comment" : `Comment C${no}`,
+    what: "this comment",
+    tip: `Asked about ${name}. Opens it in Comments; the chat stays open.`,
+  };
+}
+
+/** The whole pull request as a subject. */
+export const WHOLE_PR: Subject = {
+  view: null,
+  code: null,
+  text: "Whole PR",
+  what: "the whole PR",
+  tip: "Asked about the whole pull request, not one place. Opens the PR context; the chat stays open.",
+};
+
+/** The name of what a question is about; `numbers` names review-comment items. */
+export function subjectOf(anchor: AskAnchor, tour: Tour, numbers: ItemNumbers = NO_NUMBERS): Subject {
   switch (anchor.kind) {
     case "step": {
       const step = findStep(tour, anchor.step_id);
@@ -101,14 +136,10 @@ export function subjectOf(anchor: AskAnchor, tour: Tour): Subject {
         tip: "Asked about this flow as a whole. Opens its introduction; the chat stays open.",
       };
     }
+    case "comment_item":
+      return commentSubject(anchor.item, numbers);
     case "pr":
-      return {
-        view: null,
-        code: null,
-        text: "Whole PR",
-        what: "the whole PR",
-        tip: "Asked about the whole pull request, not one place. Opens the PR context; the chat stays open.",
-      };
+      return WHOLE_PR;
   }
 }
 
@@ -139,6 +170,8 @@ function about(anchor: AskAnchor, place: AskAnchor, tour: Tour): boolean {
   switch (place.kind) {
     case "pr":
       return anchor.kind === "pr";
+    case "comment_item":
+      return anchor.kind === "comment_item" && anchor.item === place.item;
     case "flow":
       return anchor.kind === "flow" && anchor.flow_id === place.flow_id;
     case "step": {

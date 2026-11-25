@@ -17,7 +17,11 @@ pub mod access_tokens;
 pub mod agent_sessions;
 pub mod analyses;
 mod analysis_progress;
+mod assessment_primary;
+pub mod assessments;
+pub mod comment_sources;
 pub mod comments;
+pub mod container_sessions;
 pub mod dashboard;
 pub mod documents;
 pub mod feedback;
@@ -27,6 +31,7 @@ pub mod llm_credentials;
 pub mod pull_requests;
 pub mod questions;
 pub mod repos;
+pub mod review_loop;
 pub mod review_state;
 pub mod sessions;
 pub mod settings;
@@ -37,6 +42,10 @@ pub mod users;
 
 #[cfg(test)]
 mod concurrency_tests;
+#[cfg(test)]
+mod containers_tests;
+#[cfg(test)]
+mod migration_0030_tests;
 #[cfg(test)]
 mod schema_tests;
 
@@ -63,6 +72,47 @@ pub mod testing {
         busy_timeout: Duration,
     ) -> Result<Db, DbError> {
         Db::open_with(&dir.join("diffpilot.sqlite"), busy_timeout).await
+    }
+
+    /// Creates a populated pre-0030 database with synthetic auth, for migration/startup tests only.
+    pub async fn pre_container_database(path: &Path) -> Result<(), DbError> {
+        let options = super::SqliteConnectOptions::new()
+            .filename(path)
+            .create_if_missing(true)
+            .journal_mode(super::SqliteJournalMode::Wal)
+            .foreign_keys(true);
+        let pool = super::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await?;
+        super::migrate(&pool, super::MIGRATIONS.len() - 1).await?;
+        sqlx::raw_sql(include_str!("../../tests/fixtures/pre_0030.sql"))
+            .execute(&pool)
+            .await?;
+        // Keep the synthetic browser session live regardless of when the fixture is used.
+        sqlx::query("UPDATE sessions SET last_seen_at = ?")
+            .bind(super::jobs::ts(contracts::time::Timestamp::now()))
+            .execute(&pool)
+            .await?;
+        pool.close().await;
+        Ok(())
+    }
+
+    /// Makes the next `count` writes of a pass's job link change nothing (so each reports a conflict), as links
+    /// lost while the database is busy right after a job was submitted; later links are written.
+    pub async fn lose_pass_job_links(db: &Db, count: u32) -> Result<(), DbError> {
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "CREATE TABLE lost_pass_job_links (lost INTEGER NOT NULL);
+             CREATE TRIGGER lose_pass_job_links BEFORE UPDATE OF job_id ON comment_passes
+             WHEN (SELECT COUNT(*) FROM lost_pass_job_links) < {count}
+             BEGIN
+                 INSERT INTO lost_pass_job_links (lost) VALUES (1);
+                 SELECT RAISE(IGNORE);
+             END;"
+        )))
+        .execute(&db.pool)
+        .await?;
+        Ok(())
     }
 
     /// Makes every later write of an in-memory `db` fail while reads still work, as on a full disk
@@ -92,7 +142,7 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The schema migrations in order, as `(version, description, SQL)`: the initial schema, then additive
 /// changes that upgrade an existing database in place.
-const MIGRATIONS: [(i64, &str, &str); 16] = [
+const MIGRATIONS: [(i64, &str, &str); 27] = [
     (1, "init", include_str!("../../migrations/0001_init.sql")),
     (
         2,
@@ -168,6 +218,61 @@ const MIGRATIONS: [(i64, &str, &str); 16] = [
         16,
         "unbound_seed_logins",
         include_str!("../../migrations/0016_unbound_seed_logins.sql"),
+    ),
+    (
+        17,
+        "review_loop",
+        include_str!("../../migrations/0017_review_loop.sql"),
+    ),
+    (
+        18,
+        "verify_comments_jobs",
+        include_str!("../../migrations/0018_verify_comments_jobs.sql"),
+    ),
+    (
+        19,
+        "review_loop_actions",
+        include_str!("../../migrations/0019_review_loop_actions.sql"),
+    ),
+    (
+        21,
+        "dashboard_snoozes",
+        include_str!("../../migrations/0021_dashboard_snoozes.sql"),
+    ),
+    (
+        23,
+        "watch_passes",
+        include_str!("../../migrations/0023_watch_passes.sql"),
+    ),
+    (
+        24,
+        "comment_items_gone",
+        include_str!("../../migrations/0024_comment_items_gone.sql"),
+    ),
+    (
+        25,
+        "feed_delivery",
+        include_str!("../../migrations/0025_feed_delivery.sql"),
+    ),
+    (
+        26,
+        "dashboard_snooze_ends",
+        include_str!("../../migrations/0026_dashboard_snooze_ends.sql"),
+    ),
+    (
+        27,
+        "slack_names",
+        include_str!("../../migrations/0027_slack_names.sql"),
+    ),
+    (
+        29,
+        "dashboard_trigger_automatic",
+        include_str!("../../migrations/0029_dashboard_trigger_automatic.sql"),
+    ),
+    (
+        30,
+        "v13_containers",
+        include_str!("../../migrations/0030_v13_containers.sql"),
     ),
 ];
 
@@ -294,3 +399,9 @@ impl Db {
 }
 
 pub mod usage;
+
+#[cfg(test)]
+mod assessments_tests;
+
+#[cfg(test)]
+mod private_ask_tests;

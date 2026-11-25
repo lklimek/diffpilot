@@ -66,6 +66,15 @@ impl CallFailure {
             Self::Failed(JobFailureKind::Timeout) => "timeout",
             Self::Failed(JobFailureKind::Internal) => "internal",
             Self::Failed(JobFailureKind::Configuration) => "configuration",
+            Self::Failed(JobFailureKind::WorkerUnavailable) => "worker_unavailable",
+            Self::Failed(JobFailureKind::WorkerLost) => "worker_lost",
+            Self::Failed(JobFailureKind::CredentialMissing) => "credential_missing",
+            Self::Failed(JobFailureKind::CredentialRelink) => "credential_relink",
+            Self::Failed(JobFailureKind::ModelUnavailable) => "model_unavailable",
+            Self::Failed(JobFailureKind::UpstreamRejected) => "upstream_rejected",
+            Self::Failed(JobFailureKind::ReportVersionUnsupported) => "report_version_unsupported",
+            Self::Failed(JobFailureKind::InvalidJsonSchema) => "invalid_json_schema",
+            Self::Failed(JobFailureKind::AskCompactionUnconfirmed) => "ask_compaction_unconfirmed",
         }
     }
 
@@ -298,15 +307,22 @@ async fn read_selection(
 }
 
 impl SettingsRepo<'_> {
-    /// The tenant's most recent LLM call over all credentials; `None` before the first call.
-    pub async fn last_call(&self, tenant_id: &str) -> Result<Option<LastCall>, DbError> {
+    /// The user's most recent LLM call; `None` before the first call.
+    pub async fn last_call(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+    ) -> Result<Option<LastCall>, DbError> {
+        let mut tx = super::read_tx(self.pool).await?;
         let row = sqlx::query(
             "SELECT last_call_at, last_call_ok, last_call_message, last_call_failure FROM llm_credentials
-             WHERE tenant_id = ? AND last_call_at IS NOT NULL ORDER BY last_call_at DESC LIMIT 1",
+             WHERE user_id = ? AND tenant_id = ? AND last_call_at IS NOT NULL",
         )
+        .bind(user_id)
         .bind(tenant_id)
-        .fetch_optional(self.pool)
+        .fetch_optional(&mut *tx)
         .await?;
+        tx.commit().await?;
         let Some(row) = row else {
             return Ok(None);
         };
@@ -394,18 +410,23 @@ impl SettingsRepo<'_> {
         }))
     }
 
-    /// Since when the tenant's most recently blocked LLM credential is unusable; `None` while all are usable.
+    /// When the user's gateway connection required relinking; absent while usable.
     pub async fn credential_unusable_since(
         &self,
         tenant_id: &str,
+        user_id: &str,
     ) -> Result<Option<Timestamp>, DbError> {
-        let since: Option<String> = sqlx::query_scalar(
-            "SELECT MAX(unusable_since) FROM llm_credentials WHERE tenant_id = ?",
+        let mut tx = super::read_tx(self.pool).await?;
+        let since: Option<Option<String>> = sqlx::query_scalar(
+            "SELECT relink_needed_at FROM llm_credentials WHERE user_id = ? AND tenant_id = ? AND state = 'relink_needed'",
         )
+        .bind(user_id)
         .bind(tenant_id)
-        .fetch_one(self.pool)
+        .fetch_optional(&mut *tx)
         .await?;
+        tx.commit().await?;
         since
+            .flatten()
             .map(|at| parse_ts(&at, "llm_credentials.unusable_since"))
             .transpose()
     }
@@ -443,7 +464,6 @@ async fn read_controlled_owners(
 
 #[cfg(test)]
 mod tests {
-    use contracts::job::spec::{CredentialKind, LlmCredentialRef};
     use jiff::SignedDuration;
 
     use super::*;
@@ -650,18 +670,16 @@ mod tests {
     #[tokio::test]
     async fn credential_unusable_since_follows_the_runner_report() {
         let db = Db::in_memory().await.expect("db");
+        sqlx::query("INSERT INTO users(id,github_id,login,created_at,updated_at) VALUES ('codex-1',1,'codex-1','t','t')").execute(&db.pool).await.unwrap();
         let settings = db.settings();
         assert_eq!(
             settings
-                .credential_unusable_since(DEFAULT_TENANT)
+                .credential_unusable_since(DEFAULT_TENANT, "codex-1")
                 .await
                 .expect("none"),
             None
         );
-        let credential = LlmCredentialRef {
-            id: "codex-1".to_owned(),
-            kind: CredentialKind::CodexChatgpt,
-        };
+        let credential = contracts::ids::UserId("codex-1".to_owned());
         let credentials = db.llm_credentials();
         let at = "2026-11-17T08:00:00Z".parse::<Timestamp>().expect("time");
         credentials
@@ -670,7 +688,7 @@ mod tests {
             .expect("usable");
         assert_eq!(
             settings
-                .credential_unusable_since(DEFAULT_TENANT)
+                .credential_unusable_since(DEFAULT_TENANT, "codex-1")
                 .await
                 .expect("usable"),
             None
@@ -681,14 +699,14 @@ mod tests {
             .expect("unusable");
         assert_eq!(
             settings
-                .credential_unusable_since(DEFAULT_TENANT)
+                .credential_unusable_since(DEFAULT_TENANT, "codex-1")
                 .await
                 .expect("unusable"),
             Some(at)
         );
         assert_eq!(
             settings
-                .credential_unusable_since("other")
+                .credential_unusable_since("other", "codex-1")
                 .await
                 .expect("other tenant"),
             None

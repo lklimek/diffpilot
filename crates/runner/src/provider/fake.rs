@@ -1,19 +1,21 @@
 //! Scripted provider for tests and development (feature `fake-provider`, never in release builds): replays
-//! the recorded Codex streams of the fixture PR (`fixtures/pr-482/codex/`) through the Codex stream parser.
+//! the recorded streams of the fixture PR (`fixtures/pr-482/codex/`) through an offline fixture decoder.
 //!
-//! The recording is chosen by file mode or the call's output schema and, for `analyse_flow`, by the first flow
+//! The recording follows the self-contained job kind and, for `analyse_flow`, the first flow
 //! id token `f<n>` of the prompt's `Job: analyse_flow f<n>.` line. `ask` has no recording; `judge_work` answers
-//! every item of the prompt's data block neutrally (asked parts 0, eligibility as computed).
+//! every item of the prompt's data block neutrally (asked parts 0, eligibility as computed); `verify_comments`
+//! answers every item of its data block with a neutral assessment and, in a question pass, the question.
 //!
 //! A script (JSON file named by [`SCRIPT_ENV`], read before every call; no file: plain replay) overrides calls
 //! for the full-stack tests: the first rule matching the job kind, the flow and a prompt substring applies, at
 //! most `times` times. Example: `{"rules": [{"id": "pause", "job": "analyse_flow", "flow": 2, "times": 1,
 //! "action": {"usage_limit": {"resets_in_secs": 5}}}]}`; actions: `replay` (the recording, `step_delay_ms` per
 //! line), `usage_limit`, `fail` (`message`) and `answer` (`output`: a JSON object for JSON jobs,
-//! a tagged-text string for file jobs). File jobs write `out/flow.md` before using the real bounded collector.
+//! a tagged-text string for file jobs).
 
+use contracts::agent::JobKind;
 use contracts::agent::judge_work::{JudgeWorkInput, part_values};
-use contracts::agent::{JobKind, output_schema};
+use contracts::agent::verify_comments::VerifyCommentsInput;
 use contracts::api::dashboard::ScoreComponent;
 use contracts::ids::JobId;
 use contracts::job::event::JobEvent;
@@ -30,8 +32,10 @@ use tokio::sync::{Notify, mpsc};
 use contracts::time::Timestamp;
 use jiff::SignedDuration;
 
-use crate::provider::codex::{CodexStream, Exit, usage_delta};
+mod host;
+mod recording;
 use crate::provider::{LlmProvider, ProviderCall, ProviderError, ProviderEvent, ProviderOutcome};
+use recording::{Recording, usage_delta};
 
 /// Every recording of the fixture session, for the cumulative usage before a job.
 const SESSION: [(&str, &str); 9] = [
@@ -80,7 +84,6 @@ pub const SCRIPT_ENV: &str = "SR_RUNNER_FAKE_SCRIPT";
 #[derive(Debug, Default)]
 pub struct FakeProvider {
     step_delay: Duration,
-    archive_turns: bool,
     running: Mutex<HashMap<JobId, Arc<Notify>>>,
     script: Option<PathBuf>,
     /// Applications per script rule id.
@@ -115,9 +118,6 @@ enum Action {
     Answer { output: Value },
 }
 
-/// The line a compacted fake archive starts with.
-pub const COMPACTED_MARK: &str = "[compacted history]";
-
 impl FakeProvider {
     /// A provider that waits `step_delay` before each recorded line (zero: replay at once), scripted by the file
     /// [`SCRIPT_ENV`] names, if set.
@@ -133,44 +133,6 @@ impl FakeProvider {
     pub fn with_script(mut self, path: PathBuf) -> Self {
         self.script = Some(path);
         self
-    }
-
-    /// Records fake prompt rollouts to exercise real runner archive routing in isolation tests.
-    pub fn with_archives(mut self) -> Self {
-        self.archive_turns = true;
-        self
-    }
-
-    async fn turn(
-        &self,
-        call: &ProviderCall,
-        events: &mpsc::Sender<ProviderEvent>,
-        resume: bool,
-    ) -> Result<ProviderOutcome, ProviderError> {
-        let prior = if self.archive_turns && resume {
-            let restored = std::fs::read_to_string(call.restore_dir.join("fake-rollout.txt"))
-                .map_err(|_| ProviderError::SessionUnavailable)?;
-            // Pre-turn compaction: a summary that still carries the history (S1b finding 3).
-            if call.compact_on_start {
-                format!("{COMPACTED_MARK}\n{restored}")
-            } else {
-                restored
-            }
-        } else {
-            String::new()
-        };
-        let mut outcome = self.replay(call, events).await?;
-        if self.archive_turns {
-            std::fs::create_dir_all(&call.session_dir)?;
-            std::fs::write(
-                call.session_dir.join("fake-rollout.txt"),
-                format!("{prior}\n{}", call.prompt),
-            )?;
-            if outcome.session_id.is_none() {
-                outcome.session_id = Some("fake-thread".to_owned());
-            }
-        }
-        Ok(outcome)
     }
 
     /// The action of the first script rule matching the call that has uses left; counts the use.
@@ -215,17 +177,32 @@ impl FakeProvider {
         call: &ProviderCall,
         events: &mpsc::Sender<ProviderEvent>,
     ) -> Result<ProviderOutcome, ProviderError> {
-        let kind = job_kind(call)?;
+        let kind = call.job_spec.kind;
         let mut scripted_output = None;
-        let (jsonl, step_delay) = match self.scripted(kind, &call.prompt)? {
-            None => (stream(kind, &call.prompt)?, self.step_delay),
+        let replay = || {
+            if call.job_spec.assessment.as_ref().is_some_and(|run| {
+                run.method == contracts::assessment::AssessmentMethod::ClaudiusHost
+            }) {
+                let data = call
+                    .job_spec
+                    .pr_data
+                    .as_ref()
+                    .ok_or_else(|| ProviderError::Failed {
+                        message: "host fixture lacks frozen PR data".into(),
+                    })?;
+                Ok(answer_stream(&host::report(data)))
+            } else {
+                stream(kind, &call.job_spec.prompt)
+            }
+        };
+        let (jsonl, step_delay) = match self.scripted(kind, &call.job_spec.prompt)? {
+            None => (replay()?, self.step_delay),
             Some((id, action)) => {
-                tracing::info!(job = %call.job_id, rule = %id, "fake provider script rule applied");
+                tracing::info!(job = %call.job_spec.job_id, rule = %id, "fake provider script rule applied");
                 match action {
-                    Action::Replay { step_delay_ms } => (
-                        stream(kind, &call.prompt)?,
-                        Duration::from_millis(step_delay_ms),
-                    ),
+                    Action::Replay { step_delay_ms } => {
+                        (replay()?, Duration::from_millis(step_delay_ms))
+                    }
                     Action::UsageLimit { resets_in_secs } => {
                         return Err(ProviderError::UsageLimit {
                             resets_at: resets_in_secs
@@ -241,8 +218,8 @@ impl FakeProvider {
             }
         };
         let cancelled = Arc::new(Notify::new());
-        let _registration = Registration::new(self, call.job_id, Arc::clone(&cancelled));
-        let mut stream = CodexStream::default();
+        let _registration = Registration::new(self, call.job_spec.job_id, Arc::clone(&cancelled));
+        let mut stream = Recording::default();
         for line in jsonl.lines() {
             if !step_delay.is_zero() {
                 tokio::select! {
@@ -260,8 +237,8 @@ impl FakeProvider {
                 let _ = events.send(ProviderEvent::Activity(event)).await;
             }
         }
-        let mut finished = stream.finish(Exit::Code(0))?;
-        if call.flow_file.is_some() {
+        let mut finished = stream.finish()?;
+        if call.job_spec.flow_file.is_some() {
             let text = if let Some(output) = scripted_output {
                 output
                     .as_str()
@@ -275,23 +252,54 @@ impl FakeProvider {
                     include_str!("../../../../fixtures/pr-482/agent/flow-4.md"),
                     include_str!("../../../../fixtures/pr-482/agent/flow-5.md"),
                 ];
-                let n = flow_number(&call.prompt).unwrap_or(1) as usize;
+                let n = flow_number(&call.job_spec.prompt).unwrap_or(1) as usize;
                 files
                     .get(n.saturating_sub(1))
-                    .ok_or_else(super::output_file::refused)?
+                    .ok_or_else(|| ProviderError::Failed {
+                        message: "unknown fixture flow".into(),
+                    })?
                     .to_string()
             };
-            std::fs::create_dir_all(call.job_dir.join("out"))?;
-            std::fs::write(call.job_dir.join("out/flow.md"), text)?;
-            finished.output = Value::String(super::output_file::collect(&call.job_dir)?);
+            finished.output = Value::String(text);
         }
         let _ = events
             .send(ProviderEvent::OutputReady(finished.output.clone()))
             .await;
         Ok(ProviderOutcome {
+            runtime_session: (!matches!(kind, JobKind::JudgeWork | JobKind::VerifyComments)).then(
+                || {
+                    let resumed = call
+                        .job_spec
+                        .working_session
+                        .as_ref()
+                        .and_then(|w| w.thread_id.as_ref())
+                        .is_some()
+                        || call.job_spec.session.is_some();
+                    contracts::job::result::SessionReport {
+                        thread_id: finished
+                            .thread_id
+                            .clone()
+                            .unwrap_or_else(|| "fake-thread".into()),
+                        outcome: if resumed {
+                            contracts::job::result::SessionOutcome::Resumed
+                        } else {
+                            contracts::job::result::SessionOutcome::Started
+                        },
+                        last_context: None,
+                        preflight: call
+                            .job_spec
+                            .working_session
+                            .as_ref()
+                            .and_then(|w| w.preflight.clone())
+                            .map(Box::new),
+                    }
+                },
+            ),
             session_turns: None,
             output: finished.output,
-            session_id: finished.thread_id,
+            session_id: (!matches!(kind, JobKind::JudgeWork | JobKind::VerifyComments))
+                .then_some(finished.thread_id)
+                .flatten(),
             usage: usage_delta(
                 cumulative_before(finished.cumulative_usage),
                 finished.cumulative_usage,
@@ -307,7 +315,7 @@ impl LlmProvider for FakeProvider {
         call: &'a ProviderCall,
         events: mpsc::Sender<ProviderEvent>,
     ) -> BoxFuture<'a, Result<ProviderOutcome, ProviderError>> {
-        Box::pin(async move { self.turn(call, &events, false).await })
+        Box::pin(async move { self.replay(call, &events).await })
     }
 
     fn resume<'a>(
@@ -316,7 +324,7 @@ impl LlmProvider for FakeProvider {
         call: &'a ProviderCall,
         events: mpsc::Sender<ProviderEvent>,
     ) -> BoxFuture<'a, Result<ProviderOutcome, ProviderError>> {
-        Box::pin(async move { self.turn(call, &events, true).await })
+        Box::pin(async move { self.replay(call, &events).await })
     }
 
     fn cancel(&self, job: JobId) -> BoxFuture<'_, Result<(), ProviderError>> {
@@ -368,24 +376,12 @@ fn recording(name: &str) -> Option<&'static str> {
         .map(|(_, jsonl)| *jsonl)
 }
 
-/// The call's job kind, from its output schema.
-fn job_kind(call: &ProviderCall) -> Result<JobKind, ProviderError> {
-    if call.flow_file.is_some() {
-        return Ok(JobKind::AnalyseFlow);
-    }
-    JobKind::ALL
-        .into_iter()
-        .find(|kind| output_schema(*kind).is_ok_and(|schema| schema == call.output_schema))
-        .ok_or_else(|| ProviderError::Failed {
-            message: "the fake provider does not know this output schema".to_owned(),
-        })
-}
-
 /// The Codex stream replayed for a call of `kind`: its recording, or for `judge_work` a neutral answer to the
 /// prompt's items.
 fn stream(kind: JobKind, prompt: &str) -> Result<String, ProviderError> {
     match kind {
         JobKind::JudgeWork => Ok(answer_stream(&judge_answer(prompt)?)),
+        JobKind::VerifyComments => Ok(answer_stream(&verify_answer(prompt)?)),
         _ => recorded(kind, prompt).map(str::to_owned),
     }
 }
@@ -424,15 +420,50 @@ fn judge_answer(prompt: &str) -> Result<Value, ProviderError> {
     Ok(json!({ "items": items }))
 }
 
+/// A valid neutral assessment of every item of the prompt's verify input: partly valid, in scope, no gates,
+/// recommended for a fix here; a question pass also answers the question.
+fn verify_answer(prompt: &str) -> Result<Value, ProviderError> {
+    let input = VerifyCommentsInput::from_prompt(prompt).ok_or_else(|| ProviderError::Failed {
+        message: "the fake provider found no verify input in the prompt".to_owned(),
+    })?;
+    let items: Vec<Value> = input
+        .items
+        .iter()
+        .map(|item| {
+            let code = item.location.as_ref().and_then(|location| {
+                location.lines.map(|lines| {
+                    json!({"path": location.path, "enclosing": lines,
+                        "description": "Fake description of the enclosing code for tests."})
+                })
+            });
+            json!({
+                "item": item.id, "validity": "partly_valid", "evidence": [], "pre_existing": false,
+                "category": "other", "necessity": "in", "necessity_reason": "Fake assessment for tests.",
+                "better_pr": null, "gates": [], "elsewhere": [], "fix_sketch": "Fake fix sketch.", "fix_size": "XS",
+                "reply_drafts": ["Fixed per maintainer decision."],
+                "recommendation": {"kind": "fix_here", "reason": "Fake recommendation for tests.",
+                    "reason_class": "fake", "target_pr": null, "target_url": null, "title": null},
+                "code": code
+            })
+        })
+        .collect();
+    let answer = input
+        .question
+        .map(|_| "Fake answer to the question for tests.");
+    Ok(json!({"purpose": "Fake purpose for tests.", "items": items, "answer": answer}))
+}
+
 /// The recording for a call of `kind`; the flow comes from the prompt.
 fn recorded(kind: JobKind, prompt: &str) -> Result<&'static str, ProviderError> {
     let name = match kind {
         JobKind::Plan => "plan".to_owned(),
         JobKind::PrContext => "pr-context".to_owned(),
         JobKind::AnalyseFlow => format!("analyse-flow-{}", flow_number(prompt).unwrap_or(1)),
-        JobKind::Ask | JobKind::JudgeWork => {
+        JobKind::Ask | JobKind::JudgeWork | JobKind::VerifyComments => {
             return Err(ProviderError::Failed {
-                message: "the fake provider has no recording for ask or judge_work jobs".to_owned(),
+                message:
+                    "the fake provider has no recording for ask, judge_work or verify_comments jobs"
+                        .to_owned(),
             });
         }
     };
@@ -472,7 +503,7 @@ fn cumulative_before(after: Usage) -> Usage {
     SESSION
         .iter()
         .filter_map(|(_, jsonl)| {
-            let mut stream = CodexStream::default();
+            let mut stream = Recording::default();
             for line in jsonl.lines() {
                 stream.line(line);
             }
@@ -495,21 +526,10 @@ mod tests {
     fn call(kind: JobKind, prompt: &str) -> ProviderCall {
         let spec = crate::test_support::spec(kind, Path::new("/nonexistent"));
         ProviderCall {
-            job_id: spec.job_id,
-            job_dir: PathBuf::new(),
-            codex_home: PathBuf::new(),
-            session_dir: PathBuf::new(),
-            restore_dir: PathBuf::new(),
-            prompt: prompt.to_owned(),
-            output_schema: spec.output_schema,
-            flow_file: None,
-            model: spec.model,
-            limits: spec.limits,
-            access: spec.access,
-            answer_only: false,
-            compact_on_start: false,
-            phases: Default::default(),
-            skills: Vec::new(),
+            job_spec: Box::new(contracts::job::spec::JobSpec {
+                prompt: prompt.into(),
+                ..spec
+            }),
         }
     }
 
@@ -631,7 +651,7 @@ mod tests {
             &json!({"rules": [{"id": "slow", "job": "plan", "action": {"replay": {"step_delay_ms": 200}}}]}),
         ));
         let job = call(JobKind::Plan, "Job: plan.");
-        let id = job.job_id;
+        let id = job.job_spec.job_id;
         let running = tokio::spawn({
             let provider = Arc::clone(&provider);
             async move {
@@ -668,17 +688,20 @@ mod tests {
             input_tokens: 48210,
             cached_input_tokens: 30976,
             output_tokens: 1904,
+            requests: None,
         };
         assert_eq!(cumulative_before(plan), Usage::default());
         let after_plan_compaction = Usage {
             input_tokens: 109_232,
             cached_input_tokens: 78080,
             output_tokens: 2884,
+            requests: None,
         };
         let pr_context = Usage {
             input_tokens: 180_776,
             cached_input_tokens: 130_304,
             output_tokens: 4414,
+            requests: None,
         };
         assert_eq!(cumulative_before(pr_context), after_plan_compaction);
     }
@@ -693,34 +716,19 @@ mod file_tests {
         let script = root.path().join("script.json");
         let text = "# flow f1\n";
         std::fs::write(&script,json!({"rules":[{"id":"file","job":"analyse_flow","action":{"answer":{"output":text}}}]}).to_string()).unwrap();
+        let mut spec = crate::test_support::spec(JobKind::AnalyseFlow, root.path());
+        spec.prompt = "Job: analyse_flow f1.".into();
+        spec.flow_file = Some(contracts::job::spec::FlowFile {
+            context: json!({}),
+            previous: None,
+        });
         let call = ProviderCall {
-            job_id: JobId::new_random(),
-            job_dir: root.path().join("job"),
-            codex_home: root.path().join("home"),
-            session_dir: root.path().join("session"),
-            restore_dir: root.path().join("session"),
-            prompt: "Job: analyse_flow f1.".into(),
-            output_schema: Value::Null,
-            flow_file: Some(contracts::job::spec::FlowFile {
-                context: json!({}),
-                previous: None,
-            }),
-            model: crate::test_support::spec(JobKind::AnalyseFlow, root.path()).model,
-            limits: Default::default(),
-            access: Default::default(),
-            answer_only: false,
-            compact_on_start: false,
-            phases: Default::default(),
-            skills: vec![],
+            job_spec: Box::new(spec),
         };
         let (send, mut receive) = mpsc::channel(32);
         let provider = FakeProvider::default().with_script(script);
         let outcome = provider.run(&call, send).await.unwrap();
         assert_eq!(outcome.output, json!(text));
-        assert_eq!(
-            std::fs::read_to_string(call.job_dir.join("out/flow.md")).unwrap(),
-            text
-        );
         assert!(
             std::iter::from_fn(|| receive.try_recv().ok())
                 .any(|e| e == ProviderEvent::OutputReady(json!(text)))

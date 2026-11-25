@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [feat/v1]
+    branches: [feat/v1, feat/v1.3]
   pull_request:
 
 permissions:
@@ -14,6 +14,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: "2"
 
 jobs:
   rust:
@@ -88,7 +89,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends python3-pytest python3-jsonschema sqlite3
       - name: Script tests
-        run: python3 -m pytest -q scripts/tests
+        run: python3 -m pytest -q scripts/tests tools/skills
       - name: Release image tags self-test
         run: scripts/release-image-tags.sh --self-test
       - name: Backup script self-test (online snapshot under a live writer, restore)
@@ -119,12 +120,13 @@ jobs:
       - name: Wording check
         run: scripts/check-wording.sh
 
-  # Images are built, never pushed. Plain `docker build` (BuildKit, docker driver): the runner and server builds
+  # No external image publication; installer tests push only to their disposable loopback registry.
+  # Plain `docker build` (BuildKit, docker driver): the runner and server builds
   # share the cargo cache mounts within the job; apt, Codex and node layers come from the runner's layer cache.
   images:
-    name: Images (server, runner, egress proxy) and container tests
+    name: Images (server/gateway, runner, worker, fetch, proxy) and live isolation
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    timeout-minutes: 120
     permissions:
       contents: read
     env:
@@ -141,13 +143,30 @@ jobs:
         run: docker build --build-context workspace=. -t diffpilot-egress-proxy:local deploy/egress-proxy
       - name: Egress proxy test (SSRF guard, MemCan exception, no request data in logs)
         run: PROXY_SKIP_BUILD=1 deploy/egress-proxy/test.sh "$RUNNER_TEMP/egress-proxy-test.log"
-      # Builds the runner image (targets base and runner) and the test image; the real-Codex job needs a login and
-      # is skipped (the suite prints the skip).
-      - name: Runner container suite (Rust supervisor, production image checks)
+      - name: Build the runner and test launcher isolation
+        run: |
+          docker build -f deploy/containers/runner.Dockerfile -t v13w3-runner:test .
+          deploy/containers/test-launcher-image.sh
+      - name: Build and test the worker with the approved curated skill tree
+        run: |
+          git clone --no-checkout https://github.com/lklimek/claudius.git "$RUNNER_TEMP/claudius"
+          git -C "$RUNNER_TEMP/claudius" checkout --detach 71096d7d4481977added8761b2cfd63cd84852b4
+          deploy/containers/prepare-claudius.sh "$RUNNER_TEMP/claudius" "$RUNNER_TEMP/worker-claudius"
+          docker build --build-context claudius="$RUNNER_TEMP/worker-claudius" \
+            -f deploy/worker/Dockerfile -t v13w3-worker:test .
+          deploy/containers/test-worker-image.sh
+      - name: Dependency fetch container and worker egress
         env:
-          R1_SUPERVISOR: rust
-          R1_SKIP_CODEX: "1"
-        run: deploy/runner/r1-test/run.sh "$RUNNER_TEMP/r1-test.log"
+          SR_CARGO_COMMAND: cargo
+          SR_CS3_TMPDIR: ${{ runner.temp }}
+          CARGO_BUILD_JOBS: "2"
+        # This job uses hosted runners; the local ledger wrapper is host-specific.
+        # Install the pinned toolchain for the template exporter used by the test.
+        run: |
+          rustup toolchain install --no-self-update
+          deploy/containers/test-cs3-squid.sh
+      - name: Container deployment wiring
+        run: deploy/test-stack.sh "$RUNNER_TEMP/stack-config.log"
       - name: Build the server image
         run: docker build -f deploy/server/Dockerfile -t diffpilot-server:local .
       - name: Server image answers its healthcheck
@@ -170,11 +189,13 @@ jobs:
           docker logs sr-ci-server
           docker exec sr-ci-server id
           [ "$status" = healthy ]
-      # Needs Docker Engine 28.0+ (isolated runner network).
-      - name: Stack test (runner reaches only the proxy and its listener; limits)
+      - name: Local installer and live SG5/SG7 isolation (QA-404, fake gateway only)
+        env:
+          SR_LOCAL_TMPDIR: ${{ runner.temp }}
+          SR_LOCAL_CLAUDIUS_SOURCE: ${{ runner.temp }}/claudius
         run: |
-          docker version -f 'Docker Engine {{.Server.Version}}'
-          deploy/test-stack.sh "$RUNNER_TEMP/stack-test.log"
+          export SR_DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
+          flock "$RUNNER_TEMP/diffpilot-heavy.lock" deploy/dev/test-local-containers.sh
       - name: Remove test containers
         if: always()
         run: docker rm -f -v sr-ci-server || true

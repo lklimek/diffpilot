@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PayerUsage",
+  "description": "Payer usage, summed from request or turn deltas without fork inheritance.",
+  "type": "object",
+  "properties": {
+    "user": {
+      "description": "Payer.",
+      "$ref": "#/$defs/UserId"
+    },
+    "usage": {
+      "description": "Billable token counts, separate from last-context estimates.",
+      "$ref": "#/$defs/Usage"
+    },
+    "resets_at": {
+      "description": "Reset time if usage is limited.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    }
+  },
+  "required": [
+    "user",
+    "usage"
+  ],
+  "$defs": {
+    "UserId": {
+      "description": "Stable authenticated user id, also the payer key.",
+      "type": "string"
+    },
+    "Usage": {
+      "description": "Token usage.",
+      "type": "object",
+      "properties": {
+        "input_tokens": {
+          "description": "Input tokens, cached included.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "cached_input_tokens": {
+          "description": "Cached input tokens.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "output_tokens": {
+          "description": "Output tokens.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "requests": {
+          "description": "Model requests of the call, counted from the provider's events (one per batch of tool calls, and the\nanswer); null when not counted.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        }
+      },
+      "required": [
+        "input_tokens",
+        "cached_input_tokens",
+        "output_tokens"
+      ]
+    }
+  }
+}

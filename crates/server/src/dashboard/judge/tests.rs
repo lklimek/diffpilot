@@ -10,7 +10,7 @@ use contracts::api::dashboard::{
 use contracts::common::RepoRef;
 use contracts::ids::RefreshId;
 use contracts::job::result::{JobOutcome, JobResult};
-use contracts::job::spec::{CredentialKind, JobPriority, LlmCredentialRef};
+use contracts::job::spec::JobPriority;
 use contracts::job::state::JobState;
 use db::repo::dashboard::{JudgeCounts, SendCaps, SendReservation, StartOutcome};
 use db::repo::jobs::{ClaimParams, JobRecord, JobStage};
@@ -83,6 +83,7 @@ fn pr(number: u32, title: &str) -> StoredPr {
             review_requested_at: None,
             review_request_age_is_approx: false,
             changes_requested_by: Vec::new(),
+            changes_requested_by_bot: Some(false),
             changes_requested_by_human: false,
             changes_requested_human_at: None,
             reviews_truncated: false,
@@ -97,10 +98,13 @@ fn pr(number: u32, title: &str) -> StoredPr {
         },
         private: false,
         head_sha: "a".repeat(40),
+        base_sha: None,
         created_at: now() - SignedDuration::from_hours(24 * 3),
         ci_red: Vec::new(),
         ci_pending: Vec::new(),
+        ci_ignored: Vec::new(),
         linked_issues: Vec::new(),
+        mark: None,
     }
 }
 
@@ -171,6 +175,7 @@ fn snapshot(prs: Vec<StoredPr>, issues: Vec<StoredIssue>, todos: Vec<StoredTodo>
         merge_states_recorded: true,
         prs_reread_at: None,
         todos_hidden: false,
+        snoozes: Vec::new(),
     }
 }
 
@@ -236,10 +241,7 @@ async fn harness() -> Harness {
     db.llm_credentials()
         .register(
             DEFAULT_TENANT,
-            &LlmCredentialRef {
-                id: CREDENTIAL_ID.to_owned(),
-                kind: CredentialKind::CodexChatgpt,
-            },
+            &contracts::ids::UserId(CREDENTIAL_ID.to_owned()),
             true,
             Timestamp::now(),
         )
@@ -392,7 +394,7 @@ impl Harness {
                     .db()
                     .jobs()
                     .claim(ClaimParams {
-                        credential_ids: &[CREDENTIAL_ID.to_owned()],
+                        payer_ids: &[CREDENTIAL_ID.to_owned()],
                         job_token_hash: b"hash",
                         lease_until: now + SignedDuration::from_hours(1),
                         now,
@@ -414,6 +416,8 @@ impl Harness {
             .jobs()
             .complete(
                 &JobResult {
+                    assessment: None,
+                    report: None,
                     job_id: job.id,
                     attempt: job.attempt,
                     outcome,
@@ -474,7 +478,7 @@ impl Harness {
                     .db()
                     .jobs()
                     .claim(ClaimParams {
-                        credential_ids: &[CREDENTIAL_ID.to_owned()],
+                        payer_ids: &[CREDENTIAL_ID.to_owned()],
                         job_token_hash: b"hash",
                         lease_until: now + SignedDuration::from_hours(1),
                         now,
@@ -1566,8 +1570,9 @@ fn pull_requests_carry_their_size_mark() {
     assert_eq!(awaiting, [("wallet-ui#7", Some(SizeMark::Huge))]);
 }
 
-/// B10: a waiting PR whose state changes so that something is the user's move (a human approves; changes are
-/// requested) is back in Needs you on the next scan and is judged then; it leaves Waiting on others.
+/// K15: a waiting PR whose state changes so that something is the user's move (approved without the ready label;
+/// changes are requested) is back in Needs you on the next scan and is judged then; it leaves Waiting on others.
+/// While it carries the ready label it needs a human and keeps waiting, approved or not.
 #[test]
 fn a_waiting_pull_request_returns_to_needs_you_when_it_becomes_the_users_move() {
     use crate::dashboard::score::ReviewDecision as D;
@@ -1594,8 +1599,17 @@ fn a_waiting_pull_request_returns_to_needs_you_when_it_becomes_the_users_move() 
             f.review_decision = Some(D::Approved);
             f.approved_by.push("ana".to_owned());
         }),
+        (0, 1, 0),
+        "a human approved, the ready label kept"
+    );
+    assert_eq!(
+        moved(&|f| {
+            f.review_decision = Some(D::Approved);
+            f.approved_by.push("ana".to_owned());
+            f.labels.clear();
+        }),
         (1, 0, 1),
-        "a human approved"
+        "a human approved, no ready label"
     );
     assert_eq!(
         moved(&|f| {
@@ -1699,10 +1713,9 @@ async fn unclaimed_judge_job_ends_the_ranking() {
     assert_eq!(error.message(), "No runner picked up the ranking job");
 }
 
-/// An Ask claimed ahead of the judge job (Ask goes first, plan §5.3) holds the credential: that wait is not
-/// "unclaimed"; once the credential is idle again the limit applies as before.
+/// PR Ask and dashboard judging use independent containers for the same payer.
 #[tokio::test]
-async fn ask_holding_the_credential_does_not_count_as_unclaimed() {
+async fn ask_container_does_not_suppress_the_unclaimed_judge_limit() {
     let h = harness().await;
     let snap = snapshot(prs(1), vec![], vec![]);
     let id = h.stored("u1", &snap).await;
@@ -1742,7 +1755,7 @@ async fn ask_holding_the_credential_does_not_count_as_unclaimed() {
         .await
         .expect("finished");
     let mut spec = db::repo::analyses::testing::job_spec(analysis, JobKind::Ask);
-    spec.credential.id = CREDENTIAL_ID.to_owned();
+    spec.payer.0 = CREDENTIAL_ID.to_owned();
     h.db()
         .jobs()
         .enqueue(
@@ -1759,20 +1772,12 @@ async fn ask_holding_the_credential_does_not_count_as_unclaimed() {
     let ask = h.claim().await;
     assert_eq!(ask.kind, JobKind::Ask, "the later Ask is claimed first");
 
-    ranking
-        .observe(job)
-        .await
-        .expect("waiting behind an Ask, not unclaimed");
-    assert_eq!(ranking.live, RankingState::Running);
-    assert_eq!(ranking.unclaimed_since, None);
-
-    h.complete(&ask, JobOutcome::Cancelled).await;
-    ranking.unclaimed_since = Some(long_ago);
     let error = ranking
         .observe(job)
         .await
-        .expect_err("idle credential, unclaimed too long");
+        .expect_err("an active Ask does not occupy the judge container");
     assert!(matches!(error, RankError::Unclaimed));
+    h.complete(&ask, JobOutcome::Cancelled).await;
 }
 
 #[tokio::test]
@@ -1782,7 +1787,7 @@ async fn ranking_waits_for_running_analysis_job() {
         .await
         .expect("analysis");
     let mut spec = db::repo::analyses::testing::job_spec(analysis, JobKind::Plan);
-    spec.credential.id = CREDENTIAL_ID.to_owned();
+    spec.payer.0 = CREDENTIAL_ID.to_owned();
     h.db()
         .jobs()
         .enqueue(
@@ -1807,8 +1812,13 @@ async fn ranking_waits_for_running_analysis_job() {
         })
         .await;
     assert_eq!(waiting.state, RefreshState::Ranking);
-    h.complete(&analysis_job, JobOutcome::Cancelled).await;
     h.serve(|i| succeeded(neutral(i))).await;
+    assert_eq!(
+        h.db().jobs().get(analysis_job.id).await.unwrap().state,
+        JobState::Claimed,
+        "the separate judge container can claim while the PR container is busy"
+    );
+    h.complete(&analysis_job, JobOutcome::Cancelled).await;
     let done = h.ranked("u1", id).await;
     assert_eq!(done.ranking.map(|r| r.state), Some(RankingState::Finished));
 }
@@ -1923,6 +1933,8 @@ async fn stale_attempt_writes_neither_notes_nor_judgements() {
     };
     let job = old.submit(1, 0, &input).await.expect("submit").job_id;
     let result = JobResult {
+        assessment: None,
+        report: None,
         job_id: job,
         attempt: 0,
         outcome: succeeded(neutral(&input)),
@@ -2047,7 +2059,7 @@ async fn recovery_cancels_orphan_judge_jobs() {
     let mut handles = Vec::new();
     for batch in [1, 2] {
         let mut spec = db::repo::analyses::testing::judge_spec(id);
-        spec.credential.id = CREDENTIAL_ID.to_owned();
+        spec.payer.0 = CREDENTIAL_ID.to_owned();
         let handle = h
             .state
             .executor
@@ -2242,5 +2254,256 @@ async fn a_retry_beyond_the_cap_is_not_sent() {
             .as_deref()
             .is_some_and(|m| m.starts_with("8 items could not be judged (")),
         "{ranking:?}"
+    );
+}
+
+/// A plug-in that states whose move one pull request is (K15 W3b), always fresh.
+#[derive(Debug)]
+struct Stating {
+    home: url::Url,
+    data: crate::dashboard::plugin::PluginData,
+}
+
+impl crate::dashboard::plugin::DashboardPlugin for Stating {
+    fn id(&self) -> &'static str {
+        "pr-hygiene"
+    }
+
+    fn name(&self) -> &'static str {
+        "PR Hygiene"
+    }
+
+    fn home(&self) -> &url::Url {
+        &self.home
+    }
+
+    fn poll(
+        &self,
+    ) -> BoxFuture<
+        '_,
+        Result<crate::dashboard::plugin::Polled, crate::dashboard::plugin::PluginError>,
+    > {
+        let data = self.data.clone();
+        Box::pin(async move { Ok(crate::dashboard::plugin::Polled::Data(data)) })
+    }
+}
+
+/// The overlay of a current statement that `wallet-ui#number` is `whose` move.
+async fn stating(
+    number: u32,
+    whose: crate::dashboard::plugin::Move,
+) -> crate::dashboard::plugin::Overlay {
+    use crate::dashboard::plugin::{PluginData, PluginHost, PrKey, PrStatement, Timing};
+    let statement = PrStatement {
+        url: format!("https://hygiene.example.test/api/v1/prs/acme/wallet-ui/{number}"),
+        summary: Some("Stage owner".to_owned()),
+        details: Vec::new(),
+        facts: Vec::new(),
+        ready_to_merge: None,
+        whose_move: Some(whose),
+        github_updated_at: None,
+        mark: "stage".to_owned(),
+    };
+    let plugin = Stating {
+        home: url::Url::parse("https://hygiene.example.test/").expect("url"),
+        data: PluginData {
+            as_of: now(),
+            prs: HashMap::from([(PrKey::new(&repo("wallet-ui"), number), statement)]),
+        },
+    };
+    let host = PluginHost::new(vec![Arc::new(plugin)], Timing::default());
+    host.poll_once(now()).await;
+    host.overlay(now())
+}
+
+fn reviewers_move() -> crate::dashboard::plugin::Move {
+    crate::dashboard::plugin::Move::People {
+        owed: vec!["renata-s".to_owned()],
+        reason: "Human approval is required".to_owned(),
+    }
+}
+
+/// K15 W3: a statement that the move is the author's adds nothing and vetoes nothing. A #5949-shaped PR (ready
+/// label, PR Hygiene `waiting-self-review`) waits on others for its label and is not judged; a requested review
+/// keeps waiting; a PR GitHub's signals rank stays ranked.
+#[tokio::test]
+async fn an_authors_move_statement_changes_neither_waiting_on_others_nor_the_judge() {
+    use crate::dashboard::plugin::Move;
+    use contracts::api::dashboard::AwaitingReason;
+    let mut labelled = pr(5949, "feat(sdk): ready for a human");
+    labelled.facts.labels = vec!["ready-for-human".to_owned()];
+    let mut requested = pr(7, "feat: review requested");
+    requested.facts.review_requested_from_others = vec!["ana".to_owned()];
+    let snap = snapshot(
+        vec![labelled, requested, pr(2, "fix: other")],
+        vec![],
+        vec![],
+    );
+    for number in [5949, 7, 2] {
+        let view = snapshot::build(
+            &snap,
+            &HashMap::new(),
+            None,
+            &stating(number, Move::Author).await,
+        );
+        let ranked: Vec<_> = view.items.iter().map(|i| i.item.id.as_str()).collect();
+        let awaiting: Vec<_> = view
+            .awaiting
+            .iter()
+            .map(|a| (a.id.as_str(), a.reason.clone()))
+            .collect();
+        assert_eq!(ranked, ["wallet-ui#2"], "statement on #{number}");
+        assert_eq!(
+            awaiting,
+            [
+                ("wallet-ui#7", AwaitingReason::ReviewRequested),
+                (
+                    "wallet-ui#5949",
+                    AwaitingReason::ReadyLabel {
+                        label: "ready-for-human".to_owned()
+                    }
+                ),
+            ],
+            "statement on #{number} (same opening time: by display id)"
+        );
+    }
+    let judged: Vec<_> = candidates(&snap, LlmLanguage::En)
+        .into_iter()
+        .map(|c| c.item.id.clone())
+        .collect();
+    assert_eq!(judged, ["wallet-ui#2"], "only the ranked PR is judged");
+}
+
+/// K15 with the judge's input: plug-in statements can only list a PR under Waiting on others (W3b), so the ranking
+/// judges without them and every PR the read path ranks is judged, whatever the statements are when it reads. A PR
+/// a current reviewers'-move statement holds under Waiting on others is judged too; its judgement applies once the
+/// statement is gone.
+#[tokio::test]
+async fn every_pull_request_the_read_path_ranks_is_judged_whatever_the_statements() {
+    let h = harness().await;
+    let snap = snapshot(
+        vec![pr(7, "feat: in review"), pr(2, "fix: other")],
+        vec![],
+        vec![],
+    );
+    let held = snapshot::build(
+        &snap,
+        &HashMap::new(),
+        None,
+        &stating(7, reviewers_move()).await,
+    );
+    assert_eq!(
+        held.awaiting
+            .iter()
+            .map(|a| a.id.as_str())
+            .collect::<Vec<_>>(),
+        ["wallet-ui#7"],
+        "a current reviewers'-move statement: Waiting on others"
+    );
+    let id = h.rank("u1", &snap).await;
+    let (_, input) = h.serve(|input| succeeded(neutral(input))).await;
+    let mut sent: Vec<_> = input.items.iter().map(|i| i.id.as_str()).collect();
+    sent.sort_unstable();
+    assert_eq!(sent, ["wallet-ui#2", "wallet-ui#7"]);
+    assert_eq!(h.ranked("u1", id).await.state, RefreshState::Finished);
+    let key = ItemKey::new(&ItemTarget::PullRequest {
+        repo: repo("wallet-ui"),
+        number: 7,
+    })
+    .expect("key");
+    let judgements = h.judgements("u1", &snap).await;
+    assert!(judgements.contains_key(&key), "{judgements:?}");
+    let ranked = snapshot::build(&snap, &judgements, None, &Default::default());
+    let seven = ranked
+        .items
+        .iter()
+        .find(|i| i.item.id == "wallet-ui#7")
+        .expect("ranked without the statement");
+    assert_ne!(seven.item.score.state, ScoreState::Unjudged, "judged");
+}
+
+/// K15 W5: Waiting on others lists the longest wait first; without a known request time (a labelled PR nobody was
+/// asked to review, a team request) the wait counts from the PR's opening time, as its `waiting_since` shows.
+#[test]
+fn waiting_on_others_counts_an_unknown_request_time_from_the_opening() {
+    let mut opened_long_ago = pr(1, "feat: labelled a month ago");
+    opened_long_ago.facts.labels = vec!["ready-for-human".to_owned()];
+    opened_long_ago.created_at = now() - SignedDuration::from_hours(24 * 30);
+    let mut asked_yesterday = pr(2, "feat: review requested yesterday");
+    asked_yesterday.facts.labels = vec!["ready-for-human".to_owned()];
+    asked_yesterday.facts.review_requested_from_others = vec!["ana".to_owned()];
+    asked_yesterday.facts.others_review_requested_at = Some(now() - SignedDuration::from_hours(24));
+    let snap = snapshot(vec![asked_yesterday, opened_long_ago], vec![], vec![]);
+    let view = snapshot::build(&snap, &HashMap::new(), None, &Default::default());
+    let order: Vec<_> = view
+        .awaiting
+        .iter()
+        .map(|a| (a.id.as_str(), a.waiting_since))
+        .collect();
+    assert_eq!(
+        order,
+        [
+            ("wallet-ui#1", now() - SignedDuration::from_hours(24 * 30)),
+            ("wallet-ui#2", now() - SignedDuration::from_hours(24)),
+        ],
+        "longest wait first"
+    );
+}
+
+const CREDENTIAL_ID: &str = db::repo::analyses::testing::CREDENTIAL;
+
+#[tokio::test]
+async fn nonretryable_failures_end_ranking_with_their_plain_cause() {
+    use contracts::job::result::JobFailureKind::*;
+    let link = "Link your Codex account in Settings";
+    let format = "The LLM answer was not in the expected format.";
+    let other = "The LLM call failed for another reason; the server log has the details.";
+    for (kind, message) in [
+        (
+            Configuration,
+            "The server is misconfigured: a required agent skill is missing. Ask the administrator.",
+        ),
+        (OutputNotJson, format),
+        (CredentialUnusable, link),
+        (CheckoutFailed, other),
+        (CredentialMissing, link),
+        (CredentialRelink, link),
+        (ModelUnavailable, other),
+        (UpstreamRejected, other),
+        (ReportVersionUnsupported, other),
+        (InvalidJsonSchema, format),
+        (
+            AskCompactionUnconfirmed,
+            "The answer was discarded because the required context shortening was not confirmed.",
+        ),
+    ] {
+        let h = harness().await;
+        let id = h.rank("u1", &snapshot(prs(1), vec![], vec![])).await;
+        h.serve(|_| JobOutcome::Failed {
+            kind,
+            message: "untrusted provider canary".into(),
+        })
+        .await;
+        let ended = h.ranked("u1", id).await;
+        let ranking = ended.ranking.unwrap();
+        assert_eq!(ranking.state, RankingState::Failed, "{kind:?}");
+        assert_eq!(ranking.message.as_deref(), Some(message), "{kind:?}");
+        assert_eq!(h.jobs(id).await.len(), 1, "no automatic retry for {kind:?}");
+    }
+}
+
+#[tokio::test]
+async fn retryable_worker_loss_is_judged_again() {
+    let h = harness().await;
+    let id = h.rank("u1", &snapshot(prs(1), vec![], vec![])).await;
+    h.serve(|_| JobOutcome::Failed {
+        kind: contracts::job::result::JobFailureKind::WorkerLost,
+        message: "lost".into(),
+    })
+    .await;
+    h.serve(|i| succeeded(neutral(i))).await;
+    assert_eq!(
+        h.ranked("u1", id).await.ranking.unwrap().state,
+        RankingState::Finished
     );
 }

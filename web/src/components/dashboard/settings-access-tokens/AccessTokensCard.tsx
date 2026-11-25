@@ -61,8 +61,11 @@ export function AccessTokensCard({ tokens, onCreate, onRevoke, now = new Date() 
     <SettingsCard title="Access tokens" help={<HelpTip topic="access_tokens" />}>
       <p>
         A personal access token lets your agents read over HTTP what you can read here: My work, reviews and
-        their questions. Tokens are <b>read-only</b>: they cannot change anything, start a refresh or an
-        analysis, post comments, or list and create tokens.
+        their questions. A <b>read</b> token is <b>read-only</b>: it cannot change anything, start a refresh
+        or an analysis, post comments, or list and create tokens. A token that also has{" "}
+        <b>review_loop_execute</b> may claim any current decision on PR comments in this diffpilot, yours and
+        other users&apos;, report its effects and set a push target that diffpilot sends requests to; no token
+        can decide.
       </p>
       <p className="text-xs text-muted">
         Send it as <code className="font-mono">Authorization: Bearer srp_…</code>. The agent API is described
@@ -72,7 +75,8 @@ export function AccessTokensCard({ tokens, onCreate, onRevoke, now = new Date() 
       {tokens.length === 0 ? (
         <p className="text-muted">No tokens yet.</p>
       ) : (
-        <div className="overflow-x-auto">
+        <div className="relative overflow-x-auto">
+          {/* `relative`: the cells' screen-reader text (absolutely placed) scrolls with the table, not the page. */}
           <table className="w-full border-collapse text-sm">
             <caption className="sr-only">Your access tokens</caption>
             <thead>

@@ -901,6 +901,41 @@
           "description": "GitHub refused a change made as the user (e.g. the Viewed mark); nothing was changed.",
           "type": "string",
           "const": "github_refused"
+        },
+        {
+          "description": "The review-loop item changed since the decision's revision; read it again (ADR-023).",
+          "type": "string",
+          "const": "item_changed"
+        },
+        {
+          "description": "Another agent holds the decision's claim.",
+          "type": "string",
+          "const": "claimed"
+        },
+        {
+          "description": "The claim's lease ended; the decision is back in the feed.",
+          "type": "string",
+          "const": "lease_expired"
+        },
+        {
+          "description": "An open effect of the decision is outside the claimer's capabilities.",
+          "type": "string",
+          "const": "capability_missing"
+        },
+        {
+          "description": "The user watches the maximum number of pull requests.",
+          "type": "string",
+          "const": "watch_limit_reached"
+        },
+        {
+          "description": "A notification URL must use `http` or `https`.",
+          "type": "string",
+          "const": "scheme_not_allowed"
+        },
+        {
+          "description": "A changed kind or URL origin of a notification target needs its secret replaced or removed.",
+          "type": "string",
+          "const": "secret_required"
         }
       ]
     },

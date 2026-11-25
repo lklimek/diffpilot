@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FeedQuery",
+  "description": "Query of RF1 and RF2.",
+  "type": "object",
+  "properties": {
+    "capabilities": {
+      "description": "Comma-separated `EffectKind` names the agent can execute.",
+      "type": "string"
+    },
+    "repo": {
+      "description": "Only this repository, `owner/name`.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "cursor": {
+      "description": "Opaque cursor of the next page (RF1).",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "capabilities"
+  ]
+}

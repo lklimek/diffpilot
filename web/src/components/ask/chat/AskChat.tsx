@@ -8,14 +8,14 @@ import {
   type PointerEvent,
   type Ref,
 } from "react";
-import type { AskAnchor, AskQuestion, Evidence, QuestionId, Tour } from "../../../api/generated/types";
+import type { AskAnchor, AskQuestion, Evidence, QuestionId } from "../../../api/generated/types";
 import { HEAD_BUTTON, busyTip } from "../../button/button";
 import { clockText } from "../../format/time";
 import { Kbd } from "../../help/Kbd";
 import { assignRef, growField, useAction } from "../../inspector/action";
 import { Tooltip } from "../../tooltip/Tooltip";
 import { Answer } from "../Answer";
-import { hasLines, subjectOf, type ChatThread } from "./model";
+import { hasLines, type ChatThread, type Subject } from "./model";
 
 // The server's message says what to do; a hint is added only to a retryable failure whose message has none.
 const RETRY_LATER = new Set(["unavailable", "rate_limited"]);
@@ -64,7 +64,8 @@ export interface ChatGeometry {
 
 /** Props of the floating Ask chat. */
 export interface AskChatProps {
-  tour: Tour;
+  /** Names a subject (chip, placeholder, tips): `subjectOf` over the tour, or the comment items of a PR. */
+  describe: (anchor: AskAnchor) => Subject;
   /** The user's threads of the analysis, oldest first (`threadsOf`). */
   threads: ChatThread[];
   /** What the next question is about. */
@@ -91,6 +92,8 @@ export interface AskChatProps {
   /** Asks a question without an answer again, in its thread. */
   onAskAgain: (question: AskQuestion) => Promise<unknown> | void;
   onUnanchor: () => void;
+  /** Why the whole PR cannot be the subject here: × is off with this hint, and a question about it is not sent. */
+  wholePrUnavailable?: string;
   onUsePlace: () => void;
   /** Opens what a thread is about (its subject chip); the chat stays open. */
   onGoto: (anchor: AskAnchor) => void;
@@ -125,8 +128,8 @@ const sends = (event: KeyboardEvent<HTMLTextAreaElement>) =>
   event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing;
 
 /** A subject as chip text: view, code, words. */
-function SubjectText({ anchor, tour }: { anchor: AskAnchor; tour: Tour }) {
-  const s = subjectOf(anchor, tour);
+function SubjectText({ anchor, describe }: { anchor: AskAnchor } & Pick<AskChatProps, "describe">) {
+  const s = describe(anchor);
   return (
     <>
       {s.view && <span className="text-[10px] font-bold tracking-wide text-muted uppercase">{s.view}</span>}{" "}
@@ -139,20 +142,20 @@ function SubjectText({ anchor, tour }: { anchor: AskAnchor; tour: Tour }) {
 function Question({
   question,
   root,
-  tour,
+  describe,
   onGoto,
-}: { question: AskQuestion; root: boolean } & Pick<AskChatProps, "tour" | "onGoto">) {
+}: { question: AskQuestion; root: boolean } & Pick<AskChatProps, "describe" | "onGoto">) {
   return (
     <div className="flex min-w-0 flex-col items-end gap-0.5">
       <div className="flex max-w-full flex-wrap items-center justify-end gap-1.5 text-[11.5px] text-muted">
         {root ? (
-          <Tooltip tip={subjectOf(question.anchor, tour).tip}>
+          <Tooltip tip={describe(question.anchor).tip}>
             <button
               type="button"
               onClick={() => onGoto(question.anchor)}
               className="inline-flex min-h-6 max-w-full cursor-pointer flex-wrap items-baseline gap-1 rounded-[10px] border border-border bg-surface px-2 text-left text-[11.5px] text-accent hover:border-accent hover:underline"
             >
-              <SubjectText anchor={question.anchor} tour={tour} />
+              <SubjectText anchor={question.anchor} describe={describe} />
             </button>
           </Tooltip>
         ) : (
@@ -367,7 +370,7 @@ function CornerHandle({ geometry, size, onSize }: Pick<AskChatProps, "geometry" 
  * resizing. Non-modal: focus is not trapped.
  */
 export function AskChat(props: AskChatProps) {
-  const { tour, threads, subject, following, placeWhat, draft, onDraft, geometry, size, onSize } = props;
+  const { describe, threads, subject, following, placeWhat, draft, onDraft, geometry, size, onSize } = props;
   const titleId = useId();
   const aboutId = useId();
   const fieldId = useId();
@@ -377,10 +380,11 @@ export function AskChat(props: AskChatProps) {
   const count = useRef(0);
   const action = useAction();
   const [empty, setEmpty] = useState(false);
+  const [wholePrRefused, setWholePrRefused] = useState(false);
   const [replyFor, setReplyFor] = useState<QuestionId | null>(null);
   const replyButtons = useRef(new Map<QuestionId, HTMLButtonElement>());
   const threadItems = useRef(new Map<QuestionId, HTMLLIElement>());
-  const s = subjectOf(subject, tour);
+  const s = describe(subject);
   const all = threads.flatMap((t) => [t.root, ...t.followUps]);
   const total = all.length;
   // Questions are answered one at a time: a pending one waits behind any earlier one still waiting.
@@ -436,6 +440,11 @@ export function AskChat(props: AskChatProps) {
       field.current?.focus();
       return;
     }
+    if (subject.kind === "pr" && props.wholePrUnavailable) {
+      setWholePrRefused(true);
+      field.current?.focus();
+      return;
+    }
     if (await action.run(() => props.onSend(draft.trim()))) {
       onDraft("");
       requestAnimationFrame(() => growField(field.current));
@@ -445,7 +454,11 @@ export function AskChat(props: AskChatProps) {
     setReplyFor(null);
     requestAnimationFrame(() => replyButtons.current.get(id)?.focus());
   };
-  const error = empty ? "Write a question first." : action.error && notSent(action.error, action.code);
+  const error = empty
+    ? "Write a question first."
+    : wholePrRefused && subject.kind === "pr"
+      ? (props.wholePrUnavailable ?? null)
+      : action.error && notSent(action.error, action.code);
 
   return (
     <section
@@ -548,7 +561,7 @@ export function AskChat(props: AskChatProps) {
                       new
                     </span>
                   )}
-                  <Question question={root} root tour={tour} onGoto={props.onGoto} />
+                  <Question question={root} root describe={describe} onGoto={props.onGoto} />
                   <ChatAnswer question={root} anchor={root.anchor} queued={queued(root)} {...props} />
                   {followUps.length > 0 && (
                     <ol
@@ -557,7 +570,7 @@ export function AskChat(props: AskChatProps) {
                     >
                       {followUps.map((f) => (
                         <li key={f.id} className="grid gap-1.5">
-                          <Question question={f} root={false} tour={tour} onGoto={props.onGoto} />
+                          <Question question={f} root={false} describe={describe} onGoto={props.onGoto} />
                           <ChatAnswer question={f} anchor={root.anchor} queued={queued(f)} {...props} />
                         </li>
                       ))}
@@ -638,14 +651,16 @@ export function AskChat(props: AskChatProps) {
             <span className="inline-flex max-w-full min-w-0 items-center gap-0.5 rounded-[10px] border border-accent bg-accent-bg pl-2">
               <Tooltip tip="Your question will be about this place. It follows where you are in the review; × asks about the whole PR instead.">
                 <span tabIndex={0} className="[overflow-wrap:anywhere]">
-                  <SubjectText anchor={subject} tour={tour} />
+                  <SubjectText anchor={subject} describe={describe} />
                 </span>
               </Tooltip>
-              <Tooltip tip="Ask about the whole PR instead">
+              <Tooltip tip={props.wholePrUnavailable ?? "Ask about the whole PR instead"}>
                 <button
                   type="button"
                   aria-label="Remove the subject: ask about the whole PR"
+                  aria-disabled={props.wholePrUnavailable ? true : undefined}
                   onClick={() => {
+                    if (props.wholePrUnavailable) return;
                     props.onUnanchor();
                     field.current?.focus();
                   }}
@@ -657,7 +672,9 @@ export function AskChat(props: AskChatProps) {
             </span>
           ) : (
             <>
-              <Tooltip tip="Your question will be about the whole pull request.">
+              <Tooltip
+                tip={props.wholePrUnavailable ?? "Your question will be about the whole pull request."}
+              >
                 <span tabIndex={0} className="rounded-[10px] border border-accent bg-accent-bg px-2">
                   Whole PR
                 </span>
@@ -696,6 +713,7 @@ export function AskChat(props: AskChatProps) {
             onChange={(event) => {
               onDraft(event.target.value);
               setEmpty(false);
+              setWholePrRefused(false);
               growField(event.target);
             }}
             onKeyDown={(event) => {

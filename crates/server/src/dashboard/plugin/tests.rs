@@ -1,5 +1,9 @@
 //! The plug-in host (presence gating, cadence, freshness, change signal, logging) and the PR Hygiene plug-in
-//! against the in-process fake service (`test_support::pr_hygiene`); no real network.
+//! against the in-process fake service (`test_support::pr_hygiene`); no real network. The thepastaclaw status
+//! plug-in: `tests/thepastaclaw.rs`.
+
+mod pr_hygiene;
+mod thepastaclaw;
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -34,6 +38,8 @@ fn statement(mark: &str, readiness: Option<Readiness>) -> PrStatement {
             value: "self-review".to_owned(),
         }],
         ready_to_merge: readiness,
+        whose_move: None,
+        github_updated_at: None,
         mark: mark.to_owned(),
     }
 }
@@ -285,7 +291,7 @@ fn external_text_is_bounded_plain_and_links_are_web_links() {
     let mut spoofed = statement("b", None);
     spoofed.summary =
         Some("Merge\u{202E}evil\u{202C} it\u{200B}\u{2066}now\u{2069}\u{FEFF}".to_owned());
-    long.details = (0..20).map(|n| format!("detail {n}")).collect();
+    long.details = (0..100).map(|n| format!("detail {n}")).collect();
     long.facts = (0..10)
         .map(|n| Fact {
             label: format!("label {n}"),
@@ -383,6 +389,43 @@ async fn nothing_is_polled_while_no_user_is_active_and_polls_follow_the_interval
     poller.await.expect("poller ends");
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_watched_pull_request_keeps_the_poller_going_without_readers() {
+    let plugin = Scripted::new(Vec::new());
+    let host = host(
+        Arc::clone(&plugin) as Arc<dyn DashboardPlugin>,
+        Timing::default(),
+    );
+    assert!(!host.is_watching(), "nobody watches until told otherwise");
+    let (stop, stopping) = watch::channel(false);
+    let poller = tokio::spawn(host.clone().run(stopping, now, |_| async {}));
+    let minute = Duration::from_secs(60);
+    assert_eq!(polls_after(&plugin, 10 * minute).await, 0);
+
+    host.set_watching(true);
+    assert!(host.is_watching());
+    assert_eq!(
+        polls_after(&plugin, Duration::ZERO).await,
+        1,
+        "a first watch starts a poll at once"
+    );
+    host.set_watching(true);
+    assert_eq!(
+        polls_after(&plugin, 10 * minute).await,
+        11,
+        "polls follow the interval with no reader, past the 3-minute presence of a read"
+    );
+
+    host.set_watching(false);
+    assert_eq!(
+        polls_after(&plugin, 30 * minute).await,
+        11,
+        "no watch and no reader: no poll"
+    );
+    stop.send(true).expect("stop");
+    poller.await.expect("poller ends");
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // PR Hygiene
 
@@ -426,12 +469,15 @@ async fn pr_hygiene_states_governed_pull_requests_of_fresh_repositories() {
         first.summary.as_deref(),
         Some("Author must post /self-reviewed 1a2b3c")
     );
-    assert_eq!(
-        first.details,
-        [
-            "Author must post /self-reviewed 1a2b3c",
-            "Human approval or objection resolution is required"
-        ]
+    assert!(
+        first
+            .details
+            .contains(&"Blocker: Author must post /self-reviewed 1a2b3c".to_owned())
+    );
+    assert!(
+        first
+            .details
+            .contains(&"Blocker: Human approval or objection resolution is required".to_owned())
     );
     let facts: Vec<_> = first
         .facts
@@ -441,9 +487,12 @@ async fn pr_hygiene_states_governed_pull_requests_of_fresh_repositories() {
     assert_eq!(
         facts,
         [
-            ("Stage", "self-review"),
+            ("Stage", "Self review"),
             ("Whose move", "author"),
-            ("Lateness", "late")
+            ("Lateness", "late"),
+            ("Engine state", "Waiting for self review"),
+            ("Since", "2026-11-18T08:00:00Z (0h 59m at data time)"),
+            ("Since basis", "Engine")
         ]
     );
     assert_eq!(
@@ -459,6 +508,77 @@ async fn pr_hygiene_states_governed_pull_requests_of_fresh_repositories() {
     assert_eq!(
         data.prs[&PrKey::new(&repo("dashpay", "platform"), 2)].ready_to_merge,
         Some(Readiness::Agrees)
+    );
+}
+
+/// K15 W3b: the stage's owner says whose move a governed pull request is: the author's, or the reviewers' or
+/// maintainers' with the `asks` approvers as those owing a review (bounded to valid logins, once each); bots' and
+/// nobody's stages say nothing.
+#[tokio::test]
+async fn pr_hygiene_says_whose_move_from_the_stage_owner() {
+    let staged = |number: u32, stage: &str| {
+        let mut r = record(
+            "dashpay/platform",
+            number,
+            Some("ready-for-human"),
+            "Review it",
+        );
+        r["stage"] = json!(stage);
+        r
+    };
+    let mut review = staged(1, "review");
+    review["asks"] = json!([
+        {"area": "sdk", "approvers": ["QuantumExplorer", "shumkov"]},
+        {"area": "fallback", "approvers": ["shumkov", "not a login", 7]},
+        "unexpected"
+    ]);
+    let fake = FakePrHygiene::start(
+        "2026-11-18T08:59:00Z",
+        vec![
+            review,
+            staged(2, "blocked"),
+            staged(3, "self-review"),
+            staged(4, "bots"),
+            staged(5, "ci"),
+        ],
+    )
+    .await;
+    let host = PluginHost::new(
+        vec![Arc::new(PrHygiene::new(fake.url.clone()).expect("plugin"))],
+        Timing::default(),
+    );
+    host.poll_once(now()).await;
+    let overlay = host.overlay(now());
+    let platform = repo("dashpay", "platform");
+    let whose = |number| overlay.whose_move(&platform, number).map(|m| m.whose);
+    assert_eq!(
+        whose(1),
+        Some(Move::People {
+            owed: vec!["QuantumExplorer".to_owned(), "shumkov".to_owned()],
+            reason: "Review it".to_owned()
+        })
+    );
+    assert_eq!(
+        whose(2),
+        Some(Move::People {
+            owed: Vec::new(),
+            reason: "Review it".to_owned()
+        })
+    );
+    assert_eq!(whose(3), Some(Move::Author));
+    assert_eq!((whose(4), whose(5)), (None, None));
+    let said = overlay.whose_move(&platform, 1).expect("statement");
+    assert_eq!(
+        said.as_of,
+        "2026-11-18T08:59:00Z".parse().expect("source time")
+    );
+    assert_eq!(
+        (said.plugin.as_str(), said.source.as_str(), said.url),
+        (
+            "pr-hygiene",
+            "PR Hygiene",
+            format!("{}api/v1/prs/dashpay/platform/1", fake.url)
+        )
     );
 }
 
@@ -480,14 +600,14 @@ async fn pr_hygiene_revalidates_with_etags_and_marks_ignore_time_only_values() {
     };
     assert_eq!(plugin.poll().await.expect("poll"), Polled::Unchanged);
     let served = fake.served();
-    assert_eq!(served.len(), 4);
+    assert_eq!(served.len(), 5);
     assert!(
         served[..2]
             .iter()
             .all(|s| s.if_none_match.is_none() && s.status == 200)
     );
     assert!(
-        served[2..]
+        served[3..]
             .iter()
             .all(|s| s.if_none_match.is_some() && s.status == 304),
         "{served:?}"
@@ -599,5 +719,38 @@ async fn pr_hygiene_logs_unreadable_records_once_per_change_of_their_count() {
             .matches("PR Hygiene records are all readable again")
             .count(),
         1
+    );
+}
+
+#[test]
+fn only_pr_hygiene_says_it_can_hold_ready_to_merge() {
+    let url = |path: &str| Url::parse(&format!("https://source.example.test/{path}")).expect("url");
+    let host = PluginHost::new(
+        vec![
+            Arc::new(PrHygiene::new(url("")).expect("pr hygiene")),
+            Arc::new(
+                super::thepastaclaw::Thepastaclaw::new(url("data/status.json"))
+                    .expect("thepastaclaw"),
+            ),
+        ],
+        Timing::default(),
+    );
+    let holds: Vec<(String, bool)> = host
+        .statuses(now())
+        .into_iter()
+        .map(|status| (status.plugin, status.holds_ready_to_merge))
+        .collect();
+    assert_eq!(
+        holds,
+        [
+            ("pr-hygiene".to_owned(), true),
+            ("thepastaclaw".to_owned(), false)
+        ]
+    );
+    let json = serde_json::to_value(host.statuses(now())).expect("json");
+    assert_eq!(json[0]["holds_ready_to_merge"], json!(true));
+    assert!(
+        json[1].get("holds_ready_to_merge").is_none(),
+        "omitted when false: {json}"
     );
 }

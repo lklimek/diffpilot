@@ -4,5 +4,6 @@
 pub mod claim;
 pub mod executor;
 pub mod github_tokens;
+pub mod payer;
 pub mod progress;
 pub mod queue;

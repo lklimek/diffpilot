@@ -4,10 +4,10 @@
 use std::path::Path;
 
 use contracts::ids::JobId;
-use contracts::job::protocol::{ClaimRequest, ClaimResponse, CredentialStatus};
-use contracts::job::spec::{CredentialKind, JobPriority, LlmCredentialRef};
+use contracts::job::protocol::{ClaimRequest, ClaimResponse};
+use contracts::job::spec::JobPriority;
 use contracts::time::Timestamp;
-use db::repo::analyses::testing::{CREDENTIAL, judge_spec, seed_ranking_refresh};
+use db::repo::analyses::testing::{judge_spec, seed_ranking_refresh};
 use db::repo::jobs::JobStage;
 
 use super::*;
@@ -32,15 +32,9 @@ async fn claimed_job_token(state: &AppState) -> String {
         state.config.runner_secret.expose_secret().to_owned()
     };
     let body = serde_json::to_string(&ClaimRequest {
+        accept_job: true,
         runner_id: "runner-sec".to_owned(),
-        credentials: vec![CredentialStatus {
-            credential: LlmCredentialRef {
-                id: CREDENTIAL.to_owned(),
-                kind: CredentialKind::CodexChatgpt,
-            },
-            usable: true,
-        }],
-        dropped_sessions: Vec::new(),
+        retired: Vec::new(),
     })
     .expect("json");
     let response = api::runner_router(state.clone())

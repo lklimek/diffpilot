@@ -27,6 +27,19 @@ export async function signIn(page: Page, login = "alice"): Promise<void> {
     page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: /^My work/ }),
   ).toHaveAttribute("aria-current", "page");
   await expect(page.getByRole("banner")).toContainText(login);
+  const me = (await (await page.request.get("/api/v1/me")).json()) as { csrf_token: string };
+  if (!process.env.SR_E2E_BASE_URL) {
+    const linked = await page.request.post("/api/v1/settings/codex/link", {
+      headers: { "X-CSRF-Token": me.csrf_token },
+      data: { mode: "chatgpt_plan" },
+    });
+    expect(linked.ok(), await linked.text()).toBe(true);
+    await expect
+      .poll(async () => (await (await page.request.get("/api/v1/settings/codex/link")).json()).state)
+      .toBe("linked");
+  }
+  const status = await page.request.get("/api/v1/settings/codex");
+  expect((await status.json()).state).toBe("linked");
 }
 
 /**
@@ -40,9 +53,12 @@ export async function checkPr(page: Page): Promise<void> {
   await expect(page.getByRole("region", { name: "Pull request check" })).toBeVisible();
 }
 
+/** The fixture PR's PR page (review-workflow-plan §3.1 V0): Review a PR shows its latest analysis's progress. */
+export const PR_PAGE_PATH = "/pr/acme/node-client/482";
+
 /**
  * Presses the check card's Start analysis (or Start analysis anyway) and returns the new analysis id
- * (progress screen open).
+ * (the PR page open, showing that analysis's progress).
  */
 export async function startAnalysis(page: Page): Promise<string> {
   const created = page.waitForResponse(
@@ -56,18 +72,23 @@ export async function startAnalysis(page: Page): Promise<string> {
   const response = await created;
   expect(response.status(), await response.text()).toBe(201);
   const { id } = (await response.json()) as { id: string };
-  await expect(page).toHaveURL(new RegExp(`/analyses/${id}/progress$`));
+  await expect(page).toHaveURL(new RegExp(`${PR_PAGE_PATH}$`));
+  await expect(page.getByRole("region", { name: "Analysis progress" })).toBeVisible();
+  const shown = await page.request.get("/api/v1/prs/acme/node-client/482");
+  expect(shown.ok(), await shown.text()).toBe(true);
+  const { analysis } = (await shown.json()) as { analysis: { id: string } | null };
+  expect(analysis?.id, "the analysis the PR page shows").toBe(id);
   return id;
 }
 
-/** Checks the PR on the review start page and starts its analysis: returns the new analysis id (progress open). */
+/** Checks the PR on the review start page and starts its analysis: returns the new analysis id (PR page open). */
 export async function analyze(page: Page): Promise<string> {
   await checkPr(page);
   return startAnalysis(page);
 }
 
 /**
- * On the progress screen: once the plan is ready, opts in to analysing every remaining flow. Flows run on request
+ * On the PR page: once the plan is ready, opts in to analysing every remaining flow. Flows run on request
  * only, so the switch must read off first; a server that starts it on fails here.
  */
 export async function analyseAllRemainingFlows(page: Page): Promise<void> {
@@ -157,19 +178,19 @@ export function wordingViolations(text: string, patterns: RegExp[] = [WORDS, PER
   });
 }
 
-/** The analysis waiting screen's progress section: the one place a percentage may show (brief §1, §4.2). */
-const PROGRESS_SECTION = 'section[aria-label="Analysis progress"]';
+/** Measured analysis progress and provider-observed plan usage (D13), never model assessments. */
+const PERCENT_SECTIONS = 'section[aria-label="Analysis progress"], p[data-codex-plan-usage]';
 
 /**
  * Brief §1 / plan §12.4 on the rendered page: no banned phrase and no percentage in the page text (hidden tooltip
- * text included; the progress section of the analysis waiting screen may show its percentage), and no `%` at all
+ * text included; measured progress and provider plan usage may show percentages), and no `%` at all
  * in the top bar. My work (route `/`, ADR-016, v1.1 plan §F.5) is outside these rules and not checked.
  */
 export async function expectTrustWording(page: Page): Promise<void> {
   if (new URL(page.url()).pathname === "/") return;
   // Text nodes joined by spaces (hidden text too; block boundaries keep word boundaries) and the rendered text
-  // (inline markup inside a word); the second pair leaves the progress section out.
-  const [text, withoutProgress] = await page.locator("body").evaluate((body: HTMLElement, progress) => {
+  // (inline markup inside a word); the second pair leaves the measured-percentage sections out.
+  const [text, withoutPercent] = await page.locator("body").evaluate((body: HTMLElement, progress) => {
     const collect = (root: HTMLElement, skip: boolean) => {
       const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, (node) =>
         node.parentElement?.closest("script, style") || (skip && node.parentElement?.closest(progress))
@@ -184,9 +205,9 @@ export async function expectTrustWording(page: Page): Promise<void> {
     rest.querySelectorAll(progress).forEach((section) => section.remove());
     const rendered = (body as HTMLElement).innerText;
     return [`${collect(body, false)}\n${rendered}`, `${collect(body, true)}\n${rest.textContent ?? ""}`];
-  }, PROGRESS_SECTION);
+  }, PERCENT_SECTIONS);
   expect(
-    [...wordingViolations(text, [WORDS]), ...wordingViolations(withoutProgress, [PERCENT])],
+    [...wordingViolations(text, [WORDS]), ...wordingViolations(withoutPercent, [PERCENT])],
     "banned wording on the page",
   ).toEqual([]);
   const banner = page.getByRole("banner");
@@ -202,6 +223,8 @@ export async function expectTrustWording(page: Page): Promise<void> {
 export interface RequiredTip {
   /** The screen it belongs to: a selector present only there (`body`: every screen). */
   screen: string;
+  /** The text of a `<label>` inside the `screen` element: the screen is present only with that label. */
+  label?: string;
   /** What it is, for the failure message. */
   what: string;
   /** The tooltip trigger itself (the element with `aria-describedby`). */
@@ -304,7 +327,14 @@ export const REQUIRED_TIPS: RequiredTip[] = [
     selector: `${PROGRESS} button, ${PROGRESS} a[href]`,
     min: 1,
   },
-  { screen: HOME, what: "Check", selector: `${HOME} button[type="submit"]`, name: "^Check$", min: 1 },
+  {
+    screen: HOME,
+    label: "GitHub pull request URL",
+    what: "Check",
+    selector: `${HOME} button[type="submit"]`,
+    name: "^Check$",
+    min: 1,
+  },
 ];
 
 /**
@@ -342,8 +372,14 @@ export async function sweepTooltips(
         .map(({ element }) => element)
         .find((element) => element?.getAttribute("role") === "tooltip");
 
+    const present = (want: (typeof required)[number]) =>
+      [...document.querySelectorAll(want.screen)].some(
+        (screen) =>
+          want.label === undefined ||
+          [...screen.querySelectorAll("label")].some((label) => label.textContent?.trim() === want.label),
+      );
     for (const want of required) {
-      if (!document.querySelector(want.screen)) continue;
+      if (!present(want)) continue;
       const name = want.name === undefined ? null : new RegExp(want.name, "u");
       const found = [...document.querySelectorAll(want.selector)].filter(
         (element) => rendered(element) && (!name || name.test(nameOf(element))),

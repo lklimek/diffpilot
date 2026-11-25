@@ -44,6 +44,37 @@ export type AccessTokenId = string;
 export type AccessTokenSecret = string;
 
 /**
+ * Event of an agent push message.
+ */
+export type AgentPushEvent = "decision_available";
+
+/**
+ * JSON body of an agent push-target webhook delivery (ntfy: the same fields as the message): ids and a fetch
+ * link only, never reply text, reasons, comment bodies or secrets (T28).
+ */
+export type AgentPushPayload = {
+/**
+ * Payload version, 1.
+ */
+v: number,
+/**
+ * Event.
+ */
+event: AgentPushEvent,
+/**
+ * The decision.
+ */
+decision_id: DecisionId,
+/**
+ * Pull request, `owner/name#number`.
+ */
+pr: string,
+/**
+ * API path to fetch the decision (RF1b).
+ */
+fetch: string, };
+
+/**
  * A bounded estimate, not a deadline or a guarantee.
  */
 export type AnalysisEstimate = {
@@ -353,7 +384,7 @@ message: string, };
 /**
  * Machine-readable API error code.
  */
-export type ApiErrorCode = "configuration" | "unauthenticated" | "login_not_allowed" | "csrf_rejected" | "not_found" | "invalid_request" | "not_a_pr_url" | "private_repository" | "app_not_installed" | "analysis_not_finished" | "conflict" | "pr_head_changed" | "position_rejected" | "comment_published" | "range_too_large" | "not_rendered" | "github_unavailable" | "internal" | "unavailable" | "refresh_running" | "github_rate_limited" | "invalid_dashboard_settings" | "cursor_expired" | "insufficient_scope" | "token_not_accepted" | "token_limit_reached" | "rate_limited" | "github_refused";
+export type ApiErrorCode = "configuration" | "unauthenticated" | "login_not_allowed" | "csrf_rejected" | "not_found" | "invalid_request" | "not_a_pr_url" | "private_repository" | "app_not_installed" | "analysis_not_finished" | "conflict" | "pr_head_changed" | "position_rejected" | "comment_published" | "range_too_large" | "not_rendered" | "github_unavailable" | "internal" | "unavailable" | "refresh_running" | "github_rate_limited" | "invalid_dashboard_settings" | "cursor_expired" | "insufficient_scope" | "token_not_accepted" | "token_limit_reached" | "rate_limited" | "github_refused" | "item_changed" | "claimed" | "lease_expired" | "capability_missing" | "watch_limit_reached" | "scheme_not_allowed" | "secret_required";
 
 /**
  * A GitHub App installation.
@@ -395,7 +426,11 @@ range: LineRange | null, } | { "kind": "flow",
 /**
  * The flow.
  */
-flow_id: FlowId, } | { "kind": "pr" };
+flow_id: FlowId, } | { "kind": "pr" } | { "kind": "comment_item",
+/**
+ * The item.
+ */
+item: CommentItemId, };
 
 /**
  * An LLM answer to a question about a step.
@@ -409,6 +444,23 @@ answer: string,
  * Lines read that support the answer.
  */
 evidence: Array<Evidence>, };
+
+/**
+ * First-Ask preflight bound to the working thread's seed and analytic generation.
+ */
+export type AskPreflight = {
+/**
+ * Working-thread seed.
+ */
+seed: SessionSeed,
+/**
+ * Analytic generation at seeding.
+ */
+generation: number,
+/**
+ * Confirmed preflight state.
+ */
+state: PreflightState, };
 
 /**
  * A private question and its LLM answer, pinned to its anchor; returned only to its asker.
@@ -516,6 +568,439 @@ blocking?: Blocking,
 smallest_correction: string | null, };
 
 /**
+ * Pre-admission rejection consumes no slot.
+ */
+export type AssessmentAdmissionFailure = { "code": "assessment_daily_limit",
+/**
+ * Next UTC midnight.
+ */
+resets_at: string, } | { "code": "credential_missing" };
+
+/**
+ * GET …/comments/assessment-comparison, scoped to payer and PR.
+ */
+export type AssessmentComparison = {
+/**
+ * Exact comparison counts with explicit denominators.
+ */
+summary: ComparisonSummary,
+/**
+ * Frozen logical pass.
+ */
+pass: AssessmentPass,
+/**
+ * Owner revisions are selected as of this cutoff.
+ */
+cutoff: string,
+/**
+ * Independent method state and metering.
+ */
+runs: Array<AssessmentMethodRun>,
+/**
+ * Includes unmatched, missing, duplicate and failed rows explicitly.
+ */
+items: Array<AssessmentComparisonItem>, };
+
+/**
+ * Common method-local comparison row; secondary IDs never allocate primary items.
+ */
+export type AssessmentComparisonItem = {
+/**
+ * Model-reported reply-chain evidence, separate from actual diffpilot owner truth.
+ */
+recorded_decision?: RecordedDecision,
+/**
+ * Stable comparison identity inside this pass.
+ */
+comparison_key: string,
+/**
+ * Adapter-local ID, distinct from a primary item ID.
+ */
+local_id: string,
+/**
+ * Adapter and pass.
+ */
+run: AssessmentRunRef,
+/**
+ * Adapter version.
+ */
+method_version: string,
+/**
+ * Frozen source identity.
+ */
+source: AssessmentSource,
+/**
+ * Existing primary item, only for an unambiguous alignment.
+ */
+primary_item_id: CommentItemId | null,
+/**
+ * Frozen normalized primary point hash, distinct from the full source version.
+ */
+primary_item_hash: string | null,
+/**
+ * Alignment/completeness state.
+ */
+status: ComparisonItemStatus,
+/**
+ * Canonical comparison key for a duplicate.
+ */
+duplicate_of: string | null,
+/**
+ * Normalized verdict, absent when unavailable.
+ */
+verdict: AssessmentVerdict | null,
+/**
+ * Native verdict preserved exactly.
+ */
+native_verdict: string | null,
+/**
+ * Machine proposal; absence is distinct from a missing row or verdict.
+ */
+proposal: ProposedDecision | null,
+/**
+ * Actual diffpilot owner decision reference as of the report cutoff.
+ */
+owner_decision: AssessmentOwnerDecision | null, };
+
+/**
+ * Per-user settings; changing them alone never schedules work.
+ */
+export type AssessmentConfig = {
+/**
+ * Only this method can change visible items or effects.
+ */
+primary_method: AssessmentMethod,
+/**
+ * Explicit owner/repo#number selections, empty by default.
+ */
+ab_prs: Array<string>,
+/**
+ * Optional UTC deadline, absent by default.
+ */
+ab_until: string | null, };
+
+/**
+ * A line read that supports the validity reading.
+ */
+export type AssessmentEvidence = {
+/**
+ * Repository-relative path at the head.
+ */
+path: string,
+/**
+ * 1-based line at the head.
+ */
+line: number,
+/**
+ * What the line shows.
+ */
+note: string, };
+
+/**
+ * Non-secret immutable snapshot reference; includes source versions, scope and standing decisions.
+ */
+export type AssessmentInput = {
+/**
+ * owner/repo#number.
+ */
+pr: string,
+/**
+ * Stable PR database key.
+ */
+pull_request_id: number,
+/**
+ * Assessed head.
+ */
+head: CommitSha,
+/**
+ * Base used by both adapters.
+ */
+base: CommitSha,
+/**
+ * SHA-256 of the frozen input, including source versions and standing decisions.
+ */
+input_hash: string,
+/**
+ * SHA-256 of the frozen scope.
+ */
+scope_hash: string,
+/**
+ * Immutable host-owned non-secret snapshot reference, never model-supplied.
+ */
+snapshot_ref: string,
+/**
+ * Identical model and effort for both adapters.
+ */
+model: ModelChoice, };
+
+/**
+ * An assessment adapter; native outputs retain their own validation contracts.
+ */
+export type AssessmentMethod = "claudius_host" | "prompt_v4";
+
+/**
+ * Persisted method summary; usage and duration include failed attempts once each.
+ */
+export type AssessmentMethodRun = {
+/**
+ * False when any started attempt has unavailable metering; usage then reports only known totals.
+ */
+usage_complete: boolean,
+/**
+ * Commit actually reported by the adapter; a mismatch stays comparison-only.
+ */
+reported_head: CommitSha | null,
+/**
+ * Frozen method identity.
+ */
+reference: AssessmentRunRef,
+/**
+ * One job whose attempts execute this method.
+ */
+job_id: JobId,
+/**
+ * Version of the adapter.
+ */
+version: string,
+/**
+ * Current state.
+ */
+status: AssessmentRunStatus,
+/**
+ * Current attempt fence.
+ */
+attempt: number,
+/**
+ * The only accepted successful attempt, if any.
+ */
+accepted_attempt: number | null,
+/**
+ * Billable usage from all attempts, deduplicated by job/attempt.
+ */
+usage: Usage,
+/**
+ * Total duration in milliseconds across attempts.
+ */
+duration_ms: number,
+/**
+ * Scrubbed failure kind, never upstream response text.
+ */
+failure: JobFailureKind | null, };
+
+/**
+ * Actual owner choice, separate from inferred/relayed report evidence.
+ */
+export type AssessmentOwnerDecision = {
+/**
+ * Durable diffpilot decision ID.
+ */
+id: DecisionId,
+/**
+ * Revision retained in append-only history.
+ */
+revision: number,
+/**
+ * Actual deciding user.
+ */
+owner: UserId,
+/**
+ * Actual decision time.
+ */
+at: string,
+/**
+ * Actual chosen kind.
+ */
+kind: DecisionKind,
+/**
+ * Actual target.
+ */
+target: DecisionTarget | null, };
+
+/**
+ * One admitted logical pass; retries keep its original day and configuration.
+ */
+export type AssessmentPass = {
+/**
+ * Pass identity.
+ */
+id: PassId,
+/**
+ * Payer and quota owner.
+ */
+payer: UserId,
+/**
+ * Frozen input.
+ */
+input: AssessmentInput,
+/**
+ * Frozen user configuration.
+ */
+config: AssessmentConfig,
+/**
+ * Whether both adapters are scheduled.
+ */
+paired: boolean,
+/**
+ * Original UTC admission day, YYYY-MM-DD.
+ */
+day_utc: string,
+/**
+ * Original admission time.
+ */
+admitted_at: string, };
+
+/**
+ * Assessment progress of a PR ("LLM assessment running: 4 of 9 comments").
+ */
+export type AssessmentProgress = {
+/**
+ * A pass is queued or running.
+ */
+running: boolean,
+/**
+ * Items assessed at the current head.
+ */
+assessed: number,
+/**
+ * Items needing an assessment.
+ */
+total: number,
+/**
+ * Items left out by the daily limit.
+ */
+limited: number,
+/**
+ * Head of the latest pass.
+ */
+head: CommitSha | null,
+/**
+ * End of the latest pass.
+ */
+at: string | null, };
+
+/**
+ * Safe quota status; unrelated jobs are unaffected.
+ */
+export type AssessmentQuota = {
+/**
+ * Logical passes still available today, out of 80.
+ */
+remaining: number,
+/**
+ * Next UTC midnight.
+ */
+resets_at: string, };
+
+/**
+ * Durable method identity carried by both job input and result; attempt is the enclosing job's fence.
+ */
+export type AssessmentRunRef = {
+/**
+ * Logical pass shared by an A/B pair and all its retries.
+ */
+pass_id: PassId,
+/**
+ * Independent adapter.
+ */
+method: AssessmentMethod, };
+
+/**
+ * Method execution status, independent of per-row completeness.
+ */
+export type AssessmentRunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+
+/**
+ * GET /settings/comment-assessment; PUT uses AssessmentSettingsUpdate and never schedules work itself.
+ */
+export type AssessmentSettings = {
+/**
+ * Opaque content revision required for an atomic conditional write.
+ */
+revision: string,
+/**
+ * Effective per-user configuration.
+ */
+config: AssessmentConfig,
+/**
+ * Safe remaining/reset status.
+ */
+quota: AssessmentQuota, };
+
+/**
+ * Conditional settings write; stale revisions fail with HTTP 409 and never schedule work.
+ */
+export type AssessmentSettingsUpdate = {
+/**
+ * Configuration the caller wants to save.
+ */
+config: AssessmentConfig,
+/**
+ * Revision obtained with the configuration the caller edited.
+ */
+revision: string, };
+
+/**
+ * Frozen source identity; quote and version are required for body-point alignment.
+ */
+export type AssessmentSource = { "kind": "inline",
+/**
+ * GitHub node ID.
+ */
+thread_id: string,
+/**
+ * Frozen thread body/version hash, preventing decision reuse after edits.
+ */
+version: string, } | { "kind": "body",
+/**
+ * Original report source kind.
+ */
+source_kind: CommentSourceKind,
+/**
+ * Source URL.
+ */
+url: string,
+/**
+ * Frozen body SHA-256.
+ */
+version: string,
+/**
+ * Verbatim grounded quote.
+ */
+quote: string, };
+
+/**
+ * Whether an item has an LLM assessment.
+ */
+export type AssessmentState = { "state": "running" } | { "state": "assessed" } | { "state": "not_assessed",
+/**
+ * Why.
+ */
+reason: NotAssessedReason, };
+
+/**
+ * A nullable common verdict never inferred from prose.
+ */
+export type AssessmentVerdict = "valid" | "invalid" | "already_fixed" | "out_of_scope";
+
+/**
+ * Who wrote the item: the bot rule (`Bot` type, `[bot]` login or Settings `known_bots`, RQ17).
+ */
+export type AuthorKind = "human" | "bot" | "diffpilot";
+
+/**
+ * The latest automatic assessment.
+ */
+export type AutoPass = {
+/**
+ * When it ended.
+ */
+at: string,
+/**
+ * Questions waiting for a decision when it ended.
+ */
+questions: number, };
+
+/**
  * A pull request of the user that waits on other people.
  */
 export type AwaitingItem = {
@@ -540,11 +1025,16 @@ title: string,
  */
 url: string,
 /**
- * Logins and teams (`team:<slug>`) whose review is requested.
+ * Whom to ping: logins and teams (`team:<slug>`) whose review is requested, or those a plug-in says owe a
+ * review; empty when nobody is named.
  */
 waiting_on: Array<string>,
 /**
- * Since when it waits (the oldest open request).
+ * Why it waits on others.
+ */
+reason: AwaitingReason,
+/**
+ * Since when it waits (the oldest open request; else when the pull request was opened).
  */
 waiting_since: string,
 /**
@@ -561,6 +1051,31 @@ change_size?: ChangeSizeMark,
 total_tenths: number | null, };
 
 /**
+ * Why a pull request of the user waits on other people (plan K15 W3), the first that applies.
+ */
+export type AwaitingReason = { "kind": "ready_label",
+/**
+ * The label as on GitHub.
+ */
+label: string, } | { "kind": "plugin",
+/**
+ * Plug-in id.
+ */
+plugin: string,
+/**
+ * Name of the plug-in, shown before the reason.
+ */
+source: string,
+/**
+ * The plug-in's reason, plain text.
+ */
+reason: string,
+/**
+ * Evidence: the source's record of the pull request.
+ */
+url: string, } | { "kind": "review_requested" };
+
+/**
  * Change background work; an already running job is kept.
  */
 export type BackgroundAnalysisRequest = {
@@ -573,6 +1088,11 @@ enabled: boolean, };
  * Whether a statement was read in the code or inferred.
  */
 export type Basis = "fact" | "inference";
+
+/**
+ * How a batch was decided.
+ */
+export type BatchVia = "group" | "bulk" | "table";
 
 /**
  * A block of the Tour sequence or a menu row.
@@ -595,6 +1115,12 @@ row: QuietRowRef, } | { "block": "pending_review" };
  * Merge impact of an assessed step.
  */
 export type Blocking = "no_action_proposed" | "blocks_this_pr" | "follow_up";
+
+/**
+ * thepastaclaw's own status of a thread, read from its status block (spike S13-1 M4); a GitHub fact, not a
+ * decision. Open enum.
+ */
+export type BotThreadStatus = "resolved" | "deferred" | "withdrawn" | "no_longer_applies" | "disputed";
 
 /**
  * Callers and callees of a step symbol.
@@ -631,6 +1157,149 @@ line: number,
 github_url: string, };
 
 /**
+ * Carry-over counts.
+ */
+export type CarryCounts = {
+/**
+ * Carried.
+ */
+carried: number,
+/**
+ * Asked again: bot edited.
+ */
+asked_again_bot_edited: number,
+/**
+ * Asked again: code changed.
+ */
+asked_again_code_changed: number,
+/**
+ * Carried decisions whose effects are pending.
+ */
+effects_pending: number, };
+
+/**
+ * A carry-over event (V5).
+ */
+export type CarryEvent = {
+/**
+ * Id.
+ */
+id: CarryEventId,
+/**
+ * Pull request.
+ */
+pr: PrRef,
+/**
+ * The repeat, `C<no>`; may equal the source item when the bot re-raised it in place (spike S13-1 E2).
+ */
+item_no: number,
+/**
+ * The item of the source decision, `C<no>`.
+ */
+source_item_no: number,
+/**
+ * The decision carried or re-asked.
+ */
+source_decision: DecisionId,
+/**
+ * Its kind.
+ */
+source_kind: DecisionKind,
+/**
+ * Kind.
+ */
+kind: CarryKind,
+/**
+ * Why asked again.
+ */
+reason: ReaskReason | null,
+/**
+ * Evidence.
+ */
+evidence: CarryEvidence,
+/**
+ * Effects of the carried decision not yet done.
+ */
+effects_pending: number,
+/**
+ * When.
+ */
+at: string, };
+
+/**
+ * Identifier of a carry-over event (a decision carried to a repeat, or a repeat asked again).
+ */
+export type CarryEventId = string;
+
+/**
+ * Evidence of a carry-over event, read by the server.
+ */
+export type CarryEvidence = {
+/**
+ * Verbatim grounded quote of a restated point, when supplied.
+ */
+quote?: string,
+/**
+ * GitHub link of the repeat.
+ */
+url: string | null,
+/**
+ * Normalised text hash at decision time (hex).
+ */
+body_hash_before: string | null,
+/**
+ * Normalised text hash now (hex).
+ */
+body_hash_after: string | null,
+/**
+ * The commit that changed the lines.
+ */
+commit: CommitSha | null,
+/**
+ * The decided lines mapped forward to the head.
+ */
+lines: LineRange | null, };
+
+/**
+ * Carry-over event kind.
+ */
+export type CarryKind = "carried" | "asked_again";
+
+/**
+ * Response of RC11: events newest first, counts per PR and in total.
+ */
+export type CarryOverPage = {
+/**
+ * Totals over the scope.
+ */
+totals: CarryCounts,
+/**
+ * Per pull request (all-PR scope; one row for a PR scope).
+ */
+per_pr: Array<PrCarryCounts>,
+/**
+ * Events, newest first.
+ */
+events: Array<CarryEvent>,
+/**
+ * Cursor of the next page.
+ */
+next_cursor: string | null, };
+
+/**
+ * Query of RC11.
+ */
+export type CarryOverQuery = {
+/**
+ * One pull request, `owner/name/number`; absent for all.
+ */
+pr: string | null,
+/**
+ * Opaque cursor of the next page.
+ */
+cursor: string | null, };
+
+/**
  * A pull request's size mark with its evidence (a scan fact, not a score input).
  */
 export type ChangeSizeMark = {
@@ -646,6 +1315,28 @@ additions: number,
  * Removed lines of the full diff.
  */
 deletions: number, };
+
+/**
+ * Push channel kind.
+ */
+export type ChannelKind = "ntfy" | "webhook";
+
+/**
+ * Response of RN3 (one attempt, no retry).
+ */
+export type ChannelTestResult = {
+/**
+ * Outcome.
+ */
+outcome: DeliveryOutcome,
+/**
+ * HTTP status when one was received.
+ */
+http_status: number | null,
+/**
+ * Error in plain words.
+ */
+error: string | null, };
 
 /**
  * A failing check.
@@ -720,14 +1411,433 @@ check_runs?: CiCounts,
 statuses?: CiCounts, };
 
 /**
+ * Response of RF3: 201, the claimed decision and its lease (409 `claimed`).
+ */
+export type Claim = {
+/**
+ * The decision.
+ */
+decision: FeedDecision,
+/**
+ * Lease end (30 minutes; renewed by each report).
+ */
+lease_until: string, };
+
+/**
+ * The claim on an effect's decision.
+ */
+export type ClaimInfo = {
+/**
+ * Name of the claiming access token.
+ */
+token_name: string,
+/**
+ * Lease end; renewed by each report.
+ */
+lease_until: string, };
+
+/**
+ * Body of RF3 (`POST …/decisions/{id}/claim`).
+ */
+export type ClaimRequest = {
+/**
+ * Capabilities; every open effect of the decision must be within them (422 `capability_missing`).
+ */
+capabilities: Array<EffectKind>, };
+
+/**
  * Classification of a flow (brief §3, closed list).
  */
 export type Classification = "behavioural" | "api_contract" | "new_code" | "refactor_pure" | "move" | "rename" | "docs_comments" | "generated_mechanical" | "config_build" | "dependency" | "other";
 
 /**
+ * Response of RC5.
+ */
+export type CodeContext = {
+/**
+ * Repository-relative path.
+ */
+path: string,
+/**
+ * Head the lines come from.
+ */
+head: CommitSha,
+/**
+ * Lines served.
+ */
+lines: Array<CodeLine>,
+/**
+ * Lines in the file.
+ */
+total_lines: number,
+/**
+ * The commented lines.
+ */
+marked: LineRange | null,
+/**
+ * Enclosing range and description (LLM), when assessed.
+ */
+code: CodeSummary | null,
+/**
+ * The analysis the flow steps come from; null without one.
+ */
+analysis: AnalysisId | null,
+/**
+ * Head of that analysis (labelled when older than the PR head).
+ */
+analysis_head: CommitSha | null,
+/**
+ * Flow steps containing the lines.
+ */
+in_flows: Array<FlowStepRef>,
+/**
+ * Notes elsewhere.
+ */
+notes: Array<NoteElsewhere>, };
+
+/**
+ * One line of code.
+ */
+export type CodeLine = {
+/**
+ * 1-based line at the head.
+ */
+line: number,
+/**
+ * Text.
+ */
+text: string, };
+
+/**
+ * The enclosing code of the discussed lines and what it does.
+ */
+export type CodeSummary = {
+/**
+ * Repository-relative path at the head.
+ */
+path: string,
+/**
+ * Enclosing range (function or block).
+ */
+enclosing: LineRange,
+/**
+ * One paragraph on what the code does (LLM).
+ */
+description: string, };
+
+/**
+ * The LLM assessment of one item at one head (`verify_comments`).
+ */
+export type CommentAssessment = {
+/**
+ * Original host proposal, preserving targets beyond the legacy action form.
+ */
+proposed_decision?: ProposedDecision,
+/**
+ * Evidence from the report, labelled LLM text.
+ */
+evidence_text?: string,
+/**
+ * Attributed prior decision; authority and grounding are verified by server ingest.
+ */
+recorded_decision?: RecordedDecision,
+/**
+ * The job that wrote it.
+ */
+job: JobId,
+/**
+ * Head it was made at.
+ */
+head: CommitSha,
+/**
+ * When it was stored.
+ */
+assessed_at: string,
+/**
+ * Reused from this head: comment text, code at the lines and PR purpose unchanged since (fingerprint).
+ */
+reused_since: CommitSha | null,
+/**
+ * Validity.
+ */
+validity: Validity,
+/**
+ * Lines that support it.
+ */
+evidence: Array<AssessmentEvidence>,
+/**
+ * The problem exists on the base already.
+ */
+pre_existing: boolean | null,
+/**
+ * Category slug (claudius #118 catalog).
+ */
+category: string,
+/**
+ * Necessity.
+ */
+necessity: Necessity,
+/**
+ * Gates the LLM names.
+ */
+gates: Array<Gate>,
+/**
+ * Where else it is handled.
+ */
+elsewhere: Array<Elsewhere>,
+/**
+ * Fix sketch.
+ */
+fix_sketch: string | null,
+/**
+ * Fix size.
+ */
+fix_size: FixSize | null,
+/**
+ * Reply drafts (English, "per maintainer decision").
+ */
+reply_drafts: Array<string>,
+/**
+ * Recommendation.
+ */
+recommendation: Recommendation,
+/**
+ * Enclosing code and its description.
+ */
+code: CodeSummary | null,
+/**
+ * Prompt version of the job.
+ */
+prompt_version: number,
+/**
+ * Commit of the claudius checkout whose skills the job read ("Assessed with claudius <short sha>"); null when
+ * the runner gave none or the assessment predates it. A reused assessment keeps the commit it was made with.
+ */
+skills_commit: string | null, };
+
+/**
+ * Item counts of a PR.
+ */
+export type CommentCounts = {
+/**
+ * Unresolved threads on GitHub (fact).
+ */
+unresolved_threads: number,
+/**
+ * Undecided questions.
+ */
+undecided: number,
+/**
+ * Repeats asked again.
+ */
+asked_again: number,
+/**
+ * Decisions with open or claimed effects.
+ */
+waiting_for_agents: number,
+/**
+ * Failed effects.
+ */
+failed_effects: number,
+/**
+ * Items resolved outside diffpilot.
+ */
+outside: number,
+/**
+ * All items.
+ */
+total: number, };
+
+/**
+ * A review-loop item with its assessment, decisions and effects (RC4).
+ */
+export type CommentItem = {
+/**
+ * Grounded point read from a versioned source; absent on inline threads and PR questions.
+ */
+point?: CommentPoint,
+/**
+ * Per-PR number of the linked point; each inline thread keeps its own item.
+ */
+duplicate_of?: number,
+/**
+ * Database id.
+ */
+id: CommentItemId,
+/**
+ * Per-PR number shown as `C<no>`, assigned at first sight, never reused.
+ */
+no: number,
+/**
+ * Source.
+ */
+kind: CommentItemKind,
+/**
+ * Stable key: the bot's `dedupe=` marker, else the thread node id; review id + ordinal for body items;
+ * `pr:<round>:merge` / `pr:<round>:dismiss` for PR-level questions.
+ */
+stable_key: string,
+/**
+ * Author's GitHub login (`diffpilot` for PR-level questions).
+ */
+author: string,
+/**
+ * Author kind.
+ */
+author_kind: AuthorKind,
+/**
+ * GitHub link (thread, review or comment); null for PR-level questions.
+ */
+url: string | null,
+/**
+ * Discussed lines.
+ */
+location: ItemLocation | null,
+/**
+ * Title: the bot's finding heading or the first line; plain text.
+ */
+title: string,
+/**
+ * Comment text (GitHub): plain text, rendered as text; links only to `https://github.com/…`.
+ */
+body: string,
+/**
+ * The bot's own severity words (e.g. `Blocking`), shown with the GitHub tag; a claim, not a fact.
+ */
+bot_severity: string | null,
+/**
+ * Gates from the assessment or the owner.
+ */
+gates: Array<GateMark>,
+/**
+ * State.
+ */
+state: ItemState,
+/**
+ * Revision; a decision names the revision it saw (409 `item_changed` otherwise).
+ */
+revision: number,
+/**
+ * Head when diffpilot first read it (not the head the comment was written on).
+ */
+first_seen_head: CommitSha,
+/**
+ * Bot round when first read; null before the first round.
+ */
+first_round: number | null,
+/**
+ * Where GitHub says the comment was written, from the latest read; absent when that read gives no time (an
+ * item it no longer produces, a read stored before this was kept).
+ */
+written?: Written,
+/**
+ * GitHub facts.
+ */
+github: ItemGithubFacts,
+/**
+ * Set when resolved outside diffpilot.
+ */
+outside: OutsideResolution | null,
+/**
+ * When a complete read of the pull request first no longer produced it (deleted on GitHub, or no longer an
+ * item by the read rules, such as a person's earlier review); absent while reads produce it. Such an item
+ * leaves the queue, "Decide the rest" and bulk decisions; its decisions stay.
+ */
+gone_at?: string,
+/**
+ * The item whose decision this repeat carried or re-asks (`C<no>`).
+ */
+repeat_of: number | null,
+/**
+ * Assessment state.
+ */
+assessment_state: AssessmentState,
+/**
+ * The latest LLM assessment.
+ */
+assessment: CommentAssessment | null,
+/**
+ * Decisions, oldest first; the last is current.
+ */
+decisions: Array<Decision>,
+/**
+ * Answers in the Ask chat about this item.
+ */
+ask_answers: number, };
+
+/**
+ * Identifier of a review-loop item (a PR review comment, review-body item or PR-level question).
+ */
+export type CommentItemId = string;
+
+/**
+ * Where an item comes from (plan §2.1 I1–I4). Open enum.
+ */
+export type CommentItemKind = "thread" | "review_body" | "pr_comment" | "pr_question";
+
+/**
  * Where a pending comment sits on GitHub.
  */
 export type CommentKind = "line" | "file";
+
+/**
+ * Response of RC10: decisions with effects, claims and reports; carry events; feed state.
+ */
+export type CommentLog = {
+/**
+ * Agents subscribed now.
+ */
+subscribers: Array<FeedSubscriber>,
+/**
+ * Open or claimed effects.
+ */
+open_effects: number,
+/**
+ * Failed effects.
+ */
+failed_effects: number,
+/**
+ * Decisions, oldest first.
+ */
+decisions: Array<Decision>,
+/**
+ * Carry events of this PR, oldest first.
+ */
+carry_events: Array<CarryEvent>, };
+
+/**
+ * Point provenance, grounded in the source's cleaned GitHub text.
+ */
+export type CommentPoint = {
+/**
+ * Server-validated source URL.
+ */
+source_url: string,
+/**
+ * Submitted review body or PR comment.
+ */
+source_kind: CommentSourceKind,
+/**
+ * Distinct verbatim span: 12–600 characters, or the whole shorter source.
+ */
+quote: string, };
+
+/**
+ * Host report envelope; rows are decoded individually so a malformed row can be dropped.
+ */
+export type CommentReport = {
+/**
+ * Accepted versions are 4.2.x.
+ */
+schema_version: string,
+/**
+ * Host provenance, matched against the server's input.
+ */
+metadata: ReportMetadata,
+/**
+ * Independently parsed assessment rows; unknown report fields are ignored.
+ */
+comment_assessments: unknown[], };
 
 /**
  * Commenting on displayed lines, decided by the server from the pull request diff (ADR-006).
@@ -737,6 +1847,59 @@ export type CommentScope = { "scope": "in_diff",
  * Ranges, on the response's side, whose lines get a line thread.
  */
 line_thread_ranges: Array<LineRange>, } | { "scope": "not_in_diff" };
+
+/**
+ * Read-only source version, including sources from which no points were read.
+ */
+export type CommentSource = {
+/**
+ * Source URL.
+ */
+url: string,
+/**
+ * Source kind.
+ */
+kind: CommentSourceKind,
+/**
+ * GitHub author login.
+ */
+author: string,
+/**
+ * Cleaned source text, retaining details content.
+ */
+body: string,
+/**
+ * SHA-256 of the cleaned text identifies this version.
+ */
+body_hash: string,
+/**
+ * Host-assigned source role.
+ */
+role: SourceRole,
+/**
+ * First successful assessment read of this source version.
+ */
+read_at: string | null, };
+
+/**
+ * Stored source kind; inline threads remain independent items.
+ */
+export type CommentSourceKind = "review_body" | "pr_comment";
+
+/**
+ * Counts of a pull request's review comments in Comments (plan docs/review-workflow-plan.md §2.1): threads,
+ * review-body and PR-comment items of the last read, without PR-level questions and items the read no longer
+ * produces.
+ */
+export type CommentTally = {
+/**
+ * Comments in any state.
+ */
+total: number,
+/**
+ * Those waiting for a decision: the Needs you list of Comments.
+ */
+needs_you: number, };
 
 /**
  * The displayed line(s) a comment is written on.
@@ -760,9 +1923,139 @@ start_line: number | null,
 line: number, };
 
 /**
+ * Response of RC2.
+ */
+export type CommentsOverview = {
+/**
+ * Pull request.
+ */
+pr: PrRef,
+/**
+ * Title (GitHub).
+ */
+title: string,
+/**
+ * GitHub link.
+ */
+url: string,
+/**
+ * Head.
+ */
+head: CommitSha,
+/**
+ * PR purpose in one sentence (LLM), or the analysis's PR context.
+ */
+purpose: string | null,
+/**
+ * The last read.
+ */
+read: GithubRead,
+/**
+ * Counts.
+ */
+counts: CommentCounts,
+/**
+ * Rounds, oldest first.
+ */
+rounds: Array<Round>,
+/**
+ * Assessment progress.
+ */
+assessment: AssessmentProgress,
+/**
+ * Questions in order.
+ */
+queue: Array<QueueEntry>,
+/**
+ * State badge.
+ */
+badge: PrBadgeView,
+/**
+ * Latest analysis of this PR, if any (the view menu needs one for Flows, Files and Dependencies).
+ */
+analysis: AnalysisId | null, };
+
+/**
+ * Comments summary on the PR page.
+ */
+export type CommentsSummary = {
+/**
+ * Counts.
+ */
+counts: CommentCounts,
+/**
+ * Bot rounds so far.
+ */
+rounds: number,
+/**
+ * Assessment progress.
+ */
+assessment: AssessmentProgress,
+/**
+ * The last read.
+ */
+read: GithubRead, };
+
+/**
  * A full 40-character hexadecimal git commit id.
  */
 export type CommitSha = string;
+
+/**
+ * Distinct completeness/alignment states; null verdict and proposal remain independent.
+ */
+export type ComparisonItemStatus = "context" | "matched" | "missing_row" | "duplicate" | "unmatched" | "method_failed" | "head_mismatch";
+
+/**
+ * Counts exclude duplicates, mismatched heads and unaligned secondary points from scoring.
+ */
+export type ComparisonSummary = {
+/**
+ * Rows whose two available normalized verdicts can be compared.
+ */
+verdict_compared: number,
+/**
+ * Different normalized verdicts among verdict_compared.
+ */
+verdict_disagreements: number,
+/**
+ * Primary points waiting for an actual owner choice.
+ */
+pending_owner: number,
+/**
+ * Per-method coverage and exact proposal-kind/target agreement.
+ */
+methods: Array<MethodComparisonScore>, };
+
+/**
+ * A worker's identity; each identity owns at most one running job.
+ */
+export type ContainerId = { "shape": "pr",
+/**
+ * Database PR key.
+ */
+pull_request_id: number,
+/**
+ * User paying for this worker's turns.
+ */
+payer: UserId, } | { "shape": "judge",
+/**
+ * Dashboard user paying for the turn.
+ */
+payer: UserId, };
+
+/**
+ * Query of RC5: lines `from..=to` (defaults: the enclosing range, at most 40 lines).
+ */
+export type ContextQuery = {
+/**
+ * First line.
+ */
+from: number | null,
+/**
+ * Last line.
+ */
+to: number | null, };
 
 /**
  * The installation-wide list of controlled GitHub owners: their repositories are "yours" in the Dependencies
@@ -922,7 +2215,7 @@ export type CreateAccessToken = {
  */
 name: string,
 /**
- * Requested scopes; v1.1 accepts only `read`.
+ * Requested scopes: `read`, optionally with `review_loop_execute` (ADR-023).
  */
 scopes: Array<TokenScope>,
 /**
@@ -985,6 +2278,86 @@ token: AccessTokenSecret,
  * The new token as listed.
  */
 access_token: AccessToken, };
+
+/**
+ * The only supported credential mode; no paid fallback.
+ */
+export type CredentialMode = "chatgpt_plan";
+
+/**
+ * ChatGPT-plan connection state.
+ */
+export type CredentialState = "linking" | "linked" | "relink_needed";
+
+/**
+ * Non-secret status shared by gateway, server and Settings.
+ */
+export type CredentialStatus = {
+/**
+ * Safe observations, without tokens, key IDs or upstream response bodies.
+ */
+telemetry: CredentialTelemetry,
+/**
+ * Current device challenge on the staged-link GET only; reading never starts a flow.
+ */
+challenge: DeviceLink | null,
+/**
+ * Only ChatGPT-plan linking is supported.
+ */
+mode: CredentialMode,
+/**
+ * Common connection state.
+ */
+state: CredentialState,
+/**
+ * Present only when relink is needed.
+ */
+relink_reason: RelinkReason | null,
+/**
+ * Human-readable connection label.
+ */
+label: string | null,
+/**
+ * Provider plan label, when supplied.
+ */
+plan: string | null,
+/**
+ * Payer pause after a usage limit.
+ */
+paused_until: string | null,
+/**
+ * Most recent model call.
+ */
+last_call: LlmCallOutcome | null, };
+
+/**
+ * Safe account observations; gateway fills plan data and server fills payer job data.
+ */
+export type CredentialTelemetry = {
+/**
+ * Gateway commit time of the current account link; refresh does not change it.
+ */
+linked_at: string | null,
+/**
+ * Last observed primary plan window.
+ */
+primary: PlanUsage | null,
+/**
+ * Last observed secondary plan window.
+ */
+secondary: PlanUsage | null,
+/**
+ * Retained provider reports finished today in UTC, null without reports.
+ */
+tokens_today: UsageTotals | null,
+/**
+ * Retained provider reports finished this calendar month in UTC, null without reports.
+ */
+tokens_month: UsageTotals | null,
+/**
+ * Server-known containers with claimed/running jobs; null until read from server state.
+ */
+live_containers: Array<ContainerId> | null, };
 
 /**
  * Server-sent event of `GET /api/v1/dashboard/refreshes/{id}/events`; the SSE `event` field is the tag.
@@ -1051,7 +2424,11 @@ schedule_time: string,
 /**
  * IANA time zone; null until the browser sends one.
  */
-time_zone: string | null, };
+time_zone: string | null,
+/**
+ * GitHub logins with the Slack name "Copy for Slack" writes instead of `@login` (at most 100 rows).
+ */
+slack_names: Array<SlackName>, };
 
 /**
  * Response of `GET`/`PUT /api/v1/settings/dashboard`.
@@ -1121,6 +2498,264 @@ older_prompt_judgements: number,
 plugins?: Array<PluginStatus>, };
 
 /**
+ * Body of RC8 (`POST …/comments/items/{item}/decisions`).
+ */
+export type DecideRequest = {
+/**
+ * Decision.
+ */
+kind: DecisionKind,
+/**
+ * Reason (required for D3 and D8).
+ */
+reason: string | null,
+/**
+ * Target (D4, D6, D7; optional title for D5).
+ */
+target: DecisionTarget | null,
+/**
+ * Override flag.
+ */
+override: Override | null,
+/**
+ * "Resolve this thread" as submitted.
+ */
+resolve_ticked: boolean,
+/**
+ * Reply text to post (edited preview); null for the server's default.
+ */
+reply_text: string | null,
+/**
+ * The owner's comment for the executor; never posted.
+ */
+comment: string | null,
+/**
+ * The item revision the decision is based on.
+ */
+item_revision: number,
+/**
+ * The `plan_digest` of the RC16 preview the owner confirmed (PR-level decisions); when the plan computed at
+ * storing differs, the decision is refused (409 `conflict`). Absent: stored as planned then.
+ */
+plan_digest?: string, };
+
+/**
+ * The "Decide the rest per recommendation" confirmation list; nothing is stored until RC9 confirms it.
+ */
+export type DecideRest = {
+/**
+ * Rows to decide; their count is the number shown.
+ */
+rows: Array<DecideRestRow>,
+/**
+ * Undecided items left out, gate items included.
+ */
+left_out: Array<LeftOutItem>, };
+
+/**
+ * One row of the "Decide the rest" confirmation list.
+ */
+export type DecideRestRow = {
+/**
+ * The decision submitted on confirmation (RC9 `via: bulk`).
+ */
+row: DecisionBatchRow,
+/**
+ * The recommendation it follows.
+ */
+recommendation: Recommendation,
+/**
+ * Its effects.
+ */
+effects: Array<PlannedEffect>, };
+
+/**
+ * A stored decision (append-only) with its effects.
+ */
+export type Decision = {
+/**
+ * Id.
+ */
+id: DecisionId,
+/**
+ * The item (`C<no>`).
+ */
+item_no: number,
+/**
+ * Decision.
+ */
+kind: DecisionKind,
+/**
+ * Reason (D3, D8; posted as the reply).
+ */
+reason: string | null,
+/**
+ * Target (D4–D7).
+ */
+target: DecisionTarget | null,
+/**
+ * Override flag.
+ */
+override: Override | null,
+/**
+ * "Resolve this thread" as submitted: the explicit resolve decision.
+ */
+resolve_ticked: boolean,
+/**
+ * The reply text that gets posted (English).
+ */
+reply_text: string | null,
+/**
+ * The owner's comment: stored, sent to the executing agent, never posted to GitHub.
+ */
+comment: string | null,
+/**
+ * The recommendation shown at decision time.
+ */
+recommendation: Recommendation | null,
+/**
+ * Where it was made.
+ */
+via: DecisionVia,
+/**
+ * The decision this one was carried from.
+ */
+carried_from: DecisionId | null,
+/**
+ * The decision this one supersedes.
+ */
+supersedes: DecisionId | null,
+/**
+ * Head at decision time.
+ */
+head: CommitSha,
+/**
+ * GitHub login of the deciding user (`carried` decisions: of the source decision).
+ */
+decided_by: string,
+/**
+ * When.
+ */
+decided_at: string,
+/**
+ * When the owner undid it (before any effect was claimed); its effects are cancelled and the item is asked
+ * again. Absent while it stands.
+ */
+undone_at?: string,
+/**
+ * Effects in `seq` order.
+ */
+effects: Array<Effect>, };
+
+/**
+ * Body of RC9 (`POST …/comments/decision-batches`); 201 `Decision[]`.
+ */
+export type DecisionBatchRequest = {
+/**
+ * Where.
+ */
+via: BatchVia,
+/**
+ * One row per item.
+ */
+rows: Array<DecisionBatchRow>, };
+
+/**
+ * One row of a decision batch.
+ */
+export type DecisionBatchRow = {
+/**
+ * The item, `C<no>`.
+ */
+item_no: number,
+/**
+ * Decision.
+ */
+kind: DecisionKind,
+/**
+ * Reason (required for D3 and D8).
+ */
+reason: string | null,
+/**
+ * Target (D4, D6, D7; optional title for D5).
+ */
+target: DecisionTarget | null,
+/**
+ * Override flag.
+ */
+override: Override | null,
+/**
+ * "Resolve this thread" as submitted.
+ */
+resolve_ticked: boolean,
+/**
+ * Reply text to post (edited preview); null for the server's default.
+ */
+reply_text: string | null,
+/**
+ * The owner's comment for the executor; never posted.
+ */
+comment: string | null,
+/**
+ * The item revision the decision is based on.
+ */
+item_revision: number,
+/**
+ * The `plan_digest` of the RC16 preview the owner confirmed (PR-level decisions); when the plan computed at
+ * storing differs, the decision is refused (409 `conflict`). Absent: stored as planned then.
+ */
+plan_digest?: string, };
+
+/**
+ * Response of RF1: claimable decisions within the capabilities, oldest first.
+ */
+export type DecisionFeed = {
+/**
+ * Decisions.
+ */
+decisions: Array<FeedDecision>,
+/**
+ * Cursor of the next page.
+ */
+next_cursor: string | null, };
+
+/**
+ * Identifier of a decision on a review-loop item (append-only).
+ */
+export type DecisionId = string;
+
+/**
+ * A decision (D1–D7; D8 is `reject` with a `blocker_gate` override; P1–P4 for PR-level questions). Open enum.
+ */
+export type DecisionKind = "resolve" | "fix_here" | "reject" | "handled_in_pr" | "follow_up_pr" | "upstream_issue" | "todo" | "merge_with_follow_ups" | "another_round" | "dismiss_stale_reviews" | "keep_reviews";
+
+/**
+ * The target a decision needs.
+ */
+export type DecisionTarget = { "type": "existing_pr",
+/**
+ * Its number in the same repository.
+ */
+number: number, } | { "type": "follow_up_pr",
+/**
+ * Title.
+ */
+title: string | null, } | { "type": "upstream_issue",
+/**
+ * Issue URL.
+ */
+url: string | null, } | { "type": "todo",
+/**
+ * Title.
+ */
+title: string, };
+
+/**
+ * Where a decision was made. Open enum.
+ */
+export type DecisionVia = "question" | "group" | "bulk" | "table" | "carried";
+
+/**
  * Removed code shown at its deletion marker.
  */
 export type DeletedBlock = {
@@ -1150,6 +2785,28 @@ replacement?: LineRange,
  * hide them.
  */
 context_only?: Array<number>, };
+
+/**
+ * Outcome of a delivery.
+ */
+export type DeliveryOutcome = "delivered" | "failed";
+
+/**
+ * Delivery state of a channel or push target.
+ */
+export type DeliveryStatus = {
+/**
+ * Latest delivery.
+ */
+last: LastDelivery | null,
+/**
+ * Latest error in plain words ("connection refused (3 attempts)").
+ */
+last_error: string | null,
+/**
+ * Failing since; null while healthy.
+ */
+failing_since: string | null, };
 
 /**
  * A crate.
@@ -1306,6 +2963,23 @@ notes: NotesState,
 repositories: Array<DependencyRepository>, };
 
 /**
+ * Public device-code challenge; upstream tokens never cross this boundary.
+ */
+export type DeviceLink = {
+/**
+ * Short code the owner enters at the provider.
+ */
+user_code: string,
+/**
+ * Fixed provider verification page.
+ */
+verification_url: string,
+/**
+ * Deadline of the staged attempt.
+ */
+expires_at: string, };
+
+/**
  * A diff hunk.
  */
 export type DiffHunk = {
@@ -1364,6 +3038,195 @@ side: LineSide,
  * Hunks overlapping the range.
  */
 hunks: Array<DiffHunk>, };
+
+/**
+ * One effect of a decision.
+ */
+export type Effect = {
+/**
+ * Id.
+ */
+id: EffectId,
+/**
+ * Order within the decision, 1-based.
+ */
+seq: number,
+/**
+ * `seq` of the effect this one waits for (a reply after a fix waits for its commit).
+ */
+after: number | null,
+/**
+ * Kind.
+ */
+kind: EffectKind,
+/**
+ * Executor.
+ */
+executor: Executor,
+/**
+ * Parameters.
+ */
+params: EffectParams,
+/**
+ * State.
+ */
+state: EffectState,
+/**
+ * Current claim.
+ */
+claim: ClaimInfo | null,
+/**
+ * Reports, oldest first.
+ */
+reports: Array<EffectReport>,
+/**
+ * When a server read found the effect on GitHub (fact badge).
+ */
+seen_on_github_at: string | null,
+/**
+ * Last change.
+ */
+updated_at: string, };
+
+/**
+ * Identifier of one effect of a decision (reply, resolve, fix, …).
+ */
+export type EffectId = string;
+
+/**
+ * Kind of an effect; also an executor capability. Open enum.
+ */
+export type EffectKind = "fix" | "reply" | "resolve" | "pr_comment" | "follow_up_pr" | "upstream_issue" | "todo" | "dismiss_review";
+
+/**
+ * Parameters of an effect, set by the server's effect function.
+ */
+export type EffectParams = {
+/**
+ * Text to post (reply, PR-level comment, dismissal message).
+ */
+text: string | null,
+/**
+ * GitHub thread node id (reply, resolve).
+ */
+thread_id: string | null,
+/**
+ * GitHub review node id (dismiss; PR-level replies to a review's items).
+ */
+review_id: string | null,
+/**
+ * Title (follow-up PR, issue, TODO).
+ */
+title: string | null,
+/**
+ * Existing issue URL (D6 with a link).
+ */
+url: string | null,
+/**
+ * Items listed in a follow-up PR (P1), `C<no>`.
+ */
+item_nos: Array<number>, };
+
+/**
+ * A stored agent report ("Agent <token name> reports: …").
+ */
+export type EffectReport = {
+/**
+ * Outcome.
+ */
+outcome: ReportOutcome,
+/**
+ * Reference (commit SHA, URL, TODO id).
+ */
+reference: string | null,
+/**
+ * Message (failure reason).
+ */
+message: string | null,
+/**
+ * Reporting token's name.
+ */
+token_name: string,
+/**
+ * When.
+ */
+at: string, };
+
+/**
+ * Body of RF4 (`POST …/effects/{id}/reports`); a repeated idempotency key is a no-op.
+ */
+export type EffectReportRequest = {
+/**
+ * Outcome.
+ */
+outcome: ReportOutcome,
+/**
+ * Reference (required for `done`).
+ */
+reference: string | null,
+/**
+ * Message (required for `failed`).
+ */
+message: string | null,
+/**
+ * Client-generated key.
+ */
+idempotency_key: string, };
+
+/**
+ * Effect state. Open enum.
+ */
+export type EffectState = "waiting" | "open" | "claimed" | "done" | "failed" | "cancelled";
+
+/**
+ * The effects one decision would get.
+ */
+export type EffectsPreview = {
+/**
+ * The item, `C<no>`.
+ */
+item_no: number,
+/**
+ * Effects in order.
+ */
+effects: Array<PlannedEffect>,
+/**
+ * For a PR-level decision ("Merge now", dismissing stale reviews): a digest of what its plan rests on (the
+ * items it follows up and their revisions, or the reviews it dismisses); send it back as the decision's
+ * `plan_digest`.
+ */
+plan_digest?: string, };
+
+/**
+ * Body of the effects preview: the decisions the reader is about to submit (the revisions are not checked).
+ */
+export type EffectsPreviewRequest = {
+/**
+ * One row per item.
+ */
+rows: Array<DecisionBatchRow>, };
+
+/**
+ * A place where the matter is handled already.
+ */
+export type Elsewhere = {
+/**
+ * Kind.
+ */
+kind: ElsewhereKind,
+/**
+ * URL or `owner/repo#n`.
+ */
+reference: string,
+/**
+ * One line on the overlap.
+ */
+note: string, };
+
+/**
+ * Where else the matter is handled. Open enum.
+ */
+export type ElsewhereKind = "open_pr" | "issue" | "upstream";
 
 /**
  * Where waiting-time estimates came from.
@@ -1430,7 +3293,11 @@ reason: ExclusionReason,
 /**
  * Display id of the item it was merged into (`merged_into_another` only).
  */
-merged_into: string | null, };
+merged_into: string | null,
+/**
+ * When the snooze ends (`snoozed` only).
+ */
+snoozed_until?: string, };
 
 /**
  * How many items one rule left out.
@@ -1448,7 +3315,7 @@ count: number, };
 /**
  * The rule that left an item out of the ranking. Clients show an unknown value as a plain "other rule".
  */
-export type ExclusionReason = "excluded_author" | "outside_owned_areas" | "draft" | "judged_not_eligible" | "merged_into_another";
+export type ExclusionReason = "excluded_author" | "outside_owned_areas" | "draft" | "judged_not_eligible" | "merged_into_another" | "snoozed";
 
 /**
  * The items left out of the ranking, counted per reason. No LLM text; `judged_not_eligible` and
@@ -1467,6 +3334,11 @@ counts: Array<ExclusionCount>,
  * With `?excluded=true` only: the items by reason, then display id, at most [`EXCLUDED_ITEMS_LIMIT`].
  */
 items?: Array<ExcludedItem>, };
+
+/**
+ * Who executes an effect.
+ */
+export type Executor = "agent" | "diffpilot_bot";
 
 /**
  * A labelled scan fact.
@@ -1493,6 +3365,123 @@ text: string,
  * Tooltip with the underlying fact.
  */
 tip: string, };
+
+/**
+ * A decision as an agent reads it (RF1 entries, RF1b).
+ */
+export type FeedDecision = {
+/**
+ * Pull request.
+ */
+pr: PrRef,
+/**
+ * The item.
+ */
+item: FeedItem,
+/**
+ * The decision with its effects; `comment` carries the owner's instructions for the executor.
+ */
+decision: Decision, };
+
+/**
+ * SSE data of RF2.
+ */
+export type FeedEvent = { "event": "decision_available",
+/**
+ * Decision.
+ */
+decision: DecisionId,
+/**
+ * Pull request.
+ */
+pr: PrRef,
+/**
+ * API path to fetch it (RF1b).
+ */
+fetch: string, } | { "event": "decision_cancelled",
+/**
+ * Decision.
+ */
+decision: DecisionId,
+/**
+ * Pull request.
+ */
+pr: PrRef, } | { "event": "heartbeat",
+/**
+ * Server time.
+ */
+at: string, };
+
+/**
+ * The item a feed decision is about.
+ */
+export type FeedItem = {
+/**
+ * `C<no>`.
+ */
+no: number,
+/**
+ * Source.
+ */
+kind: CommentItemKind,
+/**
+ * GitHub link.
+ */
+url: string | null,
+/**
+ * Discussed lines.
+ */
+location: ItemLocation | null,
+/**
+ * Title.
+ */
+title: string,
+/**
+ * Comment text (GitHub; untrusted data).
+ */
+body: string, };
+
+/**
+ * Query of RF1 and RF2.
+ */
+export type FeedQuery = {
+/**
+ * Comma-separated `EffectKind` names the agent can execute.
+ */
+capabilities: string,
+/**
+ * Only this repository, `owner/name`.
+ */
+repo: string | null,
+/**
+ * Opaque cursor of the next page (RF1).
+ */
+cursor: string | null, };
+
+/**
+ * An agent subscribed to the feed (V3 header).
+ */
+export type FeedSubscriber = {
+/**
+ * Token name.
+ */
+token_name: string,
+/**
+ * Capabilities it declared.
+ */
+capabilities: Array<EffectKind>,
+/**
+ * Holds a live stream now.
+ */
+connected: boolean,
+/**
+ * Last request or stream activity.
+ */
+last_seen_at: string,
+/**
+ * Its push target, if registered.
+ */
+push: PushTarget | null, };
 
 /**
  * A stored feedback entry.
@@ -1715,6 +3704,11 @@ evidence: Array<Evidence>, };
 export type FitTopic = "layer_or_repository" | "size_for_problem" | "duplicate_mechanism" | "other";
 
 /**
+ * Size of a fix.
+ */
+export type FixSize = "XS" | "S" | "M";
+
+/**
  * The scenario of a flag; its title (the risk class, "Potential …") is the annotation's `text`.
  */
 export type Flag = {
@@ -1895,14 +3889,113 @@ id: FlowId,
 title: string, };
 
 /**
+ * A flow step whose range contains the commented lines.
+ */
+export type FlowStepRef = {
+/**
+ * Flow.
+ */
+flow: FlowId,
+/**
+ * 1-based position of the flow in the tour.
+ */
+flow_position: number,
+/**
+ * Flow title (LLM).
+ */
+flow_title: string,
+/**
+ * Step.
+ */
+step: StepId,
+/**
+ * 1-based number of the step within its flow.
+ */
+step_number: number, };
+
+/**
  * Kind of a step (fragment) of a flow (brief §3).
  */
 export type FragmentKind = "modified" | "added" | "moved" | "renamed" | "deleted_site" | "context";
 
 /**
+ * A blocker gate of claudius `severity` §2. Gate items are never grouped or bulk-decided (RQ4, RQ5). Open enum.
+ */
+export type Gate = "G-FUNDS" | "G-SECRET" | "G-CRYPTO" | "G-DATA";
+
+/**
+ * A gate on an item and who set it.
+ */
+export type GateMark = {
+/**
+ * The gate.
+ */
+gate: Gate,
+/**
+ * Who set it.
+ */
+source: GateSource, };
+
+/**
+ * Body of the gate mark route: the owner marks or clears a gate (clearing removes the owner's mark only; a gate
+ * the assessment names stays).
+ */
+export type GateMarkRequest = {
+/**
+ * The gate.
+ */
+gate: Gate,
+/**
+ * Mark (true) or clear (false).
+ */
+marked: boolean,
+/**
+ * The item revision.
+ */
+item_revision: number, };
+
+/**
+ * Who marked a gate on an item.
+ */
+export type GateSource = "assessment" | "owner";
+
+/**
  * GitHub item kinds of the list filter `kind`.
  */
 export type GithubKind = "pr" | "issue";
+
+/**
+ * The last read of the PR's threads, reviews and comments.
+ */
+export type GithubRead = {
+/**
+ * Last successful read; null before the first.
+ */
+read_at: string | null,
+/**
+ * Threads read.
+ */
+threads: number,
+/**
+ * Every page was read (no cap hit).
+ */
+complete: boolean,
+/**
+ * Reviews read.
+ */
+reviews: number,
+/**
+ * PR-level comments read.
+ */
+comments: number,
+/**
+ * The latest attempt failed.
+ */
+failure: ReadFailure | null,
+/**
+ * Next automatic read.
+ */
+next_read_at: string | null, };
 
 /**
  * A GitHub review thread of the pull request.
@@ -2017,31 +4110,6 @@ file: string,
 line: number, };
 
 /**
- * A pull request Ready to merge would list, held back by a plug-in's statement (ADR-022).
- */
-export type HeldBack = {
-/**
- * The pull request as Ready to merge would list it.
- */
-item: ReadyToMergeItem,
-/**
- * Plug-in id.
- */
-plugin: string,
-/**
- * Name of the plug-in, shown before the reason.
- */
-source: string,
-/**
- * The plug-in's reason, plain text.
- */
-reason: string,
-/**
- * Evidence: the source's record of the pull request.
- */
-url: string, };
-
-/**
  * A dated event for the charts.
  */
 export type HistoryEvent = {
@@ -2138,6 +4206,16 @@ basis: Basis,
 github_url: string, };
 
 /**
+ * Body of the item actions Undo, Reopen and Skip: the item revision the reader saw (409 `item_changed`
+ * otherwise).
+ */
+export type ItemActionRequest = {
+/**
+ * The item revision.
+ */
+item_revision: number, };
+
+/**
  * Ranked items by kind and tier.
  */
 export type ItemCounts = {
@@ -2179,6 +4257,52 @@ p3: number,
 not_judged: number, };
 
 /**
+ * Facts diffpilot read from GitHub about an item (badges name the check).
+ */
+export type ItemGithubFacts = {
+/**
+ * Thread resolved on GitHub; null for items without a thread.
+ */
+resolved: boolean | null,
+/**
+ * Who resolved the thread.
+ */
+resolved_by: string | null,
+/**
+ * Thread outdated (its lines changed since it was written); null without a thread.
+ */
+outdated: boolean | null,
+/**
+ * The bot's own thread status, when it writes one.
+ */
+bot_status: BotThreadStatus | null,
+/**
+ * The comment text changed after the latest decision (normalised text hash, spike S13-1 K1).
+ */
+edited_after_decision: boolean,
+/**
+ * Replies in the thread after the first comment.
+ */
+replies: number,
+/**
+ * The bot's thepastaclaw `dedupe=` marker, when present.
+ */
+marker: string | null, };
+
+/**
+ * Durable CMT number allocation and previous item identities.
+ */
+export type ItemIds = {
+/**
+ * Next unused number.
+ */
+next_id: number,
+/**
+ * Known point identities.
+ */
+items: Array<PrDataItem>, };
+
+/**
  * Stable key of a work item, the normative form (`docs/contracts/http-api.md` "Item keys"):
  * `<owner>~<repo>~pr~<number>`, `<owner>~<repo>~issue~<number>` or `memcan~<uuid>`. Built and parsed only here;
  * deserialisation rejects any other form.
@@ -2189,6 +4313,20 @@ export type ItemKey = string;
  * Kind of a work item.
  */
 export type ItemKind = "pr" | "issue" | "todo";
+
+/**
+ * The lines an item discusses: at the head for a thread; for a body item naming `path:range`, at the review's
+ * commit, which may predate the head.
+ */
+export type ItemLocation = {
+/**
+ * Repository-relative path.
+ */
+path: string,
+/**
+ * The lines; null for a file-level or outdated thread without a head line.
+ */
+lines: LineRange | null, };
 
 /**
  * Response of `GET /api/v1/dashboard/items`: ranked items of the latest snapshot, in rank order.
@@ -2275,6 +4413,11 @@ tier: Tier,
 parts: Array<ScorePart>, };
 
 /**
+ * Item state (plan §2.7). Open enum.
+ */
+export type ItemState = "assessing" | "undecided" | "asked_back" | "decided" | "executing" | "done" | "repeat" | "reopened" | "outside";
+
+/**
  * LLM-written text of an item (shown with the "LLM" tag).
  */
 export type ItemText = {
@@ -2304,6 +4447,56 @@ inherited: boolean,
 also_keys: Array<ItemKey>, };
 
 /**
+ * Query of RC4.
+ */
+export type ItemsQuery = {
+/**
+ * Only items in this state.
+ */
+state: ItemState | null,
+/**
+ * Only items of this kind.
+ */
+kind: CommentItemKind | null, };
+
+/**
+ * Kind of a failed attempt.
+ */
+export type JobFailureKind = "configuration" | "provider_failed" | "output_not_json" | "credential_unusable" | "checkout_failed" | "timeout" | "internal" | "worker_unavailable" | "worker_lost" | "credential_missing" | "credential_relink" | "model_unavailable" | "upstream_rejected" | "report_version_unsupported" | "invalid_json_schema" | "ask_compaction_unconfirmed";
+
+/**
+ * Identifier of a job (one agent run).
+ */
+export type JobId = string;
+
+/**
+ * What a job works on (ADR-018); exhaustive matches mark every pull-request-only site.
+ */
+export type JobTarget = { "type": "pull_request" } & PullRequestTarget | { "type": "dashboard",
+/**
+ * The refresh whose items are judged.
+ */
+refresh_id: RefreshId, } | { "type": "pull_request_comments" } & PullRequestCommentsTarget | { "type": "pull_request_ask" } & PullRequestAskTarget;
+
+/**
+ * Reasons to revoke a local virtual key; none authorizes upstream revoke.
+ */
+export type KeyRevokeReason = "rotation" | "idle_stop" | "retirement";
+
+/**
+ * Decisions of one kind.
+ */
+export type KindCount = {
+/**
+ * Kind.
+ */
+kind: DecisionKind,
+/**
+ * Count.
+ */
+count: number, };
+
+/**
  * Counts by item kind.
  */
 export type KindCounts = {
@@ -2319,6 +4512,54 @@ issue: number,
  * MemCan TODOs.
  */
 todo: number, };
+
+/**
+ * Last-context estimate, separate from cumulative usage and billable job deltas.
+ */
+export type LastContext = {
+/**
+ * Input and output context tokens reported for the last completed turn.
+ */
+tokens: number,
+/**
+ * Thread generation this estimate describes; missing/stale usage needs recovery.
+ */
+generation: number, };
+
+/**
+ * The latest delivery of a channel.
+ */
+export type LastDelivery = {
+/**
+ * Event kind (`decision_available` deliveries of push targets show as null).
+ */
+event: UserEventKind | null,
+/**
+ * Outcome.
+ */
+outcome: DeliveryOutcome,
+/**
+ * When.
+ */
+at: string, };
+
+/**
+ * An undecided item left out of "Decide the rest".
+ */
+export type LeftOutItem = {
+/**
+ * The item, `C<no>`.
+ */
+item_no: number,
+/**
+ * Why.
+ */
+reason: LeftOutReason, };
+
+/**
+ * Why an undecided item is not part of "Decide the rest per recommendation". Open enum.
+ */
+export type LeftOutReason = "gate" | "not_assessed" | "asked_again" | "incomplete";
 
 /**
  * A line ending other than LF.
@@ -2394,6 +4635,15 @@ moved: Array<MovedLines>,
  * Whether and how these lines can be commented on (deterministic, ADR-006).
  */
 comments: CommentScope, };
+
+/**
+ * Starts device linking without accepting upstream secrets or endpoints.
+ */
+export type LinkCredential = {
+/**
+ * ChatGPT-plan linking only.
+ */
+mode: CredentialMode, };
 
 /**
  * Outcome and time of an LLM call.
@@ -2483,6 +4733,55 @@ export type LogoutRequest = {
  * End every session of the user, not only this one.
  */
 everywhere: boolean, };
+
+/**
+ * Host provenance and author facts.
+ */
+export type Manifest = {
+/**
+ * owner/repo.
+ */
+repo: string,
+/**
+ * PR number.
+ */
+pr: number,
+/**
+ * Assessed head.
+ */
+head: string,
+/**
+ * Base branch name.
+ */
+base_ref: string,
+/**
+ * Frozen base commit for pre-existing checks.
+ */
+base_sha: string,
+/**
+ * Author-stated PR intent.
+ */
+title: string,
+/**
+ * Author-stated PR description.
+ */
+body: string,
+/**
+ * Trusted maintainer relays.
+ */
+delegates?: Array<string>,
+/**
+ * PR author's login; only their own text is author context.
+ */
+pr_author: string,
+/**
+ * Tenant members' logins, independent of source roles.
+ */
+maintainers: Array<string>,
+/**
+ * Known bot logins.
+ */
+bots: Array<string>, };
 
 /**
  * A signed-in user.
@@ -2607,6 +4906,56 @@ unchecked_logins: Array<string>,
 timed_out_logins: Array<string>, };
 
 /**
+ * Explicit per-method denominators; native verdict and proposal remain separately nullable.
+ */
+export type MethodComparisonScore = {
+/**
+ * Assessment adapter.
+ */
+method: AssessmentMethod,
+/**
+ * Method rows with an available normalized verdict.
+ */
+assessed: number,
+/**
+ * Unaligned points retained in the report.
+ */
+unmatched: number,
+/**
+ * Expected but absent rows, including failed methods.
+ */
+missing: number,
+/**
+ * Available rows without a normalized verdict.
+ */
+missing_verdict: number,
+/**
+ * Available rows without a machine proposal.
+ */
+missing_proposal: number,
+/**
+ * Eligible actual owner choices, whether a proposal is present or not.
+ */
+owner_decided: number,
+/**
+ * Exact kind and target matches among owner_decided.
+ */
+owner_agreed: number,
+/**
+ * Whether this method failed or was cancelled.
+ */
+failed: boolean, };
+
+/**
+ * Mint a fresh, expiring key and revoke the previous key for this container.
+ */
+export type MintKey = {
+/**
+ * Worker identity and payer.
+ */
+container: ContainerId, };
+
+/**
  * Model and reasoning effort (plan §5.2, ADR-002).
  */
 export type ModelChoice = {
@@ -2711,6 +5060,28 @@ status: AnalysisStatus,
 created_at: string, };
 
 /**
+ * Necessity verdict with its reason.
+ */
+export type Necessity = {
+/**
+ * Verdict.
+ */
+verdict: NecessityVerdict,
+/**
+ * Evidence (in) or reason (out).
+ */
+reason: string,
+/**
+ * Better-fitting pull request (`owner/repo#n` or URL) for `out`.
+ */
+better_pr: string | null, };
+
+/**
+ * Whether the fix belongs in this pull request.
+ */
+export type NecessityVerdict = "in" | "out";
+
+/**
  * Kind of a flow-graph node, derived from the step kind.
  */
 export type NodeKind = "added" | "changed" | "unchanged";
@@ -2788,9 +5159,40 @@ file_count: number,
 items: Array<NotAnalysedItem>, };
 
 /**
+ * Why an item has no assessment. Open enum.
+ */
+export type NotAssessedReason = "daily_limit" | "failed" | "missing" | "not_run";
+
+/**
  * Why a file is never rendered.
  */
 export type NotRenderedReason = "too_large" | "generated" | "binary";
+
+/**
+ * A note about this code elsewhere (an icon opening its place in a new tab).
+ */
+export type NoteElsewhere = {
+/**
+ * Source.
+ */
+source: NoteSource,
+/**
+ * Accessible name and tooltip.
+ */
+label: string,
+/**
+ * Count shown on the icon.
+ */
+count: number | null,
+/**
+ * Where it opens (app route or plug-in home).
+ */
+url: string, };
+
+/**
+ * A source of notes about code elsewhere in diffpilot. Open enum.
+ */
+export type NoteSource = "flows" | "files" | "dependencies" | "pr_hygiene" | "thepastaclaw";
 
 /**
  * Whether the LLM's crate notes exist.
@@ -2798,9 +5200,73 @@ export type NotRenderedReason = "too_large" | "generated" | "binary";
 export type NotesState = "produced" | "pending" | "not_produced";
 
 /**
+ * A user's channel; the secret is never returned.
+ */
+export type NotificationChannel = {
+/**
+ * Kind.
+ */
+kind: ChannelKind,
+/**
+ * ntfy server URL or webhook URL.
+ */
+url: string,
+/**
+ * ntfy topic.
+ */
+topic: string | null,
+/**
+ * Last 4 characters of the stored secret, or null without one.
+ */
+secret_last4: string | null,
+/**
+ * Events it receives.
+ */
+events: Array<UserEventKind>,
+/**
+ * On.
+ */
+enabled: boolean,
+/**
+ * Delivery state.
+ */
+delivery: DeliveryStatus, };
+
+/**
+ * Response of RN1. The browser notification toggle stays per browser (local storage).
+ */
+export type NotificationSettings = {
+/**
+ * Channels, at most one per kind.
+ */
+channels: Array<NotificationChannel>, };
+
+/**
  * Whether an issue was introduced by the pull request.
  */
 export type Origin = "introduced" | "pre_existing" | "unclear";
+
+/**
+ * An item resolved or answered on GitHub outside diffpilot (US17).
+ */
+export type OutsideResolution = {
+/**
+ * GitHub login that resolved it.
+ */
+by: string,
+/**
+ * When diffpilot first read it resolved.
+ */
+seen_at: string, };
+
+/**
+ * A decision against the assessment.
+ */
+export type Override = { "type": "necessity_gate" } | { "type": "blocker_gate",
+/**
+ * The gate.
+ */
+gate: Gate, };
 
 /**
  * Where changed lines are explained, decided by the server from the same coverage that yields Unexplained.
@@ -2868,6 +5334,11 @@ export type PartSource = "computed" | "llm" | "not_applicable";
  * How a part's value was reached.
  */
 export type PartStatus = "computed" | "judged" | "overridden" | "inherited" | "estimated" | "pending";
+
+/**
+ * Identifier of a `verify_comments` pass over the items of one pull request.
+ */
+export type PassId = string;
 
 /**
  * A pattern explained once and applied in several places ("same pattern × N").
@@ -2984,6 +5455,44 @@ index: number,
 total: number, };
 
 /**
+ * Observed usage of one plan window; absent fields have not been reported upstream.
+ */
+export type PlanUsage = {
+/**
+ * Percentage supplied by x-codex-*-used-percent; never estimated from tokens.
+ */
+used_percent: number | null,
+/**
+ * Absolute reset time supplied by the backend.
+ */
+resets_at: string | null, };
+
+/**
+ * An effect a decision would get ("What happens next", the confirmation list); not stored.
+ */
+export type PlannedEffect = {
+/**
+ * Order, 1-based.
+ */
+seq: number,
+/**
+ * `seq` it waits for.
+ */
+after: number | null,
+/**
+ * Kind.
+ */
+kind: EffectKind,
+/**
+ * Executor.
+ */
+executor: Executor,
+/**
+ * Parameters (the reply text that gets posted is in `text`).
+ */
+params: EffectParams, };
+
+/**
  * Information from the accepted plan, before step analysis.
  */
 export type PlannedFlowDetails = {
@@ -3062,7 +5571,11 @@ state: PluginState,
 /**
  * When the source produced the data last read; null before the first successful read.
  */
-as_of: string | null, };
+as_of: string | null,
+/**
+ * The plug-in can hold a pull request back from Ready to merge (PR Hygiene); absent when it never does.
+ */
+holds_ready_to_merge?: boolean, };
 
 /**
  * An ownership policy file (JSON format of `stale_prs_are_bad`).
@@ -3076,6 +5589,41 @@ repo: RepoRef,
  * Relative path ending `.json`.
  */
 path: string, };
+
+/**
+ * PR state badge (plan §3.9 B1–B5); first match wins.
+ */
+export type PrBadge = "blocked_failing" | "questions_waiting" | "executing" | "waiting_for_bot_round" | "ready_to_merge";
+
+/**
+ * The badge with the facts behind it (tooltip).
+ */
+export type PrBadgeView = {
+/**
+ * Badge; null when none applies or inputs are unknown.
+ */
+badge: PrBadge | null,
+/**
+ * Facts diffpilot read that select it.
+ */
+facts: Array<string>,
+/**
+ * Inputs not known (no B5 while any is listed).
+ */
+missing: Array<string>, };
+
+/**
+ * Counts of one pull request.
+ */
+export type PrCarryCounts = {
+/**
+ * Pull request.
+ */
+pr: PrRef,
+/**
+ * Counts.
+ */
+counts: CarryCounts, };
 
 /**
  * The PR context: deterministic facts and LLM content.
@@ -3163,6 +5711,68 @@ related_work: Array<RelatedWork>,
 fit_questions: Array<FitQuestion>, };
 
 /**
+ * Self-contained host-supplied review files; GitHub shapes are opaque to contracts.
+ */
+export type PrData = {
+/**
+ * manifest.json.
+ */
+manifest: Manifest,
+/**
+ * threads.json in the gh script shape.
+ */
+threads: unknown,
+/**
+ * review-comments.json in the gh script shape.
+ */
+review_comments: unknown[],
+/**
+ * reviews.json in the gh script shape.
+ */
+reviews: unknown[],
+/**
+ * comments.json in the gh script shape.
+ */
+comments: unknown[],
+/**
+ * Base-branch convention files, relative paths below conventions/.
+ */
+conventions: { [key in string]: string },
+/**
+ * ids.json, preserving durable point identities and standing decisions.
+ */
+ids: ItemIds,
+/**
+ * scope.json; all other handed-in material is context.
+ */
+scope: ReviewScope, };
+
+/**
+ * One stable point in ids.json.
+ */
+export type PrDataItem = {
+/**
+ * CMT identifier.
+ */
+id: string,
+/**
+ * Thread node id, review:id:k or comment:id:k.
+ */
+key: string,
+/**
+ * Original source kind, inferred from the key when absent.
+ */
+source_kind: SourceKind | null,
+/**
+ * Quote only for open and decided items.
+ */
+quote: string | null,
+/**
+ * Standing maintainer decision.
+ */
+decision: StandingDecision | null, };
+
+/**
  * One file of the pull request.
  */
 export type PrFile = {
@@ -3206,6 +5816,71 @@ viewed: FileViewedState | null,
  * Hunks (runs of changed lines without context) in file order.
  */
 hunks: Array<FileHunk>, };
+
+/**
+ * Response of RC1: the PR page.
+ */
+export type PrPage = {
+/**
+ * Pull request.
+ */
+pr: PrRef,
+/**
+ * Title.
+ */
+title: string,
+/**
+ * Author's GitHub login (`ghost` for a deleted account).
+ */
+author: string,
+/**
+ * GitHub link.
+ */
+url: string,
+/**
+ * GitHub state (`OPEN`, `CLOSED`, `MERGED`); empty while GitHub was never read (`comments.read.failure`).
+ */
+state: string,
+/**
+ * Draft.
+ */
+draft: boolean,
+/**
+ * Base branch; empty while GitHub was never read.
+ */
+base: string,
+/**
+ * The PR whose branch is the base (stacked PR).
+ */
+stack_parent: PrRef | null,
+/**
+ * Head.
+ */
+head: CommitSha,
+/**
+ * CI of the head; null when not read.
+ */
+ci: CiStatus | null,
+/**
+ * Plug-in statements (PR Hygiene, thepastaclaw), attributed.
+ */
+plugin_notes: Array<PluginNote>,
+/**
+ * The reader's watch; null when not watching.
+ */
+watch: WatchedPr | null,
+/**
+ * State badge.
+ */
+badge: PrBadgeView,
+/**
+ * The latest analysis (the progress content); null without one.
+ */
+analysis: AnalysisSummary | null,
+/**
+ * Process PR comments.
+ */
+comments: CommentsSummary, };
 
 /**
  * A pull request of a repository.
@@ -3267,6 +5942,11 @@ base_sha: CommitSha,
 head_sha: CommitSha, };
 
 /**
+ * Durable first-Ask preflight state; pending is never interpreted as completed.
+ */
+export type PreflightState = "not_needed" | "pending" | "done";
+
+/**
  * A source of the project profile.
  */
 export type ProfileSource = "repository_file" | "memcan";
@@ -3286,14 +5966,185 @@ sources: Array<ProfileSource>,
 memcan: SourceCheck, };
 
 /**
+ * Machine-readable proposed action; target semantics are validated by the server.
+ */
+export type ProposedDecision = {
+/**
+ * Decision kind.
+ */
+kind: ProposedDecisionKind,
+/**
+ * Fix commit, if supplied.
+ */
+fixed_in: string | null,
+/**
+ * Target PR number.
+ */
+target_pr: number | null,
+/**
+ * Target issue or PR URL.
+ */
+target_url: string | null,
+/**
+ * Follow-up title.
+ */
+title: string | null, };
+
+/**
+ * Proposed decision kind; independent of PR-level decisions.
+ */
+export type ProposedDecisionKind = "resolve" | "fix_here" | "reject" | "handled_in_pr" | "follow_up_pr" | "upstream_issue" | "todo";
+
+/**
  * A deterministic check that a badge names (brief §1, §3). No badge means LLM analysis.
  */
 export type ProvenanceBadge = "text_identical" | "classified_by_path" | "classified_by_line_rule" | "binary_content";
 
 /**
+ * Private comment Ask, scoped by `JobSpec::payer`; no assessment quota or analytic archive.
+ */
+export type PullRequestAskTarget = {
+/**
+ * Stable database key of the pull request.
+ */
+pull_request_id: number,
+/**
+ * Frozen checkout for the question and its evidence.
+ */
+repo: RepoCheckout, };
+
+/**
+ * What a `verify_comments` job works on (ADR-023, plan §4.2): the head checkout and the read-only PR-scoped token,
+ * no session, no MemCan.
+ */
+export type PullRequestCommentsTarget = {
+/**
+ * Stable database key of the pull request.
+ */
+pull_request_id: number,
+/**
+ * The repository to check out (head).
+ */
+repo: RepoCheckout,
+/**
+ * The assessment pass.
+ */
+pass_id: PassId, };
+
+/**
+ * The pull request an analysis job works on.
+ */
+export type PullRequestTarget = {
+/**
+ * The analysis the job belongs to.
+ */
+analysis_id: AnalysisId,
+/**
+ * Stable database key of the pull request; root of its analytic and private working archives.
+ */
+pull_request_id: number,
+/**
+ * The repository to check out.
+ */
+repo: RepoCheckout, };
+
+/**
+ * An agent token's push target; the secret is never returned.
+ */
+export type PushTarget = {
+/**
+ * Kind.
+ */
+kind: ChannelKind,
+/**
+ * ntfy server URL or webhook URL; null in the decision log for another user's token.
+ */
+url: string | null,
+/**
+ * ntfy topic; null in the decision log for another user's token.
+ */
+topic: string | null,
+/**
+ * Last 4 characters of the stored secret; null in the decision log for another user's token.
+ */
+secret_last4: string | null,
+/**
+ * Delivery state (in the decision log for another user's token without `last_error`).
+ */
+delivery: DeliveryStatus, };
+
+/**
+ * Body of RN2 (`PUT …/channels/{kind}`); 200 `NotificationChannel`.
+ */
+export type PutChannelRequest = {
+/**
+ * URL (`http`/`https` only; 422 `scheme_not_allowed`).
+ */
+url: string,
+/**
+ * ntfy topic.
+ */
+topic: string | null,
+/**
+ * The secret: ntfy access token or webhook `Authorization` value.
+ */
+secret: SecretChange,
+/**
+ * Events.
+ */
+events: Array<UserEventKind>,
+/**
+ * On.
+ */
+enabled: boolean, };
+
+/**
+ * Body of RF5 (`PUT /api/v1/decision-feed/push-target`); 200 `PushTarget`.
+ */
+export type PutPushTargetRequest = {
+/**
+ * Kind.
+ */
+kind: ChannelKind,
+/**
+ * URL (`http`/`https` only).
+ */
+url: string,
+/**
+ * ntfy topic.
+ */
+topic: string | null,
+/**
+ * The secret: ntfy access token or webhook `Authorization` value.
+ */
+secret: SecretChange, };
+
+/**
  * Identifier of an Ask question.
  */
 export type QuestionId = string;
+
+/**
+ * One question in the queue: a single item or a group.
+ */
+export type QueueEntry = {
+/**
+ * Items, `C<no>`; two or more for a group.
+ */
+item_nos: Array<number>,
+/**
+ * Reason.
+ */
+reason: QueueReason,
+/**
+ * The reader skipped it ("Skip for now") at its current revision; skipped entries come last. Absent when not.
+ */
+skipped?: boolean, };
+
+/**
+ * Why an entry is at its place in the queue (plan §2.4 order). Open enum.
+ */
+export type QueueReason = "pr_question" | "asked_again" | "answered" | "gate" | "blocking" | "single" | "group";
 
 /**
  * A quiet row of the menu.
@@ -3374,8 +6225,13 @@ resumes_at: string | null,
 message: string | null, };
 
 /**
- * A pull request of the user ready to merge: into the default branch, not a draft, write access, every check passed
- * and nothing left to answer (plan K17).
+ * Why the last GitHub read failed. Open enum.
+ */
+export type ReadFailure = "rate_limited" | "unavailable" | "sign_in_required";
+
+/**
+ * A pull request of the user ready to merge: into the default branch or a release branch, not a draft, write
+ * access, every check passed except ignored ones, nothing left to answer and no ready label (plan K17).
  */
 export type ReadyToMergeItem = {
 /**
@@ -3408,9 +6264,73 @@ tags: Array<FactTag>,
 change_size?: ChangeSizeMark, };
 
 /**
+ * Why a repeat was asked again (RQ3). Open enum.
+ */
+export type ReaskReason = "bot_edited" | "code_changed";
+
+/**
  * Reasoning effort of the model.
  */
 export type ReasoningEffort = "low" | "medium" | "high";
+
+/**
+ * The LLM's recommendation; on the card under the evidence, the recommended option first (RQ7).
+ */
+export type Recommendation = {
+/**
+ * Recommended decision.
+ */
+kind: DecisionKind,
+/**
+ * Why.
+ */
+reason: string,
+/**
+ * Target the decision needs (D4–D7).
+ */
+target: DecisionTarget | null,
+/**
+ * Short class of the reason; groups share kind and class or target (plan §2.4).
+ */
+reason_class: string, };
+
+/**
+ * Attributed prior decision; server verifies authority and grounding before treating it as a fact.
+ */
+export type RecordedDecision = {
+/**
+ * Recorded decision.
+ */
+kind: RecordedDecisionKind,
+/**
+ * GitHub author login.
+ */
+by: string,
+/**
+ * Named maintainer for an explicit trusted relay; never inferred.
+ */
+on_behalf_of: string | null,
+/**
+ * Link to the decision's comment.
+ */
+comment_url: string,
+/**
+ * Verbatim decision quote, at most 600 characters.
+ */
+quote: string,
+/**
+ * PR target, when supplied.
+ */
+target_pr: number | null,
+/**
+ * URL target, when supplied.
+ */
+target_url: string | null, };
+
+/**
+ * Recorded decision kind, including deferral and withdrawal.
+ */
+export type RecordedDecisionKind = "deferred" | "withdrawn" | ProposedDecisionKind;
 
 /**
  * Why a refresh failed.
@@ -3505,7 +6425,7 @@ log: Array<string>, };
 /**
  * What started a refresh.
  */
-export type RefreshTrigger = "manual" | "scheduled";
+export type RefreshTrigger = "manual" | "scheduled" | "automatic";
 
 /**
  * One piece of related work.
@@ -3560,6 +6480,28 @@ verified: boolean, };
 export type RelatedWorkTargetKind = "pull_request" | "issue";
 
 /**
+ * Safe relink reason; never contains a token, upstream response or account identifier.
+ */
+export type RelinkReason = "terminal" | "quarantined";
+
+/**
+ * Where the runner fetches the repository from.
+ */
+export type RepoCheckout = {
+/**
+ * Clone URL (any scheme; `file://` in development).
+ */
+clone_url: string,
+/**
+ * Base commit, fetched for diffs.
+ */
+base_sha: CommitSha,
+/**
+ * Head commit, checked out.
+ */
+head_sha: CommitSha, };
+
+/**
  * A GitHub repository.
  */
 export type RepoRef = {
@@ -3594,6 +6536,143 @@ related_repos: Array<RepoRef>,
 project_profile: ProjectProfileStatus, };
 
 /**
+ * The upstream assessment, before mapping into the API's validity and necessity.
+ */
+export type ReportAssessment = "valid" | "already_fixed" | "out_of_scope" | "wrong";
+
+/**
+ * An upstream gate; only the four blocker gates map into stored gate items.
+ */
+export type ReportGate = {
+/**
+ * Upstream gate name, allowing gates beyond the four stored ones.
+ */
+gate: string,
+/**
+ * Gate evidence, labelled LLM.
+ */
+evidence: string, };
+
+/**
+ * Required host-supplied provenance; other metadata is ignored.
+ */
+export type ReportMetadata = {
+/**
+ * Must be comment_check.
+ */
+report_type: string,
+/**
+ * Host-supplied is the only accepted mode.
+ */
+input_mode: string,
+/**
+ * GitHub PR number.
+ */
+pr_number: number,
+/**
+ * Commit assessed; a differing head is labelled rather than discarded.
+ */
+commit: string, };
+
+/**
+ * Outcome an agent reports for an effect.
+ */
+export type ReportOutcome = "done" | "failed" | "released";
+
+/**
+ * Fields consumed from one upstream assessment; unknown fields, including severity floats, are discarded.
+ */
+export type ReportRow = {
+/**
+ * Direct canonical row ID for a duplicate from another source.
+ */
+merged_into: string | null,
+/**
+ * Upstream CMT identifier.
+ */
+id: string,
+/**
+ * Source author.
+ */
+reviewer: string,
+/**
+ * Source role.
+ */
+source_kind: SourceKind,
+/**
+ * Source URL, checked against the host scope.
+ */
+comment_url: string,
+/**
+ * Required for an inline row.
+ */
+thread_id: string | null,
+/**
+ * Required for a body or PR-comment point; server checks a distinct verbatim span.
+ */
+source_quote: string | null,
+/**
+ * Problem description.
+ */
+description: string,
+/**
+ * Validity assessment; absent on context rows.
+ */
+assessment: ReportAssessment | null,
+/**
+ * Reasoning text.
+ */
+reasoning: string,
+/**
+ * Evidence text, labelled LLM.
+ */
+evidence: string | null,
+/**
+ * Human-readable proposed action.
+ */
+proposed_action: string,
+/**
+ * Machine decision, required on assessed host rows.
+ */
+proposed_decision: ProposedDecision | null,
+/**
+ * Earlier attributed decision.
+ */
+recorded_decision: RecordedDecision | null,
+/**
+ * Optional location in file:lines notation.
+ */
+location: string | null,
+/**
+ * Draft reply, passed through the server's wording guard.
+ */
+proposed_reply: string | null,
+/**
+ * Whether the problem exists on the base.
+ */
+pre_existing: boolean | null,
+/**
+ * Category slug.
+ */
+category: string | null,
+/**
+ * Fix size.
+ */
+fix_size: FixSize | null,
+/**
+ * Named gates.
+ */
+gates: Array<ReportGate>,
+/**
+ * Threads grouped with this row, intersected with host scope.
+ */
+merged_thread_ids: Array<string>,
+/**
+ * Additional source links, subject to the same-source and author rules.
+ */
+merged_urls: Array<string>, };
+
+/**
  * Kind of a crate source.
  */
 export type RepositoryKind = "this" | "github" | "other_git" | "registry" | "path" | "unknown";
@@ -3621,7 +6700,12 @@ ownership_policy: PolicyRef | null,
 /**
  * Release and long-lived branch patterns; empty = the built-ins.
  */
-branch_patterns: Array<string>, };
+branch_patterns: Array<string>,
+/**
+ * Checks and statuses that never make CI red or pending (whole name, case-insensitive, `*` any text); empty =
+ * the built-ins.
+ */
+ignored_checks: Array<string>, };
 
 /**
  * Body of `POST /api/v1/pr/resolve`.
@@ -3690,6 +6774,19 @@ head_moved: boolean,
 has_my_state: boolean, };
 
 /**
+ * What a pass may assess (10 points/threads and 5 new sources, with continuations).
+ */
+export type ReviewScope = {
+/**
+ * Open thread node ids.
+ */
+threads: Array<string>,
+/**
+ * Versioned source URLs.
+ */
+sources: Array<string>, };
+
+/**
  * Review state of one user for one analysis; a flow is reviewed when all its steps are ticked.
  */
 export type ReviewState = {
@@ -3703,9 +6800,71 @@ ticked_steps: Array<StepId>,
 last_viewed: BlockRef | null, };
 
 /**
+ * Revoke local keys without logging out or revoking an upstream credential.
+ */
+export type RevokeKeys = {
+/**
+ * Worker whose keys become unusable.
+ */
+container: ContainerId,
+/**
+ * Local-only revocation reason.
+ */
+reason: KeyRevokeReason, };
+
+/**
  * Risk at system scale, rated by the LLM (no numbers, brief §1).
  */
 export type RiskBand = "low" | "medium" | "high";
+
+/**
+ * A bot round: a thepastaclaw review with `phase=final sha=<head>` (spike S13-1 R1).
+ */
+export type Round = {
+/**
+ * 1-based.
+ */
+number: number,
+/**
+ * The round's review (GitHub link).
+ */
+url: string,
+/**
+ * Head reviewed.
+ */
+head: CommitSha,
+/**
+ * Submitted.
+ */
+finished_at: string,
+/**
+ * The bot's review state as GitHub reports it (`CHANGES_REQUESTED`, `APPROVED`, `DISMISSED`, …).
+ */
+verdict: string,
+/**
+ * Items first seen in this round.
+ */
+new: number,
+/**
+ * Items still open at its end.
+ */
+still_open: number,
+/**
+ * Repeats carried.
+ */
+carried: number,
+/**
+ * Repeats asked again.
+ */
+asked_again: number,
+/**
+ * Undecided items.
+ */
+undecided: number,
+/**
+ * Decisions by kind.
+ */
+decisions: Array<KindCount>, };
 
 /**
  * Kind of rule.
@@ -3860,6 +7019,20 @@ basis: string, };
 export type ScoreState = "final" | "provisional" | "unjudged";
 
 /**
+ * What a save does with a channel's or push target's stored secret (an absent field keeps it).
+ */
+export type SecretChange = { "action": "keep" } | { "action": "replace",
+/**
+ * The new secret.
+ */
+value: string, } | { "action": "remove" };
+
+/**
+ * How a private working thread was seeded.
+ */
+export type SessionSeed = "fork" | "context_pack";
+
+/**
  * Body of `PUT /api/v1/settings/llm/ask-effort`.
  */
 export type SetAskEffortRequest = {
@@ -3979,6 +7152,19 @@ changed_files: number,
 estimate: AnalysisEstimate | null, };
 
 /**
+ * One row of the Slack names table: a GitHub login and the text copied for it.
+ */
+export type SlackName = {
+/**
+ * GitHub login (case-insensitive, unique in the table).
+ */
+login: string,
+/**
+ * Text written instead of `@login`, as typed (1–80 characters, no control characters), e.g. `@jan.kowalski`.
+ */
+slack: string, };
+
+/**
  * Facts of the stored snapshot besides its items.
  */
 export type SnapshotMeta = {
@@ -4007,16 +7193,14 @@ excluded: number,
  */
 awaiting: Array<AwaitingItem>,
 /**
- * The user's pull requests ready to merge at the scan (plan K17), by display id; also ranked.
+ * The user's pull requests ready to merge at the scan (plan K17), by display id; also ranked. A pull request a
+ * current plug-in statement holds back (ADR-022) is left out and stays ranked with its note.
  */
 ready_to_merge: Array<ReadyToMergeItem>,
 /**
- * Pull requests K17 would list that a current plug-in statement holds back (ADR-022), by display id.
- */
-ready_to_merge_held?: Array<HeldBack>,
-/**
- * The user's pull requests into the default branch whose merge state GitHub had not computed by the scan (read
- * again by the next refresh); null when the snapshot did not record merge states (stored before they were).
+ * The user's pull requests Ready to merge could list (into the default branch or a release branch) whose merge
+ * state GitHub had not computed by the scan (read again by the next refresh); null when the snapshot did not
+ * record merge states (stored before they were).
  */
 merge_state_pending: number | null,
 /**
@@ -4043,12 +7227,36 @@ checked: KindCounts,
  * Why the rules left items out, computed with the ranking; absent only from a response without it (a server
  * older than this field), which the web shows as not recorded.
  */
-exclusions?: Exclusions, };
+exclusions?: Exclusions,
+/**
+ * When the listed pull requests' facts (CI, reviews, merge state) were last checked against GitHub after the scan,
+ * while My work was open (plan §M); absent when none was since the scan or the server restarted since.
+ */
+facts_checked_at?: string, };
+
+/**
+ * Body of `PUT /api/v1/dashboard/items/{key}/snooze` (R12).
+ */
+export type SnoozeRequest = {
+/**
+ * Days from now, 1 to [`MAX_SNOOZE_DAYS`].
+ */
+days: number, };
 
 /**
  * Whether a source was checked.
  */
 export type SourceCheck = "checked" | "not_checked";
+
+/**
+ * A row's source role in the upstream report.
+ */
+export type SourceKind = "inline" | "review_body" | "pr_comment" | "reply" | "status";
+
+/**
+ * Host-assigned source role, independent of author membership.
+ */
+export type SourceRole = "context" | "ignored" | "source";
 
 /**
  * The flow of a `flow` stage.
@@ -4067,6 +7275,27 @@ title: string, };
  * Kind of an analysis stage.
  */
 export type StageKind = "plan" | "pr_context" | "flow";
+
+/**
+ * Standing choice offered to the skill, without invented reply-chain provenance.
+ */
+export type StandingDecision = {
+/**
+ * Stored decision kind.
+ */
+kind: RecordedDecisionKind,
+/**
+ * Existing PR target.
+ */
+target_pr: number | null,
+/**
+ * Existing issue or PR target.
+ */
+target_url: string | null,
+/**
+ * Follow-up or TODO title.
+ */
+title: string | null, };
 
 /**
  * One step of a flow.
@@ -4195,6 +7424,11 @@ export type SummaryQuery = {
 excluded?: boolean, };
 
 /**
+ * Immutable thread policy; resend its full configuration on start, fork and resume.
+ */
+export type ThreadKind = "analytic" | "ask" | "verify" | "judge";
+
+/**
  * LLM status of an existing GitHub review thread.
  */
 export type ThreadLlmStatus = "still_valid" | "stale" | "already_addressed";
@@ -4234,7 +7468,7 @@ export type TodosStatus = "read" | "not_refreshed" | "off" | "not_configured";
 /**
  * What a token may do; a list on each token. Open enum: clients treat unknown values as opaque.
  */
-export type TokenScope = "read";
+export type TokenScope = "read" | "review_loop_execute";
 
 /**
  * Response of `GET /api/v1/analyses/{id}/tour`.
@@ -4298,6 +7532,15 @@ reason?: UnexplainedReason, };
 export type UnexplainedReason = "too_large_for_prompt";
 
 /**
+ * Explicit user-authorized upstream unlink; distinct from retiring a local virtual key.
+ */
+export type UnlinkCredential = {
+/**
+ * User whose credential and local keys are unlinked.
+ */
+user: UserId, };
+
+/**
  * Body of `PATCH /api/v1/analyses/{id}/pending-review/comments/{comment_id}`.
  */
 export type UpdateCommentRequest = {
@@ -4305,6 +7548,28 @@ export type UpdateCommentRequest = {
  * New text.
  */
 body: string, };
+
+/**
+ * Token usage.
+ */
+export type Usage = {
+/**
+ * Input tokens, cached included.
+ */
+input_tokens: number,
+/**
+ * Cached input tokens.
+ */
+cached_input_tokens: number,
+/**
+ * Output tokens.
+ */
+output_tokens: number,
+/**
+ * Model requests of the call, counted from the provider's events (one per batch of tool calls, and the
+ * answer); null when not counted.
+ */
+requests: number | null, };
 
 /**
  * Token sums; cached input is included in input, not additional to it.
@@ -4345,14 +7610,172 @@ today: UsageTotals | null,
 last_7_days: UsageTotals | null, };
 
 /**
+ * A per-user event (RW3 SSE data, push channels).
+ */
+export type UserEvent = {
+/**
+ * Id.
+ */
+id: UserEventId,
+/**
+ * Kind.
+ */
+kind: UserEventKind,
+/**
+ * Pull request; null for `test`.
+ */
+pr: PrRef | null,
+/**
+ * Questions (questions_ready) or decisions (round_executed).
+ */
+count: number,
+/**
+ * Plain text, e.g. "acme/node-client #482: 5 questions ready".
+ */
+text: string,
+/**
+ * The path of the PR's Comments page on this instance (`/pr/<owner>/<name>/<number>/comments`).
+ */
+url: string | null,
+/**
+ * When.
+ */
+at: string, };
+
+/**
+ * Identifier of a per-user event (questions ready, round executed, test).
+ */
+export type UserEventId = string;
+
+/**
+ * Kind of a per-user event; also what a channel subscribes to.
+ */
+export type UserEventKind = "questions_ready" | "round_executed" | "test";
+
+/**
  * Feedback values a reviewer can choose.
  */
 export type UserFeedbackValue = "correct" | "wrong" | "irrelevant" | "overrated" | "underrated";
 
 /**
+ * Stable authenticated user id, also the payer key.
+ */
+export type UserId = string;
+
+/**
+ * SSE data of RW3; the SSE `event` field is the `event` tag.
+ */
+export type UserStreamEvent = { "event": "user_event",
+/**
+ * The event.
+ */
+user_event: UserEvent, } | { "event": "heartbeat",
+/**
+ * Server time of sending.
+ */
+at: string, };
+
+/**
+ * The LLM's validity reading ("The LLM says: …"). Open enum.
+ */
+export type Validity = "valid" | "already_fixed" | "partly_valid" | "invalid";
+
+/**
  * How completely the Viewed state was read.
  */
 export type ViewedStatus = "checked" | "partial" | "not_checked";
+
+/**
+ * Response of RW2.
+ */
+export type WatchList = {
+/**
+ * Watches, newest first.
+ */
+watches: Array<WatchedPr>,
+/**
+ * Most watched PRs per user.
+ */
+limit: number,
+/**
+ * Assessment passes charged to the reader in the last 24 hours (automatic and question passes).
+ */
+passes_today: number,
+/**
+ * Passes per user and 24 hours; automatic passes stop at it.
+ */
+daily_limit: number, };
+
+/**
+ * State of a watch. Open enum.
+ */
+export type WatchState = "active" | "waiting_for_bot_round" | "job_running" | "limit_reached" | "paused" | "ended";
+
+/**
+ * A watched pull request (RW2, V6).
+ */
+export type WatchedPr = {
+/**
+ * Pull request.
+ */
+pr: PrRef,
+/**
+ * Title.
+ */
+title: string,
+/**
+ * Watching since.
+ */
+since: string,
+/**
+ * Last probe.
+ */
+last_probe_at: string | null,
+/**
+ * Latest automatic assessment.
+ */
+last_auto_pass: AutoPass | null,
+/**
+ * State.
+ */
+state: WatchState,
+/**
+ * When the watch ended (merged or closed).
+ */
+ended_at: string | null,
+/**
+ * State badge.
+ */
+badge: PrBadgeView, };
+
+/**
+ * JSON body of a generic webhook delivery (`POST`; plan §5.5).
+ */
+export type WebhookPayload = {
+/**
+ * Payload version, 1.
+ */
+v: number,
+/**
+ * Event kind.
+ */
+event: UserEventKind,
+/**
+ * Plain text, e.g. "acme/node-client #482: 5 questions ready".
+ */
+text: string,
+/**
+ * The PR's Comments page.
+ */
+url: string | null,
+/**
+ * Pull request, `owner/name#number`.
+ */
+pr: string | null,
+/**
+ * When.
+ */
+at: string, };
 
 /**
  * One ranked item.
@@ -4424,6 +7847,52 @@ llm: ItemText | null,
  */
 review: ReviewLink | null,
 /**
+ * Review comments diffpilot read for this pull request (Comments), counted at request time; absent before
+ * diffpilot's first successful read of them.
+ */
+comments?: CommentTally,
+/**
+ * The user watches this pull request (RW1), read at request time; with `comments` absent its comments were
+ * not read yet.
+ */
+watched?: boolean,
+/**
  * Current statements of dashboard plug-ins about this pull request (ADR-022); absent when none.
  */
 plugin_notes?: Array<PluginNote>, };
+
+/**
+ * Managed worker identity and current lifecycle state.
+ */
+export type WorkerStatus = {
+/**
+ * Worker identity derived from managed labels.
+ */
+container: ContainerId,
+/**
+ * Whether it is currently running.
+ */
+running: boolean, };
+
+/**
+ * Fixed workspace shape; paths never come from model output.
+ */
+export type Workspace = "pr" | "judge";
+
+/**
+ * The commit and time a comment was written on, as GitHub records them.
+ */
+export type Written = {
+/**
+ * The bot round whose own review raised it (then `commit` and `at` are that round's head and end); absent for
+ * any other comment.
+ */
+round?: number,
+/**
+ * The commit its review was made on; absent for a PR comment or a review GitHub did not list.
+ */
+commit?: CommitSha,
+/**
+ * When it was written (the review's submission, the comment's creation).
+ */
+at: string, };

@@ -1,3 +1,4 @@
+import { GithubCommentText } from "../comments/GithubCommentText";
 import type { Annotation, AnnotationId, GithubThread } from "../../api/generated/types";
 import { MARKER, SpeechBubble } from "../comment/LineComments";
 import { GithubLink, isGithubUrl } from "../inspector/text";
@@ -174,7 +175,9 @@ export function ThreadMarker({
         threads.map((t) => (
           <span key={t.id} className="block">
             <span className="block font-semibold">@{t.author}</span>{" "}
-            <span className="line-clamp-4 whitespace-pre-wrap">{t.excerpt}</span>
+            <span className="line-clamp-4 whitespace-pre-wrap">
+              <GithubCommentText text={t.excerpt} />
+            </span>
             {pinned && ((onShowInInspector && t.step_id !== null) || isGithubUrl(t.url)) && (
               <span className="mt-0.5 flex flex-wrap items-center gap-x-3">
                 {onShowInInspector && t.step_id !== null && (

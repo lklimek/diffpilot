@@ -72,6 +72,42 @@ macro_rules! current_snapshot_id {
     };
 }
 
+/// Why a snooze ended (owner SN1); an ended snooze is kept, marked with it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SnoozeEnd {
+    /// Its date passed.
+    Date,
+    /// A review request to the user newer than the snooze.
+    ReviewRequest,
+    /// A mention of the user newer than the snooze.
+    Mention,
+    /// The user woke it (Wake now).
+    Woken,
+}
+
+impl SnoozeEnd {
+    /// The stored `end_reason`.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Date => "date",
+            Self::ReviewRequest => "review_request",
+            Self::Mention => "mention",
+            Self::Woken => "woken",
+        }
+    }
+}
+
+/// A snoozed dashboard item of a user (owner SN1).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Snooze {
+    /// The item.
+    pub key: ItemKey,
+    /// When it was snoozed (a review request or mention after it wakes the item).
+    pub snoozed_at: Timestamp,
+    /// When it wakes.
+    pub until: Timestamp,
+}
+
 /// Access to the dashboard tables.
 #[derive(Debug)]
 pub struct Dashboard<'a> {
@@ -212,7 +248,7 @@ pub enum StartOutcome {
         /// The superseded ranking refresh, if one was live.
         superseded: Option<RefreshId>,
     },
-    /// Another refresh of the user is `scanning`: R2 answers 409 `refresh_running`; the schedule counts it as done.
+    /// A scan, or for an automatic start any live refresh, blocks starting: R2 answers 409 `refresh_running`.
     ScanRunning,
 }
 
@@ -350,6 +386,95 @@ impl Dashboard<'_> {
         Ok(())
     }
 
+    /// The user's snoozes not marked ended (owner SN1), by item key; one whose date passed is included until a write
+    /// marks it.
+    pub async fn snoozes(&self, tenant_id: &str, user_id: &str) -> Result<Vec<Snooze>, DbError> {
+        let rows = sqlx::query(
+            "SELECT item_key, snoozed_at, until FROM dashboard_snoozes
+             WHERE tenant_id = ? AND user_id = ? AND ended_at IS NULL ORDER BY item_key",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .fetch_all(self.pool)
+        .await?;
+        rows.iter()
+            .map(|row| {
+                Ok(Snooze {
+                    key: ItemKey::parse(row.try_get::<&str, _>("item_key")?)
+                        .map_err(|_| DbError::Corrupt { column: "item_key" })?,
+                    snoozed_at: parse_ts(row.try_get::<&str, _>("snoozed_at")?, "snoozed_at")?,
+                    until: parse_ts(row.try_get::<&str, _>("until")?, "until")?,
+                })
+            })
+            .collect()
+    }
+
+    /// Snoozes `key` from `now` until `until` (it replaces the item's snooze that has not ended) after marking the
+    /// user's snoozes whose date passed by `now` ended (kept); never changes the snapshot or a judgement.
+    pub async fn snooze(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        key: &ItemKey,
+        now: Timestamp,
+        until: Timestamp,
+    ) -> Result<(), DbError> {
+        let mut tx = write_tx(self.pool).await?;
+        sqlx::query(
+            "UPDATE dashboard_snoozes SET ended_at = until, end_reason = 'date'
+             WHERE tenant_id = ? AND user_id = ? AND ended_at IS NULL AND until <= ?",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(ts(now))
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO dashboard_snoozes (tenant_id, user_id, item_key, snoozed_at, until) VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT (tenant_id, user_id, item_key) WHERE ended_at IS NULL DO UPDATE
+                 SET snoozed_at = excluded.snoozed_at, until = excluded.until",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(key.as_str())
+        .bind(ts(now))
+        .bind(ts(until))
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Marks the user's snoozes of `keys` that have not ended as ended at `now` for `reason` (Wake now, a newer review
+    /// request or mention), or at their date when it passed; the rows are kept. Returns how many ended. Idempotent.
+    pub async fn wake(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        keys: &[ItemKey],
+        reason: SnoozeEnd,
+        now: Timestamp,
+    ) -> Result<u64, DbError> {
+        if keys.is_empty() {
+            return Ok(0);
+        }
+        let list = serde_json::to_string(&keys.iter().map(ItemKey::as_str).collect::<Vec<_>>())?;
+        let ended = sqlx::query(
+            "UPDATE dashboard_snoozes SET ended_at = min(until, ?1),
+                 end_reason = CASE WHEN until <= ?1 THEN 'date' ELSE ?2 END
+             WHERE tenant_id = ?3 AND user_id = ?4 AND ended_at IS NULL
+                 AND item_key IN (SELECT value FROM json_each(?5))",
+        )
+        .bind(ts(now))
+        .bind(reason.as_str())
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(list)
+        .execute(self.pool)
+        .await?;
+        Ok(ended.rows_affected())
+    }
+
     /// The user's settings row; none means the defaults (`DashboardSettings::default`).
     pub async fn settings(
         &self,
@@ -377,8 +502,8 @@ impl Dashboard<'_> {
         let saved = sqlx::query(
             "INSERT INTO dashboard_settings (user_id, tenant_id, linked_logins, enumerate_owners, repositories,
                  lookback_days, ready_label, skip_authors, known_bots, include_todos, memcan_extra_projects,
-                 schedule_enabled, schedule_time, time_zone, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 schedule_enabled, schedule_time, time_zone, slack_names, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT (user_id) DO UPDATE SET linked_logins = excluded.linked_logins,
                  enumerate_owners = excluded.enumerate_owners, repositories = excluded.repositories,
                  lookback_days = excluded.lookback_days, ready_label = excluded.ready_label,
@@ -386,7 +511,8 @@ impl Dashboard<'_> {
                  include_todos = excluded.include_todos,
                  memcan_extra_projects = excluded.memcan_extra_projects,
                  schedule_enabled = excluded.schedule_enabled, schedule_time = excluded.schedule_time,
-                 time_zone = excluded.time_zone, updated_at = excluded.updated_at
+                 time_zone = excluded.time_zone, slack_names = excluded.slack_names,
+                 updated_at = excluded.updated_at
              WHERE dashboard_settings.tenant_id = excluded.tenant_id",
         )
         .bind(user_id)
@@ -403,6 +529,7 @@ impl Dashboard<'_> {
         .bind(settings.schedule_enabled)
         .bind(&settings.schedule_time)
         .bind(&settings.time_zone)
+        .bind(serde_json::to_string(&settings.slack_names)?)
         .bind(ts(now))
         .execute(self.pool)
         .await
@@ -508,7 +635,7 @@ impl Dashboard<'_> {
 
     /// R2 and the schedule, in one write transaction: a refresh of the user in `ranking` is superseded
     /// ([`Dashboard::finish_ranking`] with `cancelled`), then a new one starts in `scanning`; a `scanning` one
-    /// blocks ([`StartOutcome::ScanRunning`]). Deletes the user's older refreshes beyond [`REFRESHES_KEPT`], never
+    /// blocks ([`StartOutcome::ScanRunning`]). An automatic start is also blocked by a ranking. Deletes the user's older refreshes beyond [`REFRESHES_KEPT`], never
     /// the one holding the current snapshot nor one started in the last 24 hours that judged something (the daily
     /// cap counts it).
     pub async fn start_refresh(
@@ -529,8 +656,9 @@ impl Dashboard<'_> {
         .await?;
         let mut superseded = None;
         if let Some((id, state)) = live {
-            if parse_wire::<RefreshState>(&state, "dashboard_refreshes.state")?
-                == RefreshState::Scanning
+            if trigger == RefreshTrigger::Automatic
+                || parse_wire::<RefreshState>(&state, "dashboard_refreshes.state")?
+                    == RefreshState::Scanning
             {
                 return Ok(StartOutcome::ScanRunning);
             }
@@ -1446,6 +1574,7 @@ fn settings_of(row: &SqliteRow) -> Result<StoredDashboardSettings, DbError> {
             schedule_enabled: row.try_get("schedule_enabled")?,
             schedule_time: row.try_get("schedule_time")?,
             time_zone: row.try_get("time_zone")?,
+            slack_names: json_column(row, "slack_names")?,
         },
         last_scheduled,
         updated_at: parse_ts(&row.try_get::<String, _>("updated_at")?, "updated_at")?,
@@ -1478,7 +1607,8 @@ fn judgement_of(row: &SqliteRow) -> Result<StoredJudgement, DbError> {
 #[cfg(test)]
 mod tests {
     use contracts::api::dashboard::{
-        ItemTarget, PolicyRef, RefreshFailureCode, RepositoryRule, ScanStepKey, StepState,
+        ItemTarget, PolicyRef, RefreshFailureCode, RepositoryRule, ScanStepKey, SlackName,
+        StepState,
     };
     use contracts::common::RepoRef;
     use contracts::job::spec::ReasoningEffort;
@@ -1518,6 +1648,154 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    fn item(text: &str) -> ItemKey {
+        ItemKey::parse(text).unwrap()
+    }
+
+    /// A snooze row: item key, `until`, `ended_at`, `end_reason`.
+    type SnoozeRow = (String, String, Option<String>, Option<String>);
+
+    /// Every snooze row of the user with its end, oldest first (ended snoozes are kept).
+    async fn snooze_rows(db: &Db, user: &str) -> Vec<SnoozeRow> {
+        sqlx::query_as(
+            "SELECT item_key, until, ended_at, end_reason FROM dashboard_snoozes WHERE user_id = ? ORDER BY id",
+        )
+        .bind(user)
+        .fetch_all(&db.pool)
+        .await
+        .unwrap()
+    }
+
+    /// SN1: a snooze is per user, a new snooze replaces the item's snooze that has not ended, a snooze write marks
+    /// the user's snoozes whose date passed ended, and Wake ends exactly the named ones (idempotent); ended snoozes
+    /// are kept with their reason and end, and a later snooze of the same item is a new row beside them.
+    #[tokio::test]
+    async fn snoozes_are_per_user_replaced_ended_and_kept() {
+        let db = db().await;
+        let dash = db.dashboard();
+        let pr = item("acme~platform~pr~1203");
+        let issue = item("acme~platform~issue~1187");
+        dash.snooze(T, "u1", &pr, at(0), at(60)).await.unwrap();
+        dash.snooze(T, "u1", &issue, at(0), at(10)).await.unwrap();
+        dash.snooze(T, "u2", &pr, at(0), at(30)).await.unwrap();
+        dash.snooze(T, "u1", &pr, at(5), at(90)).await.unwrap();
+        assert_eq!(
+            dash.snoozes(T, "u1").await.unwrap(),
+            [
+                Snooze {
+                    key: issue.clone(),
+                    snoozed_at: at(0),
+                    until: at(10)
+                },
+                Snooze {
+                    key: pr.clone(),
+                    snoozed_at: at(5),
+                    until: at(90)
+                },
+            ]
+        );
+        let todo = item("memcan~3fa91c2e-0000-4000-8000-000000000000");
+        dash.snooze(T, "u1", &todo, at(10), at(20)).await.unwrap();
+        let keys: Vec<ItemKey> = dash
+            .snoozes(T, "u1")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.key)
+            .collect();
+        assert_eq!(
+            keys,
+            [pr.clone(), todo.clone()],
+            "the issue snooze ended at its date"
+        );
+        assert_eq!(
+            dash.wake(
+                T,
+                "u1",
+                &[pr.clone(), issue.clone()],
+                SnoozeEnd::Woken,
+                at(15)
+            )
+            .await
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            dash.wake(T, "u1", std::slice::from_ref(&pr), SnoozeEnd::Woken, at(16))
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            dash.wake(T, "u1", &[], SnoozeEnd::Woken, at(16))
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            dash.wake(
+                T,
+                "u1",
+                std::slice::from_ref(&todo),
+                SnoozeEnd::Mention,
+                at(25)
+            )
+            .await
+            .unwrap(),
+            1,
+            "its date passed before the mention was seen"
+        );
+        dash.snooze(T, "u1", &pr, at(30), at(40)).await.unwrap();
+        dash.wake(
+            T,
+            "u1",
+            std::slice::from_ref(&pr),
+            SnoozeEnd::ReviewRequest,
+            at(35),
+        )
+        .await
+        .unwrap();
+        let ts = |minute| super::ts(at(minute));
+        assert_eq!(
+            snooze_rows(&db, "u1").await,
+            [
+                (
+                    pr.as_str().to_owned(),
+                    ts(90),
+                    Some(ts(15)),
+                    Some("woken".to_owned())
+                ),
+                (
+                    issue.as_str().to_owned(),
+                    ts(10),
+                    Some(ts(10)),
+                    Some("date".to_owned())
+                ),
+                (
+                    todo.as_str().to_owned(),
+                    ts(20),
+                    Some(ts(20)),
+                    Some("date".to_owned())
+                ),
+                (
+                    pr.as_str().to_owned(),
+                    ts(40),
+                    Some(ts(35)),
+                    Some("review_request".to_owned())
+                ),
+            ],
+            "ended snoozes are kept with their end; the next snooze of the item is a new row"
+        );
+        assert_eq!(
+            dash.snoozes(T, "u2").await.unwrap().len(),
+            1,
+            "another user's stays"
+        );
+        assert!(dash.snoozes("other", "u1").await.unwrap().is_empty());
+        let backwards = dash.snooze(T, "u1", &pr, at(50), at(50)).await;
+        assert!(backwards.is_err(), "a snooze ends after it starts");
     }
 
     async fn seed_users(db: &Db) {
@@ -1725,6 +2003,7 @@ mod tests {
                     path: "policies/platform.json".to_owned(),
                 }),
                 branch_patterns: vec!["vX.Y-dev".to_owned()],
+                ignored_checks: Vec::new(),
             }],
             enumerate_owners: vec!["dashpay".to_owned()],
             lookback_days: 14,
@@ -1736,6 +2015,10 @@ mod tests {
             schedule_enabled: false,
             schedule_time: "07:15".to_owned(),
             time_zone: Some("Europe/Warsaw".to_owned()),
+            slack_names: vec![SlackName {
+                login: "bob".to_owned(),
+                slack: "<@U01ABC>".to_owned(),
+            }],
         };
         dash.save_settings(T, "u1", &settings, at(0))
             .await
@@ -2027,6 +2310,30 @@ mod tests {
             );
             assert_eq!(live(&db, "u1").await, [(new.id, RefreshState::Scanning)]);
         }
+    }
+
+    #[tokio::test]
+    async fn automatic_start_cannot_supersede_a_ranking_restarted_after_its_precheck() {
+        let db = db().await;
+        let dash = db.dashboard();
+        let id = finished(&db, "u1", 0, RankingState::Cancelled).await;
+        let before = dash
+            .latest_refresh(T, "u1")
+            .await
+            .expect("precheck")
+            .expect("refresh");
+        assert_eq!(before.state, RefreshState::Finished);
+        dash.restart_ranking(T, "u1", id).await.expect("rank again");
+        let restarted = record(&db, "u1", id).await;
+        assert_eq!(restarted.state, RefreshState::Ranking);
+        assert_eq!(
+            dash.start_refresh(T, "u1", RefreshTrigger::Automatic, at(30))
+                .await
+                .expect("start"),
+            StartOutcome::ScanRunning
+        );
+        assert_eq!(record(&db, "u1", id).await, restarted);
+        assert_eq!(live(&db, "u1").await, [(id, RefreshState::Ranking)]);
     }
 
     #[tokio::test]
@@ -3482,6 +3789,7 @@ mod tests {
                 "dashboard_judgements_by_last_seen",
                 "dashboard_refreshes_by_user",
                 "dashboard_refreshes_one_live_per_user",
+                "dashboard_snoozes_not_ended",
             ]
         );
         let attempt: (String, i64) = sqlx::query_as(
@@ -3570,7 +3878,7 @@ mod tests {
             .await
             .expect("before");
 
-        super::super::migrate(&db.pool, super::super::MIGRATIONS.len())
+        super::super::migrate(&db.pool, super::super::MIGRATIONS.len() - 1)
             .await
             .expect("upgrade in place");
 
@@ -3617,6 +3925,7 @@ mod tests {
         .expect("versions");
         let all: Vec<i64> = super::super::MIGRATIONS
             .iter()
+            .take(super::super::MIGRATIONS.len() - 1)
             .map(|(version, ..)| *version)
             .collect();
         assert_eq!(versions, all);
@@ -3667,7 +3976,7 @@ mod tests {
             .await
             .expect("before");
 
-        super::super::migrate(&db.pool, super::super::MIGRATIONS.len())
+        super::super::migrate(&db.pool, super::super::MIGRATIONS.len() - 1)
             .await
             .expect("upgrade in place");
 
@@ -3941,5 +4250,19 @@ mod tests {
             stored.settings.known_bots,
             ["thepastaclaw", "Claudius-Maginificent", "DCG-Claude"]
         );
+    }
+
+    /// A settings row stored before migration 0027, or created with column defaults, has no Slack names.
+    #[tokio::test]
+    async fn rows_without_slack_names_read_an_empty_table() {
+        let db = db().await;
+        let dash = db.dashboard();
+        assert!(
+            dash.set_time_zone_if_unset(T, "u1", "Europe/Warsaw", at(0))
+                .await
+                .expect("zone")
+        );
+        let stored = dash.settings(T, "u1").await.expect("read").expect("row");
+        assert_eq!(stored.settings.slack_names, []);
     }
 }

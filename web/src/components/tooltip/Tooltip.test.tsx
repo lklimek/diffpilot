@@ -1,9 +1,27 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Tooltip } from "./Tooltip";
 
 describe("Tooltip", () => {
+  it.each(["below", "right"] as const)("keeps a 16 px gutter on narrow screens (%s)", async (placement) => {
+    vi.stubGlobal("innerWidth", 320);
+    try {
+      const user = userEvent.setup();
+      render(
+        <Tooltip tip="Long statement" placement={placement} scrollable>
+          <button type="button">Narrow</button>
+        </Tooltip>,
+      );
+      const button = screen.getByRole("button", { name: "Narrow" });
+      button.parentElement!.getBoundingClientRect = () => new DOMRect(280, 100, 20, 20);
+      await user.hover(button);
+      expect(screen.getByRole("tooltip").style.left).toBe("16px");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("describes its trigger and shows on focus and hover", async () => {
     const user = userEvent.setup();
     render(
@@ -124,4 +142,27 @@ describe("Tooltip", () => {
     expect(tip.style.left).toBe("218px");
     expect(tip.style.top).toBe("100px");
   });
+});
+
+it("keeps long statements in the viewport and scrolls them from the focused trigger", async () => {
+  const user = userEvent.setup();
+  render(
+    <Tooltip scrollable tip="Long statement">
+      <span tabIndex={0}>Source statement</span>
+    </Tooltip>,
+  );
+  const trigger = screen.getByText("Source statement");
+  trigger.parentElement!.getBoundingClientRect = () => new DOMRect(10, window.innerHeight - 100, 200, 20);
+  await user.tab();
+  const tip = screen.getByRole("tooltip");
+  expect(tip.style.bottom).toBe("104px");
+  expect(Number.parseFloat(tip.style.maxHeight)).toBeLessThan(window.innerHeight);
+  const scrollBy = vi.fn();
+  tip.scrollBy = scrollBy;
+  Object.defineProperty(tip, "scrollHeight", { value: 1000 });
+  Object.defineProperty(tip, "clientHeight", { value: 300 });
+  await user.keyboard("{PageDown}{ArrowUp}");
+  expect(scrollBy).toHaveBeenNthCalledWith(1, { top: 300 });
+  expect(scrollBy).toHaveBeenNthCalledWith(2, { top: -40 });
+  expect(trigger).toHaveFocus();
 });

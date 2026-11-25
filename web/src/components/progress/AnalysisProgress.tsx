@@ -149,9 +149,10 @@ const BAR_LOOK: Record<AnalysisState["state"], string> = {
   cancelled: "border-border",
 };
 
-// Without a whole-run denominator the bar stays indeterminate. Stripes distinguish planning and pauses.
+// Stripes distinguish indeterminate work and pauses from completed work, also without motion.
 const STRIPES = {
   planning: "repeating-linear-gradient(135deg, var(--color-accent) 0 8px, var(--color-accent-bg) 8px 16px)",
+  running: "repeating-linear-gradient(135deg, var(--color-accent) 0 6px, var(--color-surface-2) 6px 12px)",
   paused: "repeating-linear-gradient(135deg, var(--color-med-bd) 0 6px, var(--color-med-bg) 6px 12px)",
 };
 
@@ -182,7 +183,11 @@ function Bar({
       ? STRIPES[state.state]
       : state.state === "failed"
         ? "var(--color-high-bg)"
-        : "var(--color-accent)";
+        : state.state === "running" && !counted
+          ? STRIPES.running
+          : "var(--color-accent)";
+  // While a job works, the part not counted as done pulses (the whole bar without a count); done work stays still.
+  const pulse = "motion-safe:animate-progress-pulse";
   return (
     <div
       role="progressbar"
@@ -200,10 +205,13 @@ function Bar({
       className={`flex h-3 overflow-hidden rounded-md border bg-surface-2 ${BAR_LOOK[state.state]}`}
     >
       <i
-        className={`block h-full ${state.state === "planning" && working ? "motion-safe:animate-pulse" : ""}`}
+        className={`block h-full ${working && !counted ? pulse : ""}`}
         style={{ flexGrow: filled, background }}
       />
-      <span style={{ flexGrow: empty }} />
+      <span
+        className={working && counted ? pulse : undefined}
+        style={{ flexGrow: empty, background: working && counted ? STRIPES.running : undefined }}
+      />
     </div>
   );
 }
@@ -247,7 +255,7 @@ export function AnalysisProgress({
   const elapsed = stage !== null && activity !== undefined ? elapsedText(started, activity, working) : "";
   const running = state.state === "planning" || state.state === "running";
   const percentText = progress?.percent != null ? percentLabel(progress.percent) : "";
-  // With flows on request the server counts no whole-run percent or estimate: no bar and no number then.
+  // On-demand flows have no whole-run percent or ETA; the bar only signals job activity.
   const uncounted = reviewReady === true && running && progress !== undefined && progress.percent === null;
   const analysisElapsed =
     progress && activity && activity.clockOffset !== null && running
@@ -260,7 +268,7 @@ export function AnalysisProgress({
         <p className="flex flex-wrap items-baseline gap-x-4 text-[15px] font-semibold">
           <span aria-live="polite">
             {reviewReady && state.state === "running"
-              ? `${state.done} of ${state.total} flows analysed. The review is open.`
+              ? `${state.done} of ${plural(state.total, "flow")} analysed. The review is open.`
               : label(state, planned)}
           </span>
           {(state.state === "finished" || reviewReady) && (
@@ -348,11 +356,9 @@ export function AnalysisProgress({
           )}
         </span>
       </div>
-      {!uncounted && (
-        <div className="mt-3">
-          <Bar state={state} working={working} progress={progress} planned={planned} />
-        </div>
-      )}
+      <div className="mt-3">
+        <Bar state={state} working={working} progress={progress} planned={planned} />
+      </div>
       {progress && running && !uncounted && (
         <p className="mt-2 text-[12.5px] text-muted">
           {percentText && <span>{percentText}</span>}

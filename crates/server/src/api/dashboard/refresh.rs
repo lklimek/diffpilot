@@ -171,11 +171,21 @@ fn scope(session: &Session) -> Scope {
 
 /// Counts a dashboard read in a browser session as the user's presence for the plug-in poller (ADR-022 §3); a
 /// personal access token read is an automated client, not a user in the session.
-fn mark_present(state: &AppState, session: &Session) {
+pub(crate) fn mark_present(state: &AppState, session: &Session) {
     if !session.is_access_token() {
         state
             .plugins
             .mark_active(&session.tenant_id, &session.user_id);
+    }
+}
+
+/// Counts a summary read in a browser session as My work being open (plan §M); never an access token read.
+fn mark_open(state: &AppState, session: &Session) {
+    if !session.is_access_token() {
+        state
+            .dashboard
+            .readers()
+            .mark_open(&scope(session), state.dashboard.now());
     }
 }
 
@@ -228,6 +238,7 @@ async fn summary(
     let list_excluded = query.excluded.unwrap_or(false);
     let scope = scope(&session);
     mark_present(&state, &session);
+    mark_open(&state, &session);
     let dashboard = state.db.dashboard();
     let latest_refresh = match dashboard
         .latest_refresh(&scope.tenant_id, &scope.user_id)
@@ -240,7 +251,12 @@ async fn summary(
         match current_view(&state, &scope).await? {
             Some((revision, snapshot, view, record, older)) => (
                 revision,
-                Some(view.meta(&snapshot, &record, list_excluded)),
+                Some(view.meta(
+                    &snapshot,
+                    &record,
+                    list_excluded,
+                    state.dashboard.readers().checked_at(&scope, record.id),
+                )),
                 older,
                 record.scanned_at,
                 snapshot.mentions,
@@ -337,6 +353,7 @@ async fn items(
         items.push(item.item);
     }
     review_links(&state, &session, &mut items, &heads).await?;
+    comment_tallies(&state, &session, &mut items).await?;
     let body = ItemPage {
         mentions,
         mention_coverage,
@@ -406,6 +423,37 @@ async fn review_links(
             has_my_state: link.has_review_state,
             analysed_head: link.head_sha,
         });
+    }
+    Ok(())
+}
+
+/// Fills `comments` and `watched` of the pull requests on the page from the tenant's review-loop tables and the
+/// user's watches, read now in one statement; a pull request whose comments diffpilot never read keeps no counts.
+/// Part of the page's `ETag` like `review`.
+async fn comment_tallies(
+    state: &AppState,
+    session: &Session,
+    items: &mut [WorkItem],
+) -> Result<(), DbError> {
+    let (rows, wanted): (Vec<usize>, Vec<_>) = items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| item.kind == ItemKind::Pr)
+        .filter_map(|(row, item)| Some((row, (item.repo.clone()?, item.number?))))
+        .unzip();
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let tallies = state
+        .db
+        .review_loop()
+        .comment_tallies(&session.tenant_id, &session.user_id, &wanted)
+        .await?;
+    for tally in tallies {
+        if let Some(&row) = rows.get(tally.index) {
+            items[row].comments = tally.counts;
+            items[row].watched = tally.watched;
+        }
     }
     Ok(())
 }

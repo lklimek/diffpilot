@@ -62,8 +62,8 @@ ENV CARGO_BUILD_JOBS=2 \
     CARGO_TARGET_DIR=/build
 RUN --mount=type=cache,id=diffpilot-cargo-registry,target=/root/.cargo/registry \
     --mount=type=cache,id=diffpilot-cargo-target,target=/build \
-    cargo build --release --locked -p server --features embed-ui --bin diffpilot-server \
-    && install -D -m 0755 /build/release/diffpilot-server /out/diffpilot-server \
+    cargo build --release --locked -p server --features embed-ui --bin diffpilot-server --bin diffpilot-gateway \
+    && install -D -m 0755 -t /out /build/release/diffpilot-server /build/release/diffpilot-gateway \
     && cargo fetch --locked && mkdir -p /out/notices \
     && cargo about generate --frozen --fail -c deploy/notices/about.toml -m crates/server/Cargo.toml \
         --features embed-ui -o /out/notices/third-party-rust-server.txt deploy/notices/about.hbs \
@@ -75,11 +75,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10010 diffpilot \
     && useradd --uid 10010 --gid 10010 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin diffpilot \
-    && install -d -o 10010 -g 10010 -m 0700 /var/lib/diffpilot \
+    && install -d -o 10010 -g 10010 -m 0700 /var/lib/diffpilot /var/lib/diffpilot-gateway \
     && install -d -m 0755 /usr/share/doc/diffpilot \
     && dpkg-query -W -f='${Package} ${Version} ${source:Package} ${source:Version}\n' \
         > /usr/share/doc/diffpilot/packages.txt
-COPY --from=build /out/diffpilot-server /usr/local/bin/diffpilot-server
+COPY --from=build /out/diffpilot-server /out/diffpilot-gateway /usr/local/bin/
 COPY --from=web /out/notices/ /usr/share/doc/diffpilot/
 COPY --from=build /out/notices/ /usr/share/doc/diffpilot/
 # After the notices: --chmod on a COPY that creates the directory would apply to the directory too.

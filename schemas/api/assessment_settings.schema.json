@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AssessmentSettings",
+  "description": "GET /settings/comment-assessment; PUT uses AssessmentSettingsUpdate and never schedules work itself.",
+  "type": "object",
+  "properties": {
+    "revision": {
+      "description": "Opaque content revision required for an atomic conditional write.",
+      "type": "string"
+    },
+    "config": {
+      "description": "Effective per-user configuration.",
+      "$ref": "#/$defs/AssessmentConfig"
+    },
+    "quota": {
+      "description": "Safe remaining/reset status.",
+      "$ref": "#/$defs/AssessmentQuota"
+    }
+  },
+  "required": [
+    "revision",
+    "config",
+    "quota"
+  ],
+  "$defs": {
+    "AssessmentConfig": {
+      "description": "Per-user settings; changing them alone never schedules work.",
+      "type": "object",
+      "properties": {
+        "primary_method": {
+          "description": "Only this method can change visible items or effects.",
+          "$ref": "#/$defs/AssessmentMethod",
+          "default": "claudius_host"
+        },
+        "ab_prs": {
+          "description": "Explicit owner/repo#number selections, empty by default.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "ab_until": {
+          "description": "Optional UTC deadline, absent by default.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time",
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "AssessmentMethod": {
+      "description": "An assessment adapter; native outputs retain their own validation contracts.",
+      "oneOf": [
+        {
+          "description": "Host-supplied claudius 4.2 report.",
+          "type": "string",
+          "const": "claudius_host"
+        },
+        {
+          "description": "Existing strict prompt v4 output.",
+          "type": "string",
+          "const": "prompt_v4"
+        }
+      ]
+    },
+    "AssessmentQuota": {
+      "description": "Safe quota status; unrelated jobs are unaffected.",
+      "type": "object",
+      "properties": {
+        "remaining": {
+          "description": "Logical passes still available today, out of 80.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "resets_at": {
+          "description": "Next UTC midnight.",
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "remaining",
+        "resets_at"
+      ]
+    }
+  }
+}

@@ -60,6 +60,8 @@ enum StartError {
     Resume(#[source] DbError),
     #[error("could not follow the open questions")]
     ResumeQuestions(#[source] DbError),
+    #[error("could not follow the live comment assessment passes")]
+    ResumePasses(#[source] DbError),
     #[error("could not end the dashboard refreshes the restart interrupted")]
     RecoverDashboard(#[source] DbError),
     #[error("the HTTP server stopped with an I/O error")]
@@ -140,12 +142,18 @@ async fn run(dotenv: Result<PathBuf, dotenvy::Error>) -> Result<(), StartError> 
     server::ask::resume_unanswered(&state)
         .await
         .map_err(StartError::ResumeQuestions)?;
+    server::review_loop::assess::resume(&state)
+        .await
+        .map_err(StartError::ResumePasses)?;
     server::dashboard::refresh::recover(&state)
         .await
         .map_err(StartError::RecoverDashboard)?;
     // After the recovery, so a scheduled start never meets a refresh the restart left live.
     server::dashboard::schedule::spawn(state.clone());
     server::dashboard::plugin::spawn(state.clone());
+    server::dashboard::fresh::spawn(state.clone());
+    server::review_loop::feed::spawn(state.clone());
+    server::review_loop::notify::spawn(state.clone());
 
     let (stop, stopped) = (state.stopping.clone(), state.stopping.subscribe());
     tokio::spawn(async move {

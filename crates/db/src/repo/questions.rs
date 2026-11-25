@@ -1,9 +1,10 @@
-//! Repository for `questions`: Ask questions on steps or lines of an analysis and their LLM answers.
+//! Repository for `questions`: Ask questions on steps or lines of an analysis, or on review-comment items of a pull
+//! request (with or without an analysis), and their LLM answers.
 
 use contracts::agent::ask::AskOutput;
 use contracts::api::questions::{AskAnchor, AskQuestion, AskState};
 use contracts::common::LineRange;
-use contracts::ids::{AnalysisId, FlowId, JobId, QuestionId, StepId};
+use contracts::ids::{AnalysisId, CommentItemId, FlowId, JobId, QuestionId, StepId};
 use contracts::time::Timestamp;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqlitePool};
@@ -64,13 +65,43 @@ pub enum Asked {
     UserLimit,
 }
 
+/// A question about a review-comment item without an analysis; the tenant is the item's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewPrQuestion {
+    /// Question id.
+    pub id: QuestionId,
+    /// `pull_requests.id`.
+    pub pull_request_id: i64,
+    /// The item, of this pull request.
+    pub item: CommentItemId,
+    /// A follow-up: the first question of its thread (same pull request, item and user, checked by the caller).
+    pub parent_id: Option<QuestionId>,
+    /// Who asked.
+    pub user_id: String,
+    /// The question text (user input, stored as given).
+    pub text: String,
+}
+
+/// Limits of [`Questions::create_for_pr`], checked in the insert statement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PrQuestionLimits {
+    /// Questions one user may hold about one pull request's items.
+    pub per_pull_request: u32,
+    /// Questions one user may ask from `user_window_start` on (all questions).
+    pub per_user: u32,
+    /// Start of the per-user window.
+    pub user_window_start: Timestamp,
+}
+
 /// A stored question with what only the server needs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QuestionRecord {
     /// The question as the API shows it.
     pub question: AskQuestion,
-    /// The analysis.
-    pub analysis_id: AnalysisId,
+    /// The analysis; none for a comment-item question without an analysis.
+    pub analysis_id: Option<AnalysisId>,
+    /// The pull request; none only for questions stored before migration 0018 without an analysis row.
+    pub pull_request_id: Option<i64>,
     /// Who asked.
     pub user_id: String,
     /// The `ask` job, once submitted.
@@ -100,7 +131,7 @@ pub enum QuestionUpdate {
 /// job's paused credential, if still ahead (`?1` = now).
 macro_rules! question_select {
     () => {
-        "SELECT q.id, q.analysis_id, q.step_id, q.path, q.side, q.start_line, q.end_line, q.user_id, q.text, q.state, q.answer, q.failure, q.job_id,
+        "SELECT q.id, q.analysis_id, q.pull_request_id, q.item_id, q.step_id, q.path, q.side, q.start_line, q.end_line, q.user_id, q.text, q.state, q.answer, q.failure, q.job_id,
              q.created_at, q.answered_at, q.touched_steps, q.kind, q.flow_id, q.parent_id, u.login AS asked_by,
              CASE WHEN q.state = 'pending' THEN
                  CASE WHEN j.state = 'paused' AND j.resumes_at > ?1 THEN j.resumes_at
@@ -109,7 +140,7 @@ macro_rules! question_select {
          FROM questions q
          JOIN users u ON u.id = q.user_id
          LEFT JOIN jobs j ON j.id = q.job_id
-         LEFT JOIN llm_credentials c ON c.id = j.credential_id"
+         LEFT JOIN llm_credentials c ON c.user_id = j.payer_id"
     };
 }
 
@@ -121,7 +152,7 @@ fn optional_ts(row: &SqliteRow, column: &'static str) -> Result<Option<Timestamp
 
 fn record_from_row(row: &SqliteRow) -> Result<QuestionRecord, DbError> {
     let id: String = row.try_get("id")?;
-    let analysis: String = row.try_get("analysis_id")?;
+    let analysis: Option<String> = row.try_get("analysis_id")?;
     let state: String = row.try_get("state")?;
     let created_at: String = row.try_get("created_at")?;
     let answer: Option<String> = row.try_get("answer")?;
@@ -146,7 +177,10 @@ fn record_from_row(row: &SqliteRow) -> Result<QuestionRecord, DbError> {
             created_at: parse_ts(&created_at, "questions.created_at")?,
             resumes_at: optional_ts(row, "resumes_at")?,
         },
-        analysis_id: parse_wire(&analysis, "questions.analysis_id")?,
+        analysis_id: analysis
+            .map(|analysis| parse_wire(&analysis, "questions.analysis_id"))
+            .transpose()?,
+        pull_request_id: row.try_get("pull_request_id")?,
         user_id: row.try_get("user_id")?,
         job_id: job
             .map(|job| parse_wire(&job, "questions.job_id"))
@@ -173,6 +207,7 @@ fn anchor_from_row(row: &SqliteRow) -> Result<AskAnchor, DbError> {
     let path: Option<String> = row.try_get("path")?;
     let side: Option<String> = row.try_get("side")?;
     let flow: Option<String> = row.try_get("flow_id")?;
+    let item: Option<String> = row.try_get("item_id")?;
     let corrupt = |column| DbError::Corrupt { column };
     match kind.as_str() {
         "step" => Ok(AskAnchor::Step {
@@ -191,6 +226,12 @@ fn anchor_from_row(row: &SqliteRow) -> Result<AskAnchor, DbError> {
             flow_id: FlowId(flow.ok_or(corrupt("questions.flow_id"))?),
         }),
         "pr" => Ok(AskAnchor::Pr),
+        "comment_item" => Ok(AskAnchor::CommentItem {
+            item: parse_wire(
+                &item.ok_or(corrupt("questions.item_id"))?,
+                "questions.item_id",
+            )?,
+        }),
         _ => Err(corrupt("questions.kind")),
     }
 }
@@ -205,6 +246,7 @@ struct AnchorColumns<'a> {
     start: Option<u32>,
     end: Option<u32>,
     flow: Option<&'a str>,
+    item: Option<String>,
 }
 
 fn anchor_columns(anchor: &AskAnchor) -> Result<AnchorColumns<'_>, DbError> {
@@ -245,6 +287,11 @@ fn anchor_columns(anchor: &AskAnchor) -> Result<AnchorColumns<'_>, DbError> {
             kind: "pr",
             ..AnchorColumns::default()
         },
+        AskAnchor::CommentItem { item } => AnchorColumns {
+            kind: "comment_item",
+            item: Some(item.to_string()),
+            ..AnchorColumns::default()
+        },
     })
 }
 
@@ -258,9 +305,10 @@ impl Questions<'_> {
     ) -> Result<Asked, DbError> {
         let anchor = anchor_columns(&question.anchor)?;
         let inserted = sqlx::query(
-            "INSERT INTO questions (id, tenant_id, analysis_id, step_id, path, side, start_line, end_line, user_id,
-                 text, state, created_at, kind, flow_id, parent_id)
-             SELECT ?1, a.tenant_id, a.id, ?2, ?10, ?11, ?12, ?13, ?3, ?4, 'pending', ?5, ?14, ?15, ?16
+            "INSERT INTO questions (id, tenant_id, analysis_id, pull_request_id, step_id, path, side, start_line,
+                 end_line, user_id, text, state, created_at, kind, flow_id, parent_id, item_id)
+             SELECT ?1, a.tenant_id, a.id, a.pull_request_id, ?2, ?10, ?11, ?12, ?13, ?3, ?4, 'pending', ?5, ?14, ?15,
+                 ?16, ?17
              FROM analyses a WHERE a.id = ?6
                  AND (SELECT COUNT(*) FROM questions WHERE analysis_id = a.id AND user_id = ?3) < ?7
                  AND (SELECT COUNT(*) FROM questions WHERE user_id = ?3 AND created_at >= ?8) < ?9",
@@ -281,6 +329,7 @@ impl Questions<'_> {
         .bind(anchor.kind)
         .bind(anchor.flow)
         .bind(question.parent_id.map(|parent| parent.to_string()))
+        .bind(anchor.item)
         .execute(self.pool)
         .await?;
         if inserted.rows_affected() == 1 {
@@ -326,7 +375,7 @@ impl Questions<'_> {
         }
     }
 
-    /// One question; `resumes_at` as of `now`.
+    /// One question (with or without an analysis); `resumes_at` as of `now`.
     pub async fn get(&self, id: QuestionId, now: Timestamp) -> Result<QuestionRecord, DbError> {
         let row = sqlx::query(concat!(question_select!(), " WHERE q.id = ?2"))
             .bind(ts(now))
@@ -381,13 +430,13 @@ impl Questions<'_> {
             .collect()
     }
 
-    /// Questions of every tenant whose end is not stored yet, oldest first: `pending`, `answering`, or answered
-    /// provisionally (the job's result, possibly already recorded, decides).
+    /// Analysis and private PR questions whose end is not stored yet, oldest first: `pending`, `answering`, or
+    /// answered provisionally (the job's result, possibly already recorded, decides).
     pub async fn unanswered(&self, now: Timestamp) -> Result<Vec<QuestionRecord>, DbError> {
         let rows = sqlx::query(concat!(
             question_select!(),
-            " WHERE q.state IN ('pending', 'answering')
-                 OR (q.state = 'answered' AND q.answered_at IS NULL)
+            " WHERE (q.analysis_id IS NOT NULL OR q.private_ask=1) AND (q.state IN ('pending', 'answering')
+                 OR (q.state = 'answered' AND q.answered_at IS NULL))
              ORDER BY q.created_at, q.rowid"
         ))
         .bind(ts(now))
@@ -406,7 +455,8 @@ impl Questions<'_> {
         let rows = sqlx::query(concat!(
             question_select!(),
             ", questions asked
-             WHERE asked.id = ?2 AND q.user_id = asked.user_id AND q.analysis_id = asked.analysis_id
+             WHERE asked.id = ?2 AND q.user_id = asked.user_id AND q.analysis_id IS asked.analysis_id
+                 AND q.pull_request_id IS asked.pull_request_id
                  AND COALESCE(asked.parent_id, asked.id) IN (q.id, q.parent_id) AND q.rowid < asked.rowid
              ORDER BY q.rowid"
         ))
@@ -447,15 +497,166 @@ impl Questions<'_> {
         question: QuestionId,
     ) -> Result<Vec<(String, AskOutput)>, DbError> {
         let rows: Vec<(String, String)> = sqlx::query_as(
-            "SELECT q.text, q.answer FROM questions q JOIN analyses a ON a.id = q.analysis_id,
-                questions asked JOIN analyses current ON current.id = asked.analysis_id
-             WHERE asked.id = ? AND q.user_id = asked.user_id AND a.pull_request_id = current.pull_request_id
+            "SELECT q.text, q.answer FROM questions q, questions asked
+             WHERE asked.id = ? AND q.user_id = asked.user_id AND q.tenant_id = asked.tenant_id
+                AND q.pull_request_id = asked.pull_request_id
                 AND q.state = 'answered' AND q.answered_at IS NOT NULL AND q.answer IS NOT NULL
-                AND q.rowid < asked.rowid ORDER BY q.rowid DESC LIMIT 20")
-            .bind(question.to_string()).fetch_all(self.pool).await?;
+                AND q.rowid < asked.rowid ORDER BY q.rowid DESC LIMIT 20",
+        )
+        .bind(question.to_string())
+        .fetch_all(self.pool)
+        .await?;
         rows.into_iter()
             .rev()
             .map(|(text, answer)| Ok((text, serde_json::from_str(&answer)?)))
+            .collect()
+    }
+
+    /// Stores a question about `question.item` of a pull request without an analysis as `pending` unless a limit is
+    /// reached; `NotFound` when the item is not one of that pull request's.
+    pub async fn create_for_pr(
+        &self,
+        question: NewPrQuestion,
+        limits: PrQuestionLimits,
+        now: Timestamp,
+    ) -> Result<Asked, DbError> {
+        self.create_pr_question(question, limits, now, false).await
+    }
+
+    /// Stores a private Verify-kind Ask for a PR without an analysis, outside assessment passes.
+    pub async fn create_private_for_pr(
+        &self,
+        question: NewPrQuestion,
+        limits: PrQuestionLimits,
+        now: Timestamp,
+    ) -> Result<Asked, DbError> {
+        self.create_pr_question(question, limits, now, true).await
+    }
+
+    async fn create_pr_question(
+        &self,
+        question: NewPrQuestion,
+        limits: PrQuestionLimits,
+        now: Timestamp,
+        private: bool,
+    ) -> Result<Asked, DbError> {
+        let mut tx = super::write_tx(self.pool).await?;
+        let inserted = sqlx::query(
+            "INSERT INTO questions (id, tenant_id, analysis_id, pull_request_id, user_id, text, state, created_at, kind,
+                 parent_id, item_id, private_ask)
+             SELECT ?1, i.tenant_id, NULL, i.pull_request_id, ?2, ?3, 'pending', ?4, 'comment_item', ?5, i.id, ?11
+             FROM comment_items i WHERE i.id = ?6 AND i.pull_request_id = ?7
+                 AND (SELECT COUNT(*) FROM questions WHERE pull_request_id = ?7 AND user_id = ?2
+                      AND kind = 'comment_item') < ?8
+                 AND (SELECT COUNT(*) FROM questions WHERE user_id = ?2 AND created_at >= ?9) < ?10",
+        )
+        .bind(question.id.to_string())
+        .bind(&question.user_id)
+        .bind(&question.text)
+        .bind(ts(now))
+        .bind(question.parent_id.map(|parent| parent.to_string()))
+        .bind(question.item.to_string())
+        .bind(question.pull_request_id)
+        .bind(limits.per_pull_request)
+        .bind(ts(limits.user_window_start))
+        .bind(limits.per_user)
+        .bind(private)
+        .execute(&mut *tx)
+        .await?;
+        if inserted.rows_affected() == 1 {
+            tx.commit().await?;
+            return Ok(Asked::Stored(Box::new(self.get(question.id, now).await?)));
+        }
+        let held: Option<u32> = sqlx::query_scalar(
+            "SELECT (SELECT COUNT(*) FROM questions q WHERE q.pull_request_id = ?2 AND q.user_id = ?3
+                 AND q.kind = 'comment_item')
+             FROM comment_items i WHERE i.id = ?1 AND i.pull_request_id = ?2",
+        )
+        .bind(question.item.to_string())
+        .bind(question.pull_request_id)
+        .bind(&question.user_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        match held {
+            None => Err(DbError::NotFound),
+            Some(held) if held >= limits.per_pull_request => Ok(Asked::AnalysisLimit),
+            Some(_) => Ok(Asked::UserLimit),
+        }
+    }
+
+    /// The reader's questions about the review-comment items of a pull request, with or without an analysis, oldest
+    /// first; `resumes_at` as of `now`.
+    pub async fn list_for_pull_request(
+        &self,
+        pull_request_id: i64,
+        user: &str,
+        now: Timestamp,
+    ) -> Result<Vec<AskQuestion>, DbError> {
+        let rows = sqlx::query(concat!(
+            question_select!(),
+            " WHERE q.pull_request_id = ?2 AND q.user_id = ?3 AND q.kind = 'comment_item'
+             ORDER BY q.created_at, q.rowid"
+        ))
+        .bind(ts(now))
+        .bind(pull_request_id)
+        .bind(user)
+        .fetch_all(self.pool)
+        .await?;
+        rows.iter()
+            .map(|row| {
+                let mut question = record_from_row(row)?.question;
+                question.mine = Some(true);
+                Ok(question)
+            })
+            .collect()
+    }
+
+    /// The oldest question without an analysis of `pull_request_id` still waiting for a question pass.
+    pub async fn next_unsent_for_pr(
+        &self,
+        pull_request_id: i64,
+        now: Timestamp,
+    ) -> Result<Option<QuestionRecord>, DbError> {
+        let row = sqlx::query(concat!(
+            question_select!(),
+            " WHERE q.pull_request_id = ?2 AND q.analysis_id IS NULL AND q.private_ask=0 AND q.state = 'pending' AND q.job_id IS NULL
+             ORDER BY q.created_at, q.rowid LIMIT 1"
+        ))
+        .bind(ts(now))
+        .bind(pull_request_id)
+        .fetch_optional(self.pool)
+        .await?;
+        row.as_ref().map(record_from_row).transpose()
+    }
+
+    /// Pull requests with a question without an analysis that no pass has taken yet (server start).
+    pub async fn pull_requests_with_unsent(&self) -> Result<Vec<i64>, DbError> {
+        Ok(sqlx::query_scalar(
+            "SELECT DISTINCT pull_request_id FROM questions
+             WHERE analysis_id IS NULL AND private_ask=0 AND state = 'pending' AND job_id IS NULL ORDER BY pull_request_id",
+        )
+        .fetch_all(self.pool)
+        .await?)
+    }
+
+    /// Answered comment-item questions per item of a pull request for one reader (the card's Ask count).
+    pub async fn answers_per_item(
+        &self,
+        pull_request_id: i64,
+        user: &str,
+    ) -> Result<Vec<(CommentItemId, u32)>, DbError> {
+        let rows: Vec<(String, u32)> = sqlx::query_as(
+            "SELECT item_id, COUNT(*) FROM questions
+             WHERE pull_request_id = ? AND user_id = ? AND kind = 'comment_item' AND state = 'answered'
+             GROUP BY item_id ORDER BY item_id",
+        )
+        .bind(pull_request_id)
+        .bind(user)
+        .fetch_all(self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|(item, count)| Ok((parse_wire(&item, "questions.item_id")?, count)))
             .collect()
     }
 
@@ -484,6 +685,28 @@ impl Questions<'_> {
             return Err(DbError::NotFound);
         }
         Ok(())
+    }
+
+    /// Publishes a private ready answer only while its owned job has not been cancelled.
+    pub async fn publish_private_provisional(
+        &self,
+        question: QuestionId,
+        job: JobId,
+        answer: &AskOutput,
+        now: Timestamp,
+    ) -> Result<Option<AskQuestion>, DbError> {
+        let mut tx = super::write_tx(self.pool).await?;
+        let changed = sqlx::query("UPDATE questions SET state='answered',answer=?,failure=NULL
+            WHERE id=? AND job_id=? AND private_ask=1 AND state<>'failed' AND answered_at IS NULL
+            AND EXISTS(SELECT 1 FROM jobs j WHERE j.id=questions.job_id AND j.payer_id=questions.user_id
+                AND j.pull_request_id=questions.pull_request_id AND j.cancel_requested=0 AND j.state<>'cancelled')")
+            .bind(serde_json::to_string(answer)?).bind(question.to_string()).bind(job.to_string())
+            .execute(&mut *tx).await?.rows_affected();
+        tx.commit().await?;
+        if changed == 0 {
+            return Ok(None);
+        }
+        Ok(Some(self.get(question, now).await?.question))
     }
 
     /// Stores a state change; an answer replaces the failure and vice versa.
@@ -534,7 +757,7 @@ mod tests {
     use contracts::agent::JobKind;
     use contracts::common::{Evidence, LineSide};
     use contracts::job::result::{JobOutcome, JobResult};
-    use contracts::job::spec::{CredentialKind, JobPriority, LlmCredentialRef};
+    use contracts::job::spec::JobPriority;
     use jiff::SignedDuration;
 
     use super::*;
@@ -1058,10 +1281,7 @@ mod tests {
             .await
             .expect("enqueue");
         db.questions().set_job(id, job.id).await.expect("link");
-        let credential = LlmCredentialRef {
-            id: CREDENTIAL.to_owned(),
-            kind: CredentialKind::CodexChatgpt,
-        };
+        let credential = contracts::ids::UserId(CREDENTIAL.to_owned());
         db.llm_credentials()
             .register(DEFAULT_TENANT, &credential, true, at(0))
             .await
@@ -1085,7 +1305,7 @@ mod tests {
         let claimed = db
             .jobs()
             .claim(ClaimParams {
-                credential_ids: &[CREDENTIAL.to_owned()],
+                payer_ids: &[CREDENTIAL.to_owned()],
                 job_token_hash: b"hash",
                 lease_until: at(40),
                 now: at(31),
@@ -1096,6 +1316,8 @@ mod tests {
         db.jobs()
             .complete(
                 &JobResult {
+                    assessment: None,
+                    report: None,
                     job_id: claimed.id,
                     attempt: claimed.attempt,
                     outcome: JobOutcome::UsageLimited {

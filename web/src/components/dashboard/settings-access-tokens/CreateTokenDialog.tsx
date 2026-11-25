@@ -3,6 +3,7 @@ import type { CreateAccessToken, CreatedAccessToken } from "../../../api/generat
 import { busyTip, buttonClass } from "../../button/button";
 import { useAction } from "../../inspector/action";
 import { Tooltip } from "../../tooltip/Tooltip";
+import { writeClipboard } from "../common/copyList";
 
 /** Lifetimes offered, in days (`CreateAccessToken::EXPIRY_DAYS`); 90 is preselected. */
 const EXPIRY_DAYS = [30, 90, 365];
@@ -26,7 +27,8 @@ export function nameProblem(name: string, names: string[]): string | null {
 }
 
 /**
- * Modal dialog that creates a read-only token and shows its secret once, with a copy button. The secret lives
+ * Modal dialog that creates a token (read, optionally with the review-loop execute scope) and shows its secret
+ * once, with a copy button. The secret lives
  * only in this dialog's state: never in browser storage or logs, and it is dropped when the dialog closes.
  */
 export function CreateTokenDialog({ names, onCreate, onClose }: CreateTokenDialogProps) {
@@ -34,6 +36,7 @@ export function CreateTokenDialog({ names, onCreate, onClose }: CreateTokenDialo
   const dialog = useRef<HTMLDivElement>(null);
   const [name, setName] = useState("");
   const [days, setDays] = useState(DEFAULT_EXPIRY_DAYS);
+  const [execute, setExecute] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [secret, setSecret] = useState<string | null>(null);
   const [copied, setCopied] = useState<"copied" | "failed" | null>(null);
@@ -50,17 +53,17 @@ export function CreateTokenDialog({ names, onCreate, onClose }: CreateTokenDialo
     setProblem(refused);
     if (refused) return;
     await action.run(async () => {
-      const created = await onCreate({ name: trimmed, scopes: ["read"], expires_in_days: days });
+      const created = await onCreate({
+        name: trimmed,
+        scopes: execute ? ["read", "review_loop_execute"] : ["read"],
+        expires_in_days: days,
+      });
       setSecret(created.token);
     });
   };
+  // Plain text only: a token never goes to the clipboard as HTML. Works over plain HTTP too (the LAN deployment).
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(secret ?? "");
-      setCopied("copied");
-    } catch {
-      setCopied("failed");
-    }
+    setCopied((await writeClipboard({ text: secret ?? "" })) ? "copied" : "failed");
   };
   // While the request runs the dialog stays: closing it then would hide a secret the server already made.
   const close = () => {
@@ -147,9 +150,30 @@ export function CreateTokenDialog({ names, onCreate, onClose }: CreateTokenDialo
                 ))}
               </select>
             </div>
-            <p>
-              Scope: <b>read</b>. The token reads what you can read here and cannot change anything.
-            </p>
+            {execute ? (
+              <p>
+                Scope: <b>read</b> and <b>review_loop_execute</b>. The token reads what you can read here and
+                can claim and report on decisions as described below.
+              </p>
+            ) : (
+              <p>
+                Scope: <b>read</b>. The token reads what you can read here and cannot change anything.
+              </p>
+            )}
+            <label className="flex min-h-6 items-start gap-2">
+              <input
+                type="checkbox"
+                checked={execute}
+                className="mt-1"
+                onChange={(e) => setExecute(e.target.checked)}
+              />
+              <span>
+                Also <b>review_loop_execute</b>: an implementing agent with this token may claim any current
+                decision on PR comments in this diffpilot, yours and other users&apos;, report its effects
+                done, failed or released, and set a push target that diffpilot sends requests to. It still
+                cannot decide.
+              </span>
+            </label>
             {message && (
               <p id={`${id}-error`} role="alert" className="text-high">
                 Not created: {message}

@@ -2,8 +2,10 @@
 //! body bytes with `If-None-Match` → 304, a status override (e.g. 503 before the first snapshot), a raw body
 //! override (malformed JSON) and a log of every request.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use axum::Router;
 use axum::extract::{Request, State};
@@ -29,6 +31,8 @@ pub(crate) struct Served {
 struct World {
     prs: Value,
     stages: Value,
+    details: HashMap<String, Value>,
+    detail_delay: Duration,
     status: Option<StatusCode>,
     raw: Option<String>,
     served: Vec<Served>,
@@ -42,14 +46,19 @@ pub(crate) struct FakePrHygiene {
     pub url: Url,
 }
 
-/// The stage list the real service serves (2026-11-21).
+/// The stage list the real service serves (2026-11-22).
 pub(crate) fn stages() -> Value {
     json!({"idle_days": 14, "stages": [
         {"stage": "draft", "owner": "author", "in_flow": false, "late_hours": null, "entry_recorded": true},
         {"stage": "bots", "owner": "bots", "in_flow": true, "late_hours": [24.0, 48.0], "entry_recorded": true},
         {"stage": "self-review", "owner": "author", "in_flow": true, "late_hours": [72.0, 168.0], "entry_recorded": true},
+        {"stage": "ci", "owner": "nobody", "in_flow": true, "late_hours": [6.0, 24.0], "entry_recorded": false},
+        {"stage": "queued", "owner": "nobody", "in_flow": true, "late_hours": null, "entry_recorded": true},
         {"stage": "review", "owner": "reviewers", "in_flow": true, "late_hours": [24.0, 72.0], "entry_recorded": true},
-        {"stage": "mergeable", "owner": "author", "in_flow": true, "late_hours": [24.0, 72.0], "entry_recorded": true}
+        {"stage": "mergeable", "owner": "author", "in_flow": true, "late_hours": [24.0, 72.0], "entry_recorded": true},
+        {"stage": "blocked", "owner": "maintainers", "in_flow": true, "late_hours": [24.0, 72.0], "entry_recorded": true},
+        {"stage": "not-governed", "owner": "author", "in_flow": false, "late_hours": null, "entry_recorded": true},
+        {"stage": "unknown", "owner": "nobody", "in_flow": false, "late_hours": null, "entry_recorded": false}
     ]})
 }
 
@@ -100,6 +109,18 @@ impl FakePrHygiene {
         self.world().prs = body;
     }
 
+    /// Sets the response for a single pull request.
+    pub(crate) fn set_detail(&self, repo: &str, number: u32, body: Value) {
+        self.world()
+            .details
+            .insert(format!("/api/v1/prs/{repo}/{number}"), body);
+    }
+
+    /// Delays every per-PR response without delaying the aggregate endpoints.
+    pub(crate) fn set_detail_delay(&self, delay: Duration) {
+        self.world().detail_delay = delay;
+    }
+
     /// The `/prs` body.
     pub(crate) fn prs(&self) -> Value {
         self.world().prs.clone()
@@ -122,6 +143,20 @@ impl FakePrHygiene {
 }
 
 async fn serve(State(world): State<Arc<Mutex<World>>>, request: Request) -> Response {
+    let delay = if request.uri().path().starts_with("/api/v1/prs/") {
+        world
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .detail_delay
+    } else {
+        Duration::ZERO
+    };
+    let response = respond(&world, request);
+    tokio::time::sleep(delay).await;
+    response
+}
+
+fn respond(world: &Mutex<World>, request: Request) -> Response {
     let path = request.uri().path().to_owned();
     let if_none_match = request
         .headers()
@@ -137,7 +172,7 @@ async fn serve(State(world): State<Arc<Mutex<World>>>, request: Request) -> Resp
         let body = match path.as_str() {
             "/api/v1/prs" => Some(world.prs.to_string()),
             "/api/v1/stages" => Some(world.stages.to_string()),
-            _ => None,
+            _ => world.details.get(&path).map(Value::to_string),
         };
         match body {
             None => (StatusCode::NOT_FOUND, StatusCode::NOT_FOUND.into_response()),

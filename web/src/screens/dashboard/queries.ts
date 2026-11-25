@@ -5,7 +5,7 @@ import { useMutationState } from "@tanstack/react-query";
 import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { ApiError, api } from "../../api/client";
-import type { DashboardSummary, RefreshId, RefreshStatus, WorkItem } from "../../api/generated/types";
+import type { DashboardSummary, PrRef, RefreshId, RefreshStatus, WorkItem } from "../../api/generated/types";
 
 /** Query key of the summary (R1). */
 export const SUMMARY_KEY = ["dashboard"] as const;
@@ -46,8 +46,12 @@ export function isOlderStatus(next: RefreshStatus, kept: RefreshStatus | null | 
   return at >= 0 && a[at]! < b[at]!;
 }
 
-/** How often the summary is read again while it lists a dashboard plug-in (ADR-022) and the tab is visible. */
-export const PLUGIN_REFETCH_MS = 60_000;
+/**
+ * How often the summary is read again while the tab is visible: the read keeps My work open on the server, which
+ * checks the listed pull requests and scans again while it is (plan §M), and it keeps plug-in statements current
+ * (ADR-022).
+ */
+export const SUMMARY_REFETCH_MS = 60_000;
 
 /** The quicker re-read while a listed plug-in is not current (the server polls it once a reader is back). */
 export const PLUGIN_RETRY_MS = 5_000;
@@ -59,27 +63,26 @@ const pluginNotCurrent = (summary: DashboardSummary | undefined): boolean =>
   summary?.plugins?.some((plugin) => plugin.state !== "current") ?? false;
 
 /**
- * The summary's re-read interval: none without a plug-in; while one is not current, every `PLUGIN_RETRY_MS` for
- * the first `PLUGIN_RETRY_READS` such reads in a row (`notCurrentReads`); otherwise every minute.
+ * The summary's re-read interval: while a listed plug-in is not current, every `PLUGIN_RETRY_MS` for the first
+ * `PLUGIN_RETRY_READS` such reads in a row (`notCurrentReads`); otherwise every minute.
  */
-export const summaryRefetchInterval = (
-  summary: DashboardSummary | undefined,
-  notCurrentReads = 0,
-): number | false => {
-  if (!summary?.plugins?.length) return false;
-  return pluginNotCurrent(summary) && notCurrentReads <= PLUGIN_RETRY_READS
-    ? PLUGIN_RETRY_MS
-    : PLUGIN_REFETCH_MS;
-};
+export const summaryRefetchInterval = (summary: DashboardSummary | undefined, notCurrentReads = 0): number =>
+  pluginNotCurrent(summary) && notCurrentReads <= PLUGIN_RETRY_READS ? PLUGIN_RETRY_MS : SUMMARY_REFETCH_MS;
 
 /**
- * The user's dashboard summary; disabled while signed out. A latest refresh older than the shown one is kept. While
- * the summary lists a dashboard plug-in it is read again every minute (visible tabs only), which keeps the
- * plug-in's statements current and the reader counted as active; sooner while a plug-in is not current yet, so a
- * returning reader sees its statements within seconds (`summaryRefetchInterval`).
+ * The user's dashboard summary; disabled while signed out. A latest refresh older than the shown one is kept. It is
+ * read again every minute (visible tabs only), which keeps My work open on the server (plan §M) and plug-in
+ * statements current, and brings a new revision or an automatic scan to the page; sooner while a plug-in is not
+ * current yet, so a returning reader sees its statements within seconds (`summaryRefetchInterval`).
  */
 export function useDashboardSummary(enabled: boolean) {
   const client = useQueryClient();
+  const [visible, setVisible] = useState(() => document.visibilityState === "visible");
+  useEffect(() => {
+    const changed = () => setVisible(document.visibilityState === "visible");
+    document.addEventListener("visibilitychange", changed);
+    return () => document.removeEventListener("visibilitychange", changed);
+  }, []);
   const notCurrentReads = useRef(0);
   return useQuery({
     queryKey: SUMMARY_KEY,
@@ -91,7 +94,7 @@ export function useDashboardSummary(enabled: boolean) {
         ? { ...summary, latest_refresh: kept! }
         : summary;
     },
-    enabled,
+    enabled: enabled && visible,
     refetchInterval: (query) => summaryRefetchInterval(query.state.data, notCurrentReads.current),
   });
 }
@@ -328,6 +331,18 @@ export function useSaveBrowserTimeZone(summary: DashboardSummary | undefined): {
   return { failed };
 }
 
+/**
+ * The user's Slack names (Settings › Dashboard) for Copy for Slack (K19). A cache entry of its own: the Settings form
+ * starts from its own read, never from this one.
+ */
+export const useSlackNames = (enabled: boolean) =>
+  useQuery({
+    queryKey: ["dashboard-slack-names"],
+    queryFn: api.getDashboardSettings,
+    select: (view) => view.settings.slack_names,
+    enabled,
+  });
+
 /** Hide persists server-side; invalidation also refreshes the navigation count. */
 export function useHideMention() {
   const client = useQueryClient();
@@ -352,4 +367,78 @@ export function useHideMention() {
     },
   });
   return { ...mutation, pendingIds, error, isError: error !== null, dismissError: () => setError(null) };
+}
+
+/** Pending item keys of a mutation keyed `key` (its variables start with the item key). */
+function usePendingKeys(key: string): string[] {
+  return useMutationState({
+    filters: { mutationKey: [key], status: "pending" },
+    select: (m) => (m.state.variables as { key: string }).key,
+  });
+}
+
+/**
+ * Watch of a pull request row without comment counts (RW1, owner 2026-11-23): the server reads its comments first,
+ * so the items are read again for the counts. `watchedKeys` keeps the rows watched in this visit.
+ */
+export function useWatchItem() {
+  const client = useQueryClient();
+  const [error, setError] = useState<Error | null>(null);
+  const [watchedKeys, setWatchedKeys] = useState<string[]>([]);
+  const pendingKeys = usePendingKeys("watch-item");
+  const mutation = useMutation({
+    mutationKey: ["watch-item"],
+    mutationFn: ({ pr }: { key: string; pr: PrRef }) => api.watchPr(pr),
+    onError: setError,
+    onSuccess: (_, { key }) => {
+      setError(null);
+      setWatchedKeys((keys) => (keys.includes(key) ? keys : [...keys, key]));
+      return Promise.all([
+        client.invalidateQueries({ queryKey: ["dashboard-items"] }),
+        client.invalidateQueries({ queryKey: ["watches"] }),
+      ]);
+    },
+  });
+  return {
+    ...mutation,
+    pendingKeys,
+    watchedKeys,
+    error,
+    isError: error !== null,
+    dismissError: () => setError(null),
+  };
+}
+
+/** Snooze of a ranked item (R12, owner SN1): persists server-side; the summary is read again. */
+export function useSnoozeItem() {
+  const client = useQueryClient();
+  const [error, setError] = useState<Error | null>(null);
+  const pendingKeys = usePendingKeys("snooze-item");
+  const mutation = useMutation({
+    mutationKey: ["snooze-item"],
+    mutationFn: ({ key, days }: { key: string; days: number }) => api.snoozeDashboardItem(key, days),
+    onError: setError,
+    onSuccess: () => {
+      setError(null);
+      return client.invalidateQueries({ queryKey: SUMMARY_KEY });
+    },
+  });
+  return { ...mutation, pendingKeys, error, isError: error !== null, dismissError: () => setError(null) };
+}
+
+/** "Wake now" of a snoozed item (R13): ends the snooze; the summary is read again. */
+export function useWakeItem() {
+  const client = useQueryClient();
+  const [error, setError] = useState<Error | null>(null);
+  const pendingKeys = usePendingKeys("wake-item");
+  const mutation = useMutation({
+    mutationKey: ["wake-item"],
+    mutationFn: ({ key }: { key: string }) => api.wakeDashboardItem(key),
+    onError: setError,
+    onSuccess: () => {
+      setError(null);
+      return client.invalidateQueries({ queryKey: SUMMARY_KEY });
+    },
+  });
+  return { ...mutation, pendingKeys, error, isError: error !== null, dismissError: () => setError(null) };
 }

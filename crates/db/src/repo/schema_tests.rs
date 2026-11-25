@@ -9,7 +9,7 @@ use contracts::api::feedback::FeedbackValue;
 use contracts::api::questions::AskState;
 use contracts::common::{LineSide, LlmLanguage};
 use contracts::job::result::JobFailureKind;
-use contracts::job::spec::{CredentialKind, ReasoningEffort};
+use contracts::job::spec::ReasoningEffort;
 use contracts::job::state::JobState;
 use contracts::time::Timestamp;
 use jiff::SignedDuration;
@@ -68,17 +68,27 @@ async fn insert_job(
     credential: &str,
     state: &str,
 ) -> Result<(), DbError> {
-    sqlx::query(
-        "INSERT INTO jobs (id, tenant_id, analysis_id, kind, priority, state, spec, credential_id, created_at, stage)
-         VALUES (?, 'default', ?, 'analyse_flow', 1, ?, '{}', ?, 't', ?)",
-    )
-    .bind(id)
-    .bind(analysis)
-    .bind(state)
-    .bind(credential)
-    .bind(format!("flow:{id}"))
-    .execute(&db.pool)
-    .await?;
+    let current: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM pragma_table_info('jobs') WHERE name='payer_id'")
+            .fetch_one(&db.pool)
+            .await?;
+    if current != 0 {
+        sqlx::query("INSERT OR IGNORE INTO users(id,github_id,login,created_at,updated_at) SELECT ?,COALESCE(MAX(github_id),0)+1,?,'t','t' FROM users")
+            .bind(credential).bind(credential).execute(&db.pool).await?;
+    }
+    let sql = if current == 0 {
+        "INSERT INTO jobs(id,tenant_id,analysis_id,kind,priority,state,spec,credential_id,created_at,stage) VALUES(?,'default',?,'analyse_flow',1,?,'{}',?,'t',?)"
+    } else {
+        "INSERT INTO jobs(id,tenant_id,analysis_id,kind,priority,state,spec,payer_id,pull_request_id,created_at,stage) VALUES(?,'default',?,'analyse_flow',1,?,'{}',?,1,'t',?)"
+    };
+    sqlx::query(sql)
+        .bind(id)
+        .bind(analysis)
+        .bind(state)
+        .bind(credential)
+        .bind(format!("flow:{id}"))
+        .execute(&db.pool)
+        .await?;
     Ok(())
 }
 
@@ -95,6 +105,47 @@ async fn migrations_apply_to_an_empty_file_and_reopen() {
         .await
         .expect("migration table");
     assert_eq!(applied, i64::try_from(MIGRATIONS.len()).expect("count"));
+}
+
+/// Migration 0024 came after 0025 and 0026: a database that already applied those gets it in place on the next start.
+#[tokio::test]
+async fn gone_items_migration_applies_after_later_migrations() {
+    let options = sqlx::sqlite::SqliteConnectOptions::new().in_memory(true);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .min_connections(1)
+        .idle_timeout(None)
+        .max_lifetime(None)
+        .connect_with(options)
+        .await
+        .expect("pool");
+    let without_0024 = MIGRATIONS
+        .iter()
+        .filter(|(version, _, _)| *version != 24 && *version != 30)
+        .map(|(version, description, sql)| {
+            Migration::new(
+                *version,
+                (*description).into(),
+                MigrationType::Simple,
+                sql.into_sql_str(),
+                false,
+            )
+        })
+        .collect();
+    Migrator::with_migrations(without_0024)
+        .run(&pool)
+        .await
+        .expect("through 0026 without 0024");
+    migrate(&pool, MIGRATIONS.len() - 1)
+        .await
+        .expect("0024 later");
+    let column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('comment_items') WHERE name = 'gone_at'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("columns");
+    assert_eq!(column, 1);
 }
 
 /// A binary that knows fewer migrations than the database has applied does not open it.
@@ -154,7 +205,7 @@ async fn flow_auto_retries_migration_keeps_the_rows_of_an_existing_database() {
         .expect("counts");
     assert_eq!(before, "2/1/2/1");
 
-    migrate(&db.pool, MIGRATIONS.len())
+    migrate(&db.pool, MIGRATIONS.len() - 1)
         .await
         .expect("upgrade in place");
 
@@ -199,11 +250,12 @@ async fn flow_auto_retries_migration_keeps_the_rows_of_an_existing_database() {
         versions,
         MIGRATIONS
             .iter()
+            .take(MIGRATIONS.len() - 1)
             .map(|(version, ..)| *version)
             .collect::<Vec<_>>()
     );
     // Running the migrator again changes nothing (the checksum of 0001 still matches).
-    migrate(&db.pool, MIGRATIONS.len())
+    migrate(&db.pool, MIGRATIONS.len() - 1)
         .await
         .expect("idempotent");
 }
@@ -269,7 +321,7 @@ async fn unbound_seed_logins_migration_keeps_bound_and_added_entries() {
     .execute(&pool)
     .await
     .expect("existing install");
-    migrate(&pool, MIGRATIONS.len()).await.expect("0016");
+    migrate(&pool, MIGRATIONS.len() - 1).await.expect("0016");
     assert_eq!(
         allowlist_rows(&pool).await,
         [("alice".to_owned(), None), ("lklimek".to_owned(), Some(7))]
@@ -311,10 +363,12 @@ async fn allowlist_binds_each_github_id_once_per_tenant() {
 
 #[tokio::test]
 async fn tenant_id_on_every_table() {
+    // Assessment configuration and quota are user-wide across tenant memberships.
     let db = db().await;
     let tables: Vec<String> = sqlx::query_scalar(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
-           AND name NOT IN ('_sqlx_migrations', 'tenants', 'users', 'llm_selection') ORDER BY name",
+           AND name NOT IN ('_sqlx_migrations', 'tenants', 'users', 'llm_selection',
+               'assessment_config', 'assessment_daily_usage') ORDER BY name",
     )
     .fetch_all(&db.pool)
     .await
@@ -405,7 +459,11 @@ async fn check_lists_match_contract_enums() {
         ),
         (
             "llm_credentials",
-            in_list([wire_name(CredentialKind::CodexChatgpt)]),
+            in_list([
+                "linking".to_owned(),
+                "linked".to_owned(),
+                "relink_needed".to_owned(),
+            ]),
         ),
         (
             "llm_credentials",
@@ -420,6 +478,15 @@ async fn check_lists_match_contract_enums() {
                             JobFailureKind::Timeout,
                             JobFailureKind::Internal,
                             JobFailureKind::Configuration,
+                            JobFailureKind::WorkerUnavailable,
+                            JobFailureKind::WorkerLost,
+                            JobFailureKind::CredentialMissing,
+                            JobFailureKind::CredentialRelink,
+                            JobFailureKind::ModelUnavailable,
+                            JobFailureKind::UpstreamRejected,
+                            JobFailureKind::ReportVersionUnsupported,
+                            JobFailureKind::InvalidJsonSchema,
+                            JobFailureKind::AskCompactionUnconfirmed,
                         ]
                         .map(CallFailure::Failed),
                     )
@@ -435,7 +502,14 @@ async fn check_lists_match_contract_enums() {
     let dashboard_cases = [
         (
             "dashboard_refreshes",
-            in_list([RefreshTrigger::Manual, RefreshTrigger::Scheduled].map(wire_name)),
+            in_list(
+                [
+                    RefreshTrigger::Manual,
+                    RefreshTrigger::Scheduled,
+                    RefreshTrigger::Automatic,
+                ]
+                .map(wire_name),
+            ),
         ),
         (
             "dashboard_refreshes",
@@ -525,7 +599,7 @@ async fn check_lists_match_contract_enums() {
 }
 
 #[tokio::test]
-async fn one_running_job_per_analysis() {
+async fn one_running_job_per_analysis_and_payer() {
     let db = db().await;
     seed(&db).await;
     insert_job(&db, "j1", "a1", "c1", "running")
@@ -534,7 +608,7 @@ async fn one_running_job_per_analysis() {
     insert_job(&db, "j2", "a1", "c2", "queued")
         .await
         .expect("queued jobs may wait");
-    let second = insert_job(&db, "j3", "a1", "c3", "claimed").await;
+    let second = insert_job(&db, "j3", "a1", "c1", "claimed").await;
     assert!(matches!(second, Err(DbError::Conflict)), "{second:?}");
 }
 
@@ -635,8 +709,8 @@ async fn one_live_job_per_pipeline_stage() {
                   stage: &'static str,
                   state: &'static str| {
         sqlx::query(
-            "INSERT INTO jobs (id, tenant_id, analysis_id, kind, priority, state, spec, credential_id, created_at, stage)
-             VALUES (?, 'default', 'a1', ?, 1, ?, '{}', 'c1', 't', ?)",
+            "INSERT INTO jobs (id, tenant_id, analysis_id, kind, priority, state, spec, payer_id, pull_request_id, created_at, stage)
+             VALUES (?, 'default', 'a1', ?, 1, ?, '{}', 'u1', 1, 't', ?)",
         )
         .bind(id)
         .bind(kind)
@@ -702,9 +776,9 @@ async fn repair_runs_are_new_generations_of_a_stage() {
     seed(&db).await;
     let insert = |id: &'static str, generation: i64, state: &'static str| {
         sqlx::query(
-            "INSERT INTO jobs (id, tenant_id, analysis_id, kind, priority, state, spec, credential_id, created_at,
+            "INSERT INTO jobs (id, tenant_id, analysis_id, kind, priority, state, spec, payer_id, pull_request_id, created_at,
                                stage, generation)
-             VALUES (?, 'default', 'a1', 'analyse_flow', 1, ?, '{}', 'c1', 't', 'flow:f1', ?)",
+             VALUES (?, 'default', 'a1', 'analyse_flow', 1, ?, '{}', 'u1', 1, 't', 'flow:f1', ?)",
         )
         .bind(id)
         .bind(state)
@@ -807,22 +881,20 @@ async fn installation_tokens_survive_until_revocation_is_confirmed() {
 }
 
 #[tokio::test]
-async fn one_running_job_per_pull_request_across_credentials() {
+async fn distinct_payers_can_run_on_one_pull_request() {
     let db = db().await;
     seed(&db).await;
     insert_job(&db, "j1", "a1", "cred-1", "running")
         .await
         .unwrap();
-    assert!(
-        insert_job(&db, "j2", "a2", "cred-2", "claimed")
-            .await
-            .is_err()
-    );
+    insert_job(&db, "j2", "a2", "cred-2", "claimed")
+        .await
+        .unwrap();
     insert_job(&db, "j3", "a2", "cred-2", "queued")
         .await
         .unwrap();
     assert!(
-        sqlx::query("UPDATE jobs SET state = 'claimed' WHERE id = 'j3'")
+        sqlx::query("UPDATE jobs SET state='claimed' WHERE id='j3'")
             .execute(&db.pool)
             .await
             .is_err()
@@ -852,7 +924,7 @@ async fn ask_effort_migration_upgrades_a_stored_selection() {
     .execute(&pool)
     .await
     .expect("stored row");
-    migrate(&pool, MIGRATIONS.len())
+    migrate(&pool, MIGRATIONS.len() - 1)
         .await
         .expect("upgrade in place");
     let row: (String, String, String, String, String) = sqlx::query_as(
@@ -900,7 +972,7 @@ async fn dashboard_migrations_upgrade_a_v1_database() {
     .execute(&pool)
     .await
     .expect("v1 row");
-    migrate(&pool, MIGRATIONS.len())
+    migrate(&pool, MIGRATIONS.len() - 1)
         .await
         .expect("upgrade in place");
     let row: (String, String, String) =
@@ -1154,6 +1226,7 @@ async fn jobs_targets_migration_applies_to_a_v1_database() {
                 input_tokens: 7,
                 cached_input_tokens: 0,
                 output_tokens: 1,
+                requests: None,
             }),
             ..crate::repo::jobs::server_result(
                 current.job_id,
@@ -1180,7 +1253,7 @@ async fn jobs_targets_migration_applies_to_a_v1_database() {
             .expect("child row");
     }
 
-    migrate(&db.pool, MIGRATIONS.len())
+    migrate(&db.pool, MIGRATIONS.len() - 1)
         .await
         .expect("upgrade in place");
 
@@ -1304,7 +1377,7 @@ async fn russian_migration_keeps_the_data_and_accepts_ru() {
     let analysis = crate::repo::analyses::testing::seed_analysis(&db)
         .await
         .expect("analysis");
-    migrate(&db.pool, MIGRATIONS.len())
+    migrate(&db.pool, MIGRATIONS.len() - 1)
         .await
         .expect("upgrade in place");
     let kept: (String, String) =
@@ -1381,7 +1454,7 @@ async fn dependencies_migration_keeps_documents_and_accepts_the_new_kind() {
     .execute(&db.pool)
     .await;
     assert!(refused.is_err(), "not a kind before 0015");
-    migrate(&db.pool, MIGRATIONS.len())
+    migrate(&db.pool, MIGRATIONS.len() - 1)
         .await
         .expect("upgrade in place");
     db.documents()
@@ -1448,7 +1521,7 @@ async fn question_anchors_migration_keeps_every_question_as_a_step_anchor() {
     .execute(&db.pool)
     .await
     .expect("questions of the old schema");
-    migrate(&db.pool, MIGRATIONS.len())
+    migrate(&db.pool, MIGRATIONS.len() - 1)
         .await
         .expect("upgrade in place");
     type Row = (
@@ -1560,7 +1633,8 @@ async fn question_threads_migration_keeps_every_question_with_its_kind() {
         .expect("schema")
     };
     let (order_before, schema_before) = (order().await, schema().await);
-    migrate(&db.pool, MIGRATIONS.len())
+    // Up to 0014 only: later migrations add their own indexes (0018: comment-item questions).
+    migrate(&db.pool, before_threads + 1)
         .await
         .expect("upgrade in place");
     assert_eq!(
@@ -1681,7 +1755,7 @@ async fn russian_migration_reaches_other_open_connections() {
     .execute(&mut *other)
     .await
     .expect("user");
-    migrate(&pool, MIGRATIONS.len())
+    migrate(&pool, MIGRATIONS.len() - 1)
         .await
         .expect("upgrade in place");
     sqlx::query("UPDATE users SET language = 'ru' WHERE id = 'u1'")
@@ -1828,7 +1902,7 @@ async fn first_v12_start_on_a_partially_bound_seed_ends_the_unlisted_maintainer(
     signed_in_v11_user(&pool, "u-owner", "owner", 9).await;
     assert_eq!(live_credentials(&pool, "u-lk").await, (1, 1, 1));
 
-    migrate(&pool, MIGRATIONS.len()).await.expect("0016");
+    migrate(&pool, MIGRATIONS.len() - 1).await.expect("0016");
     assert_eq!(
         allowlist_rows(&pool).await,
         [
@@ -1884,5 +1958,521 @@ async fn fresh_install_listing_a_seeded_login_gets_it_unbound() {
     assert_eq!(
         allowlist_rows(&db.pool).await,
         [("LKLIMEK".to_owned(), None)]
+    );
+}
+
+/// Migration 0018 rebuilds `questions`, `comment_passes` and `jobs` in place: every row keeps its rowid, a follow-up
+/// keeps its parent (no drop cascades into copied rows), questions gain their pull request, children still cascade,
+/// and the new owner rules hold (a `verify_comments` job belongs to a pass; a question without an analysis is a
+/// comment-item question of a pull request).
+#[tokio::test]
+async fn verify_comments_jobs_migration_keeps_rows_and_adds_the_pass_owner() {
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .in_memory(true)
+        .foreign_keys(true);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .min_connections(1)
+        .idle_timeout(None)
+        .max_lifetime(None)
+        .connect_with(options)
+        .await
+        .expect("pool");
+    let before = MIGRATIONS
+        .iter()
+        .position(|(_, name, _)| *name == "verify_comments_jobs")
+        .expect("migration 0018");
+    migrate(&pool, before).await.expect("schema before 0018");
+    let db = Db { pool };
+    seed(&db).await;
+    sqlx::raw_sql(
+        "INSERT INTO questions (id, tenant_id, analysis_id, step_id, user_id, text, state, created_at, kind)
+           VALUES ('q9', 'default', 'a1', 'f1.1', 'u1', 'first?', 'answered', 't1', 'step');
+         INSERT INTO questions (id, tenant_id, analysis_id, user_id, text, state, created_at, kind, parent_id)
+           VALUES ('q1', 'default', 'a1', 'u1', 'and?', 'pending', 't2', 'pr', 'q9');
+         INSERT INTO comment_prs (pull_request_id, tenant_id, created_at) VALUES (1, 'default', 't');
+         INSERT INTO comment_passes (id, tenant_id, pull_request_id, user_id, cause, head, items, state, created_at)
+           VALUES ('p1', 'default', 1, 'u1', 'opened', 'h', 2, 'queued', 't');",
+    )
+    .execute(&db.pool)
+    .await
+    .expect("rows of the old schema");
+    insert_job(&db, "j2", "a1", "c1", "succeeded")
+        .await
+        .expect("job");
+    insert_job(&db, "j1", "a2", "c1", "queued")
+        .await
+        .expect("job");
+    sqlx::raw_sql(
+        "INSERT INTO job_events (job_id, tenant_id, attempt, seq, at, body) VALUES ('j2', 'default', 1, 1, 't', '{}');
+         INSERT INTO installation_tokens (job_id, tenant_id, attempt, ciphertext, expires_at)
+           VALUES ('j2', 'default', 1, x'00', 't');",
+    )
+    .execute(&db.pool)
+    .await
+    .expect("children");
+    let rowids = || async {
+        sqlx::query_as::<_, (String, i64)>(
+            "SELECT 'q:' || id, rowid FROM questions UNION ALL SELECT 'j:' || id, rowid FROM jobs
+             UNION ALL SELECT 'p:' || id, rowid FROM comment_passes ORDER BY 1",
+        )
+        .fetch_all(&db.pool)
+        .await
+        .expect("rowids")
+    };
+    let kept = rowids().await;
+    migrate(&db.pool, MIGRATIONS.len() - 1)
+        .await
+        .expect("upgrade in place");
+    assert_eq!(rowids().await, kept, "rows and rowids are kept");
+    let follow_up: (Option<String>, Option<i64>) =
+        sqlx::query_as("SELECT parent_id, pull_request_id FROM questions WHERE id = 'q1'")
+            .fetch_one(&db.pool)
+            .await
+            .expect("follow-up");
+    assert_eq!(follow_up, (Some("q9".to_owned()), Some(1)));
+    let pass: (Option<String>, String, Option<String>) =
+        sqlx::query_as("SELECT user_id, sent, question_id FROM comment_passes WHERE id = 'p1'")
+            .fetch_one(&db.pool)
+            .await
+            .expect("pass");
+    assert_eq!(pass, (Some("u1".to_owned()), "[]".to_owned(), None));
+    let children: (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT COUNT(*) FROM job_events), (SELECT COUNT(*) FROM installation_tokens)",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("children");
+    assert_eq!(children, (1, 1));
+    for (child, parent) in [
+        ("job_events", "jobs"),
+        ("installation_tokens", "jobs"),
+        ("jobs", "comment_passes"),
+        ("comment_passes", "questions"),
+        ("questions", "comment_items"),
+    ] {
+        let parents: Vec<String> =
+            sqlx::query_scalar("SELECT \"table\" FROM pragma_foreign_key_list(?)")
+                .bind(child)
+                .fetch_all(&db.pool)
+                .await
+                .expect("foreign keys");
+        assert!(parents.contains(&parent.to_owned()), "{child}: {parents:?}");
+    }
+    let insert_job_of = |analysis: Option<&'static str>,
+                         pass: Option<&'static str>,
+                         kind: &'static str| {
+        sqlx::query(
+            "INSERT INTO jobs (id, tenant_id, analysis_id, pass_id, kind, priority, state, spec, credential_id,
+                 created_at, stage)
+             VALUES (?, 'default', ?, ?, ?, 0, 'queued', '{}', 'c1', 't', ?)",
+        )
+        .bind(contracts::ids::JobId::new_random().to_string())
+        .bind(analysis)
+        .bind(pass)
+        .bind(kind)
+        .bind(if kind == "verify_comments" { "verify:p1" } else { "plan:1" })
+        .execute(&db.pool)
+    };
+    assert!(
+        insert_job_of(None, Some("p1"), "verify_comments")
+            .await
+            .is_ok()
+    );
+    assert!(
+        insert_job_of(Some("a1"), Some("p1"), "verify_comments")
+            .await
+            .is_err(),
+        "two owners"
+    );
+    assert!(
+        insert_job_of(None, Some("p1"), "plan").await.is_err(),
+        "analysis kind on a pass"
+    );
+    assert!(
+        insert_job_of(Some("a1"), None, "verify_comments")
+            .await
+            .is_err(),
+        "verify job of an analysis"
+    );
+    let no_analysis = sqlx::raw_sql(
+        "INSERT INTO questions (id, tenant_id, pull_request_id, user_id, text, state, created_at, kind)
+           VALUES ('x1', 'default', 1, 'u1', 'x', 'pending', 't', 'pr')",
+    )
+    .execute(&db.pool)
+    .await;
+    assert!(
+        no_analysis.is_err(),
+        "only comment-item questions go without an analysis"
+    );
+    sqlx::query("DELETE FROM installation_tokens")
+        .execute(&db.pool)
+        .await
+        .expect("revoked");
+    sqlx::query("DELETE FROM jobs WHERE id = 'j2'")
+        .execute(&db.pool)
+        .await
+        .expect("delete job");
+    let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM job_events")
+        .fetch_one(&db.pool)
+        .await
+        .expect("events");
+    assert_eq!(events, 0, "events still cascade with their job");
+    let check: Option<String> = sqlx::query_scalar("PRAGMA foreign_key_check")
+        .fetch_optional(&db.pool)
+        .await
+        .expect("check");
+    assert_eq!(check, None);
+}
+
+/// 0026 rebuilds `dashboard_snoozes` so ended snoozes can be kept: every existing snooze is kept as not ended, and
+/// an ended one stays beside a new snooze of the same item.
+#[tokio::test]
+async fn snooze_ends_migration_keeps_every_snooze_as_not_ended() {
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .in_memory(true)
+        .foreign_keys(true);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .min_connections(1)
+        .idle_timeout(None)
+        .max_lifetime(None)
+        .connect_with(options)
+        .await
+        .expect("pool");
+    let before = MIGRATIONS
+        .iter()
+        .position(|(_, name, _)| *name == "dashboard_snooze_ends")
+        .expect("migration 0026");
+    migrate(&pool, before).await.expect("schema before 0026");
+    let db = Db { pool };
+    seed(&db).await;
+    sqlx::raw_sql(
+        "INSERT INTO dashboard_snoozes (tenant_id, user_id, item_key, snoozed_at, until) VALUES
+           ('default', 'u1', 'acme~platform~pr~1203', '2026-11-18T06:00:00.000000Z', '2026-11-21T06:00:00.000000Z'),
+           ('default', 'u1', 'acme~platform~issue~7', '2026-11-18T06:00:00.000000Z', '2026-11-19T06:00:00.000000Z');",
+    )
+    .execute(&db.pool)
+    .await
+    .expect("snoozes of the old schema");
+    migrate(&db.pool, MIGRATIONS.len() - 1)
+        .await
+        .expect("upgrade in place");
+    type Row = (String, String, String, Option<String>, Option<String>);
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT item_key, snoozed_at, until, ended_at, end_reason FROM dashboard_snoozes ORDER BY id",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .expect("rows");
+    let kept = |key: &str, until: &str| {
+        (
+            key.to_owned(),
+            "2026-11-18T06:00:00.000000Z".to_owned(),
+            until.to_owned(),
+            None,
+            None,
+        )
+    };
+    assert_eq!(
+        rows,
+        [
+            kept("acme~platform~pr~1203", "2026-11-21T06:00:00.000000Z"),
+            kept("acme~platform~issue~7", "2026-11-19T06:00:00.000000Z"),
+        ]
+    );
+    let dash = db.dashboard();
+    let key = contracts::api::dashboard::ItemKey::parse("acme~platform~issue~7").expect("key");
+    let woken_at = "2026-11-18T08:00:00Z".parse::<Timestamp>().expect("time");
+    dash.wake(
+        "default",
+        "u1",
+        std::slice::from_ref(&key),
+        dashboard::SnoozeEnd::Woken,
+        woken_at,
+    )
+    .await
+    .expect("wake");
+    dash.snooze(
+        "default",
+        "u1",
+        &key,
+        woken_at,
+        woken_at + SignedDuration::from_hours(24),
+    )
+    .await
+    .expect("snooze again");
+    let issue_rows: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM dashboard_snoozes WHERE item_key = 'acme~platform~issue~7'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("count");
+    assert_eq!(issue_rows, 2, "the ended snooze stays beside the new one");
+    let duplicate = sqlx::query(
+        "INSERT INTO dashboard_snoozes (tenant_id, user_id, item_key, snoozed_at, until)
+         VALUES ('default', 'u1', 'acme~platform~pr~1203', 't0', 't1')",
+    )
+    .execute(&db.pool)
+    .await
+    .map_err(DbError::from);
+    assert!(
+        matches!(duplicate, Err(DbError::Conflict)),
+        "one snooze per item has not ended: {duplicate:?}"
+    );
+}
+
+/// 0027 adds the Slack names table to `dashboard_settings` in place: an existing row keeps its settings and gains an
+/// empty table; the column takes only a JSON array.
+#[tokio::test]
+async fn slack_names_migration_gives_existing_settings_an_empty_table() {
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .in_memory(true)
+        .foreign_keys(true);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .min_connections(1)
+        .idle_timeout(None)
+        .max_lifetime(None)
+        .connect_with(options)
+        .await
+        .expect("pool");
+    let before = MIGRATIONS
+        .iter()
+        .position(|(_, name, _)| *name == "slack_names")
+        .expect("migration 0027");
+    migrate(&pool, before).await.expect("schema before 0027");
+    let db = Db { pool };
+    seed(&db).await;
+    sqlx::raw_sql(
+        "INSERT INTO dashboard_settings (user_id, tenant_id, ready_label, updated_at)
+         VALUES ('u1', 'default', 'ready', 't');",
+    )
+    .execute(&db.pool)
+    .await
+    .expect("settings of the old schema");
+    migrate(&db.pool, MIGRATIONS.len() - 1)
+        .await
+        .expect("upgrade in place");
+    let row: (String, String) =
+        sqlx::query_as("SELECT ready_label, slack_names FROM dashboard_settings")
+            .fetch_one(&db.pool)
+            .await
+            .expect("row");
+    assert_eq!(row, ("ready".to_owned(), "[]".to_owned()));
+    let refused = sqlx::query("UPDATE dashboard_settings SET slack_names = '{}'")
+        .execute(&db.pool)
+        .await;
+    assert!(refused.is_err(), "an object is not a Slack names table");
+}
+
+/// 0029 rebuilds `dashboard_refreshes` so a refresh can be `automatic` (plan §M): every refresh keeps its row and
+/// rowid, the jobs and judgements that reference one keep it (no drop cascades into them), the other CHECKs and both
+/// indexes stay, and an unknown trigger is still refused.
+#[tokio::test]
+async fn automatic_trigger_migration_keeps_refreshes_and_what_references_them() {
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .in_memory(true)
+        .foreign_keys(true);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .min_connections(1)
+        .idle_timeout(None)
+        .max_lifetime(None)
+        .connect_with(options)
+        .await
+        .expect("pool");
+    let before = MIGRATIONS
+        .iter()
+        .position(|(_, name, _)| *name == "dashboard_trigger_automatic")
+        .expect("migration 0029");
+    migrate(&pool, before).await.expect("schema before 0029");
+    let db = Db { pool };
+    seed(&db).await;
+    sqlx::raw_sql(
+        "INSERT INTO dashboard_refreshes (rowid, id, tenant_id, user_id, trigger, state, started_at, snapshot,
+             ranking_state, judged, sent, ranking_attempt, finished_at)
+           VALUES (7, 'r1', 'default', 'u1', 'scheduled', 'finished', 't1', '{\"version\":1}', 'finished', 3, 4, 1, 't2'),
+                  (9, 'r2', 'default', 'u1', 'manual', 'scanning', 't3', NULL, NULL, 0, 0, 0, NULL);
+         INSERT INTO jobs (id, tenant_id, refresh_id, kind, priority, state, spec, credential_id, created_at, stage)
+           VALUES ('j1', 'default', 'r1', 'judge_work', 1, 'succeeded', '{}', 'c1', 't', 'judge:r1:1');
+         INSERT INTO comment_prs (pull_request_id, tenant_id, created_at) VALUES (1, 'default', 't');
+         INSERT INTO comment_passes (id, tenant_id, pull_request_id, user_id, cause, head, items, state, created_at)
+           VALUES ('p1', 'default', 1, 'u1', 'opened', 'h', 2, 'queued', 't');
+         INSERT INTO jobs (rowid, id, tenant_id, pass_id, kind, priority, state, spec, credential_id, attempt,
+             max_attempts, lease_expires_at, job_token_hash, cancel_requested, resumes_at, ready_output,
+             ready_output_attempt, result, stage, generation, round, github_access_granted, flow_id, question_id,
+             created_at, claimed_at, finished_at)
+           VALUES (19, 'j2', 'default', 'p1', 'verify_comments', 0, 'succeeded', '{\"v\":2}', 'c2', 2,
+             4, 'lease', x'1234', 1, 'resume', '{}', 2, '{}', 'verify:p1', 1, 3, 1, 'flow', 'question',
+             'created', 'claimed', 'finished');
+         INSERT INTO job_events (rowid, job_id, tenant_id, attempt, seq, at, body)
+           VALUES (11, 'j1', 'default', 0, 1, 't', '{}'), (13, 'j2', 'default', 2, 7, 'event', '{}');
+         INSERT INTO installation_tokens (rowid, job_id, tenant_id, attempt, ciphertext, expires_at)
+           VALUES (17, 'j2', 'default', 2, x'1234', 'expires');
+         INSERT INTO dashboard_judgements (tenant_id, user_id, item_key, input_fingerprint, input_version,
+             prompt_version, body, refresh_id, model, judged_at, last_seen_at)
+           VALUES ('default', 'u1', 'acme~platform~pr~1', 'f', 1, 1, '{}', 'r1', 'm', 't', 't');",
+    )
+    .execute(&db.pool)
+    .await
+    .expect("rows of the old schema");
+    async fn contents(db: &Db) -> Vec<(Vec<(String, String)>, Vec<String>)> {
+        let mut contents = Vec::new();
+        for table in [
+            "dashboard_refreshes",
+            "dashboard_judgements",
+            "jobs",
+            "job_events",
+            "installation_tokens",
+        ] {
+            let columns: Vec<(String, String)> =
+                sqlx::query_as("SELECT name, type FROM pragma_table_info(?) ORDER BY name")
+                    .bind(table)
+                    .fetch_all(&db.pool)
+                    .await
+                    .expect("columns");
+            let expressions: Vec<String> = columns
+                .iter()
+                .map(|(name, kind)| {
+                    if kind == "BLOB" {
+                        format!("CASE WHEN {name} IS NULL THEN NULL ELSE hex({name}) END")
+                    } else {
+                        name.clone()
+                    }
+                })
+                .collect();
+            // Both identifiers come only from the fixture schema and the fixed table list.
+            let rows = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                "SELECT json_array(rowid, {}) FROM {table} ORDER BY rowid",
+                expressions.join(",")
+            )))
+            .fetch_all(&db.pool)
+            .await
+            .expect("all columns");
+            contents.push((columns, rows));
+        }
+        contents
+    }
+    let original = contents(&db).await;
+    migrate(&db.pool, MIGRATIONS.len() - 1)
+        .await
+        .expect("upgrade in place");
+    assert_eq!(
+        contents(&db).await,
+        original,
+        "every column and rowid survives"
+    );
+
+    type Row = (i64, String, String, String, i64, i64, i64);
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT rowid, id, trigger, state, judged, sent, ranking_attempt FROM dashboard_refreshes ORDER BY rowid",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .expect("rows");
+    assert_eq!(
+        rows,
+        [
+            (
+                7,
+                "r1".into(),
+                "scheduled".into(),
+                "finished".into(),
+                3,
+                4,
+                1
+            ),
+            (9, "r2".into(), "manual".into(), "scanning".into(), 0, 0, 0),
+        ]
+    );
+    let kept: (i64, i64, Option<String>) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM jobs WHERE refresh_id = 'r1'),
+                (SELECT count(*) FROM job_events WHERE job_id = 'j1'),
+                (SELECT refresh_id FROM dashboard_judgements)",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("references");
+    assert_eq!(kept, (1, 1, Some("r1".into())), "nothing cascaded");
+    let dangling: Vec<(String,)> = sqlx::query_as("SELECT \"table\" FROM pragma_foreign_key_check")
+        .fetch_all(&db.pool)
+        .await
+        .expect("foreign key check");
+    assert!(dangling.is_empty(), "{dangling:?}");
+
+    let insert = |id: &'static str, trigger: &'static str, state: &'static str| {
+        sqlx::query(
+            "INSERT INTO dashboard_refreshes (id, tenant_id, user_id, trigger, state, started_at)
+             VALUES (?, 'default', 'u1', ?, ?, 't4')",
+        )
+        .bind(id)
+        .bind(trigger)
+        .bind(state)
+        .execute(&db.pool)
+    };
+    assert!(
+        insert("r3", "automatic", "cancelled").await.is_ok(),
+        "automatic is a trigger"
+    );
+    assert!(
+        insert("r4", "hourly", "cancelled").await.is_err(),
+        "an unknown trigger"
+    );
+    assert!(
+        insert("r5", "automatic", "finished").await.is_err(),
+        "a finished refresh still needs its snapshot"
+    );
+    let second_live = insert("r6", "automatic", "scanning")
+        .await
+        .map_err(DbError::from);
+    assert!(
+        matches!(second_live, Err(DbError::Conflict)),
+        "one live refresh per user: {second_live:?}"
+    );
+    let indexes: Vec<(String,)> = sqlx::query_as(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'dashboard_refreshes'
+           AND name NOT LIKE 'sqlite_autoindex%' ORDER BY name",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .expect("indexes");
+    assert_eq!(
+        indexes,
+        [
+            ("dashboard_refreshes_by_user".to_owned(),),
+            ("dashboard_refreshes_one_live_per_user".to_owned(),)
+        ]
+    );
+    let parents: Vec<(String, String)> = sqlx::query_as(
+        "SELECT 'jobs', \"table\" FROM pragma_foreign_key_list('jobs')
+         UNION ALL SELECT 'dashboard_judgements', \"table\" FROM pragma_foreign_key_list('dashboard_judgements')
+         UNION ALL SELECT 'job_events', \"table\" FROM pragma_foreign_key_list('job_events')
+         UNION ALL SELECT 'installation_tokens', \"table\" FROM pragma_foreign_key_list('installation_tokens')
+         ORDER BY 1, 2",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .expect("foreign keys");
+    let parents: Vec<(&str, &str)> = parents
+        .iter()
+        .map(|(child, parent)| (child.as_str(), parent.as_str()))
+        .collect();
+    assert_eq!(
+        parents,
+        [
+            ("dashboard_judgements", "dashboard_refreshes"),
+            ("dashboard_judgements", "tenants"),
+            ("dashboard_judgements", "users"),
+            ("installation_tokens", "jobs"),
+            ("installation_tokens", "tenants"),
+            ("job_events", "jobs"),
+            ("job_events", "tenants"),
+            ("jobs", "analyses"),
+            ("jobs", "comment_passes"),
+            ("jobs", "dashboard_refreshes"),
+            ("jobs", "tenants"),
+        ],
+        "every reference names the final tables"
     );
 }

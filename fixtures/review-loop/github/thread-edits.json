@@ -1,0 +1,43 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://api.github.com/graphql",
+    "body": {
+      "query": "query($id:ID!){node(id:$id){... on PullRequestReviewThread{comments(first:1){nodes{lastEditedAt userContentEdits(first:10){totalCount nodes{editedAt diff}}}}}}}",
+      "variables": {
+        "id": "PRRT_fixture482_l3"
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "data": {
+      "node": {
+        "comments": {
+          "nodes": [
+            {
+              "lastEditedAt": "2026-11-12T10:30:05Z",
+              "userContentEdits": {
+                "totalCount": 3,
+                "nodes": [
+                  {
+                    "editedAt": "2026-11-12T10:30:05Z",
+                    "diff": "<!-- thepastaclaw-review v1 finding=ae64453d76ac dedupe=3ba0e7fbff87a8f0 -->\n**🔴 Blocking: Count only finished attempts in the metric**\n\nThe attempt counter is incremented before the request is sent, so a cancelled attempt is counted.\n\n<sub>source: `model-a` (phase2-reviewer: general)</sub>"
+                  },
+                  {
+                    "editedAt": "2026-11-11T16:20:00Z",
+                    "diff": "<!-- thepastaclaw-review v1 finding=ae64453d76ac dedupe=3ba0e7fbff87a8f0 -->\n<!-- thepastaclaw-thread-status v1 -->\n> ✅ **Withdrawn** at `9f3c2e1a`; see the replies below.\n\n**🔴 Blocking: Count only finished attempts in the metric**\n\nThe counter is incremented before the send.\n\n<sub>source: `model-a` (phase2-reviewer: general)</sub>"
+                  },
+                  {
+                    "editedAt": "2026-11-11T09:00:00Z",
+                    "diff": "<!-- thepastaclaw-review v1 finding=ae64453d76ac dedupe=3ba0e7fbff87a8f0 -->\n**🔴 Blocking: Count only finished attempts in the metric**\n\nThe counter is incremented before the send.\n\n<sub>source: `model-a` (phase2-reviewer: general)</sub>"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

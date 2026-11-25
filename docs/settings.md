@@ -172,11 +172,19 @@ Worked examples: dashpay/platform uses dashpay/stale_prs_are_bad with policies/p
 
 ### Release branches
 
-- **What:** Names of the repository's release and long-lived branches. A pull request based on such a branch is not treated as stacked on another pull request, and one that targets such a branch (other than the default branch) counts as targeting a release line.
-- **When used:** Every ranking of the repository's pull requests.
+- **What:** Names of the repository's release and long-lived branches. A pull request based on such a branch is not treated as stacked on another pull request, one that targets such a branch (other than the default branch) counts as targeting a release line, and Ready to merge lists your pull requests into such a branch as into the default branch.
+- **When used:** Every ranking of the repository's pull requests, and Ready to merge.
 - **Empty or default:** Leave empty for the built-ins: main, master, release/\*, hotfix/\*, vX.Y, vX.Y-dev. Your list replaces the built-ins; it does not add to them.
 - **Limits:** Up to 10 patterns, separated by spaces or commas; letters, digits, . _ / - and \*. X.Y stands for a version of two or more numbers (1.8, 5.1, 2.0.1); \* matches any text.
 - **Example:** vX.Y-dev matches v1.8-dev and v5.1-dev; release/\* matches release/2.1; v\*-dev works too.
+
+### Ignored checks
+
+- **What:** Names of the repository's checks and commit statuses that are gates rather than build, test or lint results (approval, policy and review-bot checks). They never make CI failing or running; a check of them that has not passed is named in the tip of CI passing.
+- **When used:** Every refresh of the repository's pull requests: CI passing, Ready to merge (a PR GitHub calls unstable counts as clean when only ignored, skipped or neutral checks have not passed) and Waiting on others (CI green).
+- **Empty or default:** Leave empty for the built-ins: \*hygiene\*, PR title, \*semantic-pull-request\*, \*milestone\*, \*CodeRabbit\*, review, policy\*, PastaClaw review. Your list replaces the built-ins; it does not add to them. Among the built-ins, policy\* stands for policy alone or followed by a space or sign (policy / reconcile).
+- **Limits:** Up to 20 names, separated by commas; each 1 to 100 characters. A name matches the whole check name without regard to case; \* matches any text. The check's own name counts, without its workflow.
+- **Example:** \*hygiene\*, PR title, PastaClaw review, docs-preview
 
 ### When GitHub search refuses an account
 
@@ -199,7 +207,7 @@ How you find out: after a refresh, What the scan missed names the accounts searc
 ### Ready for a human label
 
 - **What:** The label that marks a pull request ready for a human review.
-- **When used:** Every ranking: a pull request with this label ranks higher, and one of yours with it, green checks and no open threads counts as ready for others. A ready pull request of yours with reviews requested from others, where nothing is your move (no review asked of you, no change request, no comment awaiting your reply, no conflicts, not approved for you to merge, no merge button active for you on GitHub), is listed under Waiting on others only, not in Needs you.
+- **When used:** Every ranking: a pull request with this label ranks higher. One of yours with it needs a human: it is never listed under Ready to merge, and while nothing is your move (no conflicts, CI green with ignored checks left out, no change request, no unresolved thread, no comment awaiting your reply, no review asked of you) it is listed under Waiting on others only, not in Needs you, even when it is approved or you could merge it.
 - **Empty or default:** ready-for-human.
 - **Limits:** 1 to 50 characters; compared without regard to case.
 - **Example:** needs-review.
@@ -261,6 +269,14 @@ While it is on, the server keeps your GitHub sign-in for up to 30 days after you
 - **Empty or default:** Not set yet: the automatic refresh does not run.
 - **Limits:** A time zone name such as Europe/Warsaw.
 - **Example:** Europe/Warsaw.
+
+### Slack names
+
+- **What:** Your table of GitHub logins and the name to write for each in Slack. Copy for Slack in Waiting on others (the Slack icon of a row, and Copy for Slack next to Copy list) writes the Slack name instead of @login; Copy list and the plain copy icon keep @login.
+- **When used:** Only when you copy for Slack on My work. Nothing is sent to Slack: the text goes to your clipboard.
+- **Empty or default:** No rows: Copy for Slack writes @login for every login, like Copy list.
+- **Limits:** Up to 100 rows. Each GitHub login once (any case); the Slack name is copied as you type it, 1 to 80 characters without control characters.
+- **Example:** jun-park → @jun.park.
 
 ### Ranking limits
 

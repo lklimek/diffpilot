@@ -1,5 +1,10 @@
 # HTTP API (v1)
 
+> v1.3 common amendment: [container contracts](containers.md) and [ADR-025](../decisions/ADR-025-container-runtime.md)
+> govern payer/container identity, gateway boundaries, in-place 0030 cleanup and report 4.2. Runtime integration is
+> owned by W3/W4/W5/W8; the older runtime description below applies until those packages replace it.
+
+
 Source of truth: `crates/contracts/src/api/**` (types) and `crates/contracts/src/routes.rs` (`ROUTES`). Generated:
 `web/src/api/generated/{types,routes}.ts`. This page fixes what the types cannot: authentication, CSRF, status
 mapping, query rules and the endpoint × fixture-state inventory.
@@ -643,6 +648,8 @@ HTTP type (the drift test covers them). Fixtures: `fixtures/dashboard/` (README 
 | R9 | POST | `/api/v1/settings/access-tokens` | session_csrf | `CreateAccessToken` | 201 `CreatedAccessToken`; 409 `token_limit_reached` |
 | R10 | DELETE | `/api/v1/settings/access-tokens/{id}` | session_csrf | – | 204 (404 for an unknown, revoked or another user's token) |
 | R11 | POST | `/api/v1/dashboard/mentions/{id}/hide` | session_csrf | – | 204 (idempotent), 404 outside the user’s snapshot/hidden set |
+| R12 | PUT | `/api/v1/dashboard/items/{key}/snooze` | session_csrf | `SnoozeRequest` | 204; 400 `invalid_request` for days outside 1–365 or a malformed key; 404 for an item outside the user's current snapshot |
+| R13 | DELETE | `/api/v1/dashboard/items/{key}/snooze` | session_csrf | – | 204 (also when the item was not snoozed) |
 
 Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and shapes unchanged); only R8 stays
 `session`. How an agent reads with a token: `agent-api.md`.
@@ -667,19 +674,26 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
   snapshot yet: an empty page. Pull request items carry `change_size` (plan §C.2 K16: `tiny` < 150, `small`
   150–499, `medium` 500–2999, `large` 3000–9999, `huge` ≥ 10 000 changed lines, with `additions`/`deletions` as
   evidence; absent for issues, TODOs and unknown totals; clients show an unknown class by its name). There is no
-  size filter on R1b. A pull request of the user that waits only on others (plan §C.2 K15) is not an
+  size filter on R1b. A pull request of the user that waits on others (plan §C.2 K15) is not an
   item: it is listed in `SnapshotMeta.awaiting` only (`AwaitingItem.total_tenths` is null), never ranked, counted
-  or excluded, so no tier filter hands it out as work. `SnapshotMeta.ready_to_merge` lists, by display id, the
-  user's pull requests ready to merge at the scan (plan §C.2 K17: into the default branch, every check passed,
-  nothing left to answer); they are ranked. `merge_state_pending` counts those of the user's pull requests into the
-  default branch whose merge state GitHub had not computed by the scan (the next refresh reads them again); null when the snapshot did not record merge states.
+  or excluded, so no tier filter hands it out as work; `waiting_on` names whom to ping and `reason` why
+  (`ready_label`, `plugin` with the source's reason and evidence, `review_requested`). `SnapshotMeta.ready_to_merge`
+  lists, by display id, the user's pull requests ready to merge at the scan (plan §C.2 K17: into the default branch
+  or a release branch, every check passed except ignored ones, nothing left to answer, no ready label, not held by a
+  current plug-in); they are ranked. `merge_state_pending` counts those of the user's pull requests Ready to merge
+  could list whose merge state GitHub had not computed by the scan (the next refresh reads them again); null when the snapshot did not record merge states.
+  `facts_checked_at` (absent when none since the scan) is when the listed pull requests' facts were last checked
+  against GitHub after the scan, by the fact check while My work is open (plan §M, every 5 minutes; a re-read after
+  a plug-in signal reads only the signalled pull requests and does not count; a server restart forgets the time
+  until the next check). A summary read in a browser session (never with an access token) keeps My work open for
+  3 minutes.
 - **Excluded items (R1, B4).** `SnapshotMeta.exclusions` tells what the rules left out of the ranking, computed
   with the ranking at read time from the stored scan facts (so every stored snapshot has it; the web shows "not
   recorded for this snapshot" only when the field is absent): `total` (= `excluded`) and the non-zero `counts` per
   `ExclusionReason` (`excluded_author`, `outside_owned_areas`, `draft`, `judged_not_eligible`,
-  `merged_into_another`; clients treat an unknown value as "another rule"). `?excluded=true` adds `items`: at most
+  `merged_into_another`, `snoozed`; clients treat an unknown value as "another rule"). `?excluded=true` adds `items`: at most
   200 (`EXCLUDED_ITEMS_LIMIT`) `ExcludedItem`s by reason, then display id (key, kind, display id, repository,
-  number, URL, plain title, author, reason, `merged_into`); no LLM text, but `judged_not_eligible` and
+  number, URL, plain title, author, reason, `merged_into`, `snoozed_until` for `snoozed`); no LLM text, but `judged_not_eligible` and
   `merged_into_another` are LLM decisions (the web says "by the LLM"), the other reasons deterministic rules. Without the flag the summary carries the
   counts only (a few hundred bytes; the list can reach tens of KB). Same scope as the rest of the summary.
 - **Item keys** (normative; `ItemKey` in `api/dashboard.rs` is the only constructor and parser, and rejects any
@@ -693,8 +707,28 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
   `why`, `next`, `alarm` and `also_keys` (items merged into this one, only from server-suggested pairs). `url` is
   built by the server only: GitHub `https://github.com/<owner>/<name>/pull|issues/<number>`, a TODO
   `<SR_MEMCAN_UI_URL>/tasks/<uuid>`, null without `SR_MEMCAN_UI_URL`. `review` is read from `analyses` at request
-  time (newest analysis of the PR, head moved, the reader's saved state), never stored in the snapshot. `tags` and
+  time (newest analysis of the PR, head moved, the reader's saved state), never stored in the snapshot. `comments`
+  (pull requests only) is read from the review-loop tables at request time, in one statement per page:
+  `CommentTally { total, needs_you }` counts the comment items of the tenant's last successful read of the PR
+  (PR-level questions and items the read no longer produces left out) and those waiting for a decision (Comments'
+  Needs you: an open state, not handed to a standing "merge now" decision's follow-up PR); absent before the first
+  successful read, when the web offers Watch (RW1) instead, except on a private PR (RW1 reads public repositories
+  only). `watched` (pull requests only, omitted when false) says the user watches the PR (RW1), read in the same
+  statement; with `comments` absent the row reads "Watching, comments not read yet". Like `review` both are part of
+  the page's `ETag`. `tags` and
   `facts` come from scan facts only; `llm` text is shown with the "LLM" tag.
+- **Plug-in notes (ADR-022).** `WorkItem.plugin_notes` and the PR page's `plugin_notes` carry external
+  statements as `PluginNote { plugin, source, url, as_of, summary, details, facts }`. The shape is unchanged.
+  Render every statement attributed to `source`, as plain text; only the server-built `url` is an evidence link.
+  A summary or detail has at most 300 characters; a note has at most 64 details and 6 facts (100 characters per
+  label/value), with control and invisible formatting characters removed. PR Hygiene keeps its compact next
+  action in `summary`; `facts` and labelled `details` include readable stage/engine state, stage age at aggregate
+  data time and its basis, blockers, review requests and approvers, objectors, flags and counts, author/areas/base/
+  milestone/update time, latest dated review per reviewer, and up to five recent stage changes with observed and
+  entry times. The per-PR response supplies history, stale status and its generation time; `as_of` is the aggregate
+  response's generation time. History is cached until the aggregate PR record changes (time-only fields excluded);
+  its failure leaves aggregate context available and says "Stage history: unavailable". The UI shows the full
+  statement on hover or keyboard focus of its compact note, with keyboard scrolling for long statements.
 - **Scores.** Integers only: points in tenths. `total_tenths` is the sum of the parts' `points_tenths` (a pending
   part counts 0); `parts` lists the twelve `ScoreComponent`s in display order, each with `source` and a plain
   `basis` (an estimate's basis names its rule, "estimate until judged: …"). `tier` is computed by the server:
@@ -703,7 +737,8 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
   awaiting confirmation; shown `~N`, keeps its tier group); `unjudged` (new item, group "Not judged yet").
 - **Refreshes.** One per user is `scanning` or `ranking` at a time. R2 and a scheduled start supersede a refresh in
   `ranking` and are refused only by one in `scanning` (R2: 409 `refresh_running`; schedule: counts as done), so a
-  `paused` or `waiting_for_analysis` ranking never blocks a new scan. Transitions: "Refresh states" below. `failure.retry_at` is GitHub's
+  `paused` or `waiting_for_analysis` ranking never blocks a new scan. `trigger` is `manual` (R2), `scheduled`
+  (ADR-020) or `automatic` (started while the user had My work open, plan §M; never while a refresh is live). Transitions: "Refresh states" below. `failure.retry_at` is GitHub's
   rate-limit reset. `ranking` is null until the snapshot is stored; its `state` follows plan §B.3
   (`waiting_for_analysis` while a review analysis holds the LLM credential). `log` holds at most 200 plain lines
   without tokens or query strings. The newest 10 refreshes per user are kept, plus the one holding the current
@@ -716,7 +751,10 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
   naming the first failing field. `skip_authors` are excluded authors (every pull request and issue they author is left
   out of the dashboard, whatever its relation to the user; they are not bots); `known_bots` are the
   logins treated as bots besides GitHub `Bot` accounts and `[bot]` logins (absent in a request: the defaults,
-  `thepastaclaw`, `Claudius-Maginificent`, `DCG-Claude`). R6b stores the browser's IANA zone (sent once on the first dashboard visit
+  `thepastaclaw`, `Claudius-Maginificent`, `DCG-Claude`). `slack_names` is the user's Slack names table (G18, at
+  most 100 rows): a GitHub login (unique, any case) and the text "Copy for Slack" writes instead of `@login` (1–80
+  characters as typed, no control character, no white space at either end; absent in a request: an empty table).
+  My work reads it with R6 only for Copy for Slack (plan K19). R6b stores the browser's IANA zone (sent once on the first dashboard visit
   while none is stored). R7 sets the installation-wide ranking effort (`low` default, `medium`, `high`);
   `LlmSelection.judge_effort` reports it, and `changed_by`/`changed_at` are shared with the model choice.
 - **Access tokens (R8–R10, ADR-019).** Token `srp_<id>_<secret>`: `id` 8 base62 characters, secret 32 random bytes
@@ -781,3 +819,137 @@ without parsing or duplicating scan notes. Older snapshots default to an empty l
 204 (including repeated hides), 404 for an identity outside the user's snapshot/hidden set. A hide changes the
 summary revision and items ETag, persists per user across devices/refreshes, and leaves ranking/judgement alone.
 New posts on the same item have independent identities. Hides are not an update to GitHub.
+
+`PUT /api/v1/dashboard/items/{key}/snooze` (R12, owner SN1) takes `SnoozeRequest {days}` (1 to
+`MAX_SNOOZE_DAYS` = 365) and snoozes an item of the user's current snapshot (`{key}` is an `ItemKey`) from now
+for that many whole days; a new snooze of the same item replaces the one that has not ended. `DELETE` on the same
+path (R13, "Wake now") ends it. Session + CSRF only, no personal access tokens; per user, across devices; never an update to
+GitHub, the snapshot, the ranking or a judgement. A snoozed item that the rules would rank leaves Needs you and is
+listed under Excluded with reason `snoozed` and `snoozed_until`; another rule's exclusion wins, and a P0 alarm is
+never snoozed. The snooze ends at `snoozed_until`, or earlier when the snapshot shows a review request to the user
+on the pull request with a known request time after the snooze, or a mention of the user on the item (not hidden)
+newer than the snooze; it is then marked ended when the next snapshot is stored (refresh or pull-request re-read),
+so a wake lasts after the request or mention is gone. Ended snoozes are kept with their end and its reason (date,
+review request, mention, woken by the user). Snoozes change the summary revision and items ETag. Waiting on
+others and Ready to merge are not affected.
+
+## Review loop (v1.3)
+
+Plan `docs/review-workflow-plan.md` §6 (ADR-023). Types: `crates/contracts/src/api/review_loop.rs` (the module
+`api::comments` already holds the pending review of ADR-006); agent output `agent/verify_comments.rs`; routes in
+`routes.rs`, generated like every HTTP type. Path parameters: `{owner}/{name}/{number}` is the pull request (as
+`/repos/{owner}/{name}/settings`), `{item}` an item's per-PR number `C<no>`, `{kind}` `ntfy` | `webhook`.
+Fixtures: `fixtures/review-loop/` (spike S13-1).
+
+| ID | Method | Path | Auth | Request | Response |
+|---|---|---|---|---|---|
+| RC1 | GET | `/api/v1/prs/{owner}/{name}/{number}` | read | – | `PrPage`; a known PR that GitHub could not be read for yet is still served (header from the stored PR, `state` and `base` empty, the failure in `comments.read.failure`) |
+| RC2 | GET | `…/comments` | read | – | `CommentsOverview` |
+| RC3 | POST | `…/comments/read` | session_csrf | – | 202 (429 `rate_limited` under 10 s) |
+| RC4 | GET | `…/comments/items` | read | `ItemsQuery` | `CommentItem[]`; `first_seen_head` is the head of diffpilot's first read, `written` (`Written { round?, commit?, at }`) where GitHub says the comment was written, from the latest read: for a comment of a round's own review that round with its head and end; for any other its review's commit (absent for a PR comment) and the review's submission or the comment's creation (absent when that read gives no time, or for a read stored before it was kept) |
+| RC5 | GET | `…/comments/items/{item}/context` | read | `ContextQuery` | `CodeContext` |
+| RC6 | POST | `…/comments/items/{item}/assess` | session_csrf | – | 202; 409 `conflict` while a pass is live; 429 `AssessmentAdmissionFailure::AssessmentDailyLimit { resets_at }` at 80 admitted UTC daily passes; 409 `credential_missing` without a usable linked plan |
+| CA1 | GET | `/api/v1/settings/comment-assessment` | read | – | `AssessmentSettings`: primary/A-B configuration and remaining/reset quota |
+| CA2 | PUT | `/api/v1/settings/comment-assessment` | session_csrf | `AssessmentSettingsUpdate` | `AssessmentSettings`; stale revision → 409; never schedules assessment; at most 100 distinct `owner/repo#number` selections |
+| CA3 | GET | `…/comments/assessment-comparison` | read | optional `cutoff` (UTC timestamp) | Latest `AssessmentComparison` for this PR and payer, including exact-count summary, nullable verdict/proposal, owner revisions and method usage; 404 without a payer-owned pass; no GitHub fetch |
+| CA4 | GET | `…/comments/sources` | read | – | `CommentSource[]`, including cleaned context and zero-point versions; no GitHub fetch |
+| RC8 | POST | `…/comments/items/{item}/decisions` | session_csrf | `DecideRequest` | 201 `Decision`; 409 `item_changed`; 409 `conflict` when its `plan_digest` no longer matches the plan |
+| RC9 | POST | `…/comments/decision-batches` | session_csrf | `DecisionBatchRequest` | 201 `Decision[]`; 400 `invalid_request` for a gate row under `bulk`/`group`, an item asked again or no longer read (`gone_at`) under `bulk`, or, under `table`, a batch that leaves out a waiting gate item; 409 `item_changed` naming the changed items; 409 `conflict` naming the rows whose `plan_digest` no longer matches the plan |
+| RC10 | GET | `…/comments/log` | read | – | `CommentLog`; subscribers of the tenant's live tokens; a push target of another user's token shows only its kind and delivery state (`url`, `topic`, `secret_last4`, `last_error` null) |
+| RC11 | GET | `/api/v1/comments/carry-overs` | read | `CarryOverQuery` | `CarryOverPage` |
+| RC12 | POST | `…/comments/items/{item}/undo` | session_csrf | `ItemActionRequest` | `CommentItem` (asked again; the undone decision keeps `undone_at`); 409 `conflict` without a standing decision or once an effect is claimed; 409 `item_changed` |
+| RC13 | POST | `…/comments/items/{item}/reopen` | session_csrf | `ItemActionRequest` | `CommentItem` (state `reopened`; effects not yet claimed are cancelled); 409 `conflict` without a standing decision; 409 `item_changed` |
+| RC14 | POST | `…/comments/items/{item}/skip` | session_csrf | `ItemActionRequest` | 204; the item comes last in the caller's queue while it stays at that revision |
+| RC15 | POST | `…/comments/items/{item}/gates` | session_csrf | `GateMarkRequest` | `CommentItem`; marks or clears the owner's mark of one gate (assessment gates stay); 409 `item_changed` |
+| RC16 | POST | `…/comments/effects-preview` | session_csrf | `EffectsPreviewRequest` | `EffectsPreview[]` (the effects the rows would get, with a `plan_digest` for PR-level rows; nothing stored); 400 `invalid_request` as RC8/RC9 |
+| RC17 | GET | `…/comments/decide-rest` | read | – | `DecideRest` (the confirmation list of "Decide the rest per recommendation"; gate items and items without a complete recommendation are left out with their reason) |
+| RW1 | PUT / DELETE | `…/watch` | session_csrf | – | 204; 409 `watch_limit_reached` |
+| RW2 | GET | `/api/v1/watches` | read | – | `WatchList` (with the reader's assessment passes of the last 24 h and the daily limit) |
+| RW3 | GET | `/api/v1/events` | read | – | SSE `UserStreamEvent`: `user_event`, `heartbeat` (`sse-events.md`) |
+| RN1 | GET | `/api/v1/settings/notifications` | session | – | `NotificationSettings` (secrets as `secret_last4` only) |
+| RN2 | PUT / DELETE | `/api/v1/settings/notifications/channels/{kind}` | session_csrf | `PutChannelRequest` / – | `NotificationChannel` / 204; 422 `scheme_not_allowed`; 400 `invalid_request` for a URL with credentials, a loopback, link-local or reserved address or a denied private address, a bad ntfy topic or secret; 422 `secret_required` when a kept secret would follow a changed URL scheme, host or port; 409 `conflict` when the stored target changed while the request was checked; `secret` is a `SecretChange` (absent or `keep`, `replace`, `remove`) |
+| RN3 | POST | `…/channels/{kind}/test` | session_csrf | – | `ChannelTestResult` (one attempt); 429 `rate_limited` with `Retry-After` when 30 messages went to the channel within the hour (nothing sent, health unchanged) |
+| RF1 | GET | `/api/v1/decision-feed` | read | `FeedQuery` | `DecisionFeed`; `ETag` |
+| RF1b | GET | `/api/v1/decision-feed/decisions/{id}` | read | – | `FeedDecision` (the `fetch` link of `decision_available` and of push messages) |
+| RF2 | GET | `/api/v1/decision-feed/events` | read | `FeedQuery` | SSE `FeedEvent`; registers the subscription |
+| RF3 | POST | `/api/v1/decision-feed/decisions/{id}/claim` | token: review_loop_execute | `ClaimRequest` | 201 `Claim`; 409 `claimed`; 422 `capability_missing`; 409 `conflict` when nothing is left for an agent |
+| RF4 | POST | `/api/v1/decision-feed/effects/{id}/reports` | token: review_loop_execute | `EffectReportRequest` | 201 (no body); 409 `claimed` (another token's claim, or never claimed by this token), 409 `lease_expired` (this token's lease ended, also after the decision went back to the feed), 409 `conflict` (the effect already ended); 400 for `done` without `reference`, `failed` without `message` or `done` while the `after` effect is not done; a repeated idempotency key on the same effect is a no-op; a `failed` effect cancels the unclaimed effects waiting on it |
+| RF5 | PUT / DELETE | `/api/v1/decision-feed/push-target` | token: review_loop_execute | `PutPushTargetRequest` / – | `PushTarget` / 204; the calling token's own target only; as RN2 for the URL, and 422 `secret_required` when a kept secret would follow a changed kind or URL origin, 409 `conflict` when the target changed meanwhile |
+
+### Rules
+- **Who decides (T22).** Decisions, batches, re-reads, re-assessments, watches and channel settings need a session
+  with CSRF; a token gets 403 `token_not_accepted`. `RouteAuth::TokenOnly(TokenScope::ReviewLoopExecute)` (named
+  `token_review_loop_execute` in `routes.ts`) marks RF3–RF5: a personal access token with the scope
+  `review_loop_execute`, never a session (401 `unauthenticated` with `WWW-Authenticate: Bearer` without a token),
+  any method (ADR-019 amendment: a token may call a mutating route only when the route names its write scope). These are the only non-`GET` public routes that are not `session_csrf`
+  (contract tests `execute_scope_is_only_on_feed_write_routes`, `mutating_browser_routes_require_csrf`).
+- **Revisions.** Every `CommentItem` carries `revision`; a decision names `item_revision` and gets 409
+  `item_changed` when the item changed meanwhile (a read, an assessment, another user's decision). Decisions are
+  append-only: a new decision supersedes the current one and cancels its effects not yet claimed.
+- **D8** is `reject` with `override: {type: "blocker_gate", gate}`; gate ids are `G-FUNDS`, `G-SECRET`,
+  `G-CRYPTO`, `G-DATA`. The owner's `comment` is stored and sent to the executor, never posted; `reply_text` is
+  what gets posted.
+- **P3** (`dismiss_stale_reviews`): the dismissal message is `reason` (the default message when absent);
+  `reply_text` is not read. Clients show the server's texts from RC16, never their own copies.
+- **Plan digest.** RC8/RC9 plan every row inside the transaction that stores it. For a PR-level row (P1
+  `merge_with_follow_ups`, P3 `dismiss_stale_reviews`) RC16 returns `plan_digest`, an opaque digest of every
+  effect the row plans (kind, executor, order, targets, text) and of what the plan rests on (P1 the items it follows
+  up and their revisions; P3 the reviews it dismisses, each still stale). A row sent
+  with the `plan_digest` the owner confirmed is refused with 409 `conflict` when the plan computed at storing
+  differs; the client previews again and asks the owner to confirm the new plan. A row without it is stored as
+  planned then.
+- **Claims.** A claim covers every open agent effect of a current decision, for 30 minutes, renewed by each report;
+  only decisions whose open effects all fall within the claimer's capabilities can be claimed. A report on another
+  token's claim answers 409 `claimed`; after the claimer's lease ended 409 `lease_expired` (also once the feed task
+  returned the decision, until another token claims it). `released` returns the decision to the feed.
+- **Secrets (T28).** Channel and push-target secrets are accepted in requests only (`SecretChange`: an absent
+  field or `{"action": "keep"}` keeps the stored one, `{"action": "replace", "value": …}` (8–4096 characters)
+  replaces it, `{"action": "remove"}` removes it); responses carry `secret_last4`. A stored secret is kept only while
+  the kind and the URL's scheme, host and port stay; otherwise 422 `secret_required`. The browser notification toggle stays per browser (local storage) and is not part of RN1.
+- **Outbound payloads** (contract types, plan §5.5): webhook `WebhookPayload` `{v, event, text, url, pr, at}`;
+  agent push `AgentPushPayload` `{v, event, decision_id, pr, fetch}`, never reply text, reasons, comment bodies or
+  secrets (contract test `push_payloads_have_a_fixed_shape`).
+- **Text.** Comment bodies are GitHub text (untrusted, rendered as plain text, links only to
+  `https://github.com/…`); assessment, purpose and code descriptions are LLM text; bot severity is the bot's claim.
+- **Job contract.** `agent::verify_comments::VerifyCommentsOutput` (Codex strict subset) and
+  `job::spec::PullRequestCommentsTarget` are defined; `JobKind::VerifyComments` and the `JobTarget` variant come
+  with the runner path (WP13-JOB), because they change exhaustive matches in the server, runner and the `jobs`
+  table's CHECK lists.
+
+## v1.3 common DTO additions (W1)
+
+W5 registers `GET /api/v1/prs/{owner}/{name}/{number}/comments/sources` with a `CommentSource[]` response,
+including zero-point source versions. `CommentItem.point` identifies a grounded quote and its source;
+`duplicate_of` preserves independent item identities. Assessments add `already_fixed`, nullable `pre_existing`,
+`evidence_text` and attributed `recorded_decision`; absent code/fix-size stay nullable.
+
+Common gateway `CredentialStatus` uses singleton `mode: chatgpt_plan`; `LinkCredential` accepts no secrets,
+API keys or base URLs. Routes for `GET`/`DELETE /api/v1/settings/codex` and
+`POST`/`GET /api/v1/settings/codex/link` use the signed-in user, never a caller-supplied payer.
+GET status and link polling synchronize canonical gateway status to the secret-free credential repository.
+POST requires session + CSRF and returns `DeviceLink`; DELETE requires session + CSRF and returns 204 after
+explicit gateway unlink. Both GET routes require a session; status returns `CredentialStatus`, while link
+polling returns the staged view (an existing usable credential remains usable during replacement).
+Unsupported modes and extra secret/base-URL fields are rejected before contacting the gateway.
+Both views include safe D13 telemetry: gateway link time and observed primary/secondary plan percentage/reset
+windows, plus server-computed payer UTC today/month usage and claimed/running container identities. Missing
+observations remain null. Link polling also returns the current public `challenge` for reload/navigation recovery;
+a read never starts a device flow. See [the approved W6 amendments](containers.md#w6-approved-account-status-and-conditional-settings-amendments).
+
+The server connects through `SR_GATEWAY_ADMIN_URL` and the dedicated credentials scope
+`SR_GATEWAY_CREDENTIALS_TOKEN_FILE` (or `SR_GATEWAY_CREDENTIALS_TOKEN`, mutually exclusive). Missing gateway
+configuration or failed administration returns a redacted 503, preserving stored status. Redirects and implicit
+HTTP retries are disabled. Calls use a 15-second timeout and a 16-KiB response cap. Per-user synchronization
+serializes route operations in one server process. Settings must keep polling to observe async linking and
+quarantine; job results also mark unusable credentials. The dev/e2e stack uses only a loopback fake admin
+service and the same authenticated Settings routes, with no release-build seeding path.
+
+
+The W1 `api::assessment` contracts define `GET`/`PUT /api/v1/settings/comment-assessment` (PUT body:
+`AssessmentSettingsUpdate { config, revision }`, GET: `AssessmentSettings` with its opaque config revision) and `GET …/comments/assessment-comparison`
+(`AssessmentComparison`, payer/PR scoped). They carry frozen method references, actual owner revisions and
+safe remaining/reset quota. `AssessmentAdmissionFailure` distinguishes daily limit (with `resets_at`) from
+missing usable credentials. W5/W6 implement route access checks and orchestration; changing configuration
+alone never schedules work. Conditional writes compare the opaque config revision inside `write_tx`; a stale
+request returns 409 without replacing another tab's selections. Clients refresh and require an explicit retry.
+Cards show only the frozen primary; secondary results are comparison-only.

@@ -1,0 +1,3 @@
+# Container deployment alias; configuration and services are defined once.
+include:
+  - compose.yaml

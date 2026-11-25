@@ -149,11 +149,12 @@ export function NavList({
           const reviewed = isFlowReviewed(flow, ticked);
           return (
             <li key={flow.id} className="mb-1">
-              <div className="flex items-start gap-1">
+              {/* A label that would leave the title less than 9rem goes under it, so titles stay readable. */}
+              <div className="flex flex-wrap items-baseline gap-x-1">
                 <button
                   type="button"
                   data-row="menu"
-                  className={`${ITEM} min-w-0 flex-1 break-words`}
+                  className={`${ITEM} min-w-0 grow basis-36 break-words`}
                   aria-current={ariaCurrent(current?.block === "flow_intro" && current.flow_id === flow.id)}
                   onClick={() => onSelect({ block: "flow_intro", flow_id: flow.id })}
                   aria-label={`Flow ${flow.position}: ${flow.llm.title}${reviewed ? ", reviewed" : ""}`}
@@ -165,7 +166,7 @@ export function NavList({
                   )}
                   <b>{flow.position}</b> {flow.llm.title}
                 </button>
-                <span className="flex flex-col items-end gap-0.5 pt-1.5">
+                <span className="ml-auto flex flex-col items-end gap-0.5">
                   {flow.analysis_status && flow.analysis_status.state !== "analysed" ? (
                     <FlowWorkLabel status={flow.analysis_status} analysis={analysis} />
                   ) : (

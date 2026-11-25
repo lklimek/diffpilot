@@ -10,6 +10,7 @@ mod dashboard;
 mod fixtures;
 mod graphql;
 mod oauth;
+mod review_loop;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -55,6 +56,10 @@ pub struct Config {
     /// so the world is as recent as on that day; without it the dates are served as written.
     #[arg(long, env = "FAKE_GITHUB_DASHBOARD_WORLD_AT")]
     pub dashboard_world_at: Option<jiff::Timestamp>,
+    /// Review-loop reads (e.g. `fixtures/review-loop/github`); without it those queries are not answered from
+    /// recordings.
+    #[arg(long, env = "FAKE_GITHUB_REVIEW_LOOP_FIXTURE_DIR")]
+    pub review_loop_fixture_dir: Option<PathBuf>,
 }
 
 /// The fake GitHub could not start.
@@ -184,6 +189,12 @@ pub fn router(config: &Config) -> Result<Router, StartError> {
         })
         .transpose()?
         .map(Arc::new);
+    let review_loop = config
+        .review_loop_fixture_dir
+        .as_deref()
+        .map(review_loop::ReviewLoop::load)
+        .transpose()?
+        .map(Arc::new);
     let mut router = Router::new()
         .fallback(dashboard::serve_rest)
         .with_state(dashboard::RestState {
@@ -203,6 +214,7 @@ pub fn router(config: &Config) -> Result<Router, StartError> {
                     graphql: Arc::clone(&graphql),
                     oauth: Arc::clone(&oauth),
                     dashboard: dashboard.clone(),
+                    review_loop,
                 }),
         )
         .merge(oauth::routes(oauth))

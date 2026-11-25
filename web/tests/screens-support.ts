@@ -26,13 +26,17 @@ export async function netChartBar(page: Page, index: number) {
   return { chart, at: { position: { x: bar.x + bar.width / 2 - box.x, y: box.height / 2 } } };
 }
 
-/** Every button and button-like link in main has a tooltip (brief §4 rule 3). */
+/**
+ * Every button and button-like link in main has a tooltip (brief §4 rule 3), except the allow-listed section
+ * disclosure headings and queue rows of src/buttons-have-tooltips.test.ts (named by their title or item).
+ */
 export async function expectTooltips(page: Page): Promise<void> {
   const main = page.getByRole("main");
-  for (const control of [
-    ...(await main.getByRole("button").all()),
-    ...(await main.locator("a[class*='rounded-md']").all()),
-  ]) {
+  for (const control of await main
+    .locator(
+      "button:not(h2 > button[aria-expanded]):not(h3 > button[aria-expanded]):not(nav[aria-label='Queue'] li > button), a[class*='rounded-md']",
+    )
+    .all()) {
     const name = await control.innerText();
     expect(await control.getAttribute("aria-describedby"), `tooltip of "${name}"`).toBeTruthy();
   }

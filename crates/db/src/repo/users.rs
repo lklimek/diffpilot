@@ -48,6 +48,14 @@ pub struct UserRecord {
 }
 
 impl Users<'_> {
+    /// Tenant member logins used as author facts in host-supplied review inputs.
+    pub async fn member_logins(&self, tenant: &str) -> Result<Vec<String>, DbError> {
+        let mut tx = super::read_tx(self.pool).await?;
+        let logins = sqlx::query_scalar("SELECT u.login FROM users u JOIN memberships m ON m.user_id=u.id WHERE m.tenant_id=? ORDER BY u.login")
+            .bind(tenant).fetch_all(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(logins)
+    }
     /// Creates the user with id `new_id`, or updates the profile of the user with the same GitHub id, and makes
     /// it a member of `tenant_id`; returns the stored user.
     pub async fn upsert_member(

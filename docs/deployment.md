@@ -1,5 +1,10 @@
 # Deploying diffpilot
 
+> The v1.3 container deployment and in-place 0030 procedure are in the [runbook](runbook.md).
+> This historical release guide predates ADR-025; its runner login, uid/supervisor and credential-volume
+> commands are superseded and must not be used for v1.3.
+
+
 How to run diffpilot with Docker Compose or as a Portainer stack, from the published images or built from source.
 The guide is independent of any particular host: every value in angle brackets (`<...>`) or in the shell variables
 below is a placeholder for your environment. Day-to-day operation (backup schedule, logs, exit codes, credential
@@ -43,7 +48,11 @@ emptied at every start. `<project>` is the compose project name: `diffpilot` by 
 - A domain name and a TLS-terminating reverse proxy in front of the server (section 7).
 - A GitHub account that can create a GitHub App (section 4), and a ChatGPT account for the Codex sign-in (section 8).
 - Outbound HTTPS from the host to GitHub, Docker Hub and the LLM provider (`chatgpt.com`, `openai.com`); with
-  `SR_PR_HYGIENE_URL` set, also from the server to that PR Hygiene host (ADR-022).
+  `SR_PR_HYGIENE_URL` set, also from the server to that PR Hygiene host; with `SR_THEPASTACLAW_STATUS_URL` set, to
+  that host (`thepastaclaw.github.io`) (ADR-022). Notification channels (ntfy, webhook) and agent push targets are
+  outbound destinations the users and their agents choose (ADR-023): the server reaches whatever `http`/`https`
+  host they enter (e.g. `ntfy.sh`, a Home Assistant on the LAN), never loopback or link-local addresses;
+  `SR_NOTIFY_DENY_PRIVATE=1` keeps it off private addresses too. Notifications connect directly (no proxy).
 - Optional: a [MemCan](https://github.com/lklimek/memcan) instance (section 9).
 - On the host for backups and checks: `bash`, `openssl`, `sqlite3` 3.27+ (`deploy/backup.sh`), `jq` (rendering
   check of `deploy/check-production-config.sh`).
@@ -184,7 +193,9 @@ Required means compose or the service refuses to start without it. "Secret" valu
 | `SR_MEMCAN_URL` | yes | | MemCan MCP endpoint, full URL (section 9). |
 | `SR_MEMCAN_TOKEN` | yes, secret | | MemCan token (section 9). |
 | `SR_MEMCAN_UI_URL` | no | empty | MemCan web UI base including `/ui`; the dashboard links TODOs to `<base>/tasks/<uuid>`. |
-| `SR_PR_HYGIENE_URL` | no | empty | PR Hygiene service base URL (`http`/`https`), e.g. `https://pr-hygiene.services.dash.org`. Set: the dashboard plug-in reads its public API (no credential) at most once a minute while someone uses the dashboard (ADR-022). Empty: off. |
+| `SR_PR_HYGIENE_URL` | no | empty | PR Hygiene service base URL (`http`/`https`), e.g. `https://pr-hygiene.services.dash.org`. Set: the dashboard plug-in reads its public API (no credential) at most once a minute while someone uses the dashboard or any user watches a pull request (ADR-022). Empty: off. |
+| `SR_THEPASTACLAW_STATUS_URL` | no | empty | URL of thepastaclaw's review-system status file (`http`/`https`), e.g. `https://thepastaclaw.github.io/review-system/data/status.json`. Set: the dashboard plug-in reads it (no credential) at most once a minute while someone uses the dashboard or any user watches a pull request and notes which pull requests thepastaclaw reviews or has queued (ADR-022). Empty: off. |
+| `SR_NOTIFY_DENY_PRIVATE` | no | `0` | `1`: notification channels and agent push targets may not reach private (RFC 1918), unique-local or shared (`100.64.0.0/10`) addresses either. `0`: they may (Home Assistant, a self-hosted ntfy on the LAN). Loopback, link-local (`169.254.0.0/16`, `fe80::/10`), unspecified, multicast, broadcast, `198.18.0.0/15`, `240.0.0.0/4` and IPv6 forms embedding such an address (IPv4-mapped, NAT64, 6to4) and Teredo (`2001::/32`) are refused with either value. An address in the URL is refused when saved; a host name is resolved by the server and only its allowed addresses are used; notifications never use a proxy from the environment. Other values stop the server at start (exit 1). |
 | `RUST_LOG` | no | `info` | Log level of server and runner (`debug`, or per module, e.g. `info,runner=debug`). |
 
 **Runner**
@@ -195,7 +206,7 @@ Required means compose or the service refuses to start without it. "Secret" valu
 | `SR_RUNNER_CLAUDIUS_URL` | no | `https://github.com/lklimek/claudius.git` | Repository the agents' skills come from. |
 | `SR_RUNNER_CLAUDIUS_REF` | no | `main` | Branch, tag (`refs/tags/<tag>`) or commit SHA of the skills; a SHA or tag pins them (recommended; the check warns on a branch). |
 | `SR_RUNNER_CLAUDIUS_REFRESH_SECS` | no | `21600` | Refresh interval of the skills checkout. |
-| `SR_RUNNER_SKILLS` | no | `severity` | Skills a job may get. |
+| `SR_RUNNER_SKILLS` | no | `severity` | Skills a job may get (analyses and Ask read `severity`; comment assessments read none). A job asking for a skill not listed fails. A list that still names `check-pr-comments` works; that skill is no longer given to any job. |
 | `SR_RUNNER_SESSION_RETENTION_DAYS` | no | `14` | Days an agent session is kept after its last job. |
 | `SR_RUNNER_DISK_RESERVE_MIB` | no | `2048` | Free space on Docker's data root below which the runner takes no job (and is unhealthy). |
 | `SR_SUPERVISOR_SWEEP_DEADLINE_MS` | no | `5000` | Deadline of the job-end process sweep; a miss ends the container (exit 70). |

@@ -14,9 +14,9 @@ pub struct ModelContext {
     pub changed_lines: u32,
 }
 
-/// The saved installation choice (Sol at high effort before any save); Ask jobs use the saved Ask effort
-/// instead ([`DEFAULT_ASK_EFFORT`] before any save) and dashboard ranking jobs the saved ranking effort
-/// ([`DEFAULT_JUDGE_EFFORT`] before any save).
+/// The saved installation choice (Sol at high effort before any save), also for `verify_comments` jobs; Ask jobs use
+/// the saved Ask effort instead ([`DEFAULT_ASK_EFFORT`] before any save) and dashboard ranking jobs the saved ranking
+/// effort ([`DEFAULT_JUDGE_EFFORT`] before any save).
 pub fn select_model(
     kind: JobKind,
     context: &ModelContext,
@@ -40,15 +40,21 @@ pub fn select_model(
             reasoning_effort: saved.map_or(DEFAULT_JUDGE_EFFORT, |saved| saved.judge_effort),
             ..choice
         },
-        JobKind::Plan | JobKind::PrContext | JobKind::AnalyseFlow => choice,
+        // `verify_comments` uses the installation choice (plan §4.2; no own setting); at medium effort it misread
+        // pre-existing code (spike S13-3).
+        JobKind::Plan | JobKind::PrContext | JobKind::AnalyseFlow | JobKind::VerifyComments => {
+            choice
+        }
     }
 }
 
-/// Supported catalog recorded by the deployment's Codex spike S1a.
+/// Supported catalog: the Codex spike S1a models plus the 6.2 models of Codex 0.171 (ADR-002).
 pub const MODELS: &[(&str, &str)] = &[
+    ("gpt-6.2-sol", "Sol 6.2"),
     ("gpt-6.1-sol", "Sol 6.1"),
     ("gpt-6-sol", "Sol 6"),
     ("gpt-5.6-sol", "Sol 5.6"),
+    ("gpt-6.2-astra", "Astra 6.2"),
     ("gpt-6-astra", "Astra 6"),
 ];
 
@@ -125,6 +131,24 @@ mod tests {
         }
     }
 
+    /// `verify_comments` follows the installation model and effort, not the Ask or ranking effort (plan §4.2).
+    #[test]
+    fn verify_comments_uses_the_installation_choice() {
+        let saved = saved("gpt-6-astra", ReasoningEffort::Medium, ReasoningEffort::Low);
+        assert_eq!(
+            select_model(
+                JobKind::VerifyComments,
+                &ModelContext::default(),
+                Some(&saved)
+            ),
+            saved.choice
+        );
+        assert_eq!(
+            select_model(JobKind::VerifyComments, &ModelContext::default(), None).reasoning_effort,
+            ReasoningEffort::High
+        );
+    }
+
     #[test]
     fn select_model_judge_work_uses_judge_effort() {
         let saved = saved("gpt-6-astra", ReasoningEffort::High, ReasoningEffort::Low);
@@ -171,6 +195,28 @@ mod tests {
             "gpt-6.1-sol",
             "a model outside the catalog falls back to Sol"
         );
+    }
+
+    /// Sol 6.2 and Astra 6.2 (Codex 0.171) are selectable; the default stays Sol 6.1.
+    #[test]
+    fn sol_and_astra_6_2_are_selectable_and_the_default_stays_sol_6_1() {
+        let shown = selection(None);
+        assert_eq!(shown.current.model, "gpt-6.1-sol");
+        for (id, label) in [("gpt-6.2-sol", "Sol 6.2"), ("gpt-6.2-astra", "Astra 6.2")] {
+            let saved = saved(id, ReasoningEffort::Medium, ReasoningEffort::Low);
+            assert_eq!(
+                select_model(JobKind::Plan, &ModelContext::default(), Some(&saved)),
+                saved.choice,
+                "{id}"
+            );
+            assert!(
+                shown
+                    .models
+                    .iter()
+                    .any(|option| option.id == id && option.label == label),
+                "{id} offered as {label}"
+            );
+        }
     }
 
     #[test]

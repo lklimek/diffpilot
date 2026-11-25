@@ -3,10 +3,12 @@ import { useNavigate } from "react-router";
 import { AppNav, type AppSection } from "../../components/app-shell/AppNav";
 import { ShellTopBar } from "../../components/app-shell/ShellTopBar";
 import { MY_WORK_PATH, REVIEW_START_PATH, SETTINGS_PATH } from "./paths";
+import { WATCHING_PATH } from "../pr/paths";
 
 const HREFS: Record<AppSection, string> = {
   "my-work": MY_WORK_PATH,
   review: REVIEW_START_PATH,
+  watching: WATCHING_PATH,
   settings: SETTINGS_PATH,
 };
 

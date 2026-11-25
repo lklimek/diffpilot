@@ -74,21 +74,6 @@ impl PhaseLog {
     }
 }
 
-/// Bytes of the regular files below `dir` (links not followed); 0 when it cannot be read.
-pub(crate) fn dir_bytes(dir: &std::path::Path) -> u64 {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return 0;
-    };
-    entries
-        .flatten()
-        .map(|entry| match entry.file_type() {
-            Ok(kind) if kind.is_dir() => dir_bytes(&entry.path()),
-            Ok(kind) if kind.is_file() => entry.metadata().map_or(0, |meta| meta.len()),
-            _ => 0,
-        })
-        .sum()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,15 +87,5 @@ mod tests {
         shared.bytes("restore", 4096);
         assert_eq!(log.summary(), "checkout=2100ms mirror=hit restore=4096B");
         assert_eq!(PhaseLog::default().summary(), "");
-    }
-
-    #[test]
-    fn dir_bytes_sums_nested_files() {
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::create_dir_all(dir.path().join("a/b")).unwrap();
-        std::fs::write(dir.path().join("a/x"), b"123").unwrap();
-        std::fs::write(dir.path().join("a/b/y"), b"45").unwrap();
-        assert_eq!(dir_bytes(dir.path()), 5);
-        assert_eq!(dir_bytes(&dir.path().join("missing")), 0);
     }
 }

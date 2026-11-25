@@ -1,5 +1,8 @@
 # ADR-013: Runner process model (decision R1)
 
+> Superseded for v1.3 by [ADR-025](ADR-025-container-runtime.md). Containers replace the uid/supervisor boundary.
+> The implementation was removed in W9. Procedures below are historical; use the [runbook](../runbook.md).
+
 - Status: accepted by evidence (WP3-OPS phase 1, 2026-11-17, revised after its security and correctness
   reviews); R1 holds, the two-container fallback is not needed.
 - Source: threat model R1, T1a–T1d, T4, T8b, T13; ADR-003 (per-job `CODEX_HOME` persistent); plan §5.4.

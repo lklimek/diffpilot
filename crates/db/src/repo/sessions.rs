@@ -86,30 +86,33 @@ macro_rules! live_session {
 pub(super) use live_session;
 
 /// Days after the user's last sign-in (`users.updated_at`, also set by a language change; a session lasts at most
-/// 7 days from it) for which the dashboard schedule keeps the GitHub token pair without a session (ADR-020).
+/// 7 days from it) for which the dashboard schedule or a watched pull request keeps the GitHub token pair without a
+/// session (ADR-020 and its Watch amendment).
 pub const SCHEDULE_PAIR_KEEP_DAYS: i64 = 30;
 
-/// SQL condition on a `user_tokens` row: the user's dashboard schedule can run (on, time zone known) in the pair's
-/// tenant, the user is still on that tenant's allowlist and signed in after the bound parameter `$signed_in_after`
-/// ([`schedule_keep_bound`]), so the pair outlives the sessions (ADR-020).
-macro_rules! pair_kept_by_schedule {
+/// SQL condition on a `user_tokens` row: the user's dashboard schedule can run (on, time zone known) or the user
+/// watches a pull request (a watch not ended) in the pair's tenant, the user is still on that tenant's allowlist and
+/// signed in after the bound parameter `$signed_in_after` ([`schedule_keep_bound`]), so the pair outlives the
+/// sessions (ADR-020).
+macro_rules! pair_kept_without_session {
     ($signed_in_after:literal) => {
         concat!(
-            "EXISTS (SELECT 1 FROM dashboard_settings AS schedule
-                 JOIN users ON users.id = schedule.user_id
-                 JOIN tenant_allowed_logins AS allowed
-                   ON allowed.github_id = users.github_id AND allowed.tenant_id = schedule.tenant_id
-                 WHERE schedule.user_id = user_tokens.user_id AND schedule.tenant_id = user_tokens.tenant_id
-                   AND schedule.schedule_enabled = 1 AND schedule.time_zone IS NOT NULL
-                   AND users.updated_at > ",
+            "EXISTS (SELECT 1 FROM users JOIN tenant_allowed_logins AS allowed
+                   ON allowed.github_id = users.github_id AND allowed.tenant_id = user_tokens.tenant_id
+                 WHERE users.id = user_tokens.user_id AND users.updated_at > ",
             $signed_in_after,
-            ")"
+            " AND (EXISTS (SELECT 1 FROM dashboard_settings AS schedule
+                       WHERE schedule.user_id = user_tokens.user_id AND schedule.tenant_id = user_tokens.tenant_id
+                         AND schedule.schedule_enabled = 1 AND schedule.time_zone IS NOT NULL)
+                   OR EXISTS (SELECT 1 FROM pr_watches AS watch
+                       WHERE watch.user_id = user_tokens.user_id AND watch.tenant_id = user_tokens.tenant_id
+                         AND watch.state <> 'ended')))"
         )
     };
 }
-pub(super) use pair_kept_by_schedule;
+pub(super) use pair_kept_without_session;
 
-/// The sign-in bound of [`pair_kept_by_schedule`] at `now`.
+/// The sign-in bound of [`pair_kept_without_session`] at `now`.
 pub(super) fn schedule_keep_bound(now: Timestamp) -> String {
     timestamp(now - SignedDuration::from_hours(24 * SCHEDULE_PAIR_KEEP_DAYS))
 }
@@ -277,8 +280,8 @@ impl Sessions<'_> {
     }
 
     /// Deletes sessions that are not live (see [`Liveness`]), the GitHub token pairs of users left without any
-    /// session unless their dashboard schedule keeps them ([`SCHEDULE_PAIR_KEEP_DAYS`], ADR-020), and expired OAuth
-    /// logins, in one transaction.
+    /// session unless their dashboard schedule or a watch keeps them ([`SCHEDULE_PAIR_KEEP_DAYS`], ADR-020), and
+    /// expired OAuth logins, in one transaction.
     pub async fn delete_expired(&self, live: Liveness) -> Result<(), DbError> {
         let now = timestamp(live.now);
         let mut tx = super::write_tx(self.pool).await?;
@@ -290,7 +293,7 @@ impl Sessions<'_> {
         sqlx::query(concat!(
             "DELETE FROM user_tokens
              WHERE NOT EXISTS (SELECT 1 FROM sessions WHERE sessions.user_id = user_tokens.user_id) AND NOT ",
-            pair_kept_by_schedule!("?1")
+            pair_kept_without_session!("?1")
         ))
         .bind(schedule_keep_bound(live.now))
         .execute(&mut *tx)
@@ -713,6 +716,41 @@ mod tests {
             !pair_after_sweep(&db, now).await,
             "removed from the allow-list: deleted"
         );
+    }
+
+    /// ADR-020 Watch amendment: a watch not ended keeps the pair like the schedule, within the same bound.
+    #[tokio::test]
+    async fn pair_kept_without_session_while_a_pull_request_is_watched() {
+        let now = Timestamp::now();
+        let db = db_with_user().await;
+        assert!(!pair_after_sweep(&db, now).await, "nothing keeps it");
+        sqlx::raw_sql(
+            "INSERT INTO repos (id, tenant_id, owner, name) VALUES (1, 'default', 'acme', 'node-client');
+             INSERT INTO pull_requests (id, tenant_id, repo_id, number, title, author, html_url, base_sha,
+                 head_sha, fetched_at) VALUES (1, 'default', 1, 482, 't', 'a', 'u', 'b', 'h', 't');",
+        )
+        .execute(&db.pool)
+        .await
+        .expect("seed");
+        db.review_loop()
+            .watch(DEFAULT_TENANT, "u-1", 1, 20, now)
+            .await
+            .expect("watch");
+        assert!(pair_after_sweep(&db, now).await, "a watch keeps it");
+        assert!(
+            !pair_after_sweep(&db, now + SignedDuration::from_hours(24 * 31)).await,
+            "31 days after the last sign-in: deleted"
+        );
+        db.review_loop()
+            .set_watch_state(
+                "u-1",
+                1,
+                contracts::api::review_loop::WatchState::Ended,
+                now,
+            )
+            .await
+            .expect("end");
+        assert!(!pair_after_sweep(&db, now).await, "an ended watch does not");
     }
 
     /// The schedule keeps the pair for at most [`SCHEDULE_PAIR_KEEP_DAYS`] after the user's last sign-in.

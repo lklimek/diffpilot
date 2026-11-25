@@ -1,0 +1,1209 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AssessmentComparison",
+  "description": "GET …/comments/assessment-comparison, scoped to payer and PR.",
+  "type": "object",
+  "properties": {
+    "summary": {
+      "description": "Exact comparison counts with explicit denominators.",
+      "$ref": "#/$defs/ComparisonSummary",
+      "default": {
+        "verdict_compared": 0,
+        "verdict_disagreements": 0,
+        "pending_owner": 0,
+        "methods": []
+      }
+    },
+    "pass": {
+      "description": "Frozen logical pass.",
+      "$ref": "#/$defs/AssessmentPass"
+    },
+    "cutoff": {
+      "description": "Owner revisions are selected as of this cutoff.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "runs": {
+      "description": "Independent method state and metering.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/AssessmentMethodRun"
+      }
+    },
+    "items": {
+      "description": "Includes unmatched, missing, duplicate and failed rows explicitly.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/AssessmentComparisonItem"
+      }
+    }
+  },
+  "required": [
+    "pass",
+    "cutoff",
+    "runs",
+    "items"
+  ],
+  "$defs": {
+    "ComparisonSummary": {
+      "description": "Counts exclude duplicates, mismatched heads and unaligned secondary points from scoring.",
+      "type": "object",
+      "properties": {
+        "verdict_compared": {
+          "description": "Rows whose two available normalized verdicts can be compared.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "verdict_disagreements": {
+          "description": "Different normalized verdicts among verdict_compared.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "pending_owner": {
+          "description": "Primary points waiting for an actual owner choice.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "methods": {
+          "description": "Per-method coverage and exact proposal-kind/target agreement.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MethodComparisonScore"
+          }
+        }
+      },
+      "required": [
+        "verdict_compared",
+        "verdict_disagreements",
+        "pending_owner",
+        "methods"
+      ]
+    },
+    "MethodComparisonScore": {
+      "description": "Explicit per-method denominators; native verdict and proposal remain separately nullable.",
+      "type": "object",
+      "properties": {
+        "method": {
+          "description": "Assessment adapter.",
+          "$ref": "#/$defs/AssessmentMethod"
+        },
+        "assessed": {
+          "description": "Method rows with an available normalized verdict.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "unmatched": {
+          "description": "Unaligned points retained in the report.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "missing": {
+          "description": "Expected but absent rows, including failed methods.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "missing_verdict": {
+          "description": "Available rows without a normalized verdict.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "missing_proposal": {
+          "description": "Available rows without a machine proposal.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "owner_decided": {
+          "description": "Eligible actual owner choices, whether a proposal is present or not.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "owner_agreed": {
+          "description": "Exact kind and target matches among owner_decided.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "failed": {
+          "description": "Whether this method failed or was cancelled.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "method",
+        "assessed",
+        "unmatched",
+        "missing",
+        "missing_verdict",
+        "missing_proposal",
+        "owner_decided",
+        "owner_agreed",
+        "failed"
+      ]
+    },
+    "AssessmentMethod": {
+      "description": "An assessment adapter; native outputs retain their own validation contracts.",
+      "oneOf": [
+        {
+          "description": "Host-supplied claudius 4.2 report.",
+          "type": "string",
+          "const": "claudius_host"
+        },
+        {
+          "description": "Existing strict prompt v4 output.",
+          "type": "string",
+          "const": "prompt_v4"
+        }
+      ]
+    },
+    "AssessmentPass": {
+      "description": "One admitted logical pass; retries keep its original day and configuration.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Pass identity.",
+          "$ref": "#/$defs/PassId"
+        },
+        "payer": {
+          "description": "Payer and quota owner.",
+          "$ref": "#/$defs/UserId"
+        },
+        "input": {
+          "description": "Frozen input.",
+          "$ref": "#/$defs/AssessmentInput"
+        },
+        "config": {
+          "description": "Frozen user configuration.",
+          "$ref": "#/$defs/AssessmentConfig"
+        },
+        "paired": {
+          "description": "Whether both adapters are scheduled.",
+          "type": "boolean"
+        },
+        "day_utc": {
+          "description": "Original UTC admission day, YYYY-MM-DD.",
+          "type": "string"
+        },
+        "admitted_at": {
+          "description": "Original admission time.",
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "payer",
+        "input",
+        "config",
+        "paired",
+        "day_utc",
+        "admitted_at"
+      ]
+    },
+    "PassId": {
+      "description": "Identifier of a `verify_comments` pass over the items of one pull request.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "UserId": {
+      "description": "Stable authenticated user id, also the payer key.",
+      "type": "string"
+    },
+    "AssessmentInput": {
+      "description": "Non-secret immutable snapshot reference; includes source versions, scope and standing decisions.",
+      "type": "object",
+      "properties": {
+        "pr": {
+          "description": "owner/repo#number.",
+          "type": "string"
+        },
+        "pull_request_id": {
+          "description": "Stable PR database key.",
+          "type": "integer",
+          "format": "int64"
+        },
+        "head": {
+          "description": "Assessed head.",
+          "$ref": "#/$defs/CommitSha"
+        },
+        "base": {
+          "description": "Base used by both adapters.",
+          "$ref": "#/$defs/CommitSha"
+        },
+        "input_hash": {
+          "description": "SHA-256 of the frozen input, including source versions and standing decisions.",
+          "type": "string"
+        },
+        "scope_hash": {
+          "description": "SHA-256 of the frozen scope.",
+          "type": "string"
+        },
+        "snapshot_ref": {
+          "description": "Immutable host-owned non-secret snapshot reference, never model-supplied.",
+          "type": "string"
+        },
+        "model": {
+          "description": "Identical model and effort for both adapters.",
+          "$ref": "#/$defs/ModelChoice"
+        }
+      },
+      "required": [
+        "pr",
+        "pull_request_id",
+        "head",
+        "base",
+        "input_hash",
+        "scope_hash",
+        "snapshot_ref",
+        "model"
+      ]
+    },
+    "CommitSha": {
+      "description": "A full 40-character hexadecimal git commit id.",
+      "type": "string"
+    },
+    "ModelChoice": {
+      "description": "Model and reasoning effort (plan §5.2, ADR-002).",
+      "type": "object",
+      "properties": {
+        "model": {
+          "description": "Provider model id, e.g. `gpt-6.1-sol`.",
+          "type": "string"
+        },
+        "reasoning_effort": {
+          "description": "Reasoning effort.",
+          "$ref": "#/$defs/ReasoningEffort"
+        }
+      },
+      "required": [
+        "model",
+        "reasoning_effort"
+      ]
+    },
+    "ReasoningEffort": {
+      "description": "Reasoning effort of the model.",
+      "oneOf": [
+        {
+          "description": "Low effort.",
+          "type": "string",
+          "const": "low"
+        },
+        {
+          "description": "Medium effort.",
+          "type": "string",
+          "const": "medium"
+        },
+        {
+          "description": "High effort (v1 default for every job kind).",
+          "type": "string",
+          "const": "high"
+        }
+      ]
+    },
+    "AssessmentConfig": {
+      "description": "Per-user settings; changing them alone never schedules work.",
+      "type": "object",
+      "properties": {
+        "primary_method": {
+          "description": "Only this method can change visible items or effects.",
+          "$ref": "#/$defs/AssessmentMethod",
+          "default": "claudius_host"
+        },
+        "ab_prs": {
+          "description": "Explicit owner/repo#number selections, empty by default.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "ab_until": {
+          "description": "Optional UTC deadline, absent by default.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time",
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "AssessmentMethodRun": {
+      "description": "Persisted method summary; usage and duration include failed attempts once each.",
+      "type": "object",
+      "properties": {
+        "usage_complete": {
+          "description": "False when any started attempt has unavailable metering; usage then reports only known totals.",
+          "type": "boolean"
+        },
+        "reported_head": {
+          "description": "Commit actually reported by the adapter; a mismatch stays comparison-only.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitSha"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reference": {
+          "description": "Frozen method identity.",
+          "$ref": "#/$defs/AssessmentRunRef"
+        },
+        "job_id": {
+          "description": "One job whose attempts execute this method.",
+          "$ref": "#/$defs/JobId"
+        },
+        "version": {
+          "description": "Version of the adapter.",
+          "type": "string"
+        },
+        "status": {
+          "description": "Current state.",
+          "$ref": "#/$defs/AssessmentRunStatus"
+        },
+        "attempt": {
+          "description": "Current attempt fence.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "accepted_attempt": {
+          "description": "The only accepted successful attempt, if any.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "usage": {
+          "description": "Billable usage from all attempts, deduplicated by job/attempt.",
+          "$ref": "#/$defs/Usage"
+        },
+        "duration_ms": {
+          "description": "Total duration in milliseconds across attempts.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "failure": {
+          "description": "Scrubbed failure kind, never upstream response text.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JobFailureKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "usage_complete",
+        "reference",
+        "job_id",
+        "version",
+        "status",
+        "attempt",
+        "usage",
+        "duration_ms"
+      ]
+    },
+    "AssessmentRunRef": {
+      "description": "Durable method identity carried by both job input and result; attempt is the enclosing job's fence.",
+      "type": "object",
+      "properties": {
+        "pass_id": {
+          "description": "Logical pass shared by an A/B pair and all its retries.",
+          "$ref": "#/$defs/PassId"
+        },
+        "method": {
+          "description": "Independent adapter.",
+          "$ref": "#/$defs/AssessmentMethod"
+        }
+      },
+      "required": [
+        "pass_id",
+        "method"
+      ]
+    },
+    "JobId": {
+      "description": "Identifier of a job (one agent run).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "AssessmentRunStatus": {
+      "description": "Method execution status, independent of per-row completeness.",
+      "oneOf": [
+        {
+          "description": "Waiting for the container.",
+          "type": "string",
+          "const": "queued"
+        },
+        {
+          "description": "An attempt is running.",
+          "type": "string",
+          "const": "running"
+        },
+        {
+          "description": "Accepted result.",
+          "type": "string",
+          "const": "succeeded"
+        },
+        {
+          "description": "Failed method; the other method is not promoted.",
+          "type": "string",
+          "const": "failed"
+        },
+        {
+          "description": "Cancelled method.",
+          "type": "string",
+          "const": "cancelled"
+        }
+      ]
+    },
+    "Usage": {
+      "description": "Token usage.",
+      "type": "object",
+      "properties": {
+        "input_tokens": {
+          "description": "Input tokens, cached included.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "cached_input_tokens": {
+          "description": "Cached input tokens.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "output_tokens": {
+          "description": "Output tokens.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "requests": {
+          "description": "Model requests of the call, counted from the provider's events (one per batch of tool calls, and the\nanswer); null when not counted.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        }
+      },
+      "required": [
+        "input_tokens",
+        "cached_input_tokens",
+        "output_tokens"
+      ]
+    },
+    "JobFailureKind": {
+      "description": "Kind of a failed attempt.",
+      "oneOf": [
+        {
+          "description": "A required agent skill is unavailable; administrator action is needed.",
+          "type": "string",
+          "const": "configuration"
+        },
+        {
+          "description": "The provider failed (non-zero exit, `turn.failed`, rejected schema).",
+          "type": "string",
+          "const": "provider_failed"
+        },
+        {
+          "description": "The final message was not JSON.",
+          "type": "string",
+          "const": "output_not_json"
+        },
+        {
+          "description": "The LLM credential cannot be refreshed; the owner must sign in again.",
+          "type": "string",
+          "const": "credential_unusable"
+        },
+        {
+          "description": "Fetching or checking out the repository failed.",
+          "type": "string",
+          "const": "checkout_failed"
+        },
+        {
+          "description": "The runtime cap was reached.",
+          "type": "string",
+          "const": "timeout"
+        },
+        {
+          "description": "A runner-side error.",
+          "type": "string",
+          "const": "internal"
+        },
+        {
+          "description": "The worker could not be started or attached.",
+          "type": "string",
+          "const": "worker_unavailable"
+        },
+        {
+          "description": "Relay or frame loss; stop the container before any subsequent turn.",
+          "type": "string",
+          "const": "worker_lost"
+        },
+        {
+          "description": "No usable credential exists for the payer.",
+          "type": "string",
+          "const": "credential_missing"
+        },
+        {
+          "description": "Terminal or quarantined credentials require explicit relink (gateway HTTP 403).",
+          "type": "string",
+          "const": "credential_relink"
+        },
+        {
+          "description": "Model metadata or the selected model is unavailable.",
+          "type": "string",
+          "const": "model_unavailable"
+        },
+        {
+          "description": "The gateway rejected a request's body or tool type.",
+          "type": "string",
+          "const": "upstream_rejected"
+        },
+        {
+          "description": "The report is not a supported host-supplied 4.2 report.",
+          "type": "string",
+          "const": "report_version_unsupported"
+        },
+        {
+          "description": "The provider rejected the strict output schema; no model repair or retry.",
+          "type": "string",
+          "const": "invalid_json_schema"
+        },
+        {
+          "description": "Required first-Ask compaction was skipped or not confirmed; the answer is discarded.",
+          "type": "string",
+          "const": "ask_compaction_unconfirmed"
+        }
+      ]
+    },
+    "AssessmentComparisonItem": {
+      "description": "Common method-local comparison row; secondary IDs never allocate primary items.",
+      "type": "object",
+      "properties": {
+        "recorded_decision": {
+          "description": "Model-reported reply-chain evidence, separate from actual diffpilot owner truth.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordedDecision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "comparison_key": {
+          "description": "Stable comparison identity inside this pass.",
+          "type": "string"
+        },
+        "local_id": {
+          "description": "Adapter-local ID, distinct from a primary item ID.",
+          "type": "string"
+        },
+        "run": {
+          "description": "Adapter and pass.",
+          "$ref": "#/$defs/AssessmentRunRef"
+        },
+        "method_version": {
+          "description": "Adapter version.",
+          "type": "string"
+        },
+        "source": {
+          "description": "Frozen source identity.",
+          "$ref": "#/$defs/AssessmentSource"
+        },
+        "primary_item_id": {
+          "description": "Existing primary item, only for an unambiguous alignment.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommentItemId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "primary_item_hash": {
+          "description": "Frozen normalized primary point hash, distinct from the full source version.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "description": "Alignment/completeness state.",
+          "$ref": "#/$defs/ComparisonItemStatus"
+        },
+        "duplicate_of": {
+          "description": "Canonical comparison key for a duplicate.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "verdict": {
+          "description": "Normalized verdict, absent when unavailable.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AssessmentVerdict"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "native_verdict": {
+          "description": "Native verdict preserved exactly.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "proposal": {
+          "description": "Machine proposal; absence is distinct from a missing row or verdict.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProposedDecision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "owner_decision": {
+          "description": "Actual diffpilot owner decision reference as of the report cutoff.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AssessmentOwnerDecision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "comparison_key",
+        "local_id",
+        "run",
+        "method_version",
+        "source",
+        "status"
+      ]
+    },
+    "RecordedDecision": {
+      "description": "Attributed prior decision; server verifies authority and grounding before treating it as a fact.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "Recorded decision.",
+          "$ref": "#/$defs/RecordedDecisionKind"
+        },
+        "by": {
+          "description": "GitHub author login.",
+          "type": "string"
+        },
+        "on_behalf_of": {
+          "description": "Named maintainer for an explicit trusted relay; never inferred.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "comment_url": {
+          "description": "Link to the decision's comment.",
+          "type": "string"
+        },
+        "quote": {
+          "description": "Verbatim decision quote, at most 600 characters.",
+          "type": "string"
+        },
+        "target_pr": {
+          "description": "PR target, when supplied.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "target_url": {
+          "description": "URL target, when supplied.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "by",
+        "comment_url",
+        "quote"
+      ]
+    },
+    "RecordedDecisionKind": {
+      "description": "Recorded decision kind, including deferral and withdrawal.",
+      "anyOf": [
+        {
+          "description": "Maintainer deferred this point.",
+          "type": "string",
+          "const": "deferred"
+        },
+        {
+          "description": "Source author withdrew this point.",
+          "type": "string",
+          "const": "withdrawn"
+        },
+        {
+          "description": "Ordinary item decision.",
+          "$ref": "#/$defs/ProposedDecisionKind"
+        }
+      ]
+    },
+    "ProposedDecisionKind": {
+      "description": "Proposed decision kind; independent of PR-level decisions.",
+      "oneOf": [
+        {
+          "description": "Resolve as fixed.",
+          "type": "string",
+          "const": "resolve"
+        },
+        {
+          "description": "Fix in this PR.",
+          "type": "string",
+          "const": "fix_here"
+        },
+        {
+          "description": "Reject with a reason.",
+          "type": "string",
+          "const": "reject"
+        },
+        {
+          "description": "Existing PR handles it.",
+          "type": "string",
+          "const": "handled_in_pr"
+        },
+        {
+          "description": "Follow-up PR handles it.",
+          "type": "string",
+          "const": "follow_up_pr"
+        },
+        {
+          "description": "Upstream issue handles it.",
+          "type": "string",
+          "const": "upstream_issue"
+        },
+        {
+          "description": "Record a TODO.",
+          "type": "string",
+          "const": "todo"
+        }
+      ]
+    },
+    "AssessmentSource": {
+      "description": "Frozen source identity; quote and version are required for body-point alignment.",
+      "oneOf": [
+        {
+          "description": "Inline thread identity.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "inline"
+            },
+            "thread_id": {
+              "description": "GitHub node ID.",
+              "type": "string"
+            },
+            "version": {
+              "description": "Frozen thread body/version hash, preventing decision reuse after edits.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "thread_id",
+            "version"
+          ]
+        },
+        {
+          "description": "Point grounded in one source version.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "body"
+            },
+            "source_kind": {
+              "description": "Original report source kind.",
+              "$ref": "#/$defs/CommentSourceKind"
+            },
+            "url": {
+              "description": "Source URL.",
+              "type": "string"
+            },
+            "version": {
+              "description": "Frozen body SHA-256.",
+              "type": "string"
+            },
+            "quote": {
+              "description": "Verbatim grounded quote.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "source_kind",
+            "url",
+            "version",
+            "quote"
+          ]
+        }
+      ]
+    },
+    "CommentSourceKind": {
+      "description": "Stored source kind; inline threads remain independent items.",
+      "oneOf": [
+        {
+          "description": "Submitted, non-empty review body.",
+          "type": "string",
+          "const": "review_body"
+        },
+        {
+          "description": "Non-empty PR comment.",
+          "type": "string",
+          "const": "pr_comment"
+        }
+      ]
+    },
+    "CommentItemId": {
+      "description": "Identifier of a review-loop item (a PR review comment, review-body item or PR-level question).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "ComparisonItemStatus": {
+      "description": "Distinct completeness/alignment states; null verdict and proposal remain independent.",
+      "oneOf": [
+        {
+          "description": "Attributed reply/status evidence; never a scored point or a source-consumption marker.",
+          "type": "string",
+          "const": "context"
+        },
+        {
+          "description": "Row aligned to a common identity.",
+          "type": "string",
+          "const": "matched"
+        },
+        {
+          "description": "Expected row absent.",
+          "type": "string",
+          "const": "missing_row"
+        },
+        {
+          "description": "Direct duplicate of a canonical comparison key.",
+          "type": "string",
+          "const": "duplicate"
+        },
+        {
+          "description": "No unambiguous common identity.",
+          "type": "string",
+          "const": "unmatched"
+        },
+        {
+          "description": "Method failed, so the row is unavailable.",
+          "type": "string",
+          "const": "method_failed"
+        },
+        {
+          "description": "Report head differs from the frozen head; excluded from scoring.",
+          "type": "string",
+          "const": "head_mismatch"
+        }
+      ]
+    },
+    "AssessmentVerdict": {
+      "description": "A nullable common verdict never inferred from prose.",
+      "oneOf": [
+        {
+          "description": "Valid at the frozen head.",
+          "type": "string",
+          "const": "valid"
+        },
+        {
+          "description": "Invalid concern.",
+          "type": "string",
+          "const": "invalid"
+        },
+        {
+          "description": "Already fixed at the frozen head.",
+          "type": "string",
+          "const": "already_fixed"
+        },
+        {
+          "description": "Outside the PR's scope.",
+          "type": "string",
+          "const": "out_of_scope"
+        }
+      ]
+    },
+    "ProposedDecision": {
+      "description": "Machine-readable proposed action; target semantics are validated by the server.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "Decision kind.",
+          "$ref": "#/$defs/ProposedDecisionKind"
+        },
+        "fixed_in": {
+          "description": "Fix commit, if supplied.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target_pr": {
+          "description": "Target PR number.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "target_url": {
+          "description": "Target issue or PR URL.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "description": "Follow-up title.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    "AssessmentOwnerDecision": {
+      "description": "Actual owner choice, separate from inferred/relayed report evidence.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Durable diffpilot decision ID.",
+          "$ref": "#/$defs/DecisionId"
+        },
+        "revision": {
+          "description": "Revision retained in append-only history.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "owner": {
+          "description": "Actual deciding user.",
+          "$ref": "#/$defs/UserId"
+        },
+        "at": {
+          "description": "Actual decision time.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "kind": {
+          "description": "Actual chosen kind.",
+          "$ref": "#/$defs/DecisionKind"
+        },
+        "target": {
+          "description": "Actual target.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DecisionTarget"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "owner",
+        "at",
+        "kind"
+      ]
+    },
+    "DecisionId": {
+      "description": "Identifier of a decision on a review-loop item (append-only).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "DecisionKind": {
+      "description": "A decision (D1–D7; D8 is `reject` with a `blocker_gate` override; P1–P4 for PR-level questions). Open enum.",
+      "oneOf": [
+        {
+          "description": "D1: resolve, already fixed.",
+          "type": "string",
+          "const": "resolve"
+        },
+        {
+          "description": "D2: fix in this pull request.",
+          "type": "string",
+          "const": "fix_here"
+        },
+        {
+          "description": "D3: reject (with a reason); D8 with a `blocker_gate` override.",
+          "type": "string",
+          "const": "reject"
+        },
+        {
+          "description": "D4: handled in an existing pull request.",
+          "type": "string",
+          "const": "handled_in_pr"
+        },
+        {
+          "description": "D5: create a follow-up pull request.",
+          "type": "string",
+          "const": "follow_up_pr"
+        },
+        {
+          "description": "D6: upstream issue (link or create).",
+          "type": "string",
+          "const": "upstream_issue"
+        },
+        {
+          "description": "D7: TODO, out of scope for this pull request.",
+          "type": "string",
+          "const": "todo"
+        },
+        {
+          "description": "P1: merge now, remaining items become follow-ups.",
+          "type": "string",
+          "const": "merge_with_follow_ups"
+        },
+        {
+          "description": "P2: another round.",
+          "type": "string",
+          "const": "another_round"
+        },
+        {
+          "description": "P3: dismiss the listed stale bot reviews.",
+          "type": "string",
+          "const": "dismiss_stale_reviews"
+        },
+        {
+          "description": "P4: keep the reviews.",
+          "type": "string",
+          "const": "keep_reviews"
+        }
+      ]
+    },
+    "DecisionTarget": {
+      "description": "The target a decision needs.",
+      "oneOf": [
+        {
+          "description": "D4: the existing pull request.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "existing_pr"
+            },
+            "number": {
+              "description": "Its number in the same repository.",
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "type",
+            "number"
+          ]
+        },
+        {
+          "description": "D5: the follow-up pull request's title (prefilled; optional).",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "follow_up_pr"
+            },
+            "title": {
+              "description": "Title.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "D6: an issue URL, or null to create one.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "upstream_issue"
+            },
+            "url": {
+              "description": "Issue URL.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "D7: the TODO title.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "todo"
+            },
+            "title": {
+              "description": "Title.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "title"
+          ]
+        }
+      ]
+    }
+  }
+}

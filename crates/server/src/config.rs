@@ -42,6 +42,8 @@ pub const GITHUB_API_URL: &str = "SR_GITHUB_API_URL";
 pub const GITHUB_OAUTH_URL: &str = "SR_GITHUB_OAUTH_URL";
 /// Base URL repositories are cloned from (`<base>/<owner>/<name>.git`); `file://` allowed for development.
 pub const GITHUB_CLONE_URL: &str = "SR_GITHUB_CLONE_URL";
+/// Optional comma-separated trusted maintainer relay logins; empty by default.
+pub const MAINTAINER_DELEGATES: &str = "SR_MAINTAINER_DELEGATES";
 /// MemCan MCP endpoint URL.
 pub const MEMCAN_URL: &str = "SR_MEMCAN_URL";
 /// MemCan bearer token.
@@ -50,6 +52,12 @@ pub const MEMCAN_TOKEN: &str = "SR_MEMCAN_TOKEN";
 pub const MEMCAN_UI_URL: &str = "SR_MEMCAN_UI_URL";
 /// Base URL of the PR Hygiene service; set, the dashboard's PR Hygiene plug-in is on (optional, ADR-022).
 pub const PR_HYGIENE_URL: &str = "SR_PR_HYGIENE_URL";
+/// URL of thepastaclaw's review-system `status.json`; set, the dashboard's thepastaclaw plug-in is on (optional,
+/// ADR-022).
+pub const THEPASTACLAW_STATUS_URL: &str = "SR_THEPASTACLAW_STATUS_URL";
+/// `1`: notification channels and agent push targets may not reach private, loopback or link-local addresses
+/// (plan §5.5); unset or `0`: they may (LAN targets such as Home Assistant).
+pub const NOTIFY_DENY_PRIVATE: &str = "SR_NOTIFY_DENY_PRIVATE";
 /// Path of a file holding `SR_SECRET_KEY`; exactly one of the two may be set.
 pub const SECRET_KEY_FILE: &str = "SR_SECRET_KEY_FILE";
 /// Path of a file holding `SR_RUNNER_SECRET`; exactly one of the two may be set.
@@ -83,6 +91,8 @@ pub struct Config {
     pub runner_listen_addr: SocketAddr,
     /// GitHub logins allowed to sign in to the default tenant; at least one, unique ignoring ASCII case.
     pub allowed_logins: Vec<String>,
+    /// Explicit trusted relays, independent of tenant membership or bot status.
+    pub maintainer_delegates: Vec<String>,
     /// Reverse proxies whose forwarding headers are trusted (default: none).
     pub trusted_proxies: Vec<IpNet>,
     /// Directory for the database and the bare mirrors (default `data`).
@@ -91,6 +101,8 @@ pub struct Config {
     pub secret_key: SecretBox<[u8; SECRET_KEY_LEN]>,
     /// Secret runners authenticate with.
     pub runner_secret: SecretString,
+    /// Credentials-scoped gateway administration; absent until configured.
+    pub codex_gateway: Option<crate::gateway::client::Admin>,
     /// GitHub App and endpoints.
     pub github: GithubConfig,
     /// MemCan endpoint and token.
@@ -99,6 +111,13 @@ pub struct Config {
     pub memcan_ui_url: Option<String>,
     /// PR Hygiene service base, the dashboard plug-in's source (default: none, plug-in off; ADR-022).
     pub pr_hygiene_url: Option<Url>,
+    /// thepastaclaw's status file, the dashboard plug-in's source (default: none, plug-in off; ADR-022).
+    pub thepastaclaw_status_url: Option<Url>,
+    /// Outbound notifications refuse private addresses (`SR_NOTIFY_DENY_PRIVATE=1`).
+    pub notify_deny_private: bool,
+    /// Tests only: notifications may reach loopback, where the in-test HTTP targets listen.
+    #[cfg(test)]
+    pub notify_loopback: bool,
 }
 
 /// GitHub App credentials and GitHub base URLs (configurable for the fake GitHub).
@@ -134,6 +153,9 @@ pub struct MemcanConfig {
 /// Invalid or missing configuration. Messages name the variable, never its value.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
+    /// The credentials administration client could not be configured.
+    #[error("the gateway administration client is invalid")]
+    Gateway(#[from] crate::gateway::client::Error),
     /// A required variable is unset or empty.
     #[error("required environment variable {key} is not set")]
     Missing {
@@ -169,6 +191,12 @@ pub enum ConfigError {
         /// Parse error.
         #[source]
         source: ParseIntError,
+    },
+    /// The value is neither `0` nor `1`.
+    #[error("environment variable {key} must be 0 or 1")]
+    InvalidFlag {
+        /// Variable name.
+        key: &'static str,
     },
     /// The value is not a socket address.
     #[error("environment variable {key} is not a valid address such as 0.0.0.0:3000")]
@@ -341,12 +369,27 @@ impl Config {
         Ok(Self {
             public_url: parse_http_url(PUBLIC_URL, &require(PUBLIC_URL)?)?,
             allowed_logins: parse_allowed_logins(&require(ALLOWED_LOGINS)?)?,
+            maintainer_delegates: get(MAINTAINER_DELEGATES)?
+                .map(|value| parse_logins(MAINTAINER_DELEGATES, &value))
+                .transpose()?
+                .unwrap_or_default(),
             listen_addr,
             runner_listen_addr,
             trusted_proxies,
             data_dir: PathBuf::from(or_default(DATA_DIR, DEFAULT_DATA_DIR)?),
             secret_key: parse_secret_key(&secret(SECRET_KEY, SECRET_KEY_FILE)?)?,
             runner_secret: SecretString::from(secret(RUNNER_SECRET, RUNNER_SECRET_FILE)?),
+            codex_gateway: get("SR_GATEWAY_ADMIN_URL")?
+                .map(|value| {
+                    let url = parse_http_url("SR_GATEWAY_ADMIN_URL", &value)?;
+                    let token = secret(
+                        "SR_GATEWAY_CREDENTIALS_TOKEN",
+                        "SR_GATEWAY_CREDENTIALS_TOKEN_FILE",
+                    )?;
+                    crate::gateway::client::Admin::new(url, token.into())
+                        .map_err(ConfigError::Gateway)
+                })
+                .transpose()?,
             github: GithubConfig {
                 app_id: require(GITHUB_APP_ID)?.parse().map_err(|source| {
                     ConfigError::InvalidNumber {
@@ -388,6 +431,20 @@ impl Config {
             pr_hygiene_url: get(PR_HYGIENE_URL)?
                 .map(|value| parse_http_url(PR_HYGIENE_URL, &value))
                 .transpose()?,
+            thepastaclaw_status_url: get(THEPASTACLAW_STATUS_URL)?
+                .map(|value| parse_http_url(THEPASTACLAW_STATUS_URL, &value))
+                .transpose()?,
+            notify_deny_private: match get(NOTIFY_DENY_PRIVATE)?.as_deref() {
+                None | Some("0") => false,
+                Some("1") => true,
+                Some(_) => {
+                    return Err(ConfigError::InvalidFlag {
+                        key: NOTIFY_DENY_PRIVATE,
+                    });
+                }
+            },
+            #[cfg(test)]
+            notify_loopback: true,
         })
     }
 }
@@ -464,6 +521,10 @@ fn is_github_login(entry: &str) -> bool {
 }
 
 fn parse_allowed_logins(value: &str) -> Result<Vec<String>, ConfigError> {
+    parse_logins(ALLOWED_LOGINS, value)
+}
+
+fn parse_logins(key: &'static str, value: &str) -> Result<Vec<String>, ConfigError> {
     let mut logins: Vec<String> = Vec::new();
     for entry in value
         .split(',')
@@ -473,28 +534,26 @@ fn parse_allowed_logins(value: &str) -> Result<Vec<String>, ConfigError> {
         // Checked as check-production-config.sh does: a start with the example value would drop every bound entry.
         if entry.contains("REPLACE") {
             return Err(ConfigError::PlaceholderLogin {
-                key: ALLOWED_LOGINS,
+                key,
                 entry: entry.to_owned(),
             });
         }
         if !is_github_login(entry) {
             return Err(ConfigError::InvalidLogin {
-                key: ALLOWED_LOGINS,
+                key,
                 entry: entry.to_owned(),
             });
         }
         if logins.iter().any(|login| login.eq_ignore_ascii_case(entry)) {
             return Err(ConfigError::DuplicateLogin {
-                key: ALLOWED_LOGINS,
+                key,
                 entry: entry.to_owned(),
             });
         }
         logins.push(entry.to_owned());
     }
     if logins.is_empty() {
-        return Err(ConfigError::NoAllowedLogins {
-            key: ALLOWED_LOGINS,
-        });
+        return Err(ConfigError::NoAllowedLogins { key });
     }
     Ok(logins)
 }
@@ -571,6 +630,25 @@ pub(crate) mod tests {
     /// A valid configuration for tests of other modules.
     pub(crate) fn test_config() -> Config {
         parse(&required_env()).expect("required test environment is valid")
+    }
+
+    #[test]
+    fn maintainer_relays_require_explicit_valid_configuration() {
+        let mut env = required_env();
+        assert!(parse(&env).unwrap().maintainer_delegates.is_empty());
+        env.insert(MAINTAINER_DELEGATES, "Relay-Bot, relay_user".into());
+        assert_eq!(
+            parse(&env).unwrap().maintainer_delegates,
+            vec!["Relay-Bot", "relay_user"]
+        );
+        env.insert(MAINTAINER_DELEGATES, "bad/login".into());
+        assert!(matches!(
+            parse(&env),
+            Err(ConfigError::InvalidLogin {
+                key: MAINTAINER_DELEGATES,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -845,6 +923,56 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn notify_deny_private_is_off_unless_one() {
+        assert!(!parse(&required_env()).expect("valid").notify_deny_private);
+        let mut env = required_env();
+        for (value, expected) in [("0", false), ("1", true)] {
+            env.insert(NOTIFY_DENY_PRIVATE, value.to_owned());
+            assert_eq!(parse(&env).expect("valid").notify_deny_private, expected);
+        }
+        env.insert(NOTIFY_DENY_PRIVATE, "yes".to_owned());
+        assert!(matches!(
+            parse(&env),
+            Err(ConfigError::InvalidFlag {
+                key: NOTIFY_DENY_PRIVATE
+            })
+        ));
+    }
+
+    #[test]
+    fn thepastaclaw_status_url_is_optional_and_must_be_http() {
+        assert_eq!(
+            parse(&required_env())
+                .expect("valid")
+                .thepastaclaw_status_url,
+            None
+        );
+        let mut env = required_env();
+        let file = "https://thepastaclaw.example.test/review-system/data/status.json";
+        env.insert(THEPASTACLAW_STATUS_URL, file.to_owned());
+        let url = parse(&env).expect("valid").thepastaclaw_status_url;
+        assert_eq!(url.map(String::from).as_deref(), Some(file));
+        env.insert(THEPASTACLAW_STATUS_URL, "status.json".to_owned());
+        assert!(matches!(
+            parse(&env),
+            Err(ConfigError::InvalidUrl {
+                key: THEPASTACLAW_STATUS_URL,
+                ..
+            })
+        ));
+        env.insert(
+            THEPASTACLAW_STATUS_URL,
+            "file:///srv/status.json".to_owned(),
+        );
+        assert!(matches!(
+            parse(&env),
+            Err(ConfigError::UnsupportedUrlScheme {
+                key: THEPASTACLAW_STATUS_URL
+            })
+        ));
+    }
+
+    #[test]
     fn memcan_ui_url_is_optional_and_must_be_http() {
         assert_eq!(parse(&required_env()).expect("valid").memcan_ui_url, None);
         let mut env = required_env();
@@ -1070,6 +1198,25 @@ pub(crate) mod tests {
             "{logs}"
         );
         assert!(!logs.contains("CANARY"), "contents leaked: {logs}");
+    }
+
+    #[test]
+    fn credentials_gateway_requires_its_own_scope_and_redacts_it() {
+        let mut env = required_env();
+        env.insert("SR_GATEWAY_ADMIN_URL", "http://127.0.0.1:9001".into());
+        assert!(matches!(
+            parse(&env),
+            Err(ConfigError::Missing {
+                key: "SR_GATEWAY_CREDENTIALS_TOKEN"
+            })
+        ));
+        env.insert(
+            "SR_GATEWAY_CREDENTIALS_TOKEN",
+            "fake-gateway-scope-canary".into(),
+        );
+        let config = parse(&env).unwrap();
+        assert!(config.codex_gateway.is_some());
+        assert!(!format!("{config:?}").contains("fake-gateway-scope-canary"));
     }
 
     #[test]

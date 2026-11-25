@@ -14,6 +14,9 @@ use crate::state::AppState;
 /// A requested analysis state change could not be applied.
 #[derive(Debug, thiserror::Error)]
 pub enum ControlError {
+    /// The retrying user has no usable plan credential.
+    #[error(transparent)]
+    Payer(#[from] crate::jobs::payer::PayerError),
     /// The analysis is not in a state that allows it (e.g. retry of a running analysis).
     #[error("the analysis cannot be {action} in its current state")]
     Conflict {
@@ -232,11 +235,26 @@ pub async fn retry(
     state: &AppState,
     analysis: AnalysisId,
 ) -> Result<AnalysisSummary, ControlError> {
+    let payer = state.db.analyses().get(analysis).await?.payer_id;
+    retry_as(state, analysis, &payer).await
+}
+
+/// Retries atomically as the acting user, retaining creator identity.
+pub async fn retry_as(
+    state: &AppState,
+    analysis: AnalysisId,
+    payer: &str,
+) -> Result<AnalysisSummary, ControlError> {
+    crate::jobs::payer::require_linked(&state.db, payer).await?;
     let db = &state.db;
     let written = state
         .progress
         .update(analysis, || async {
-            if !db.analyses().retry(analysis, Timestamp::now()).await? {
+            if !db
+                .analyses()
+                .retry_as(analysis, payer, Timestamp::now())
+                .await?
+            {
                 return Err(Guarded::Refused);
             }
             let summary = db.analyses().summary(analysis).await?;
@@ -305,7 +323,7 @@ mod tests {
         let now = Timestamp::now();
         db.jobs()
             .claim(ClaimParams {
-                credential_ids: &[CREDENTIAL.to_owned()],
+                payer_ids: &[CREDENTIAL.to_owned()],
                 job_token_hash: b"hash",
                 lease_until: now + SignedDuration::from_secs(60),
                 now,
@@ -428,10 +446,14 @@ mod tests {
         db.jobs()
             .complete(
                 &JobResult {
+                    assessment: None,
+                    report: None,
                     job_id: jobs[0],
                     attempt: 1,
                     outcome: JobOutcome::Succeeded { output: json!({}) },
                     session: Some(SessionReport {
+                        last_context: None,
+                        preflight: None,
                         outcome: SessionOutcome::Started,
                         thread_id: "analytic-thread".into(),
                     }),
@@ -445,7 +467,7 @@ mod tests {
             .unwrap();
         db.jobs()
             .claim(ClaimParams {
-                credential_ids: &[CREDENTIAL.into()],
+                payer_ids: &[CREDENTIAL.into()],
                 job_token_hash: b"ask",
                 lease_until: Timestamp::now() + SignedDuration::from_secs(60),
                 now: Timestamp::now(),
@@ -456,10 +478,14 @@ mod tests {
         db.jobs()
             .complete(
                 &JobResult {
+                    assessment: None,
+                    report: None,
                     job_id: ask.id,
                     attempt: 1,
                     outcome: JobOutcome::Succeeded { output: json!({}) },
                     session: Some(SessionReport {
+                        last_context: None,
+                        preflight: None,
                         outcome: SessionOutcome::Started,
                         thread_id: "working-thread".into(),
                     }),

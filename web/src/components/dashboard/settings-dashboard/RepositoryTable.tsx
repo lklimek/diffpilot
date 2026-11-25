@@ -1,7 +1,7 @@
 import { useId } from "react";
 import { buttonClass } from "../../button/button";
 import { HelpTip } from "../../settings/HelpTip";
-import { BUILT_IN_BRANCH_TEXT, type HelpTopic } from "../../settings/settingsHelp";
+import { BUILT_IN_BRANCH_TEXT, BUILT_IN_CHECK_TEXT, type HelpTopic } from "../../settings/settingsHelp";
 import { Tooltip } from "../../tooltip/Tooltip";
 import { ERROR, FIELD } from "./look";
 import { UnreachableMark, isUnreachable } from "./UnreachableMark";
@@ -15,10 +15,14 @@ const COLUMNS: [string, HelpTopic][] = [
   ["Watch issues", "watch_issues"],
   ["Ownership policy", "ownership_policy"],
   ["Release branches", "branch_patterns"],
+  ["Ignored checks", "ignored_checks"],
 ];
 
 const BRANCH_HINT =
   "Leave empty for the built-ins. X.Y stands for a version (v1.8-dev matches vX.Y-dev); * matches any text. Your list replaces the built-ins.";
+
+const CHECK_HINT =
+  "Ignored checks never make CI failing or running. Separate names with commas; a name matches the whole check name in any case, * matches any text. Leave empty for the built-ins; your list replaces them.";
 
 interface RepositoryTableProps {
   rows: RepositoryDraft[];
@@ -29,7 +33,7 @@ interface RepositoryTableProps {
   unreachable: string[];
 }
 
-/** One row per repository with its short name, issue watch, ownership policy and release branches. */
+/** One row per repository with its short name, issue watch, ownership policy, release branches and ignored checks. */
 export function RepositoryTable({ rows, onChange, errors, unreachable }: RepositoryTableProps) {
   const id = useId();
   const set = (index: number, change: Partial<RepositoryDraft>) =>
@@ -43,7 +47,8 @@ export function RepositoryTable({ rows, onChange, errors, unreachable }: Reposit
           No repositories yet. Pull requests and issues of yours are still found by search.
         </p>
       ) : (
-        <div className="overflow-x-auto">
+        <div className="relative overflow-x-auto">
+          {/* `relative`: the cells' screen-reader text (absolutely placed) scrolls with the table, not the page. */}
           <table className="w-full border-collapse text-sm">
             <caption className="sr-only">Repositories</caption>
             <thead>
@@ -168,6 +173,26 @@ export function RepositoryTable({ rows, onChange, errors, unreachable }: Reposit
                       {message("branch_patterns")}
                     </td>
                     <td className="border-b border-border px-2 py-1.5">
+                      <input
+                        aria-label={`Ignored checks of ${name}`}
+                        value={row.ignored_checks}
+                        placeholder="empty = built-ins"
+                        autoComplete="off"
+                        aria-invalid={error("ignored_checks") ? true : undefined}
+                        aria-describedby={[`${id}-check-hint`, described("ignored_checks")]
+                          .filter(Boolean)
+                          .join(" ")}
+                        className={`${FIELD} w-full min-w-56 font-mono`}
+                        onChange={(e) => set(i, { ignored_checks: e.target.value })}
+                      />
+                      {row.ignored_checks.trim() === "" && (
+                        <p className="m-0 mt-1 font-mono text-[11px] text-muted">
+                          Built-ins: {BUILT_IN_CHECK_TEXT}
+                        </p>
+                      )}
+                      {message("ignored_checks")}
+                    </td>
+                    <td className="border-b border-border px-2 py-1.5">
                       <Tooltip tip={`Removes ${name} from the table. Save to apply.`}>
                         <button
                           type="button"
@@ -186,6 +211,9 @@ export function RepositoryTable({ rows, onChange, errors, unreachable }: Reposit
           </table>
           <p id={`${id}-branch-hint`} className="m-0 mt-1.5 text-xs text-muted">
             {BRANCH_HINT}
+          </p>
+          <p id={`${id}-check-hint`} className="m-0 mt-1 text-xs text-muted">
+            {CHECK_HINT}
           </p>
         </div>
       )}

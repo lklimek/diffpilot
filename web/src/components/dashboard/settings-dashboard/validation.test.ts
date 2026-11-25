@@ -15,6 +15,7 @@ const DEFAULTS: DashboardSettings = {
   schedule_enabled: true,
   schedule_time: "06:00",
   time_zone: "Europe/Warsaw",
+  slack_names: [],
 };
 
 const row = (repo: string, extra: Partial<RepositoryRule> = {}): RepositoryRule => {
@@ -25,6 +26,7 @@ const row = (repo: string, extra: Partial<RepositoryRule> = {}): RepositoryRule 
     watch_issues: false,
     ownership_policy: null,
     branch_patterns: [],
+    ignored_checks: [],
     ...extra,
   };
 };
@@ -136,6 +138,21 @@ describe("dashboard settings validation (plan §F.6)", () => {
     );
   });
 
+  it("ignored checks: at most 20 names of 1 to 100 characters, without commas or control characters", () => {
+    const checks = (ignored_checks: string[]) =>
+      errors({ repositories: [row("acme/x", { ignored_checks })] });
+    expect(checks(["PR Hygiene", "policy*", "CI / lint (x.y)", "x".repeat(100)])).toEqual({});
+    expect(checks(["a, b"])["repositories.0.ignored_checks"]).toBe(
+      'Repository 1: "a, b" is not a check name (1 to 100 characters, no commas).',
+    );
+    for (const bad of ["", " lead", "tab\tin", "x".repeat(101)]) {
+      expect(checks([bad]), JSON.stringify(bad)).toHaveProperty(["repositories.0.ignored_checks"]);
+    }
+    expect(checks(Array.from({ length: 21 }, (_, i) => `c${i}`))["repositories.0.ignored_checks"]).toBe(
+      "Repository 1: at most 20 ignored checks.",
+    );
+  });
+
   it("G8 owners to enumerate: login syntax, at most 5", () => {
     expect(errors({ enumerate_owners: ["a/b"] })).toHaveProperty("enumerate_owners");
     expect(errors({ enumerate_owners: ["a", "b", "c", "d", "e", "f"] }).enumerate_owners).toMatch(
@@ -177,6 +194,33 @@ describe("dashboard settings validation (plan §F.6)", () => {
     expect(checkEntry("known_bots", "thepastaclaw", ["ThePastaClaw"], "alice")).toBe(
       'Known bots: "thepastaclaw" is already listed.',
     );
+  });
+
+  it("G18 Slack names: login syntax, each login once (any case), a Slack name of 1–80 characters, at most 100", () => {
+    const named = (login: string, slack: string) => ({ login, slack });
+    expect(errors({ slack_names: [named("bob", "@bob.k"), named("Carol-2", "<@U01ABC>")] })).toEqual({});
+    expect(errors({ slack_names: [named("a b", "@ab")] })["slack_names.0.login"]).toBe(
+      'Slack names: "a b" is not a GitHub login (letters, digits, - or _, up to 39).',
+    );
+    expect(errors({ slack_names: [named("bob", "@b"), named("Bob", "@bb")] })["slack_names.1.login"]).toBe(
+      'Slack names: "Bob" is listed twice.',
+    );
+    const rule =
+      'Slack names: the Slack name of "bob" uses 1 to 80 characters, without control characters or white space at either end.';
+    for (const bad of ["", " @bob", "@bo\nb", "@bo\u0007b", "x".repeat(81)])
+      expect(errors({ slack_names: [named("bob", bad)] })["slack_names.0.slack"]).toBe(rule);
+    expect(errors({ slack_names: [named("bob", "ż".repeat(80))] })).toEqual({});
+    expect(errors({ slack_names: [named("alice", "@me")] })).toEqual({});
+    const many = Array.from({ length: 101 }, (_, i) => named(`user${i}`, `@user${i}`));
+    expect(errors({ slack_names: many }).slack_names).toBe("Slack names: at most 100.");
+    expect(errors({ slack_names: many.slice(0, 100) })).toEqual({});
+  });
+
+  it("G18 the form trims both columns of a Slack names row", () => {
+    const draft = toDraft({ ...DEFAULTS, slack_names: [{ login: "bob", slack: "@bob" }] });
+    expect(
+      fromDraft({ ...draft, slack_names: [{ login: " bob ", slack: " <@U01ABC> " }] }).slack_names,
+    ).toEqual([{ login: "bob", slack: "<@U01ABC>" }]);
   });
 
   it("G17 MemCan projects: name syntax, unique, at most 10", () => {
@@ -242,6 +286,7 @@ describe("form draft", () => {
           alias: "PLAT",
           ownership_policy: { repo: { owner: "acme", name: "policies" }, path: "p.json" },
           branch_patterns: ["release/*", "vX.Y"],
+          ignored_checks: ["*hygiene*", "PastaClaw review"],
         }),
         row("acme/docs"),
       ],
@@ -253,13 +298,17 @@ describe("form draft", () => {
       repo: " acme/web ",
       alias: " ",
       branch_patterns: "main,  release/* hotfix/*",
+      ignored_checks: " PR title ,, CI / lint ",
     };
     draft.lookback_days = "x";
     draft.ready_label = " ready ";
     draft.time_zone = "";
     const back = fromDraft(draft);
     expect(back.repositories[1]).toEqual(
-      row("acme/web", { branch_patterns: ["main", "release/*", "hotfix/*"] }),
+      row("acme/web", {
+        branch_patterns: ["main", "release/*", "hotfix/*"],
+        ignored_checks: ["PR title", "CI / lint"],
+      }),
     );
     expect(back.lookback_days).toBeNaN();
     expect(back.ready_label).toBe("ready");

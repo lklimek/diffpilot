@@ -1,8 +1,39 @@
 // The only fetch layer of the web app: typed calls to the routes of crates/contracts.
 import { routes, type RouteName } from "./generated/routes";
 import type {
+  AssessmentSettings,
+  AssessmentSettingsUpdate,
+  AssessmentComparison,
+  CredentialStatus,
+  DeviceLink,
   AccessToken,
   AnalysisEvent,
+  CarryOverPage,
+  CarryOverQuery,
+  ChannelKind,
+  ChannelTestResult,
+  CodeContext,
+  CommentItem,
+  CommentLog,
+  CommentsOverview,
+  ContextQuery,
+  DecideRequest,
+  DecideRest,
+  Decision,
+  DecisionBatchRequest,
+  EffectsPreview,
+  EffectsPreviewRequest,
+  GateMarkRequest,
+  ItemActionRequest,
+  ItemsQuery,
+  NotificationChannel,
+  NotificationSettings,
+  PrPage,
+  PrRef,
+  PutChannelRequest,
+  UserEvent,
+  UserStreamEvent,
+  WatchList,
   AnalysisId,
   AnalysisSummary,
   AnchoredAskRequest,
@@ -47,6 +78,7 @@ import type {
   SetTimeZoneRequest,
   SetViewedRequest,
   Settings,
+  SnoozeRequest,
   StepId,
   Tour,
   UpdateCommentRequest,
@@ -153,6 +185,29 @@ function isErrorBody(value: unknown): value is { code: ApiErrorCode; message: st
   );
 }
 
+/** Callbacks of the per-user event stream (RW3). */
+export interface UserEventHandlers {
+  onEvent: (event: UserEvent) => void;
+  onError: (closed: boolean) => void;
+}
+
+/** SSE names of RW3 (`sse-events.md` "Review-loop events"): the `event` tag of `UserStreamEvent`. */
+const USER_STREAM_NAMES = ["user_event", "heartbeat"] satisfies UserStreamEvent["event"][];
+
+/** Route parameters of a pull request (`{owner}/{name}/{number}`). */
+const prParams = (pr: PrRef) => ({ owner: pr.repo.owner, name: pr.repo.name, number: String(pr.number) });
+
+/** Route parameters of a review-loop item: the PR and the item's per-PR number `C<no>`. */
+const itemParams = (pr: PrRef, no: number) => ({ ...prParams(pr), item: `C${no}` });
+
+/** The defined values of a query object as query-string values. */
+const definedParams = (query: object): Record<string, string> =>
+  Object.fromEntries(
+    Object.entries(query)
+      .filter(([, value]) => value !== undefined && value !== null)
+      .map(([key, value]) => [key, String(value)]),
+  );
+
 /** Callbacks of an analysis event stream. */
 export interface AnalysisStreamHandlers {
   /** One event (a full snapshot of the analysis or of one question). */
@@ -207,8 +262,9 @@ export function createApiClient(baseUrl = "") {
       response = await send(name, options, needsCsrf ? (csrfToken ?? null) : null);
     }
     if (!response.ok) throw await errorOf(response);
-    if (response.status === 204) return undefined as T;
-    return (await response.json()) as T;
+    // 204, and the 202 of RC3 and RC6, carry no body.
+    const body = await response.text();
+    return (body ? JSON.parse(body) : undefined) as T;
   }
 
   /** A read with `If-None-Match: etag` (none when null): 304 is `unchanged`. */
@@ -273,6 +329,21 @@ export function createApiClient(baseUrl = "") {
       call<void>("deleteComment", { params: { id, comment_id: commentId } }),
     cancelAnalysis: (id: AnalysisId) => call<AnalysisSummary>("cancelAnalysis", { params: { id } }),
     retryAnalysis: (id: AnalysisId) => call<AnalysisSummary>("retryAnalysis", { params: { id } }),
+    getCodex: () => call<CredentialStatus>("getCodex"),
+    getCodexLink: () => call<CredentialStatus>("getCodexLink"),
+    linkCodex: () => call<DeviceLink>("linkCodex", { body: { mode: "chatgpt_plan" } }),
+    unlinkCodex: () => call<void>("deleteCodex"),
+    getAssessmentSettings: () => call<AssessmentSettings>("getAssessmentSettings"),
+    setAssessmentSettings: (body: AssessmentSettingsUpdate) =>
+      call<AssessmentSettings>("setAssessmentSettings", { body }),
+    getAssessmentComparison: async (pr: PrRef) => {
+      try {
+        return await call<AssessmentComparison>("getAssessmentComparison", { params: prParams(pr) });
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return null;
+        throw error;
+      }
+    },
     getSettings: () => call<Settings>("getSettings"),
     setLlm: (body: import("./generated/types").ModelChoice) =>
       call<import("./generated/types").LlmSelection>("setLlm", { body }),
@@ -313,12 +384,71 @@ export function createApiClient(baseUrl = "") {
     listDashboardItems: (query: ItemQuery, etag: string | null = null) =>
       conditional<ItemPage>("listDashboardItems", { query: itemQueryParams(query) }, etag),
     hideDashboardMention: (id: string) => call<void>("hideDashboardMention", { params: { id } }),
+    /** Snoozes one ranked item for `days` (1–365, R12); a later snooze replaces it. */
+    snoozeDashboardItem: (key: string, days: number) =>
+      call<void>("snoozeDashboardItem", { params: { key }, body: { days } satisfies SnoozeRequest }),
+    /** Ends an item's snooze now ("Wake now", R13). */
+    wakeDashboardItem: (key: string) => call<void>("wakeDashboardItem", { params: { key } }),
     startDashboardRefresh: () => call<RefreshStatus>("startDashboardRefresh"),
     getDashboardRefresh: (id: RefreshId) => call<RefreshStatus>("getDashboardRefresh", { params: { id } }),
     cancelDashboardRefresh: (id: RefreshId) =>
       call<RefreshStatus>("cancelDashboardRefresh", { params: { id } }),
     rankDashboardRefresh: (id: RefreshId) => call<RefreshStatus>("rankDashboardRefresh", { params: { id } }),
     setDashboardTimeZone: (body: SetTimeZoneRequest) => call<void>("setDashboardTimeZone", { body }),
+    getPrPage: (pr: PrRef) => call<PrPage>("getPrPage", { params: prParams(pr) }),
+    getComments: (pr: PrRef) => call<CommentsOverview>("getComments", { params: prParams(pr) }),
+    readComments: (pr: PrRef) => call<void>("readComments", { params: prParams(pr) }),
+    listCommentItems: (pr: PrRef, query: ItemsQuery = { state: null, kind: null }) =>
+      call<CommentItem[]>("listCommentItems", { params: prParams(pr), query: definedParams(query) }),
+    getCommentContext: (pr: PrRef, no: number, query: ContextQuery = { from: null, to: null }) =>
+      call<CodeContext>("getCommentContext", { params: itemParams(pr, no), query: definedParams(query) }),
+    assessComment: (pr: PrRef, no: number) => call<void>("assessComment", { params: itemParams(pr, no) }),
+    decideComment: (pr: PrRef, no: number, body: DecideRequest) =>
+      call<Decision>("decideComment", { params: itemParams(pr, no), body }),
+    undoCommentDecision: (pr: PrRef, no: number, body: ItemActionRequest) =>
+      call<CommentItem>("undoCommentDecision", { params: itemParams(pr, no), body }),
+    reopenCommentItem: (pr: PrRef, no: number, body: ItemActionRequest) =>
+      call<CommentItem>("reopenCommentItem", { params: itemParams(pr, no), body }),
+    skipCommentItem: (pr: PrRef, no: number, body: ItemActionRequest) =>
+      call<void>("skipCommentItem", { params: itemParams(pr, no), body }),
+    markCommentGate: (pr: PrRef, no: number, body: GateMarkRequest) =>
+      call<CommentItem>("markCommentGate", { params: itemParams(pr, no), body }),
+    /** Asks about a review-comment item; with an analysis of the head its Ask session answers, else a question pass. */
+    askPrQuestion: (pr: PrRef, body: AnchoredAskRequest) =>
+      call<AskQuestion>("askPrQuestion", { params: prParams(pr), body }),
+    /** The reader's own questions about the PR's review-comment items, oldest first. */
+    listPrQuestions: (pr: PrRef) => call<AskQuestion[]>("listPrQuestions", { params: prParams(pr) }),
+    decideCommentBatch: (pr: PrRef, body: DecisionBatchRequest) =>
+      call<Decision[]>("decideCommentBatch", { params: prParams(pr), body }),
+    /** The effects the server plans for the rows, with the reply texts it would post; nothing is stored (RC16). */
+    previewCommentEffects: (pr: PrRef, body: EffectsPreviewRequest) =>
+      call<EffectsPreview[]>("previewCommentEffects", { params: prParams(pr), body }),
+    /** The server's "Decide the rest per recommendation" list and the items it leaves out (RC17). */
+    getDecideRest: (pr: PrRef) => call<DecideRest>("getDecideRest", { params: prParams(pr) }),
+    getCommentLog: (pr: PrRef) => call<CommentLog>("getCommentLog", { params: prParams(pr) }),
+    listCarryOvers: (query: CarryOverQuery) =>
+      call<CarryOverPage>("listCarryOvers", { query: definedParams(query) }),
+    watchPr: (pr: PrRef) => call<void>("watchPr", { params: prParams(pr) }),
+    unwatchPr: (pr: PrRef) => call<void>("unwatchPr", { params: prParams(pr) }),
+    listWatches: () => call<WatchList>("listWatches"),
+    getNotificationSettings: () => call<NotificationSettings>("getNotificationSettings"),
+    putNotificationChannel: (kind: ChannelKind, body: PutChannelRequest) =>
+      call<NotificationChannel>("putNotificationChannel", { params: { kind }, body }),
+    deleteNotificationChannel: (kind: ChannelKind) =>
+      call<void>("deleteNotificationChannel", { params: { kind } }),
+    testNotificationChannel: (kind: ChannelKind) =>
+      call<ChannelTestResult>("testNotificationChannel", { params: { kind } }),
+    /** Opens the per-user event stream (RW3); returns a function that closes it. */
+    subscribeUserEvents(handlers: UserEventHandlers): () => void {
+      return openEventStream<UserStreamEvent>(
+        baseUrl + routePath("userEvents"),
+        USER_STREAM_NAMES,
+        (event) => {
+          if (event.event === "user_event") handlers.onEvent(event.user_event);
+        },
+        handlers.onError,
+      );
+    },
     /** Opens a refresh's event stream; returns a function that closes it. */
     subscribeDashboardRefresh(id: RefreshId, handlers: DashboardStreamHandlers): () => void {
       return openEventStream<DashboardEvent>(

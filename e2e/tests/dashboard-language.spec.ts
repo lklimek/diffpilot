@@ -2,13 +2,12 @@
 // job's prompt asks for Polish, as the fake provider received it.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { signIn } from "../support/app";
 import {
   JUDGE_DATA,
   ranked,
-  refreshButton,
   saveSettings,
   seedTodos,
+  signInForDashboardSetup,
   waitForRefresh,
   worldSettings,
 } from "../support/dashboard";
@@ -29,7 +28,7 @@ test("Polish chosen: every ranking job asks for Polish texts", async ({ page, st
       action: { replay: { step_delay_ms: 0 } },
     },
   ]);
-  await signIn(page);
+  await signInForDashboardSetup(page);
   await page.goto("/settings");
   const language = page.getByLabel(/written in/);
   await language.selectOption("pl");
@@ -37,12 +36,12 @@ test("Polish chosen: every ranking job asks for Polish texts", async ({ page, st
   await page.reload();
   await expect(page.getByLabel(/written in/)).toHaveValue("pl");
 
-  await saveSettings(page, worldSettings());
+  await saveSettings(page, { ...worldSettings(), schedule_enabled: false });
   await seedTodos(page, stack);
   await page.goto("/");
-  await refreshButton(page).click();
   const done = await waitForRefresh(page, ranked);
-  expect(done.judged).toBe(19);
+  expect(done.trigger).toBe("automatic");
+  expect(done.judged).toBe(18);
 
   const log = readFileSync(join(stack.stateDir ?? "", "logs", "runner.log"), "utf8");
   const claimed = log.match(/job claimed job=\S+ attempt=\d+ kind="judge_work"/g) ?? [];

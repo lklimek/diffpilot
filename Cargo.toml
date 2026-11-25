@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "tools/*"]
+# Claude Code skills (Python), not crates.
+exclude = ["tools/skills"]
 
 [workspace.package]
 edition = "2024"

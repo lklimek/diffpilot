@@ -423,6 +423,137 @@ describe("AnalysisProgress (brief §4.2)", () => {
       expect(indicator()).toBeNull();
     });
 
+    // Owner: a one-flow PR stayed at "0 of 1 flow analysed" with a still, empty bar for minutes. While a job works,
+    // the part of the bar not done yet moves; the done part and the counts never move by themselves.
+    const moving = () =>
+      (Array.from(bar().children) as HTMLElement[]).map((part) =>
+        /(^|\s)motion-safe:animate-/.test(part.className),
+      );
+    const percent = (value: number): RunProgress => ({
+      ...failedAt("done", "done"),
+      flows: { done: 2, total: 5, state: "current" },
+      percent: value,
+    });
+    const withProgress = (state: AnalysisState, progress: RunProgress) =>
+      render(
+        <AnalysisProgress
+          state={state}
+          progress={progress}
+          activity={activity()}
+          reviewHref="/r"
+          busy={false}
+          onCancel={() => {}}
+          onRetry={() => {}}
+        />,
+      );
+
+    it("while a job works, the part of the bar still to do moves and the done part stays still", () => {
+      const { unmount } = show(
+        {
+          state: "running",
+          done: 0,
+          total: 1,
+          idle: false,
+          stage: { kind: "flow", flow: { index: 1, title: "Send" }, started_at: startedAgo(3 * MIN) },
+        },
+        false,
+        activity(),
+      );
+      expect(bar()).toHaveAttribute("aria-valuenow", "0");
+      expect(moving()).toEqual([false, true]);
+      unmount();
+      withProgress(
+        { state: "running", done: 2, total: 5, idle: false, stage: flowStage(startedAgo(MIN)) },
+        percent(60),
+      );
+      expect(bar()).toHaveAttribute("aria-valuenow", "60");
+      expect(moving()).toEqual([false, true]);
+    });
+
+    it("a counted planning bar moves only in its part still to do", () => {
+      withProgress(
+        { state: "planning", stage: { kind: "plan", started_at: startedAgo(MIN) } },
+        { ...failedAt("current", "pending"), percent: 12 },
+      );
+      expect(moving()).toEqual([false, true]);
+    });
+
+    it("an indeterminate planning bar moves as a whole while the plan job works", () => {
+      show({ state: "planning", stage: { kind: "plan", started_at: startedAgo(MIN) } }, false, activity());
+      expect(moving()).toEqual([true, false]);
+    });
+
+    it("on-demand work has an indeterminate bar that stops when waiting or parked, without percent or ETA", () => {
+      const props = {
+        reviewReady: true,
+        backgroundAnalysis: false,
+        progress: failedAt("done", "done"),
+        activity: activity(),
+        reviewHref: "/r",
+        busy: false,
+        onCancel: vi.fn(),
+        onRetry: vi.fn(),
+      };
+      const state: AnalysisState = {
+        state: "running",
+        done: 2,
+        total: 5,
+        idle: false,
+        stage: flowStage(startedAgo(MIN)),
+      };
+      const { rerender } = render(<AnalysisProgress {...props} state={state} />);
+      expect(bar()).not.toHaveAttribute("aria-valuenow");
+      expect(moving()).toEqual([true, false]);
+      expect(indicator()).toHaveTextContent("Working");
+      expect(document.body).not.toHaveTextContent(/%|estimate|About .* left/);
+      for (const next of [
+        { ...state, stage: flowStage(null) },
+        { ...state, stage: undefined },
+        { ...state, idle: true, stage: undefined },
+      ]) {
+        rerender(<AnalysisProgress {...props} state={next} />);
+        expect(bar()).toBeVisible();
+        expect(bar()).not.toHaveAttribute("aria-valuenow");
+        expect(moving()).toEqual([false, false]);
+        expect(indicator()).toBeNull();
+      }
+      expect(document.body).not.toHaveTextContent(/%|estimate|About .* left/);
+    });
+
+    it.each([
+      ["waiting for the runner", { state: "running", done: 0, total: 1, stage: flowStage(null) }, activity()],
+      ["between two jobs", { state: "running", done: 0, total: 1, idle: false }, activity()],
+      ["parked", { state: "running", done: 1, total: 4, idle: true }, activity()],
+      [
+        "no signal",
+        { state: "running", done: 0, total: 1, stage: flowStage(startedAgo(MIN)) },
+        activity({ lastSignalAt: NOW - SILENT_MS - 1000 }),
+      ],
+      [
+        "connection lost",
+        { state: "running", done: 0, total: 1, stage: flowStage(startedAgo(MIN)) },
+        activity({ connected: false }),
+      ],
+      [
+        "no stream yet",
+        { state: "running", done: 0, total: 1, stage: flowStage(startedAgo(MIN)) },
+        undefined,
+      ],
+      [
+        "paused",
+        { state: "paused", resumes_at: null, done: 0, total: 1, stage: flowStage(null) },
+        activity(),
+      ],
+      ["finished", { state: "finished", total: 1 }, activity()],
+      ["failed", { state: "failed", flow: null, message: "Failed." }, activity()],
+    ] as [string, AnalysisState, ProgressActivity | undefined][])(
+      "the bar stands still when no job is known to work: %s",
+      (_, state, live) => {
+        show(state, false, live);
+        expect(moving()).toEqual([false, false]);
+      },
+    );
+
     it("under reduced motion nothing animates and the word Working is the static alternative", () => {
       show({ state: "planning", stage: { kind: "plan", started_at: startedAgo(MIN) } }, false, activity());
       for (const animated of document.querySelectorAll("[class*='animate-']")) {
@@ -538,6 +669,20 @@ it("user pause resumes without a usage-limit claim and Cancel needs inline confi
   expect(cancel).toHaveBeenCalledOnce();
 });
 
+it("a one-flow PR with the review open says 1 flow, not 1 flows", () => {
+  render(
+    <AnalysisProgress
+      state={{ state: "running", done: 0, total: 1, idle: false }}
+      reviewReady
+      busy={false}
+      reviewHref="/analyses/a1"
+      onCancel={() => {}}
+      onRetry={() => {}}
+    />,
+  );
+  expect(screen.getByText("0 of 1 flow analysed. The review is open.")).toBeVisible();
+});
+
 it("opens the review as soon as context is ready while flows are still running", () => {
   render(
     <AnalysisProgress
@@ -619,7 +764,7 @@ it("a failure without a flow after planning never claims it failed before planni
   expect(screen.getByText("The analysis failed")).toBeVisible();
 });
 
-it("review open with background off: no percent and no estimate from the server, so no bar and no number", () => {
+it("review open with background off: a still indeterminate bar, no percent or estimate", () => {
   render(
     <AnalysisProgress
       state={{ state: "running", done: 1, total: 5, idle: true }}
@@ -633,7 +778,8 @@ it("review open with background off: no percent and no estimate from the server,
       onRetry={() => {}}
     />,
   );
-  expect(screen.queryByRole("progressbar")).toBeNull();
+  expect(bar()).not.toHaveAttribute("aria-valuenow");
+  expect(bar().querySelector("[class*='animate-']")).toBeNull();
   expect(screen.queryByText("No estimate yet")).toBeNull();
   expect(screen.getByText("1 of 5 flows analysed. The review is open.")).toBeVisible();
 });

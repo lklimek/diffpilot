@@ -67,6 +67,34 @@ uuid_id!(
     /// Identifier of a dashboard refresh (one scan and its ranking).
     RefreshId
 );
+uuid_id!(
+    /// Identifier of a review-loop item (a PR review comment, review-body item or PR-level question).
+    CommentItemId
+);
+uuid_id!(
+    /// Identifier of a decision on a review-loop item (append-only).
+    DecisionId
+);
+uuid_id!(
+    /// Identifier of one effect of a decision (reply, resolve, fix, …).
+    EffectId
+);
+uuid_id!(
+    /// Identifier of a carry-over event (a decision carried to a repeat, or a repeat asked again).
+    CarryEventId
+);
+uuid_id!(
+    /// Identifier of a `verify_comments` pass over the items of one pull request.
+    PassId
+);
+uuid_id!(
+    /// Identifier of a per-user event (questions ready, round executed, test).
+    UserEventId
+);
+uuid_id!(
+    /// Identifier of a user's notification channel.
+    ChannelId
+);
 
 /// Identifier of a flow, assigned by the `plan` job: `f1`, `f2`, ….
 #[derive(
@@ -125,3 +153,8 @@ mod tests {
         );
     }
 }
+
+string_id!(
+    /// Stable authenticated user id, also the payer key.
+    UserId
+);

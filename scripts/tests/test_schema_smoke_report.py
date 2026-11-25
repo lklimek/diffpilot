@@ -72,3 +72,42 @@ def test_verdict_of_a_regular_valid_output(tmp_path):
     work, job, _ = make_run(tmp_path)
     (job / "output.json").write_text(json.dumps({"answer": "x"}))
     assert run("verdict", str(work / "in" / "ask.schema.json"), str(job)).stdout.strip() == "valid"
+
+
+def test_measures_read_the_last_turn_usage_and_the_output(tmp_path):
+    work, job, _ = make_run(tmp_path)
+    (job / "stdout.jsonl").write_text(
+        '{"type":"turn.completed","usage":{"input_tokens":5,"cached_input_tokens":1,"output_tokens":2}}\n'
+        'not json\n'
+        '[1]\n'
+        '{"type":"turn.completed","usage":[1]}\n'
+        '{"type":"turn.completed","usage":{"input_tokens":9,"cached_input_tokens":4,"output_tokens":3,'
+        '"reasoning_output_tokens":1}}\n')
+    output = json.dumps({"items": [{"item": "C1"}, {"item": "C2"}]})
+    (job / "output.json").write_text(output)
+    measured = json.loads(run("measures", str(job)).stdout)
+    assert measured == {"input_tokens": 9, "cached_input_tokens": 4, "output_tokens": 3,
+                        "reasoning_output_tokens": 1, "items": 2, "output_bytes": len(output)}
+
+
+def test_measures_do_not_follow_symlinks(tmp_path):
+    _, job, secret = make_run(tmp_path)
+    (job / "stdout.jsonl").unlink()
+    os.symlink(secret, job / "stdout.jsonl")
+    os.symlink(secret, job / "output.json")
+    result = run("measures", str(job))
+    assert result.returncode == 0, result.stderr
+    assert SECRET not in result.stdout
+    assert json.loads(result.stdout) == {"items": None, "output_bytes": None}
+
+
+def test_measures_count_items_only_when_they_are_a_list(tmp_path):
+    _, job, _ = make_run(tmp_path)
+    for output, items in (('{"items": null}', None), ('{"items": 3}', None), ("[1, 2]", None),
+                          ('{"items": [{}, {}, {}]}', 3)):
+        (job / "output.json").write_text(output)
+        result = run("measures", str(job))
+        assert result.returncode == 0, result.stderr
+        measured = json.loads(result.stdout)
+        assert measured["items"] == items, output
+        assert measured["output_bytes"] == len(output)

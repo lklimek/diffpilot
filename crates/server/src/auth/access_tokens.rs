@@ -2,8 +2,10 @@
 //! API router that turns `Authorization: Bearer srp_…` into a [`TokenPrincipal`] for the session extractor.
 //!
 //! The check runs after routing ([`axum::Router::route_layer`]), so it knows the matched route and decides from
-//! [`ROUTES`] alone: a token is accepted only on a `GET` route marked `SessionOrToken` (and identifies its user on
-//! `GET /api/v1/me`); every other route answers 403 `token_not_accepted` before its handler runs. Each request
+//! [`ROUTES`] alone: a token is accepted only on a `GET` route marked `SessionOrToken`, on a route marked
+//! `TokenOnly` (the decision feed's claim, report and push-target routes, ADR-023) with that route's scope, and
+//! identifies its user on `GET /api/v1/me`; every other route answers 403 `token_not_accepted` before its handler
+//! runs. Each request
 //! carrying a bearer token writes one `info` line on target `audit` (token id, user id, method, route template,
 //! status, duration); never the token, its hash, other headers or the query string.
 
@@ -116,6 +118,8 @@ pub struct TokenPrincipal {
     pub tenant_id: String,
     /// The token's user.
     pub user_id: String,
+    /// The token's scopes.
+    pub scopes: Vec<TokenScope>,
     pub(crate) token_hash: [u8; 32],
 }
 
@@ -125,7 +129,29 @@ impl fmt::Debug for TokenPrincipal {
             .field("token_id", &self.token_id)
             .field("tenant_id", &self.tenant_id)
             .field("user_id", &self.user_id)
+            .field("scopes", &self.scopes)
             .finish_non_exhaustive()
+    }
+}
+
+/// The access token of a `TokenOnly` route (ADR-023): admitted by [`check`] with the route's scope. A session
+/// cookie never passes: without a bearer token the route answers 401.
+#[derive(Clone, Debug)]
+pub struct TokenOnly(pub TokenPrincipal);
+
+impl axum::extract::FromRequestParts<AppState> for TokenOnly {
+    type Rejection = TokenAuthError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        _state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        parts
+            .extensions
+            .get::<TokenPrincipal>()
+            .cloned()
+            .map(Self)
+            .ok_or(TokenAuthError::Missing)
     }
 }
 
@@ -152,6 +178,8 @@ fn usable(credential: &TokenCredential, now: Timestamp) -> bool {
 enum TokenUse {
     /// A read route (`SessionOrToken`) needing this scope.
     Read(TokenScope),
+    /// A `TokenOnly` route needing this scope, any method.
+    Execute(TokenScope),
     /// `GET /api/v1/me`: names the token's user.
     Identify,
     /// Any other route or method.
@@ -178,6 +206,7 @@ fn token_use(method: &Method, matched: Option<&str>) -> TokenUse {
         RouteAuth::SessionOrToken(scope) if route.method == HttpMethod::Get => {
             TokenUse::Read(scope)
         }
+        RouteAuth::TokenOnly(scope) => TokenUse::Execute(scope),
         RouteAuth::Public if *route == GET_ME => TokenUse::Identify,
         RouteAuth::SessionOrToken(_)
         | RouteAuth::Public
@@ -200,6 +229,9 @@ pub enum TokenAuthError {
     /// The route or method does not accept tokens.
     #[error("the route does not accept access tokens")]
     NotAccepted,
+    /// A `TokenOnly` route without a bearer token.
+    #[error("the route needs an access token")]
+    Missing,
     /// Malformed, unknown, wrong, expired or revoked token, or its user is off the allow-list.
     #[error("the bearer token is not a valid access token")]
     Invalid,
@@ -222,7 +254,7 @@ impl ApiErrorSource for TokenAuthError {
         match self {
             Self::CookieAndToken | Self::TokenInQuery => ApiErrorCode::InvalidRequest,
             Self::NotAccepted => ApiErrorCode::TokenNotAccepted,
-            Self::Invalid => ApiErrorCode::Unauthenticated,
+            Self::Invalid | Self::Missing => ApiErrorCode::Unauthenticated,
             Self::InsufficientScope => ApiErrorCode::InsufficientScope,
             Self::RateLimited { .. } => ApiErrorCode::RateLimited,
             Self::Db(error) => error.code(),
@@ -236,6 +268,7 @@ impl ApiErrorSource for TokenAuthError {
                 "Send the access token in the Authorization header, never in the URL."
             }
             Self::NotAccepted => "This request does not accept access tokens.",
+            Self::Missing => "This request needs an access token in the Authorization header.",
             Self::Invalid => "The access token is not valid.",
             Self::InsufficientScope => "The access token does not allow this request.",
             Self::RateLimited { .. } => "Too many requests. Try again later.",
@@ -247,7 +280,9 @@ impl ApiErrorSource for TokenAuthError {
 impl IntoResponse for TokenAuthError {
     fn into_response(self) -> Response {
         let header = match &self {
-            Self::Invalid => Some((WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"))),
+            Self::Invalid | Self::Missing => {
+                Some((WWW_AUTHENTICATE, HeaderValue::from_static("Bearer")))
+            }
             Self::RateLimited {
                 retry_after_seconds,
             } => Some((RETRY_AFTER, HeaderValue::from(*retry_after_seconds))),
@@ -382,7 +417,7 @@ impl TokenGate {
             .map(MatchedPath::as_str);
         let needed = match token_use(&parts.method, matched) {
             TokenUse::Refused => return Err(TokenAuthError::NotAccepted),
-            TokenUse::Read(scope) => Some(scope),
+            TokenUse::Read(scope) | TokenUse::Execute(scope) => Some(scope),
             TokenUse::Identify => None,
         };
         // Authentication first: a valid token is never refused by the failure limit of its address, which only
@@ -445,6 +480,7 @@ impl TokenGate {
             token_id: id,
             tenant_id: credential.record.tenant_id.clone(),
             user_id: credential.record.user_id.clone(),
+            scopes: credential.record.scopes.clone(),
             token_hash: hash,
         };
         Ok(Some((credential, principal)))
@@ -667,6 +703,7 @@ pub(crate) async fn stored_token(
         token_id: issued.id,
         tenant_id: DEFAULT_TENANT.to_owned(),
         user_id: user_id.to_owned(),
+        scopes: new.scopes,
         token_hash: issued.hash,
     };
     (issued.token.0, principal)

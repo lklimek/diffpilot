@@ -1,5 +1,5 @@
-//! Repository access for a job: a bare mirror per clone URL in the runner's cache, fetched by commit id, and a
-//! fresh checkout of the head commit in the job directory. The runner never reads checkout content.
+//! Bare mirrors per clone URL, fetched by pinned commit IDs and mounted read-only into workers.
+//! Workers own checkouts; the runner never reads checkout content.
 //! Each git step runs in its own process group, killed whole when the step is dropped (job runtime limit).
 
 use std::ffi::OsString;
@@ -56,14 +56,11 @@ pub fn mirror_path(mirrors: &Path, clone_url: &str) -> PathBuf {
     mirrors.join(format!("{name}.git"))
 }
 
-/// Makes sure `mirror` holds `commits` (fetching them from `clone_url` when missing; an absent mirror is
-/// created), then checks the first commit out into the new repository `repo`, which holds a copy of the mirror's
-/// objects and a ref per commit.
-pub async fn checkout(
+/// Ensures the bare mirror holds every pinned commit, fetching only missing objects.
+pub async fn prepare_mirror(
     mirror: &Path,
     clone_url: &str,
     commits: &[&str],
-    repo: &Path,
     phases: &PhaseLog,
 ) -> Result<(), GitError> {
     for commit in commits {
@@ -71,9 +68,9 @@ pub async fn checkout(
             return Err(GitError::InvalidCommit((*commit).to_owned()));
         }
     }
-    let Some(head) = commits.first() else {
+    if commits.is_empty() {
         return Ok(());
-    };
+    }
     if !mirror.exists() {
         git(
             "init",
@@ -114,133 +111,7 @@ pub async fn checkout(
         phases.word("mirror", "fetched");
     }
     phases.since("mirror", step);
-    let step = Instant::now();
-    git("init", None, &[os("init"), os("--quiet"), repo.into()]).await?;
-    // A plain copy of the mirror's object files instead of a fetch, which re-indexes every object. The copy
-    // belongs to the job (the agent never reads the private mirror); the refs below verify each pinned commit.
-    let (source, target) = (mirror.join("objects"), repo.join(".git").join("objects"));
-    let copied = tokio::task::spawn_blocking(move || copy_objects(&source, &target))
-        .await
-        .map_err(io::Error::other)??;
-    phases.bytes("objects_copied", copied);
-    phases.since("objects_copy", step);
-    let step = Instant::now();
-    for commit in commits {
-        git(
-            "pin commit",
-            Some(repo),
-            &[
-                os("update-ref"),
-                os(&format!("{REF_PREFIX}/{commit}")),
-                os(&format!("{commit}^{{commit}}")),
-            ],
-        )
-        .await?;
-    }
-    git(
-        "checkout",
-        Some(repo),
-        &[
-            os("-c"),
-            os("advice.detachedHead=false"),
-            os("checkout"),
-            os("--quiet"),
-            os("--detach"),
-            os(head),
-        ],
-    )
-    .await?;
-    phases.since("checkout", step);
     Ok(())
-}
-
-/// Makes `checkout` (a plain repository, created when absent) hold `reference` of `url` at its tip, checked
-/// out detached; returns the commit.
-pub async fn sync_ref(checkout: &Path, url: &str, reference: &str) -> Result<String, GitError> {
-    if reference.starts_with('-')
-        || reference.is_empty()
-        || !reference
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"._/-".contains(&byte))
-    {
-        return Err(GitError::InvalidCommit(reference.to_owned()));
-    }
-    if !checkout.join(".git").exists() {
-        git("init", None, &[os("init"), os("--quiet"), checkout.into()]).await?;
-    }
-    git(
-        "ref fetch",
-        Some(checkout),
-        &[
-            os("fetch"),
-            os("--quiet"),
-            os("--no-tags"),
-            os("--no-recurse-submodules"),
-            os("--depth=1"),
-            os("--"),
-            os(url),
-            os(reference),
-        ],
-    )
-    .await?;
-    git(
-        "ref checkout",
-        Some(checkout),
-        &[
-            os("-c"),
-            os("advice.detachedHead=false"),
-            os("checkout"),
-            os("--quiet"),
-            os("--force"),
-            os("--detach"),
-            os("FETCH_HEAD"),
-        ],
-    )
-    .await?;
-    let mut command = command(Some(checkout));
-    command.args(["rev-parse", "HEAD"]);
-    let output = command
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .await?;
-    let commit = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if !output.status.success() || !is_object_id(&commit) {
-        return Err(GitError::Failed {
-            step: "rev-parse",
-            status: output.status,
-        });
-    }
-    // A ref given as a commit id is a pin: the checkout must be exactly that commit.
-    if is_object_id(reference) && !commit.eq_ignore_ascii_case(reference) {
-        return Err(GitError::InvalidCommit(reference.to_owned()));
-    }
-    Ok(commit)
-}
-
-/// Copies the packs and loose objects of the object directory `source` into `target`: regular files only,
-/// never a link, an alternates file or a temporary file of an interrupted fetch.
-fn copy_objects(source: &Path, target: &Path) -> io::Result<u64> {
-    let mut copied = 0;
-    for entry in std::fs::read_dir(source)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        let is_loose_dir = name.len() == 2 && name.bytes().all(|byte| byte.is_ascii_hexdigit());
-        if !(entry.file_type()?.is_dir() && (is_loose_dir || name == "pack")) {
-            continue;
-        }
-        let dir = target.join(&*name);
-        std::fs::create_dir_all(&dir)?;
-        for file in std::fs::read_dir(entry.path())? {
-            let file = file?;
-            let file_name = file.file_name();
-            if file.file_type()?.is_file() && !file_name.to_string_lossy().starts_with("tmp_") {
-                copied += std::fs::copy(file.path(), dir.join(&file_name))?;
-            }
-        }
-    }
-    Ok(copied)
 }
 
 async fn has_commits(mirror: &Path, commits: &[&str]) -> Result<bool, GitError> {
@@ -368,191 +239,21 @@ mod tests {
         assert_eq!(mirror_path(root, "x").parent(), Some(root));
     }
 
-    fn git_out(repo: &Path, args: &[&str]) -> Option<String> {
-        let output = std::process::Command::new("git")
-            .arg("-C")
-            .arg(repo)
-            .args(args)
-            .env("GIT_AUTHOR_NAME", "t")
-            .env("GIT_AUTHOR_EMAIL", "t@example.com")
-            .env("GIT_COMMITTER_NAME", "t")
-            .env("GIT_COMMITTER_EMAIL", "t@example.com")
-            .output()
+    #[tokio::test]
+    async fn mirror_fetches_the_pinned_commits_without_a_checkout() {
+        let root = tempfile::tempdir().unwrap();
+        let url = format!("file://{}", crate::test_support::shared_repo().display());
+        let mirror = mirror_path(root.path(), &url);
+        let commits = crate::test_support::commits();
+        let wanted = [&*commits.head, &*commits.base];
+        prepare_mirror(&mirror, &url, &wanted, &PhaseLog::default())
+            .await
             .unwrap();
-        output
-            .status
-            .success()
-            .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
-    }
-
-    fn fixture_url() -> String {
-        format!("file://{}", crate::test_support::shared_repo().display())
-    }
-
-    #[tokio::test]
-    async fn checkout_is_self_contained_and_pins_the_commits() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let (mirror, repo) = (dir.path().join("m.git"), dir.path().join("repo"));
-        let commits = crate::test_support::commits();
-        let pinned = [commits.head.as_str(), commits.base.as_str()];
-        checkout(
-            &mirror,
-            &fixture_url(),
-            &pinned,
-            &repo,
-            &PhaseLog::default(),
-        )
-        .await
-        .unwrap();
-        // An interrupted mirror fetch leaves temporary files; a later checkout never copies them.
-        std::fs::write(mirror.join("objects/pack/tmp_pack_x"), b"partial").unwrap();
-        let second = dir.path().join("second");
-        checkout(
-            &mirror,
-            &fixture_url(),
-            &pinned,
-            &second,
-            &PhaseLog::default(),
-        )
-        .await
-        .unwrap();
-        assert!(!second.join(".git/objects/pack/tmp_pack_x").exists());
-        // The agent never reads the private mirror: each checkout holds its own objects.
-        std::fs::remove_dir_all(&mirror).unwrap();
-        for repo in [&repo, &second] {
-            assert!(!repo.join(".git/objects/info/alternates").exists());
-            assert!(git_out(repo, &["log", "--oneline", &commits.base]).is_some());
-            assert!(git_out(repo, &["diff", &commits.base, &commits.head]).is_some());
-            for commit in pinned {
-                let pinned_ref = format!("{REF_PREFIX}/{commit}");
-                assert_eq!(
-                    git_out(repo, &["rev-parse", "--verify", &pinned_ref]).as_deref(),
-                    Some(commit)
-                );
-            }
-            assert_eq!(
-                git_out(repo, &["rev-parse", "HEAD"]).as_deref(),
-                Some(commits.head.as_str())
-            );
-        }
-    }
-
-    /// A fetch never repacks the mirror (no automatic gc or maintenance, detached or not), so the packs listed by
-    /// `copy_objects` stay in place while they are copied.
-    #[tokio::test]
-    async fn mirror_fetches_never_repack_the_mirror() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let mirror = dir.path().join("m.git");
-        let commits = crate::test_support::commits();
-        let log = PhaseLog::default();
-        checkout(
-            &mirror,
-            &fixture_url(),
-            &[&commits.base],
-            &dir.path().join("a"),
-            &log,
-        )
-        .await
-        .unwrap();
-        // Any second pack would make git gc consolidate the packs.
-        assert!(git_out(&mirror, &["config", "gc.autoPackLimit", "1"]).is_some());
-        let pinned = [commits.head.as_str(), commits.base.as_str()];
-        checkout(
-            &mirror,
-            &fixture_url(),
-            &pinned,
-            &dir.path().join("b"),
-            &log,
-        )
-        .await
-        .unwrap();
-        let packs = std::fs::read_dir(mirror.join("objects/pack"))
-            .unwrap()
-            .flatten()
-            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".pack"))
-            .count();
-        assert_eq!(packs, 2, "one pack per fetch, none repacked");
-    }
-
-    #[tokio::test]
-    async fn checkout_copies_loose_mirror_objects() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let (mirror, repo) = (dir.path().join("m.git"), dir.path().join("repo"));
-        let commits = crate::test_support::commits();
-        checkout(
-            &mirror,
-            &fixture_url(),
-            &[&commits.head],
-            &repo,
-            &PhaseLog::default(),
-        )
-        .await
-        .unwrap();
-        // A commit stored as a loose object in the mirror, as a small fetch leaves it.
-        let tree = format!("{}^{{tree}}", commits.head);
-        let loose = git_out(&mirror, &["commit-tree", &tree, "-m", "loose"]).unwrap();
-        let pinned_ref = format!("{REF_PREFIX}/{loose}");
-        assert!(git_out(&mirror, &["update-ref", &pinned_ref, &loose]).is_some());
-        let second = dir.path().join("second");
-        checkout(
-            &mirror,
-            &fixture_url(),
-            &[&loose, &commits.head],
-            &second,
-            &PhaseLog::default(),
-        )
-        .await
-        .unwrap();
-        std::fs::remove_dir_all(&mirror).unwrap();
-        assert_eq!(
-            git_out(&second, &["rev-parse", "HEAD"]).as_deref(),
-            Some(loose.as_str())
-        );
-    }
-
-    #[tokio::test]
-    async fn checkout_refuses_a_pinned_id_that_is_not_a_commit() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let (mirror, repo) = (dir.path().join("m.git"), dir.path().join("repo"));
-        let commits = crate::test_support::commits();
-        checkout(
-            &mirror,
-            &fixture_url(),
-            &[&commits.head],
-            &repo,
-            &PhaseLog::default(),
-        )
-        .await
-        .unwrap();
-        let tree = git_out(
-            &mirror,
-            &["rev-parse", &format!("{}^{{tree}}", commits.head)],
-        )
-        .unwrap();
-        // The mirror answers `has_commits` for the head only; the tree id is then fetched and must fail.
-        let result = checkout(
-            &mirror,
-            &fixture_url(),
-            &[&commits.head, &tree],
-            &dir.path().join("second"),
-            &PhaseLog::default(),
-        )
-        .await;
-        assert!(matches!(result, Err(GitError::Failed { .. })), "{result:?}");
-    }
-
-    #[tokio::test]
-    async fn rejects_option_like_commit_ids() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let result = checkout(
-            &dir.path().join("m.git"),
-            "file:///nowhere",
-            &["--upload-pack=touch /tmp/x"],
-            &dir.path().join("repo"),
-            &PhaseLog::default(),
-        )
-        .await;
-        assert!(matches!(result, Err(GitError::InvalidCommit(_))));
-        assert!(!dir.path().join("m.git").exists());
+        assert!(has_commits(&mirror, &wanted).await.unwrap());
+        assert!(!mirror.join(".git").exists());
+        assert!(!mirror.join("src").exists());
+        prepare_mirror(&mirror, &url, &wanted, &PhaseLog::default())
+            .await
+            .unwrap();
     }
 }

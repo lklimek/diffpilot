@@ -1,14 +1,16 @@
 //! Dashboard plug-ins over the dashboard world (ADR-022): PR Hygiene statements on work items, the Ready to merge
-//! cross-check (held, agreeing, uncovered, stale, off), presence from dashboard reads, and the targeted re-read of
-//! changed pull requests (details query only, no search), alone and driven by the poller.
+//! cross-check (held, agreeing, uncovered, stale, off), whose move it is for Waiting on others, presence from
+//! dashboard reads, and the targeted re-read of changed pull requests (details query only, no search), alone and
+//! driven by the poller.
 
 use std::collections::HashSet;
 
-use contracts::api::dashboard::PluginState;
+use contracts::api::dashboard::{AwaitingReason, PluginState};
 
 use crate::dashboard::plugin::pr_hygiene::PrHygiene;
 use crate::dashboard::plugin::{PluginHost, PrKey, Timing};
 use crate::dashboard::refresh::reread::{Reread, reread};
+use crate::dashboard::score::ReviewDecision;
 use crate::dashboard::snapshot::{self, Snapshot};
 use crate::test_support::pr_hygiene::{FakePrHygiene, record};
 
@@ -19,7 +21,7 @@ const NC_476: &str = "acme/node-client";
 /// A fresh generation time on the world's clock.
 const GENERATED: &str = "2026-11-18T08:59:00Z";
 
-fn with_plugin(w: &mut World, fake: &FakePrHygiene, timing: Timing) {
+pub(super) fn with_plugin(w: &mut World, fake: &FakePrHygiene, timing: Timing) {
     w.state.plugins = PluginHost::new(
         vec![Arc::new(PrHygiene::new(fake.url.clone()).expect("plugin"))],
         timing,
@@ -44,7 +46,7 @@ fn ready_ids(summary: &DashboardSummary) -> Vec<&str> {
 }
 
 /// The stored snapshot of alice, as written (TODOs and hidden mentions included).
-async fn stored(w: &World) -> (RefreshId, Snapshot) {
+pub(super) async fn stored(w: &World) -> (RefreshId, Snapshot) {
     let (record, document) = w
         .state
         .db
@@ -56,7 +58,7 @@ async fn stored(w: &World) -> (RefreshId, Snapshot) {
     (record.id, snapshot::readable(document).expect("readable"))
 }
 
-async fn write(w: &World, id: RefreshId, snapshot: &Snapshot) {
+pub(super) async fn write(w: &World, id: RefreshId, snapshot: &Snapshot) {
     w.state
         .db
         .dashboard()
@@ -65,7 +67,11 @@ async fn write(w: &World, id: RefreshId, snapshot: &Snapshot) {
         .expect("write");
 }
 
-fn pr_mut<'a>(snapshot: &'a mut Snapshot, repo: &str, number: u32) -> &'a mut snapshot::StoredPr {
+pub(super) fn pr_mut<'a>(
+    snapshot: &'a mut Snapshot,
+    repo: &str,
+    number: u32,
+) -> &'a mut snapshot::StoredPr {
     snapshot
         .pull_requests
         .iter_mut()
@@ -76,7 +82,7 @@ fn pr_mut<'a>(snapshot: &'a mut Snapshot, repo: &str, number: u32) -> &'a mut sn
         .expect("pull request")
 }
 
-async fn github_log(w: &World) -> Vec<Value> {
+pub(super) async fn github_log(w: &World) -> Vec<Value> {
     http()
         .get(format!("{}/_fake/dashboard/requests", w.github))
         .send()
@@ -93,7 +99,6 @@ async fn without_a_plugin_the_wire_and_ready_to_merge_are_unchanged_and_nobody_i
     w.refreshed().await;
     let body = raw_summary(&w).await;
     assert!(body.get("plugins").is_none(), "{body}");
-    assert!(body["snapshot"].get("ready_to_merge_held").is_none());
     let items = w.items("").await;
     assert!(items.items.iter().all(|i| i.plugin_notes.is_empty()));
     let page = w.send("GET", "/api/v1/dashboard/items", ALICE, &[]).await;
@@ -139,22 +144,10 @@ async fn a_current_statement_holds_a_pull_request_out_of_ready_to_merge_and_note
     );
     assert_eq!(summary.plugins[0].state, PluginState::Current);
     let meta = summary.snapshot.as_ref().expect("snapshot");
-    assert!(meta.ready_to_merge.is_empty());
-    let held = &meta.ready_to_merge_held;
-    assert_eq!(held.len(), 1);
-    assert_eq!(
-        (
-            held[0].item.id.as_str(),
-            held[0].source.as_str(),
-            held[0].reason.as_str(),
-            held[0].url.clone()
-        ),
-        (
-            "NC-476",
-            "PR Hygiene",
-            "Author must post /self-reviewed 1a2b3c",
-            format!("{}api/v1/prs/acme/node-client/476", fake.url)
-        )
+    assert!(meta.ready_to_merge.is_empty(), "held back");
+    assert!(
+        meta.awaiting.iter().all(|a| a.id != "NC-476"),
+        "ready to merge, held back: merging is the user's move, not waiting on others"
     );
     let items = w.items("").await;
     let noted: Vec<_> = items
@@ -181,14 +174,6 @@ async fn a_current_statement_holds_a_pull_request_out_of_ready_to_merge_and_note
     w.state.plugins.poll_once(w.state.dashboard.now()).await;
     let agreed = w.summary(ALICE).await;
     assert_eq!(ready_ids(&agreed), ["NC-476"], "the engine agrees");
-    assert!(
-        agreed
-            .snapshot
-            .as_ref()
-            .expect("snapshot")
-            .ready_to_merge_held
-            .is_empty()
-    );
 
     fake.set_prs(json!({"generated_at": GENERATED, "stale_repos": [],
         "prs": [record("acme/node-client", 482, Some("waiting-author"), "Fix it")]}));
@@ -307,10 +292,12 @@ async fn a_change_signal_rereads_only_the_changed_pull_requests_with_the_details
     );
     let lookups: u64 = new.iter().filter_map(|r| r["pull_requests"].as_u64()).sum();
     assert_eq!(lookups, 2);
-    assert_ne!(
-        w.summary(ALICE).await.revision,
-        revision,
-        "a re-read changes the revision"
+    let summary = w.summary(ALICE).await;
+    assert_ne!(summary.revision, revision, "a re-read changes the revision");
+    assert_eq!(
+        summary.snapshot.expect("snapshot").facts_checked_at,
+        None,
+        "a signalled re-read is no check of every listed pull request (plan §M)"
     );
 
     let none = HashSet::from([PrKey::new(
@@ -325,6 +312,130 @@ async fn a_change_signal_rereads_only_the_changed_pull_requests_with_the_details
         Reread::Skipped("none of the user's pull requests changed")
     );
     assert_eq!(github_log(&w).await.len(), log.len());
+}
+
+pub(super) fn awaiting_ids(summary: &DashboardSummary) -> Vec<&str> {
+    summary
+        .snapshot
+        .as_ref()
+        .expect("snapshot")
+        .awaiting
+        .iter()
+        .map(|a| a.id.as_str())
+        .collect()
+}
+
+fn plat_1176(summary: &DashboardSummary) -> &contracts::api::dashboard::AwaitingItem {
+    summary
+        .snapshot
+        .as_ref()
+        .expect("snapshot")
+        .awaiting
+        .iter()
+        .find(|a| a.id == "PLAT-1176")
+        .expect("PLAT-1176 waits")
+}
+
+/// K15 W3b: a current statement that the reviewers or maintainers have the move lists the user's PR under Waiting
+/// on others with the approvers it asks for, also when GitHub's signals alone would rank it, and before the ready
+/// label (owner, 2026-11-23; dashpay/platform#5949); the label is the fallback (whom: the requested reviewers); a
+/// statement of the author's move adds nothing and vetoes nothing.
+#[tokio::test]
+async fn a_statement_of_whose_move_decides_waiting_on_others() {
+    let mut w = world().await;
+    w.refreshed().await;
+    let (id, mut snapshot) = stored(&w).await;
+    let facts = &mut pr_mut(&mut snapshot, "acme/platform", 1176).facts;
+    facts.labels.clear();
+    facts.review_decision = Some(ReviewDecision::Approved);
+    write(&w, id, &snapshot).await;
+    assert!(
+        !awaiting_ids(&w.summary(ALICE).await).contains(&"PLAT-1176"),
+        "approved, no label: the user's move by GitHub's signals"
+    );
+
+    let mut review = record(
+        "acme/platform",
+        1176,
+        Some("ready-for-human"),
+        "Human approval is required",
+    );
+    review["stage"] = json!("review");
+    review["asks"] = json!([{"area": "core", "approvers": ["renata-s"]}]);
+    let fake = FakePrHygiene::start(GENERATED, vec![review.clone()]).await;
+    with_plugin(&mut w, &fake, Timing::default());
+    w.state.plugins.poll_once(w.state.dashboard.now()).await;
+    let summary = w.summary(ALICE).await;
+    let item = plat_1176(&summary);
+    assert_eq!(
+        (item.id.as_str(), item.waiting_on.as_slice()),
+        ("PLAT-1176", ["renata-s".to_owned()].as_slice())
+    );
+    assert_eq!(
+        item.reason,
+        AwaitingReason::Plugin {
+            plugin: "pr-hygiene".to_owned(),
+            source: "PR Hygiene".to_owned(),
+            reason: "Human approval is required".to_owned(),
+            url: format!("{}api/v1/prs/acme/platform/1176", fake.url),
+        }
+    );
+    assert!(
+        w.items("").await.items.iter().all(|i| i.id != "PLAT-1176"),
+        "not ranked"
+    );
+
+    let facts = &mut pr_mut(&mut snapshot, "acme/platform", 1176).facts;
+    facts.labels = vec!["ready-for-human".to_owned()];
+    write(&w, id, &snapshot).await;
+    let summary = w.summary(ALICE).await;
+    let item = plat_1176(&summary);
+    assert_eq!(
+        (item.reason.clone(), item.waiting_on.as_slice()),
+        (
+            AwaitingReason::Plugin {
+                plugin: "pr-hygiene".to_owned(),
+                source: "PR Hygiene".to_owned(),
+                reason: "Human approval is required".to_owned(),
+                url: format!("{}api/v1/prs/acme/platform/1176", fake.url),
+            },
+            ["renata-s".to_owned()].as_slice()
+        ),
+        "the statement before the label; whom: its approvers"
+    );
+
+    let author = record(
+        "acme/platform",
+        1176,
+        Some("waiting-self-review"),
+        "Author must post /self-reviewed 1a2b3c",
+    );
+    fake.set_prs(json!({"generated_at": GENERATED, "stale_repos": [], "prs": [author]}));
+    w.state.plugins.poll_once(w.state.dashboard.now()).await;
+    let summary = w.summary(ALICE).await;
+    assert_eq!(
+        plat_1176(&summary).reason,
+        AwaitingReason::ReadyLabel {
+            label: "ready-for-human".to_owned()
+        },
+        "the author's move does not veto the label"
+    );
+    assert!(
+        w.items("").await.items.iter().all(|i| i.id != "PLAT-1176"),
+        "not ranked"
+    );
+
+    let facts = &mut pr_mut(&mut snapshot, "acme/platform", 1176).facts;
+    facts.labels.clear();
+    write(&w, id, &snapshot).await;
+    assert!(
+        !awaiting_ids(&w.summary(ALICE).await).contains(&"PLAT-1176"),
+        "approved, no label: the user's move; the author's move adds nothing"
+    );
+    assert!(
+        w.items("").await.items.iter().any(|i| i.id == "PLAT-1176"),
+        "ranked with its note"
+    );
 }
 
 #[tokio::test]
@@ -430,5 +541,13 @@ async fn a_personal_access_token_read_does_not_mark_its_user_active() {
     assert!(
         w.state.plugins.active_users().is_empty(),
         "a token read is not a user in the session"
+    );
+    assert!(
+        w.state
+            .dashboard
+            .readers()
+            .open(w.state.dashboard.now())
+            .is_empty(),
+        "a token read does not open My work (plan §M)"
     );
 }

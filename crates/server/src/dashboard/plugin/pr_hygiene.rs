@@ -1,7 +1,10 @@
 //! The PR Hygiene plug-in (ADR-022 §9): the public JSON API of the PR Hygiene service (`/api/v1/prs`,
 //! `/api/v1/stages`), read with `If-None-Match`. Governed pull requests of repositories that are not stale get a
-//! statement: the engine's next action, its blockers, stage, whose move and lateness, and a hold on Ready to merge
-//! unless the engine state is `ready-to-merge`. All of it is untrusted data.
+//! statement: the engine's next action, its blockers, stage, whose move and lateness, a hold on Ready to merge
+//! unless the engine state is `ready-to-merge`, and whose move it is for Waiting on others (the stage's owner; the
+//! `asks` approvers owe a review). All of it is untrusted data.
+
+mod context;
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -9,26 +12,30 @@ use std::time::Duration;
 use contracts::api::dashboard::Fact;
 use contracts::time::Timestamp;
 use futures::future::BoxFuture;
-use reqwest::header::{ACCEPT, ETAG, IF_NONE_MATCH};
-use reqwest::{Client, StatusCode, redirect};
+use futures::{StreamExt, stream};
+use reqwest::Client;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
+use tokio::time::{Instant, timeout_at};
 use url::Url;
 
-use super::{DashboardPlugin, PluginData, PluginError, Polled, PrKey, PrStatement, Readiness};
+use super::fetch::{self, Answer};
+use super::{
+    DashboardPlugin, Move, PluginData, PluginError, Polled, PrKey, PrStatement, Readiness,
+};
 use crate::github::work::ItemRef;
 
-/// Bound of one request.
-const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
-/// Largest answer read.
-const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 /// The engine state of a pull request the engine lists as ready to merge.
 const READY_TO_MERGE: &str = "ready-to-merge";
+/// Stage owners whose stage waits on people other than the author (`/api/v1/stages`).
+const PEOPLE_OWNERS: [&str; 2] = ["reviewers", "maintainers"];
 /// Values of a record that change with time alone, left out of its change mark.
 const TIME_ONLY: [&str; 2] = ["lateness", "idle"];
+/// Optional history must leave time for the aggregate notes and the other plug-ins.
+const HISTORY_BUDGET: Duration = Duration::from_secs(2);
 
 /// The PR Hygiene service at a base URL.
 #[derive(Debug)]
@@ -45,6 +52,8 @@ struct Cache {
     stages: Option<(String, StagesBody)>,
     /// Records of the last data left out as unreadable (logged when the count changes).
     unreadable: usize,
+    /// Per-PR history, reused until its aggregate record changes.
+    details: HashMap<PrKey, (String, DetailBody)>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -63,9 +72,21 @@ struct PrRecord {
     engine_state: Option<String>,
     stage: Option<String>,
     next_action: Option<String>,
-    #[serde(default)]
-    blockers: Vec<String>,
     lateness: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct DetailBody {
+    generated_at: Timestamp,
+    pr: DetailPr,
+    stage_changes: Vec<Value>,
+    stale: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct DetailPr {
+    repo: String,
+    number: u32,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -79,26 +100,15 @@ struct StageRecord {
     owner: Option<String>,
 }
 
-/// One request's answer.
-enum Answer<T> {
-    NotModified,
-    Body { etag: Option<String>, body: T },
-}
-
 impl PrHygiene {
     /// The service at `base` (its root; a missing trailing slash is added).
     pub fn new(mut base: Url) -> Result<Self, reqwest::Error> {
         if !base.path().ends_with('/') {
             base.set_path(&format!("{}/", base.path()));
         }
-        let http = Client::builder()
-            .redirect(redirect::Policy::none())
-            .timeout(HTTP_TIMEOUT)
-            .user_agent("diffpilot")
-            .build()?;
         Ok(Self {
             base,
-            http,
+            http: fetch::client()?,
             cache: Mutex::default(),
         })
     }
@@ -113,41 +123,7 @@ impl PrHygiene {
         path: &str,
         etag: Option<&str>,
     ) -> Result<Answer<T>, PluginError> {
-        let mut request = self
-            .http
-            .get(self.endpoint(path))
-            .header(ACCEPT, "application/json");
-        if let Some(etag) = etag {
-            request = request.header(IF_NONE_MATCH, etag);
-        }
-        let mut response = request.send().await.map_err(PluginError::Http)?;
-        let status = response.status();
-        if status == StatusCode::NOT_MODIFIED {
-            return if etag.is_some() {
-                Ok(Answer::NotModified)
-            } else {
-                Err(PluginError::UnexpectedNotModified)
-            };
-        }
-        if !status.is_success() {
-            return Err(PluginError::Status(status.as_u16()));
-        }
-        let etag = response
-            .headers()
-            .get(ETAG)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(PluginError::Http)? {
-            if bytes.len() + chunk.len() > MAX_BODY_BYTES {
-                return Err(PluginError::TooLarge {
-                    limit: MAX_BODY_BYTES,
-                });
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-        let body = serde_json::from_slice(&bytes).map_err(PluginError::Malformed)?;
-        Ok(Answer::Body { etag, body })
+        fetch::get_json(&self.http, self.endpoint(path), etag).await
     }
 
     async fn read(&self) -> Result<Polled, PluginError> {
@@ -176,7 +152,8 @@ impl PrHygiene {
             }
             (Answer::NotModified, Answer::NotModified) => return Ok(Polled::Unchanged),
         };
-        let (data, unreadable) = self.data(&prs_body, &stages_body);
+        let (mut data, unreadable) = self.data(&prs_body, &stages_body);
+        self.history(&mut data, &mut cache).await;
         if unreadable != cache.unreadable {
             if unreadable > 0 {
                 tracing::warn!(
@@ -190,6 +167,63 @@ impl PrHygiene {
             cache.unreadable = unreadable;
         }
         Ok(Polled::Data(data))
+    }
+
+    /// History is absent from `/prs`; read it only for changed governed records, at most four at once.
+    async fn history(&self, data: &mut PluginData, cache: &mut Cache) {
+        cache.details.retain(|key, _| data.prs.contains_key(key));
+        let pending: Vec<_> = data
+            .prs
+            .iter()
+            .filter_map(|(key, statement)| {
+                if cache
+                    .details
+                    .get(key)
+                    .is_some_and(|(mark, _)| mark == &statement.mark)
+                {
+                    return None;
+                }
+                Some((key.clone(), statement.mark.clone()))
+            })
+            .collect();
+        let deadline = Instant::now() + HISTORY_BUDGET;
+        let mut results = stream::iter(pending)
+            .map(|(key, mark)| async move {
+                let path = format!("api/v1/prs/{}/{}/{}", key.owner, key.name, key.number);
+                (key, mark, self.get::<DetailBody>(&path, None).await)
+            })
+            .buffer_unordered(4);
+        while let Ok(Some((key, mark, result))) = timeout_at(deadline, results.next()).await {
+            if let Ok(Answer::Body { body, .. }) = result
+                && body
+                    .pr
+                    .repo
+                    .eq_ignore_ascii_case(&format!("{}/{}", key.owner, key.name))
+                && body.pr.number == key.number
+            {
+                cache.details.insert(key, (mark, body));
+            }
+        }
+        for (key, statement) in &mut data.prs {
+            if let Some((mark, detail)) = cache.details.get(key)
+                && *mark == statement.mark
+            {
+                statement
+                    .details
+                    .extend(context::history(&detail.stage_changes));
+                statement.details.push(format!(
+                    "Stale: {}",
+                    if detail.stale { "Yes" } else { "No" }
+                ));
+                statement
+                    .details
+                    .push(format!("Data generated: {}", detail.generated_at));
+            } else {
+                statement
+                    .details
+                    .push("Stage history: unavailable".to_owned());
+            }
+        }
     }
 
     /// The statements of `prs`, and how many records were left out as unreadable (shape or repository name).
@@ -222,7 +256,9 @@ impl PrHygiene {
                 unreadable += 1;
                 continue;
             };
-            if let Some(statement) = self.statement(&item, &record, value, &owners) {
+            if let Some(statement) =
+                self.statement(&item, &record, value, &owners, prs.generated_at)
+            {
                 statements.insert(PrKey::new(&item.repo, item.number), statement);
             }
         }
@@ -242,12 +278,15 @@ impl PrHygiene {
         record: &PrRecord,
         value: &Value,
         owners: &HashMap<&str, &str>,
+        as_of: Timestamp,
     ) -> Option<PrStatement> {
         let engine_state = record.engine_state.as_deref()?;
         let mut facts = Vec::new();
+        let mut owner = None;
         if let Some(stage) = &record.stage {
-            facts.push(fact("Stage", stage));
-            if let Some(owner) = owners.get(stage.as_str()) {
+            facts.push(fact("Stage", &context::readable(stage)));
+            owner = owners.get(stage.as_str()).copied();
+            if let Some(owner) = owner {
                 facts.push(fact("Whose move", owner));
             }
         }
@@ -260,16 +299,32 @@ impl PrHygiene {
             };
             facts.push(fact("Lateness", text));
         }
+        facts.push(fact("Engine state", &context::readable(engine_state)));
+        facts.extend(context::timing(value, as_of));
+        let reason = record
+            .next_action
+            .clone()
+            .or_else(|| {
+                record
+                    .stage
+                    .as_ref()
+                    .map(|s| format!("Stage: {}", context::readable(s)))
+            })
+            .unwrap_or_else(|| format!("Engine state: {}", context::readable(engine_state)));
+        let whose_move = match owner {
+            // A configuration error's blocked stage names maintainers, but establishes no review to wait for.
+            _ if engine_state == "configuration-error" => None,
+            Some("author") => Some(Move::Author),
+            Some(owner) if PEOPLE_OWNERS.contains(&owner) => Some(Move::People {
+                owed: approvers(value),
+                reason: reason.clone(),
+            }),
+            _ => None,
+        };
         let ready_to_merge = if engine_state == READY_TO_MERGE {
             Readiness::Agrees
         } else {
-            Readiness::Holds {
-                reason: record
-                    .next_action
-                    .clone()
-                    .or_else(|| record.stage.as_ref().map(|s| format!("Stage: {s}")))
-                    .unwrap_or_else(|| format!("Engine state: {engine_state}")),
-            }
+            Readiness::Holds { reason }
         };
         Some(PrStatement {
             url: self
@@ -279,9 +334,14 @@ impl PrHygiene {
                 ))
                 .to_string(),
             summary: record.next_action.clone(),
-            details: record.blockers.clone(),
+            details: context::details(value),
             facts,
             ready_to_merge: Some(ready_to_merge),
+            whose_move,
+            github_updated_at: value
+                .get("updated_at")
+                .and_then(Value::as_str)
+                .and_then(|at| at.parse().ok()),
             mark: mark(value),
         })
     }
@@ -301,6 +361,20 @@ fn fact(label: &str, value: &str) -> Fact {
     }
 }
 
+/// The logins of every `asks[].approvers` of a record, in order; an entry of another shape is skipped.
+fn approvers(value: &Value) -> Vec<String> {
+    value
+        .get("asks")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|ask| ask.get("approvers").and_then(Value::as_array))
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect()
+}
+
 /// Hash of the record without its time-only values.
 fn mark(value: &Value) -> String {
     let mut value = value.clone();
@@ -316,9 +390,12 @@ fn mark(value: &Value) -> String {
         .collect()
 }
 
+/// The plug-in's id.
+pub const ID: &str = "pr-hygiene";
+
 impl DashboardPlugin for PrHygiene {
     fn id(&self) -> &'static str {
-        "pr-hygiene"
+        ID
     }
 
     fn name(&self) -> &'static str {
@@ -331,5 +408,9 @@ impl DashboardPlugin for PrHygiene {
 
     fn poll(&self) -> BoxFuture<'_, Result<Polled, PluginError>> {
         Box::pin(self.read())
+    }
+
+    fn holds_ready_to_merge(&self) -> bool {
+        true
     }
 }

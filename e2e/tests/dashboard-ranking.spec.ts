@@ -34,8 +34,9 @@ test("a review analysis running first: the ranking waits for it, then ranks", as
   await expect(page.getByText("Planning flows…")).toBeVisible();
 
   await page.goto("/");
+  const previous = await latestRefresh(page);
   await refreshButton(page).click();
-  await waitForRefresh(page, (r) => r.ranking?.state === "waiting_for_analysis");
+  await waitForRefresh(page, (r) => r.id !== previous?.id && r.ranking?.state === "waiting_for_analysis");
   await expect(page.getByText("Waiting for the review analysis to finish.")).toBeVisible();
   await expect(
     page.getByText(/^Refreshed \d\d:\d\d · LLM ranking waits for a review analysis$/),
@@ -48,7 +49,7 @@ test("a review analysis running first: the ranking waits for it, then ranks", as
   const { status } = await api(page, "POST", `/api/v1/analyses/${analysis}/cancel`);
   expect(status).toBe(200);
   const done = await waitForRefresh(page, ranked);
-  expect(done.judged).toBe(19);
+  expect(done.judged).toBe(18);
   await expect(page.getByText("Waiting for the review analysis to finish.")).toHaveCount(0);
   await expect(page.getByRole("heading", { name: /^Not judged yet/ })).toHaveCount(0);
 });

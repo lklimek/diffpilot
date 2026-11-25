@@ -243,11 +243,37 @@ pub async fn fetch(
     repo: &RepoRef,
     head: &CommitSha,
 ) -> Result<CiStatus, GithubError> {
+    Ok(fetch_with_pending(config, token, repo, head).await?.0)
+}
+
+/// [`fetch`] with the names of the check runs and statuses still pending (so a reader can leave out ignored ones).
+pub async fn fetch_with_pending(
+    config: &GithubConfig,
+    token: &SecretString,
+    repo: &RepoRef,
+    head: &CommitSha,
+) -> Result<(CiStatus, Vec<String>), GithubError> {
     let client = client()?;
     let base = format!("repos/{}/{}/commits/{}", repo.owner, repo.name, head.0);
     let runs = source(&client, config, token, &format!("{base}/check-runs")).await?;
     let statuses = source(&client, config, token, &format!("{base}/status")).await?;
-    Ok(status_of(runs, statuses))
+    let pending = pending_names(runs.as_deref(), statuses.as_deref());
+    Ok((status_of(runs, statuses), pending))
+}
+
+/// Names of the pending check runs, then of the pending statuses.
+fn pending_names(runs: Option<&[CheckRun]>, statuses: Option<&[CommitStatus]>) -> Vec<String> {
+    let runs = runs
+        .unwrap_or_default()
+        .iter()
+        .filter(|run| outcome(run) == Outcome::Running)
+        .map(|run| run.name.clone());
+    let statuses = statuses
+        .unwrap_or_default()
+        .iter()
+        .filter(|status| status_outcome(status) == Outcome::Running)
+        .map(|status| status.context.clone());
+    runs.chain(statuses).collect()
 }
 
 async fn source<T: serde::de::DeserializeOwned>(
@@ -511,6 +537,34 @@ mod tests {
         assert_eq!(status.check_runs, Some(counts(1, 0, 0, 4, 0)));
         assert_eq!(status.statuses, Some(counts(0, 0, 1, 0, 0)));
         assert!(status.failing.is_empty());
+    }
+
+    /// The review loop keeps the names of pending checks, so an ignored pending one need not count as CI running.
+    #[tokio::test]
+    async fn pending_checks_are_named() {
+        let server = serve_runs(vec![
+            run("build", "in_progress", None),
+            run("test", "completed", Some("success")),
+        ])
+        .await;
+        serve_statuses(
+            &server,
+            vec![
+                commit_status("PR Hygiene", "pending"),
+                commit_status("lint", "success"),
+            ],
+        )
+        .await;
+        let (status, pending) = fetch_with_pending(
+            &github_config(&server),
+            &SecretString::from("ghu_checks"),
+            &repo(),
+            &CommitSha(HEAD.to_owned()),
+        )
+        .await
+        .expect("status");
+        assert_eq!(status.state, CiState::Pending);
+        assert_eq!(pending, ["build", "PR Hygiene"]);
     }
 
     #[tokio::test]

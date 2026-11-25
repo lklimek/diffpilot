@@ -6,7 +6,7 @@ import { expectTrustWording } from "../../../__tests__/wording";
 import type { AskAnchor, AskQuestion, Tour } from "../../../api/generated/types";
 import { seedFor } from "../../../mocks/fixtures";
 import { AskChat, type AskChatProps } from "./AskChat";
-import { threadsOf } from "./model";
+import { subjectOf, threadsOf } from "./model";
 
 const tour = seedFor("default", "tour") as Tour;
 const q = (id: string, minute: number, anchor: AskAnchor, extra: Partial<AskQuestion> = {}): AskQuestion => ({
@@ -29,7 +29,7 @@ function Harness(over: Partial<AskChatProps> & { questions?: AskQuestion[] }) {
   const [draft, setDraft] = useState("");
   const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
   const props: AskChatProps = {
-    tour,
+    describe: (anchor) => subjectOf(anchor, tour),
     threads: threadsOf(over.questions ?? QUESTIONS),
     subject: STEP,
     following: true,
@@ -168,6 +168,26 @@ describe("AskChat (proposal AC3–AC10)", () => {
     expect(field()).toHaveAttribute("placeholder", "Ask about the whole PR…");
     await userEvent.setup().click(within(chat()).getByRole("button", { name: "about this step instead" }));
     expect(onUsePlace).toHaveBeenCalled();
+  });
+
+  it("where the whole PR cannot be asked about, × is off with the hint and such a question is not sent", async () => {
+    const hint =
+      "Questions here are about one comment. Ask about the whole PR in Flows or Files of its analysis.";
+    const onUnanchor = vi.fn();
+    const { unmount } = render(<Harness onUnanchor={onUnanchor} wholePrUnavailable={hint} />);
+    const user = userEvent.setup();
+    const remove = within(chat()).getByRole("button", { name: "Remove the subject: ask about the whole PR" });
+    expect(remove).toHaveAttribute("aria-disabled", "true");
+    await user.click(remove);
+    expect(onUnanchor).not.toHaveBeenCalled();
+    unmount();
+    const onSend = vi.fn();
+    render(<Harness subject={{ kind: "pr" }} following={false} onSend={onSend} wholePrUnavailable={hint} />);
+    await user.type(field(), "Is this safe?");
+    await user.click(within(chat()).getByRole("button", { name: "Ask" }));
+    expect(onSend).not.toHaveBeenCalled();
+    expect(field()).toHaveAccessibleDescription(new RegExp(hint.slice(0, 40)));
+    expect(field()).toHaveValue("Is this safe?");
   });
 
   it("a follow-up goes into its thread; Esc closes its field and keeps the text, then Esc hides the chat", async () => {

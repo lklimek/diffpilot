@@ -32,7 +32,7 @@ use self::progress::Progress;
 use self::rank::RankRun;
 use self::scan::ScanInput;
 use super::score::ScoreRules;
-use super::{settings, snapshot};
+use super::{settings, snapshot, snooze};
 use crate::auth::UserTokenError;
 use crate::github::work::{UserTokens, WorkClient, WorkError};
 use crate::state::AppState;
@@ -117,7 +117,7 @@ pub async fn start(
         .filter(|failure| failure.code == RefreshFailureCode::GithubRateLimited)
         .and_then(|failure| failure.retry_at)
         .filter(|retry_at| *retry_at > now);
-    if let Some(retry_at) = limited {
+    if let Some(retry_at) = limited.max(state.dashboard.readers().limited_until(scope, now)) {
         return Err(StartError::RateLimited { retry_at });
     }
     let (refresh, superseded) = match dashboard
@@ -467,6 +467,7 @@ async fn scan_and_store(
     let trigger_text = match trigger {
         RefreshTrigger::Manual => "manual",
         RefreshTrigger::Scheduled => "scheduled",
+        RefreshTrigger::Automatic => "automatic",
     };
     progress.log(format!("refresh started ({trigger_text})"));
     let tokens = UserTokens {
@@ -514,6 +515,7 @@ async fn scan_and_store(
         Ok(()) => {
             tracing::info!(user_id = %scope.user_id, refresh = %id, prs = snapshot.pull_requests.len(),
                 issues = snapshot.issues.len(), todos = snapshot.todos.len(), "dashboard snapshot stored");
+            snooze::end_ended(state, scope, &snapshot).await;
             publish(state, scope, id).await;
             Ok(true)
         }

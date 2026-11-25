@@ -4,14 +4,14 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 
-use contracts::ids::{AnalysisId, JobId, RefreshId};
+use contracts::ids::{AnalysisId, JobId, PassId, RefreshId};
 use contracts::job::spec::JobTarget;
 use contracts::job::state::JobState;
 use contracts::time::Timestamp;
 use db::error::DbError;
 use db::repo::Db;
 use db::repo::analyses::SessionState;
-use db::repo::jobs::{ExpiredLease, JobSnapshot, NewJob};
+use db::repo::jobs::{ExpiredLease, JobSnapshot, JobStage, NewJob};
 use futures::future::BoxFuture;
 use futures::stream::{self, BoxStream, StreamExt};
 
@@ -36,6 +36,52 @@ impl QueueExecutor {
 }
 
 impl QueueExecutor {
+    /// Enqueues a payer-owned PR Ask once per question, independently of analysis and assessment passes.
+    async fn submit_private_ask(&self, request: JobRequest) -> Result<JobHandle, ExecutorError> {
+        let JobStage::Ask(question) = request.stage else {
+            return Err(DbError::Conflict.into());
+        };
+        let payer = request.spec.payer.clone();
+        let generation = request.generation;
+        let current = || async {
+            Ok::<_, ExecutorError>(
+                self.db
+                    .jobs()
+                    .current_for_private_question(question, &payer, generation)
+                    .await?
+                    .map(|job| JobHandle { job_id: job.id }),
+            )
+        };
+        if let Some(handle) = current().await? {
+            return Ok(handle);
+        }
+        let mut spec = request.spec;
+        let saved = self.db.settings().llm_selection().await?;
+        spec.model = crate::model::select_model(
+            spec.kind,
+            &crate::model::ModelContext::default(),
+            saved.as_ref(),
+        );
+        match self
+            .db
+            .jobs()
+            .enqueue_linked(
+                NewJob {
+                    spec,
+                    priority: request.priority,
+                    stage: request.stage,
+                    generation,
+                },
+                Timestamp::now(),
+            )
+            .await
+        {
+            Ok(job) => Ok(JobHandle { job_id: job.id }),
+            Err(DbError::Conflict) => current().await?.ok_or(ExecutorError::Db(DbError::Conflict)),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     /// Enqueues a dashboard job: idempotent per (refresh, stage, generation) in the refresh's ranking attempt, with
     /// the model from `select_model`; no analysis to serialise on, pause or supersede.
     async fn submit_dashboard(
@@ -49,6 +95,47 @@ impl QueueExecutor {
                 self.db
                     .jobs()
                     .current_for_judge_stage(refresh, &stage, generation)
+                    .await?
+                    .map(|job| JobHandle { job_id: job.id }),
+            )
+        };
+        if let Some(existing) = current().await? {
+            return Ok(existing);
+        }
+        let mut job = NewJob {
+            spec: request.spec,
+            priority: request.priority,
+            stage: request.stage,
+            generation,
+        };
+        let saved = self.db.settings().llm_selection().await?;
+        job.spec.model = crate::model::select_model(
+            job.spec.kind,
+            &crate::model::ModelContext::default(),
+            saved.as_ref(),
+        );
+        match self.db.jobs().enqueue_linked(job, Timestamp::now()).await {
+            Ok(job) => Ok(JobHandle { job_id: job.id }),
+            Err(DbError::Conflict) => current().await?.ok_or(ExecutorError::Db(DbError::Conflict)),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
+impl QueueExecutor {
+    /// Enqueues the `verify_comments` job of an assessment pass: idempotent per pass, with the model from
+    /// `select_model`; no analysis to serialise on, pause or supersede (ADR-023).
+    async fn submit_verify(
+        &self,
+        pass: PassId,
+        request: JobRequest,
+    ) -> Result<JobHandle, ExecutorError> {
+        let generation = request.generation;
+        let current = || async {
+            Ok::<_, ExecutorError>(
+                self.db
+                    .jobs()
+                    .current_for_pass(pass, generation)
                     .await?
                     .map(|job| JobHandle { job_id: job.id }),
             )
@@ -99,6 +186,10 @@ impl JobExecutor for QueueExecutor {
                 JobTarget::Dashboard { refresh_id } => {
                     return self.submit_dashboard(*refresh_id, request).await;
                 }
+                JobTarget::PullRequestAsk(_) => return self.submit_private_ask(request).await,
+                JobTarget::PullRequestComments(target) => {
+                    return self.submit_verify(target.pass_id, request).await;
+                }
             };
             let stage = request.stage.clone();
             let generation = request.generation;
@@ -147,13 +238,16 @@ impl JobExecutor for QueueExecutor {
                             return Err(ExecutorError::Superseded);
                         }
                         let mut job = job.clone();
+                        if !matches!(stage, JobStage::Ask(_)) {
+                            job.spec.payer = contracts::ids::UserId(current.payer_id);
+                        }
                         let saved = self.db.settings().llm_selection().await?;
                         job.spec.model = crate::model::select_model(
                             job.spec.kind,
                             &crate::model::ModelContext::default(),
                             saved.as_ref(),
                         );
-                        match self.db.jobs().enqueue(job, Timestamp::now()).await {
+                        match self.db.jobs().enqueue_linked(job, Timestamp::now()).await {
                             Ok(job) => Ok(Some(JobHandle { job_id: job.id })),
                             Err(DbError::Conflict) => self
                                 .db
@@ -460,6 +554,7 @@ mod tests {
     async fn setup() -> (Db, QueueExecutor, contracts::ids::AnalysisId) {
         let db = Db::in_memory().await.expect("db");
         let analysis = seed_analysis(&db).await.expect("seed");
+        crate::test_support::link_payer(&db, db::repo::DEFAULT_TENANT, CREDENTIAL).await;
         (
             db.clone(),
             QueueExecutor::new(db, ProgressHub::default()),
@@ -487,7 +582,7 @@ mod tests {
         let now = Timestamp::now();
         db.jobs()
             .claim(ClaimParams {
-                credential_ids: &[CREDENTIAL.to_owned()],
+                payer_ids: &[CREDENTIAL.to_owned()],
                 job_token_hash: b"hash",
                 lease_until: now + SignedDuration::from_secs(lease_secs),
                 now,
@@ -508,6 +603,8 @@ mod tests {
 
     fn succeeded(job: JobId, attempt: u32) -> JobResult {
         JobResult {
+            assessment: None,
+            report: None,
             job_id: job,
             attempt,
             outcome: JobOutcome::Succeeded {
@@ -571,6 +668,25 @@ mod tests {
             .set_state(analysis, &failed, Timestamp::now())
             .await
             .expect("failed");
+    }
+
+    #[tokio::test]
+    async fn latest_retry_payer_overrides_an_analytic_request_prepared_before_retry() {
+        let (db, executor, analysis) = setup().await;
+        let prepared = request(analysis, "f1");
+        db::repo::analyses::testing::seed_payer(&db, "u2")
+            .await
+            .unwrap();
+        crate::test_support::link_payer(&db, db::repo::DEFAULT_TENANT, "u2").await;
+        fail_analysis(&db, analysis).await;
+        assert!(
+            db.analyses()
+                .retry_as(analysis, "u2", Timestamp::now())
+                .await
+                .unwrap()
+        );
+        let job = executor.submit(prepared).await.unwrap();
+        assert_eq!(db.jobs().get(job.job_id).await.unwrap().spec.payer.0, "u2");
     }
 
     #[tokio::test]
@@ -660,10 +776,7 @@ mod tests {
             .submit(request(analysis, "f1"))
             .await
             .expect("submit");
-        let credential = contracts::job::spec::LlmCredentialRef {
-            id: CREDENTIAL.to_owned(),
-            kind: contracts::job::spec::CredentialKind::CodexChatgpt,
-        };
+        let credential = contracts::ids::UserId(CREDENTIAL.to_owned());
         db.llm_credentials()
             .register(
                 db::repo::DEFAULT_TENANT,

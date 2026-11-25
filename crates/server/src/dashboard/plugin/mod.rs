@@ -1,13 +1,17 @@
 //! Dashboard plug-ins (ADR-022): external, read-only sources of statements about pull requests. The host polls
-//! them at most once per [`Timing::interval`] server-wide and only while a user reads the dashboard, keeps their
-//! data in memory, serves the current statements to the view ([`Overlay`]) and reports which pull requests changed
-//! (the change signal behind the targeted re-read, `refresh::reread`).
+//! them at most once per [`Timing::interval`] server-wide and only while a user reads the dashboard or any user
+//! watches a pull request ([`PluginHost::set_watching`]), keeps their data in memory, serves the current statements
+//! to the view ([`Overlay`]) and reports which pull requests changed (the change signal behind the targeted
+//! re-read, `refresh::reread`).
 
+mod fetch;
 pub mod pr_hygiene;
+pub mod thepastaclaw;
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -26,9 +30,11 @@ use crate::state::AppState;
 /// Characters kept of a summary or a detail.
 const TEXT_CHARS: usize = 300;
 /// Details kept per statement.
-const DETAILS_KEPT: usize = 8;
+const DETAILS_KEPT: usize = 64;
 /// Facts kept per statement.
 const FACTS_KEPT: usize = 6;
+/// Logins kept of those owing a review.
+const OWED_KEPT: usize = 10;
 /// Characters kept of a fact's label or value.
 const FACT_CHARS: usize = 100;
 
@@ -42,6 +48,10 @@ pub trait DashboardPlugin: Send + Sync + fmt::Debug {
     fn home(&self) -> &Url;
     /// Reads the source once.
     fn poll(&self) -> BoxFuture<'_, Result<Polled, PluginError>>;
+    /// Whether its statements can hold a pull request back from Ready to merge.
+    fn holds_ready_to_merge(&self) -> bool {
+        false
+    }
 }
 
 /// The answer of one poll.
@@ -94,6 +104,10 @@ pub struct PrStatement {
     pub facts: Vec<Fact>,
     /// Opinion on Ready to merge; `None`: no opinion.
     pub ready_to_merge: Option<Readiness>,
+    /// Whose move it is (Waiting on others, K15 W3b); `None`: no opinion.
+    pub whose_move: Option<Move>,
+    /// GitHub's PR update time observed by the source; absent without GitHub clock evidence.
+    pub github_updated_at: Option<Timestamp>,
     /// Changes whenever the pull request's state at the source changes (time-only values excluded).
     pub mark: String,
 }
@@ -105,6 +119,20 @@ pub enum Readiness {
     Agrees,
     /// The source holds it back, for `reason`.
     Holds {
+        /// Plain text.
+        reason: String,
+    },
+}
+
+/// Whose move a plug-in says a pull request is (K15 W3b).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Move {
+    /// The author's: it does not wait on others.
+    Author,
+    /// The reviewers' or maintainers': it waits on people.
+    People {
+        /// GitHub logins the source says owe a review; empty when it names none.
+        owed: Vec<String>,
         /// Plain text.
         reason: String,
     },
@@ -181,7 +209,9 @@ struct Inner {
     timing: Timing,
     /// Active readers (tenant, user) and their last dashboard read.
     active: Mutex<HashMap<(String, String), Instant>>,
-    /// Woken when a reader becomes active.
+    /// Some user watches a pull request.
+    watching: AtomicBool,
+    /// Woken when a reader becomes active or a first watch appears.
     woken: Notify,
 }
 
@@ -233,6 +263,14 @@ impl PluginHost {
                 }
             }
         }
+        if let Some(status) = &config.thepastaclaw_status_url {
+            match thepastaclaw::Thepastaclaw::new(status.clone()) {
+                Ok(plugin) => plugins.push(Arc::new(plugin)),
+                Err(error) => {
+                    tracing::error!(%error, "the thepastaclaw status plug-in could not be set up; it stays off")
+                }
+            }
+        }
         Self::new(plugins, Timing::default())
     }
 
@@ -249,6 +287,7 @@ impl PluginHost {
                     .collect(),
                 timing,
                 active: Mutex::default(),
+                watching: AtomicBool::new(false),
                 woken: Notify::new(),
             }),
         }
@@ -288,7 +327,30 @@ impl PluginHost {
         users
     }
 
-    /// Waits until a reader becomes active (returns at once when one may have become active since the last wait).
+    /// Records whether any user watches a pull request (the watch list's presence source; none until it reports);
+    /// a first watch wakes the poller.
+    pub fn set_watching(&self, watching: bool) {
+        if self.is_empty() {
+            return;
+        }
+        let was = self.inner.watching.swap(watching, Ordering::SeqCst);
+        if watching && !was {
+            self.inner.woken.notify_one();
+        }
+    }
+
+    /// Some user watches a pull request.
+    pub fn is_watching(&self) -> bool {
+        self.inner.watching.load(Ordering::SeqCst)
+    }
+
+    /// Whether the poller has a reason to poll: an active reader or a watched pull request.
+    fn present(&self) -> bool {
+        self.is_watching() || !self.active_users().is_empty()
+    }
+
+    /// Waits until a reader becomes active or a first watch appears (returns at once when either may have happened
+    /// since the last wait).
     pub async fn woken(&self) {
         self.inner.woken.notified().await;
     }
@@ -306,6 +368,7 @@ impl PluginHost {
     /// The statements shown at `now`: those of plug-ins whose data is fresh.
     pub fn overlay(&self, now: Timestamp) -> Overlay {
         Overlay {
+            now: Some(now),
             sources: self
                 .inner
                 .slots
@@ -347,6 +410,7 @@ impl PluginHost {
                         PluginState::Stale
                     },
                     as_of: state.data.as_ref().map(|d| d.as_of),
+                    holds_ready_to_merge: slot.plugin.holds_ready_to_merge(),
                 }
             })
             .collect()
@@ -425,6 +489,11 @@ fn is_format(c: char) -> bool {
         | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}')
 }
 
+/// A GitHub login: letters, digits and `-`, at most 39.
+fn is_login(text: &str) -> bool {
+    (1..=39).contains(&text.len()) && text.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
 /// `text` without control and format characters, cut to `max` characters.
 fn plain(text: &str, max: usize) -> String {
     text.chars()
@@ -464,6 +533,16 @@ fn bounded(mut data: PluginData, home: &Url) -> PluginData {
         if let Some(Readiness::Holds { reason }) = &mut statement.ready_to_merge {
             *reason = plain(reason, TEXT_CHARS);
         }
+        if let Some(Move::People { owed, reason }) = &mut statement.whose_move {
+            *reason = plain(reason, TEXT_CHARS);
+            let mut kept: Vec<String> = Vec::new();
+            for login in owed.iter().filter(|l| is_login(l)) {
+                if kept.len() < OWED_KEPT && !kept.iter().any(|k| k.eq_ignore_ascii_case(login)) {
+                    kept.push(login.clone());
+                }
+            }
+            *owed = kept;
+        }
         let web =
             Url::parse(&statement.url).is_ok_and(|url| matches!(url.scheme(), "http" | "https"));
         if !web {
@@ -476,6 +555,7 @@ fn bounded(mut data: PluginData, home: &Url) -> PluginData {
 /// The statements shown now, by plug-in in configuration order.
 #[derive(Clone, Debug, Default)]
 pub struct Overlay {
+    now: Option<Timestamp>,
     sources: Vec<Source>,
 }
 
@@ -497,6 +577,23 @@ pub struct Hold {
     pub reason: String,
     /// Evidence link.
     pub url: String,
+}
+
+/// A plug-in's statement of whose move a pull request is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MoveStatement {
+    /// Plug-in id.
+    pub plugin: String,
+    /// Plug-in name.
+    pub source: String,
+    /// Evidence link.
+    pub url: String,
+    /// When the source data was generated, independent of subsequent successful polls.
+    pub as_of: Timestamp,
+    /// GitHub's PR update time observed by the source.
+    pub github_updated_at: Option<Timestamp>,
+    /// Whose move.
+    pub whose: Move,
 }
 
 impl Overlay {
@@ -526,6 +623,22 @@ impl Overlay {
             .collect()
     }
 
+    /// The first plug-in that says whose move `repo#number` is (K15 W3b).
+    pub fn whose_move(&self, repo: &RepoRef, number: u32) -> Option<MoveStatement> {
+        self.statements(repo, number)
+            .filter(|(source, _)| self.now.is_some_and(|now| source.data.as_of <= now))
+            .find_map(|(source, statement)| {
+                Some(MoveStatement {
+                    plugin: source.id.to_owned(),
+                    source: source.name.to_owned(),
+                    url: statement.url.clone(),
+                    as_of: source.data.as_of,
+                    github_updated_at: statement.github_updated_at,
+                    whose: statement.whose_move.clone()?,
+                })
+            })
+    }
+
     /// The first plug-in holding `repo#number` back from Ready to merge.
     pub fn hold(&self, repo: &RepoRef, number: u32) -> Option<Hold> {
         self.statements(repo, number)
@@ -541,9 +654,9 @@ impl Overlay {
     }
 }
 
-/// Starts the poller when a plug-in is configured: while a user is active it polls every plug-in at most once per
-/// [`Timing::interval`] and re-reads changed pull requests of active users; with nobody active it waits and sends
-/// nothing. Stops with the server.
+/// Starts the poller when a plug-in is configured: while a user is active or watches a pull request it polls every
+/// plug-in at most once per [`Timing::interval`] and re-reads changed pull requests of active users; with nobody
+/// present it waits and sends nothing. Stops with the server.
 pub fn spawn(state: AppState) -> bool {
     if state.plugins.is_empty() {
         return false;
@@ -561,6 +674,7 @@ pub fn spawn(state: AppState) -> bool {
                     let scope = super::refresh::Scope { tenant_id, user_id };
                     super::refresh::reread::changed_prs(&state, &scope, &changed).await;
                 }
+                crate::review_loop::watch::plugin_changed(&state, &changed).await;
             }
         },
     ));
@@ -568,8 +682,8 @@ pub fn spawn(state: AppState) -> bool {
 }
 
 impl PluginHost {
-    /// The poller loop: waits while nobody is active, polls, hands a non-empty change signal to `on_change`, sleeps
-    /// [`Timing::interval`]; ends once `stopping` turns true.
+    /// The poller loop: waits while nobody is active or watching, polls, hands a non-empty change signal to
+    /// `on_change`, sleeps [`Timing::interval`]; ends once `stopping` turns true.
     async fn run<F, Fut>(
         self,
         mut stopping: watch::Receiver<bool>,
@@ -581,7 +695,7 @@ impl PluginHost {
     {
         tracing::info!(plugins = ?self, "dashboard plug-in poller started");
         loop {
-            while self.active_users().is_empty() {
+            while !self.present() {
                 tokio::select! {
                     () = self.woken() => {}
                     _ = stopping.wait_for(|stop| *stop) => return,

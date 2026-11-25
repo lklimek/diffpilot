@@ -10,25 +10,24 @@ license.workspace = true
 name = "diffpilot-runner"
 path = "src/main.rs"
 
-[[bin]]
-name = "diffpilot-supervisor"
-path = "src/supervisor_main.rs"
-
 [features]
 # Scripted LLM provider for tests and development; never enabled in release builds.
 fake-provider = []
 
 [dependencies]
+bollard = "=0.21.1"
 base64.workspace = true
 contracts.workspace = true
 jiff.workspace = true
 futures.workspace = true
 reqwest.workspace = true
-rustix = { workspace = true, features = ["net"] }
+rustix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+tokio-tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake"] }
+url.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true

@@ -144,13 +144,13 @@ export const createAccessToken = route("createAccessToken", async ({ request }) 
   if (
     length < 1 ||
     length > 60 ||
-    body.scopes.join() !== "read" ||
+    !["read", "read,review_loop_execute", "review_loop_execute,read"].includes(body.scopes.join()) ||
     ![30, 90, 365].includes(body.expires_in_days)
   ) {
     return apiError(
       400,
       "invalid_request",
-      "Use a name of 1 to 60 characters, scope read and 30, 90 or 365 days.",
+      "Use a name of 1 to 60 characters, scope read (optionally with review_loop_execute) and 30, 90 or 365 days.",
     );
   }
   if (tokens.some((t) => t.name === body.name)) {

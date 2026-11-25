@@ -11,11 +11,15 @@ import {
   SUMMARY_KEY,
   useCancelRefresh,
   useHideMention,
+  useSnoozeItem,
+  useWakeItem,
+  useWatchItem,
   useDashboardItems,
   useDashboardSummary,
   useRankAgain,
   useRefreshEvents,
   useSaveBrowserTimeZone,
+  useSlackNames,
   useSnapshotRefresh,
   useStartRefresh,
 } from "./queries";
@@ -152,12 +156,16 @@ function actionError(error: unknown, action: "refresh" | "cancel" | "rank"): str
 /** The dashboard page: signed-in user, summary, items, view state, filter and actions. */
 export function useDashboardPage() {
   const hideMention = useHideMention();
+  const snooze = useSnoozeItem();
+  const wake = useWakeItem();
+  const watch = useWatchItem();
   const [withBots, setWithBots] = useMentionBots();
   const [mentionsExpanded, setMentionsExpanded] = useMentionsExpanded();
   const client = useQueryClient();
   const me = useMe();
   const user = me.data?.user ?? null;
   const summary = useDashboardSummary(user !== null);
+  const slackNames = useSlackNames(user !== null);
   const data = summary.data;
   const snapshotRefresh = useSnapshotRefresh(data);
   const items = useDashboardItems(data?.revision, data?.snapshot != null);
@@ -199,6 +207,9 @@ export function useDashboardPage() {
 
   return {
     hideMention,
+    snooze,
+    wake,
+    watch,
     mentionsExpanded,
     setMentionsExpanded,
     withBots,
@@ -206,6 +217,8 @@ export function useDashboardPage() {
     me,
     user,
     summary,
+    /** The Slack names of Settings; undefined until read (no Slack copy then). */
+    slackNames: slackNames.data,
     items,
     view,
     /** All items of the snapshot in rank order. */

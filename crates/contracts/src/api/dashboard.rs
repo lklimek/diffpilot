@@ -51,6 +51,10 @@ pub struct PluginStatus {
     pub state: PluginState,
     /// When the source produced the data last read; null before the first successful read.
     pub as_of: Option<Timestamp>,
+    /// The plug-in can hold a pull request back from Ready to merge (PR Hygiene); absent when it never does.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(as = "Option<bool>", optional)]
+    pub holds_ready_to_merge: bool,
 }
 
 /// Whether a plug-in's statements are shown.
@@ -85,6 +89,8 @@ pub enum RefreshTrigger {
     Manual,
     /// The daily schedule.
     Scheduled,
+    /// My work was open and the newest refresh was old (plan §M).
+    Automatic,
 }
 
 /// State of a refresh; transitions in `docs/contracts/http-api.md` "Refresh states". At most one refresh per user
@@ -305,14 +311,12 @@ pub struct SnapshotMeta {
     pub excluded: u32,
     /// The user's pull requests waiting on other people.
     pub awaiting: Vec<AwaitingItem>,
-    /// The user's pull requests ready to merge at the scan (plan K17), by display id; also ranked.
+    /// The user's pull requests ready to merge at the scan (plan K17), by display id; also ranked. A pull request a
+    /// current plug-in statement holds back (ADR-022) is left out and stays ranked with its note.
     pub ready_to_merge: Vec<ReadyToMergeItem>,
-    /// Pull requests K17 would list that a current plug-in statement holds back (ADR-022), by display id.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[ts(as = "Option<Vec<HeldBack>>", optional)]
-    pub ready_to_merge_held: Vec<HeldBack>,
-    /// The user's pull requests into the default branch whose merge state GitHub had not computed by the scan (read
-    /// again by the next refresh); null when the snapshot did not record merge states (stored before they were).
+    /// The user's pull requests Ready to merge could list (into the default branch or a release branch) whose merge
+    /// state GitHub had not computed by the scan (read again by the next refresh); null when the snapshot did not
+    /// record merge states (stored before they were).
     pub merge_state_pending: Option<u32>,
     /// Dated pull request and review events of the chart window (12 weeks), across the scanned logins.
     pub history: Vec<HistoryEvent>,
@@ -329,6 +333,11 @@ pub struct SnapshotMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub exclusions: Option<Exclusions>,
+    /// When the listed pull requests' facts (CI, reviews, merge state) were last checked against GitHub after the scan,
+    /// while My work was open (plan §M); absent when none was since the scan or the server restarted since.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub facts_checked_at: Option<Timestamp>,
 }
 
 /// Most excluded items listed by `GET /api/v1/dashboard?excluded=true`; the counts cover all.
@@ -374,6 +383,9 @@ pub enum ExclusionReason {
     JudgedNotEligible,
     /// The LLM merged it into another item covering the same work.
     MergedIntoAnother,
+    /// The user snoozed it (`ExcludedItem.snoozed_until`); it wakes then, or earlier on a new review request to the
+    /// user or a new mention of the user.
+    Snoozed,
 }
 
 /// One item the rules left out.
@@ -399,6 +411,20 @@ pub struct ExcludedItem {
     pub reason: ExclusionReason,
     /// Display id of the item it was merged into (`merged_into_another` only).
     pub merged_into: Option<String>,
+    /// When the snooze ends (`snoozed` only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub snoozed_until: Option<Timestamp>,
+}
+
+/// Most days an item can be snoozed.
+pub const MAX_SNOOZE_DAYS: u32 = 365;
+
+/// Body of `PUT /api/v1/dashboard/items/{key}/snooze` (R12).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct SnoozeRequest {
+    /// Days from now, 1 to [`MAX_SNOOZE_DAYS`].
+    pub days: u32,
 }
 
 /// Query of `GET /api/v1/dashboard`.
@@ -457,9 +483,12 @@ pub struct AwaitingItem {
     pub title: String,
     /// GitHub link, built by the server.
     pub url: String,
-    /// Logins and teams (`team:<slug>`) whose review is requested.
+    /// Whom to ping: logins and teams (`team:<slug>`) whose review is requested, or those a plug-in says owe a
+    /// review; empty when nobody is named.
     pub waiting_on: Vec<String>,
-    /// Since when it waits (the oldest open request).
+    /// Why it waits on others.
+    pub reason: AwaitingReason,
+    /// Since when it waits (the oldest open request; else when the pull request was opened).
     pub waiting_since: Timestamp,
     /// Deterministic tags from scan facts (e.g. CI passing).
     pub tags: Vec<FactTag>,
@@ -471,8 +500,32 @@ pub struct AwaitingItem {
     pub total_tenths: Option<i32>,
 }
 
-/// A pull request of the user ready to merge: into the default branch, not a draft, write access, every check passed
-/// and nothing left to answer (plan K17).
+/// Why a pull request of the user waits on other people (plan K15 W3), the first that applies.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AwaitingReason {
+    /// It carries the "Ready for a human" label (Settings): it needs a human, even if GitHub lets the user merge it.
+    ReadyLabel {
+        /// The label as on GitHub.
+        label: String,
+    },
+    /// A current plug-in statement says the move is the reviewers' or maintainers' (ADR-022).
+    Plugin {
+        /// Plug-in id.
+        plugin: String,
+        /// Name of the plug-in, shown before the reason.
+        source: String,
+        /// The plug-in's reason, plain text.
+        reason: String,
+        /// Evidence: the source's record of the pull request.
+        url: String,
+    },
+    /// A review is requested from others, it is not approved and GitHub does not let the user merge it.
+    ReviewRequested,
+}
+
+/// A pull request of the user ready to merge: into the default branch or a release branch, not a draft, write
+/// access, every check passed except ignored ones, nothing left to answer and no ready label (plan K17).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct ReadyToMergeItem {
     /// Display alias, e.g. `PLAT-1176`.
@@ -491,21 +544,6 @@ pub struct ReadyToMergeItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub change_size: Option<ChangeSizeMark>,
-}
-
-/// A pull request Ready to merge would list, held back by a plug-in's statement (ADR-022).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-pub struct HeldBack {
-    /// The pull request as Ready to merge would list it.
-    pub item: ReadyToMergeItem,
-    /// Plug-in id.
-    pub plugin: String,
-    /// Name of the plug-in, shown before the reason.
-    pub source: String,
-    /// The plug-in's reason, plain text.
-    pub reason: String,
-    /// Evidence: the source's record of the pull request.
-    pub url: String,
 }
 
 /// A dated event for the charts.
@@ -689,6 +727,16 @@ pub struct WorkItem {
     pub llm: Option<ItemText>,
     /// The user's diffpilot analysis of this pull request, read at request time; null when none.
     pub review: Option<ReviewLink>,
+    /// Review comments diffpilot read for this pull request (Comments), counted at request time; absent before
+    /// diffpilot's first successful read of them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub comments: Option<CommentTally>,
+    /// The user watches this pull request (RW1), read at request time; with `comments` absent its comments were
+    /// not read yet.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(as = "Option<bool>", optional)]
+    pub watched: bool,
     /// Current statements of dashboard plug-ins about this pull request (ADR-022); absent when none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(as = "Option<Vec<PluginNote>>", optional)]
@@ -924,6 +972,17 @@ pub struct ReviewLink {
     pub has_my_state: bool,
 }
 
+/// Counts of a pull request's review comments in Comments (plan docs/review-workflow-plan.md §2.1): threads,
+/// review-body and PR-comment items of the last read, without PR-level questions and items the read no longer
+/// produces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct CommentTally {
+    /// Comments in any state.
+    pub total: u32,
+    /// Those waiting for a decision: the Needs you list of Comments.
+    pub needs_you: u32,
+}
+
 /// Server-sent event of `GET /api/v1/dashboard/refreshes/{id}/events`; the SSE `event` field is the tag.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(tag = "event", rename_all = "snake_case")]
@@ -983,6 +1042,18 @@ pub struct DashboardSettings {
     pub schedule_time: String,
     /// IANA time zone; null until the browser sends one.
     pub time_zone: Option<String>,
+    /// GitHub logins with the Slack name "Copy for Slack" writes instead of `@login` (at most 100 rows).
+    #[serde(default)]
+    pub slack_names: Vec<SlackName>,
+}
+
+/// One row of the Slack names table: a GitHub login and the text copied for it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct SlackName {
+    /// GitHub login (case-insensitive, unique in the table).
+    pub login: String,
+    /// Text written instead of `@login`, as typed (1–80 characters, no control characters), e.g. `@jan.kowalski`.
+    pub slack: String,
 }
 
 impl Default for DashboardSettings {
@@ -1001,6 +1072,7 @@ impl Default for DashboardSettings {
             schedule_enabled: true,
             schedule_time: "06:00".to_owned(),
             time_zone: None,
+            slack_names: Vec::new(),
         }
     }
 }
@@ -1029,6 +1101,10 @@ pub struct RepositoryRule {
     pub ownership_policy: Option<PolicyRef>,
     /// Release and long-lived branch patterns; empty = the built-ins.
     pub branch_patterns: Vec<String>,
+    /// Checks and statuses that never make CI red or pending (whole name, case-insensitive, `*` any text); empty =
+    /// the built-ins.
+    #[serde(default)]
+    pub ignored_checks: Vec<String>,
 }
 
 /// An ownership policy file (JSON format of `stale_prs_are_bad`).

@@ -3,20 +3,19 @@
 
 use contracts::agent::JobKind;
 use contracts::common::RepoRef;
-use contracts::ids::{AnalysisId, CommitSha, JobId, RefreshId};
+use contracts::ids::{AnalysisId, CommitSha, JobId, PassId, RefreshId};
 use contracts::job::access::{AgentAccess, InstallationToken, McpHttpEndpoint, Secret};
 use contracts::job::event::{ActivityKind, JobEvent};
 use contracts::job::protocol::{
-    Claim, ClaimRequest, ClaimResponse, CredentialStatus, EventBatch, EventsAck, LeaseTiming,
-    OutputReady,
+    Claim, ClaimRequest, ClaimResponse, EventBatch, EventsAck, LeaseTiming, OutputReady,
 };
 use contracts::job::result::{
     JobFailureKind, JobOutcome, JobResult, LlmCallOutcome, LlmCallStatus, SessionOutcome,
     SessionReport, Usage,
 };
 use contracts::job::spec::{
-    CredentialKind, JobLimits, JobSpec, JobTarget, LlmCredentialRef, ModelChoice,
-    PullRequestTarget, ReasoningEffort, RepoCheckout, SessionRef,
+    JobLimits, JobSpec, JobTarget, ModelChoice, PullRequestCommentsTarget, PullRequestTarget,
+    ReasoningEffort, RepoCheckout, SessionRef,
 };
 use contracts::job::state::{JobState, JobTransition};
 use contracts::time::Timestamp;
@@ -50,15 +49,14 @@ fn spec() -> JobSpec {
         prompt: "Job: analyse_flow f1.".to_owned(),
         output_schema: json!({"type": "object"}),
         flow_file: None,
+        assessment: None,
+        pr_data: None,
         model: ModelChoice {
             model: "gpt-6.1-sol".to_owned(),
             reasoning_effort: ReasoningEffort::High,
         },
         limits: JobLimits::default(),
-        credential: LlmCredentialRef {
-            id: "codex-default".to_owned(),
-            kind: CredentialKind::CodexChatgpt,
-        },
+        payer: contracts::ids::UserId("codex-default".to_owned()),
         session: Some(SessionRef {
             pull_request_id: 1,
             thread_id: "019a0000-0000-7000-8000-000000000001".to_owned(),
@@ -91,18 +89,22 @@ fn claim_response() -> ClaimResponse {
             lease_expires_at: Timestamp::now(),
             spec: spec(),
         }),
-        drop_sessions: vec![1],
+        retire: vec![1],
     }
 }
 
 fn result() -> JobResult {
     JobResult {
+        assessment: None,
+        report: None,
         job_id: JobId::new_random(),
         attempt: 2,
         outcome: JobOutcome::Succeeded {
             output: json!({"answer": "x", "evidence": []}),
         },
         session: Some(SessionReport {
+            last_context: None,
+            preflight: None,
             thread_id: "019a0000-0000-7000-8000-000000000001".to_owned(),
             outcome: SessionOutcome::StartedAfterLoss,
         }),
@@ -110,6 +112,7 @@ fn result() -> JobResult {
             input_tokens: 214_700,
             cached_input_tokens: 190_000,
             output_tokens: 3_000,
+            requests: None,
         }),
         skills_commit: Some("d31993add8b8332ae03352c471be2931c72f7c24".to_owned()),
         llm_call: Some(LlmCallOutcome {
@@ -132,15 +135,9 @@ fn job_messages_round_trip() {
     round_trip(&claim_response());
     round_trip(&result());
     round_trip(&ClaimRequest {
+        accept_job: true,
         runner_id: "runner-1".to_owned(),
-        credentials: vec![CredentialStatus {
-            credential: LlmCredentialRef {
-                id: "codex-default".to_owned(),
-                kind: CredentialKind::CodexChatgpt,
-            },
-            usable: true,
-        }],
-        dropped_sessions: vec![],
+        retired: vec![],
     });
     round_trip(&EventBatch {
         attempt: 1,
@@ -215,6 +212,20 @@ fn job_target_wire_format_is_internally_tagged() {
     );
     assert!(wire.get("analysis_id").is_none() && wire.get("repo").is_none());
     assert_eq!(dashboard.target.pull_request(), None);
+    let mut comments = spec();
+    let repo = comments.target.checkout().expect("checkout").clone();
+    comments.target = JobTarget::PullRequestComments(PullRequestCommentsTarget {
+        pull_request_id: 7,
+        repo,
+        pass_id: PassId::new_random(),
+    });
+    round_trip(&comments);
+    let wire = serde_json::to_value(&comments).expect("serialises");
+    assert_eq!(wire["target"]["type"], "pull_request_comments");
+    assert_eq!(wire["target"]["pull_request_id"], 7);
+    assert_eq!(comments.target.pull_request(), None);
+    assert!(comments.target.checkout().is_some());
+    assert_eq!(dashboard.target.checkout(), None);
     let pr = serde_json::to_value(spec()).expect("serialises");
     assert_eq!(pr["target"]["type"], "pull_request");
     assert_eq!(pr["target"]["pull_request_id"], 1);
@@ -451,4 +462,60 @@ fn memcan_endpoint_without_allow_write_is_read_only() {
         serde_json::from_value(json!({"url": "https://memcan.example/mcp", "token": MEMCAN_TOKEN}))
             .expect("endpoint");
     assert!(!endpoint.allow_write);
+}
+
+#[test]
+fn private_pr_ask_target_needs_neither_analysis_nor_pass() {
+    let target: JobTarget = serde_json::from_value(json!({
+        "type": "pull_request_ask", "pull_request_id": 42,
+        "repo": {"clone_url": "file:///fake", "base_sha": "base", "head_sha": "head"}
+    }))
+    .expect("private Ask target");
+    assert_eq!(target.analysis_id(), None);
+    assert!(target.checkout().is_some());
+    assert_eq!(
+        serde_json::to_value(target).unwrap()["type"],
+        "pull_request_ask"
+    );
+}
+
+#[test]
+fn private_pr_ask_target_rejects_analysis_and_pass_fields() {
+    for field in ["analysis_id", "pass_id"] {
+        let mut target = json!({"type":"pull_request_ask", "pull_request_id":42,
+            "repo":{"clone_url":"file:///fake", "base_sha":"b", "head_sha":"h"}});
+        target[field] = json!(AnalysisId::new_random());
+        assert!(serde_json::from_value::<JobTarget>(target).is_err());
+    }
+}
+
+#[test]
+fn job_target_typescript_numbers_match_json_numbers() {
+    use ts_rs::TS;
+    let config = ts_rs::Config::new();
+    for declaration in [
+        contracts::job::spec::PullRequestAskTarget::decl(&config),
+        PullRequestTarget::decl(&config),
+        PullRequestCommentsTarget::decl(&config),
+    ] {
+        assert!(!declaration.contains("bigint"), "{declaration}");
+    }
+}
+
+#[test]
+fn container_claim_requires_no_host_credentials_or_archive_acknowledgements() {
+    let request: ClaimRequest =
+        serde_json::from_value(json!({"runner_id": "container-runner"})).unwrap();
+    assert_eq!(
+        serde_json::to_value(request).unwrap(),
+        json!({"runner_id": "container-runner", "accept_job": true})
+    );
+}
+
+#[test]
+fn claim_defaults_to_work_and_can_explicitly_request_cleanup_only() {
+    let mut request: ClaimRequest = serde_json::from_value(json!({"runner_id":"r"})).unwrap();
+    assert!(request.accept_job);
+    request.accept_job = false;
+    round_trip(&request);
 }

@@ -1,5 +1,20 @@
 # ADR-017: Dashboard scan on the server with the user token; LLM judgement as a runner job
 
+## v1.3 container amendment (2026-11-24)
+
+Dashboard ranking uses CS2 per payer through app-server and the model gateway. It has no checkout,
+GitHub/MemCan access, persistent home or shell setup. Runner setup/cleanup uses `fs/*`; every model tool item
+fails the attempt. Judge networking reaches only the gateway model listener. Server-side scan, closed scoring
+sets and text-only rendering remain unchanged. The ranking user pays and owns the usage pause.
+
+This amendment and [ADR-025](ADR-025-container-runtime.md) take precedence over the historical text below.
+
+
+> Amended for v1.3 by [ADR-025](ADR-025-container-runtime.md): per-payer containers, app-server,
+> gateway-only real credentials, file-based read-only GitHub tokens and host report 4.2.
+> KL1-A is closed: per-user ChatGPT-plan linking only; no API-key mode.
+
+
 - Status: accepted (owner answers 2026-11-18: OD3, OD4, OD6, OD7, OD10–OD13, OD16, OD18, OD19);
   plan `docs/v1.1-dashboard-plan.md` §A, §B, §C, §G. Depends on ADR-018 for the job shape.
 - Spikes: S11-2 done (`docs/spikes/S11-2-scan-cost.md`), S11-4 done (`docs/spikes/S11-4-memcan-todos.md`),

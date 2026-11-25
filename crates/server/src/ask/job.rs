@@ -10,6 +10,7 @@ use contracts::agent::{self as agent, JobKind, StrictSchemaError};
 use contracts::api::analyses::{AnalysisState, AnalysisSummary};
 use contracts::api::code::{DiffLineKind, RangeQuery};
 use contracts::api::files::{HunkPart, PartOwner};
+use contracts::api::pr::PrSummary;
 use contracts::api::questions::{AskAnchor, AskState};
 use contracts::api::tour::{Flow, Step};
 use contracts::common::{LineRange, LineSide};
@@ -17,8 +18,7 @@ use contracts::ids::{AnalysisId, FlowId, JobId, QuestionId, StepId};
 use contracts::job::access::AgentAccess;
 use contracts::job::result::{JobOutcome, JobResult};
 use contracts::job::spec::{
-    CredentialKind, JobLimits, JobPriority, JobSpec, JobTarget, LlmCredentialRef,
-    PullRequestTarget, RepoCheckout,
+    JobLimits, JobPriority, JobSpec, JobTarget, PullRequestTarget, RepoCheckout,
 };
 use contracts::time::Timestamp;
 use db::error::DbError;
@@ -41,15 +41,16 @@ use crate::model::{ModelContext, select_model};
 use crate::pipeline::context::{StoredResults, pack};
 use crate::pipeline::prepass::PrepassRunError;
 use crate::pipeline::tour::{self, TourLoadError};
-use crate::pipeline::{self, CREDENTIAL_ID, PrDiffError, files};
+use crate::pipeline::{self, PrDiffError, files};
 use crate::prompts::{
     self, AnsweredQuestion, AskContext, AskFlowInput, AskInput, AskLinesInput, AskPrInput, Asked,
     AskedLines, JobContext, Profile, PromptError, StepSummary, ThreadQuestion, TouchedStep,
 };
+use crate::review_loop::assess;
 use crate::state::AppState;
 
 /// Failure sentence of an answer that did not pass the checks; it is never shown.
-pub(super) const UNFIT_ANSWER: &str =
+pub(crate) const UNFIT_ANSWER: &str =
     "The LLM's answer did not follow the answer rules, so it is not shown. Ask again.";
 /// Failure sentence of a question cancelled because its PR session was removed (a re-analysis replaced it).
 pub(super) const SUPERSEDED: &str = "The question was cancelled because the pull request was analysed again. Ask it on the new analysis.";
@@ -57,9 +58,9 @@ pub(super) const SUPERSEDED: &str = "The question was cancelled because the pull
 pub(super) const ANALYSIS_CANCELLED: &str =
     "The question was cancelled because its analysis was cancelled.";
 /// Failure sentence of a question whose job was cancelled for another reason.
-pub(super) const CANCELLED: &str = "The question was cancelled before it was answered. Ask again.";
+pub(crate) const CANCELLED: &str = "The question was cancelled before it was answered. Ask again.";
 /// Failure sentence of a server-side failure.
-pub(super) const SERVER_ERROR: &str =
+pub(crate) const SERVER_ERROR: &str =
     "The question could not be answered because of a server error. Ask again later.";
 
 /// Following a question stopped on a server-side error; the question fails with [`SERVER_ERROR`].
@@ -168,7 +169,7 @@ fn step_of<'f>(flow: &'f FlowAnalysisOutput, step: &StepId) -> Option<&'f AgentS
 
 /// Drives the question to `answered` or `failed`; a server-side error fails it with a plain sentence.
 pub(super) async fn run(state: &AppState, question: QuestionId) {
-    let analysis = match follow(state, question).await {
+    let (analysis, message) = match follow(state, question).await {
         Ok(()) => return,
         // Removed with its flow's steps (the flow is analysed again): nothing is left to answer.
         Err((_, FollowError::Db(DbError::NotFound)))
@@ -182,17 +183,21 @@ pub(super) async fn run(state: &AppState, question: QuestionId) {
         }
         Err((analysis, error)) => {
             tracing::error!(%question, error = ?error, "the question could not be answered");
-            analysis
+            let message = match error {
+                FollowError::Db(DbError::CredentialUnlinked)
+                | FollowError::Executor(ExecutorError::Db(DbError::CredentialUnlinked)) => {
+                    "Link your Codex account in Settings"
+                }
+                _ => SERVER_ERROR,
+            };
+            (analysis, message)
         }
-    };
-    let Some(analysis) = analysis else {
-        return;
     };
     if let Err(error) = set(
         state,
         analysis,
         question,
-        &QuestionUpdate::Failed(SERVER_ERROR.to_owned()),
+        &QuestionUpdate::Failed(message.to_owned()),
     )
     .await
     {
@@ -212,37 +217,70 @@ async fn follow(state: &AppState, question: QuestionId) -> Followed {
     let analysis = record.analysis_id;
     follow_record(state, record)
         .await
-        .map_err(|error| (Some(analysis), error))
+        .map_err(|error| (analysis, error))
 }
 
 async fn follow_record(state: &AppState, record: QuestionRecord) -> Result<(), FollowError> {
-    let (id, analysis) = (record.question.id, record.analysis_id);
+    let id = record.question.id;
+    let analysis = record.analysis_id;
     // A provisional answer is followed on: the job's result is authoritative.
     if record.question.state == AskState::Failed || record.answered_at.is_some() {
         return Ok(());
     }
-    let summary = state.db.analyses().summary(analysis).await?;
+    let summary = match analysis {
+        Some(analysis) => Some(state.db.analyses().summary(analysis).await?),
+        None => None,
+    };
+    let mut pr = match &summary {
+        Some(summary) => summary.pr.clone(),
+        None => {
+            state
+                .db
+                .pull_requests()
+                .get(record.pull_request_id.ok_or(DbError::NotFound)?)
+                .await?
+                .pr
+        }
+    };
     let handle = match record.job_id {
         Some(job_id) => JobHandle { job_id },
         None => {
-            if superseded(&state.db.analyses().get(analysis).await?) {
+            if let Some(analysis) = analysis
+                && superseded(&state.db.analyses().get(analysis).await?)
+            {
                 set(
                     state,
-                    analysis,
+                    Some(analysis),
                     id,
                     &QuestionUpdate::Failed(SUPERSEDED.to_owned()),
                 )
                 .await?;
                 return Ok(());
             }
-            let handle = submit(state, &summary, &record).await?;
+            let handle = match &summary {
+                Some(summary) => submit(state, summary, &record).await?,
+                None => super::private::submit(state, &pr, &record).await?,
+            };
             state.db.questions().set_job(id, handle.job_id).await?;
             handle
         }
     };
+    if analysis.is_none() {
+        match state.db.jobs().get(handle.job_id).await {
+            Ok(job) => {
+                if let Some(checkout) = job.spec.target.checkout() {
+                    pr.base_sha = checkout.base_sha.clone();
+                    pr.head_sha = checkout.head_sha.clone();
+                }
+            }
+            Err(DbError::NotFound) => {} // Scripted executors store their jobs outside the DB.
+            Err(error) => return Err(error.into()),
+        }
+    }
     // A re-analysis between the check and the submit (or while the server was down): stop the job; its
     // cancelled result fails the question.
-    if superseded(&state.db.analyses().get(analysis).await?)
+    if let Some(analysis) = analysis
+        && superseded(&state.db.analyses().get(analysis).await?)
         && let Err(error) = state.executor.cancel(&handle).await
     {
         tracing::error!(question = %id, ?error, "could not cancel the ask job of a superseded analysis");
@@ -268,7 +306,7 @@ async fn follow_record(state: &AppState, record: QuestionRecord) -> Result<(), F
             }
             // Published at once (ADR-004); the result is authoritative and may replace it. The check takes time:
             // whether the answer may still be shown is decided again under the lock that publishes it.
-            JobUpdate::OutputReady(output) => match check(state, &summary, output).await? {
+            JobUpdate::OutputReady(output) => match check(state, &pr, output).await? {
                 Ok(answer) => {
                     match publish_provisional(state, analysis, id, handle.job_id, answer).await? {
                         Some(question) => current = question.state,
@@ -290,8 +328,11 @@ async fn follow_record(state: &AppState, record: QuestionRecord) -> Result<(), F
                 Some(QuestionUpdate::Pending)
             }
             JobUpdate::Finished { result, .. } => {
-                let end = finish(state, &summary, id, result).await?;
-                set(state, analysis, id, &end).await?;
+                let end = finish(state, analysis, &pr, id, result).await?;
+                let question = set(state, analysis, id, &end).await?;
+                if matches!(end, QuestionUpdate::Answered(_)) {
+                    assess::answer_landed(state, &question.anchor).await;
+                }
                 return Ok(());
             }
         };
@@ -305,13 +346,14 @@ async fn follow_record(state: &AppState, record: QuestionRecord) -> Result<(), F
 /// The question's end from the job's result: the checked answer or a plain failure sentence.
 async fn finish(
     state: &AppState,
-    summary: &AnalysisSummary,
+    analysis: Option<AnalysisId>,
+    pr: &PrSummary,
     question: QuestionId,
     result: JobResult,
 ) -> Result<QuestionUpdate, FollowError> {
     let failure = match result.outcome {
         JobOutcome::Succeeded { output } => {
-            return Ok(match check(state, summary, output).await? {
+            return Ok(match check(state, pr, output).await? {
                 Ok(answer) => {
                     tracing::info!(%question, "question answered");
                     QuestionUpdate::Answered(answer)
@@ -324,15 +366,21 @@ async fn finish(
             });
         }
         JobOutcome::Cancelled => {
-            let record = state.db.analyses().get(summary.id).await?;
-            let sentence = if superseded(&record) {
+            let record = match analysis {
+                Some(analysis) => Some(state.db.analyses().get(analysis).await?),
+                None => None,
+            };
+            let sentence = if record.as_ref().is_some_and(superseded) {
                 SUPERSEDED
-            } else if matches!(record.state, AnalysisState::Cancelled) {
+            } else if record
+                .as_ref()
+                .is_some_and(|r| matches!(r.state, AnalysisState::Cancelled))
+            {
                 ANALYSIS_CANCELLED
             } else {
                 CANCELLED
             };
-            tracing::info!(%question, analysis_state = ?record.state, "question cancelled");
+            tracing::info!(%question, analysis = ?analysis, "question cancelled");
             return Ok(QuestionUpdate::Failed(sentence.to_owned()));
         }
         JobOutcome::Failed { kind, .. } => CallFailure::Failed(kind),
@@ -350,7 +398,7 @@ async fn finish(
 /// links, evidence lines in the pinned tree. `Ok(Err(..))` = not shown.
 async fn check(
     state: &AppState,
-    summary: &AnalysisSummary,
+    pr: &PrSummary,
     output: Value,
 ) -> Result<Result<AskOutput, Unfit>, FollowError> {
     let schema = agent::output_schema(JobKind::Ask)?;
@@ -376,7 +424,6 @@ async fn check(
     let facts = if files.is_empty() {
         LineFacts::default()
     } else {
-        let pr = &summary.pr;
         let repo =
             mirror::ensure_commits(&state.config, &pr.repo, &[&pr.base_sha, &pr.head_sha]).await?;
         let (base, head) = (pr.base_sha.clone(), pr.head_sha.clone());
@@ -445,12 +492,20 @@ async fn submit(
                 profile,
             })?
         }
-        AskAnchor::Pr => {
+        AskAnchor::Pr | AskAnchor::CommentItem { .. } => {
             let results = StoredResults::load(&state.db, summary.id).await?;
+            // A question about a review comment carries the comment as its subject (T-L4).
+            let item = match &question.anchor {
+                AskAnchor::CommentItem { item } => Some(assess::verify_item(
+                    &state.db.review_loop().item(*item).await?,
+                )),
+                _ => None,
+            };
             prompts::ask_pr(&AskPrInput {
                 job,
                 plan: results.plan.as_ref(),
                 pr_context: results.pr_context.as_ref(),
+                item: item.as_ref(),
                 question: &question.text,
                 thread: &thread,
                 profile,
@@ -531,6 +586,8 @@ async fn submit(
         prompt,
         output_schema: agent::output_schema(JobKind::Ask)?,
         flow_file: None,
+        assessment: None,
+        pr_data: None,
         model: select_model(
             JobKind::Ask,
             &ModelContext {
@@ -539,10 +596,7 @@ async fn submit(
             state.db.settings().llm_selection().await?.as_ref(),
         ),
         limits: JobLimits::default(),
-        credential: LlmCredentialRef {
-            id: CREDENTIAL_ID.to_owned(),
-            kind: CredentialKind::CodexChatgpt,
-        },
+        payer: contracts::ids::UserId(record.user_id.clone()),
         session: None,
         working_session: None,
         context_pack: None,
@@ -732,7 +786,7 @@ pub async fn context_pack(
             };
             Asked::Flow { flow }
         }
-        AskAnchor::Pr => Asked::Pr,
+        AskAnchor::Pr | AskAnchor::CommentItem { .. } => Asked::Pr,
         AskAnchor::Step { step_id, .. } => {
             let Some(flow) = results
                 .flows

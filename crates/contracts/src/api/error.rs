@@ -73,11 +73,25 @@ pub enum ApiErrorCode {
     RateLimited,
     /// GitHub refused a change made as the user (e.g. the Viewed mark); nothing was changed.
     GithubRefused,
+    /// The review-loop item changed since the decision's revision; read it again (ADR-023).
+    ItemChanged,
+    /// Another agent holds the decision's claim.
+    Claimed,
+    /// The claim's lease ended; the decision is back in the feed.
+    LeaseExpired,
+    /// An open effect of the decision is outside the claimer's capabilities.
+    CapabilityMissing,
+    /// The user watches the maximum number of pull requests.
+    WatchLimitReached,
+    /// A notification URL must use `http` or `https`.
+    SchemeNotAllowed,
+    /// A changed kind or URL origin of a notification target needs its secret replaced or removed.
+    SecretRequired,
 }
 
 impl ApiErrorCode {
     /// Every code.
-    pub const ALL: [ApiErrorCode; 28] = [
+    pub const ALL: [ApiErrorCode; 35] = [
         Self::Configuration,
         Self::Unauthenticated,
         Self::LoginNotAllowed,
@@ -106,6 +120,13 @@ impl ApiErrorCode {
         Self::TokenLimitReached,
         Self::RateLimited,
         Self::GithubRefused,
+        Self::ItemChanged,
+        Self::Claimed,
+        Self::LeaseExpired,
+        Self::CapabilityMissing,
+        Self::WatchLimitReached,
+        Self::SchemeNotAllowed,
+        Self::SecretRequired,
     ];
 
     /// The HTTP status code of a response with this code.
@@ -124,13 +145,20 @@ impl ApiErrorCode {
             | Self::CommentPublished
             | Self::RefreshRunning
             | Self::CursorExpired
-            | Self::TokenLimitReached => 409,
+            | Self::TokenLimitReached
+            | Self::ItemChanged
+            | Self::Claimed
+            | Self::LeaseExpired
+            | Self::WatchLimitReached => 409,
             Self::PrivateRepository
             | Self::AppNotInstalled
             | Self::PositionRejected
             | Self::NotRendered
             | Self::InvalidDashboardSettings
-            | Self::GithubRefused => 422,
+            | Self::GithubRefused
+            | Self::CapabilityMissing
+            | Self::SchemeNotAllowed
+            | Self::SecretRequired => 422,
             Self::GithubRateLimited | Self::RateLimited => 429,
             Self::Internal | Self::Configuration => 500,
             Self::GithubUnavailable => 502,

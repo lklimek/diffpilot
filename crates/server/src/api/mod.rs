@@ -11,9 +11,12 @@ use crate::frontend::SECURITY_HEADERS;
 use crate::state::AppState;
 
 pub mod analyses;
+pub mod assessment;
 pub mod auth;
+pub mod codex;
 pub mod comments;
 pub mod dashboard;
+pub mod decision_feed;
 pub mod deps;
 pub mod diff;
 pub mod error;
@@ -23,8 +26,10 @@ pub mod files;
 pub mod flow_work;
 pub mod health;
 pub mod lines;
+pub mod notifications;
 pub mod pr;
 pub mod questions;
+pub mod review_loop;
 pub mod review_state;
 pub mod runner;
 pub mod settings;
@@ -44,10 +49,12 @@ const API_HEADERS: [(&str, &str); 2] = [
 pub fn router(state: AppState) -> Router {
     Router::new()
         .merge(analyses::routes())
+        .merge(assessment::routes())
         .merge(flow_work::routes())
         .merge(auth::routes())
         .merge(comments::routes())
         .merge(dashboard::routes())
+        .merge(decision_feed::routes())
         .merge(deps::routes())
         .merge(diff::routes())
         .merge(events::routes())
@@ -55,10 +62,13 @@ pub fn router(state: AppState) -> Router {
         .merge(files::routes())
         .merge(health::routes())
         .merge(lines::routes())
+        .merge(notifications::routes())
         .merge(pr::routes())
         .merge(questions::routes())
+        .merge(review_loop::routes())
         .merge(review_state::routes())
         .merge(settings::routes())
+        .merge(codex::routes())
         .merge(tour::routes())
         .route_layer(from_fn_with_state(
             TokenGate::new(state.clone()),

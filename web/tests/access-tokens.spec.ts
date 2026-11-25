@@ -63,6 +63,36 @@ test("create: the secret is shown once with a copy button and is gone after Done
   expect(stored).not.toContain(secret);
 });
 
+test("over plain HTTP (no Clipboard API, as Firefox on the LAN deployment) Copy puts the token on the clipboard as plain text only", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(Navigator.prototype, "clipboard", { get: () => undefined, configurable: true });
+    // On window the copy event arrives after the app's listener on document set its data.
+    window.addEventListener("copy", (event) => {
+      (window as unknown as { copied: unknown }).copied = {
+        types: [...(event.clipboardData?.types ?? [])],
+        text: event.clipboardData?.getData("text/plain"),
+      };
+    });
+  });
+  await page.goto("/settings");
+  await tokens(page).getByRole("button", { name: "New token" }).click();
+  const form = page.getByRole("dialog", { name: "New access token" });
+  await form.getByLabel("Name").fill("lan agent");
+  await form.getByRole("button", { name: "Create token" }).click();
+  const shown = page.getByRole("dialog", { name: "Token created" });
+  const secret = await shown.getByLabel("Your new token").inputValue();
+  const copy = shown.getByRole("button", { name: "Copy" });
+  await copy.click();
+  await expect(shown.getByRole("status")).toHaveText("Copied to the clipboard.");
+  await expect(shown.getByRole("alert")).toHaveCount(0);
+  await expect(copy).toBeFocused();
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as { copied?: unknown }).copied))
+    .toEqual({ types: ["text/plain"], text: secret });
+});
+
 test("the dialog keeps the keyboard inside and Escape closes it", async ({ page }) => {
   await page.goto("/settings");
   const opener = tokens(page).getByRole("button", { name: "New token" });

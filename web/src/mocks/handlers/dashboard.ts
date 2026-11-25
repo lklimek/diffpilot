@@ -1,6 +1,7 @@
 import { HttpResponse } from "msw";
 import type {
   DashboardEvent,
+  ExcludedItem,
   Mention,
   DashboardSummary,
   ItemPage,
@@ -102,6 +103,58 @@ const noTimeZone = (): Base => ({
 const SCENARIOS = {
   /** A finished manual refresh of 08:12, ranked at 08:15. */
   normal: (): Base => ({ summary: SUMMARY, items: ITEMS }),
+  /** Full external context on one compact PR note (owner 2026-11-23). */
+  "mywork-details": (): Base => ({
+    summary: SUMMARY,
+    items: {
+      ...ITEMS,
+      items: ITEMS.items.map((item) =>
+        item.id === "NC-482"
+          ? {
+              ...item,
+              plugin_notes: [
+                {
+                  plugin: "pr-hygiene",
+                  source: "PR Hygiene",
+                  url: "https://pr-hygiene.example.test/api/v1/prs/acme/node-client/482",
+                  as_of: "2026-11-18T10:12:00Z",
+                  summary: "coderabbitai has not reported for the current head",
+                  facts: [
+                    { label: "Stage", value: "Bot reviews" },
+                    { label: "Engine state", value: "Waiting for bot reviews" },
+                  ],
+                  details: [
+                    "Since: 2026-11-18T08:12:00Z (2h 0m at data time)",
+                    "Since basis: Engine",
+                    "Blocker: coderabbitai has not reported for the current head",
+                    "Blocker: thepastaclaw requested changes on this head; dismiss the review or push a fix",
+                    "Changes requested: Yes",
+                    "CI failing: Yes",
+                    "Merge conflict: No",
+                    "Unresolved comments: 0",
+                    "Lateness: on time",
+                    "Idle: No",
+                    "Draft: No",
+                    "Tracked: Yes",
+                    "Areas: fallback",
+                    "Base: v1.0-dev",
+                    "Milestone: None",
+                    "Author: Claudius-Maginificent (bot)",
+                    "Review requested for wallet: alice, bob",
+                    "Objectors: None",
+                    "Latest review by alice: Approved at 2026-11-18T09:50:00Z",
+                    "Stage change: Self review; Waiting for author; since not recorded; observed 2026-11-18T07:00:00Z",
+                    "Stale: No",
+                    "Data generated: 2026-11-18T10:12:00Z",
+                    "External text: <img src=x onerror=alert(1)>",
+                  ],
+                },
+              ],
+            }
+          : item,
+      ),
+    },
+  }),
   /** A scan running for 47 s (PR details 23 of 41); the list is the 08:12 snapshot. */
   refreshing: (): Base => {
     const started_at = new Date(LOADED - 47_000).toISOString();
@@ -229,6 +282,10 @@ let previous: RefreshStatus | null = null;
 const changed = new Map<string, RefreshStatus>();
 /** Hides persist across mock refreshes. */
 const hiddenMentions = new Set<string>();
+/** Snoozed item keys with the time they wake (R12); they persist across mock refreshes. */
+const snoozed = new Map<string, string>();
+/** Pull requests watched from My work (RW1, keys); their rows count the comments the watch read (none). */
+const watchedPrs = new Set<string>();
 /** The time zone stored through R6b. */
 let timeZone: string | null = null;
 let runCount = 0;
@@ -240,6 +297,8 @@ export function resetDashboard(): void {
   previous = null;
   changed.clear();
   hiddenMentions.clear();
+  snoozed.clear();
+  watchedPrs.clear();
   timeZone = null;
 }
 
@@ -368,7 +427,52 @@ function findRefresh(id: unknown): RefreshStatus | undefined {
 }
 
 /** Summary and items of the current snapshot: a scripted refresh's once it scanned, else the scenario's. */
+/** The scripted summary and items with the snoozed items moved to Excluded (reason `snoozed`, owner SN1). */
 function current(): Base {
+  const view = fromScript();
+  const now = Date.now();
+  for (const [key, until] of snoozed) if (Date.parse(until) <= now) snoozed.delete(key);
+  const snapshot = view.summary.snapshot;
+  const asleep = view.items.items.filter((item) => snoozed.has(item.key) && item.score.tier !== "p0");
+  if (!snapshot || asleep.length === 0) return view;
+  const revision = `${view.items.revision}-z${hashOf([...snoozed])}`;
+  const exclusions = snapshot.exclusions ?? { total: 0, counts: [], items: [] };
+  const listed: ExcludedItem[] = asleep.map((item) => ({
+    key: item.key,
+    kind: item.kind,
+    id: item.id,
+    repo: item.repo,
+    number: item.number,
+    url: item.url,
+    title: item.title,
+    author: item.author,
+    reason: "snoozed",
+    merged_into: null,
+    snoozed_until: snoozed.get(item.key)!,
+  }));
+  return {
+    summary: {
+      ...view.summary,
+      revision,
+      snapshot: {
+        ...snapshot,
+        excluded: snapshot.excluded + asleep.length,
+        exclusions: {
+          total: exclusions.total + asleep.length,
+          counts: [...exclusions.counts, { reason: "snoozed", count: asleep.length }],
+          items: [...listed, ...(exclusions.items ?? [])],
+        },
+      },
+    },
+    items: {
+      ...view.items,
+      revision,
+      items: view.items.items.filter((item) => !asleep.includes(item)),
+    },
+  };
+}
+
+function fromScript(): Base {
   const holder = [runStatus(), previous].find(holdsSnapshot);
   if (!holder) return { summary: { ...base.summary, latest_refresh: latest() }, items: base.items };
   const ranked = holder.ranking?.state === "finished";
@@ -403,12 +507,15 @@ export const getDashboard = route("getDashboard", () => {
   });
 });
 
-/** Weak ETag of a body: a short hash of its JSON. */
-function etagOf(body: unknown): string {
+/** A short hash of a value's JSON. */
+function hashOf(body: unknown): string {
   let hash = 5381;
   for (const char of JSON.stringify(body)) hash = ((hash * 33) ^ char.charCodeAt(0)) >>> 0;
-  return `W/"${hash.toString(16)}"`;
+  return hash.toString(16);
 }
+
+/** Weak ETag of a body: a short hash of its JSON. */
+const etagOf = (body: unknown): string => `W/"${hashOf(body)}"`;
 
 /**
  * `GET /api/v1/dashboard/items`: `tier`, `kind` (`pr` | `issue`; absent = both; TODOs are listed whatever it
@@ -439,7 +546,13 @@ export const listDashboardItems = route("listDashboardItems", ({ request }) => {
     mention_coverage: summary.mention_coverage,
     mentions: cursor ? [] : (page.mentions ?? []).filter((m) => !hiddenMentions.has(m.id)),
     revision: page.revision,
-    items: matching.slice(offset, offset + limit),
+    items: matching
+      .slice(offset, offset + limit)
+      .map((item) =>
+        watchedPrs.has(item.key) && !item.comments
+          ? { ...item, comments: { total: 0, needs_you: 0 }, watched: true }
+          : item,
+      ),
     next_cursor: next,
   };
   const headers = { ETag: etagOf(body), "Cache-Control": "no-store" };
@@ -447,6 +560,17 @@ export const listDashboardItems = route("listDashboardItems", ({ request }) => {
     return new HttpResponse(null, { status: 304, headers });
   }
   return HttpResponse.json(body, { headers });
+});
+
+/**
+ * RW1 PUT from a My work row: the server reads the pull request's comments, then watches it. The review module's
+ * fixture PR falls through to its own handler (review-loop.ts).
+ */
+export const watchDashboardPr = route("watchPr", ({ params }) => {
+  const { owner, name, number } = params as { owner: string; name: string; number: string };
+  if (owner === "acme" && name === "node-client" && number === "482") return undefined;
+  watchedPrs.add(`${owner}~${name}~pr~${number}`);
+  return new HttpResponse(null, { status: 204 });
 });
 
 /** Starts the script for `refresh` from step `from`; the replaced run keeps its snapshot as `previous`. */
@@ -579,5 +703,26 @@ export const hideDashboardMention = route("hideDashboardMention", ({ params }) =
   hiddenMentions.add(String(params.id));
   if (scenarioName === "mention-hide-gone")
     return apiError(404, "not_found", "The requested item was not found.");
+  return new HttpResponse(null, { status: 204 });
+});
+
+/** `PUT /api/v1/dashboard/items/{key}/snooze` (R12): 1–365 days for an item of the list, else 400 or 404. */
+export const snoozeDashboardItem = route("snoozeDashboardItem", async ({ params, request }) => {
+  const key = String(params.key);
+  const body = (await request.json().catch(() => null)) as { days?: unknown } | null;
+  const days = body?.days;
+  if (typeof days !== "number" || !Number.isInteger(days) || days < 1 || days > 365) {
+    return apiError(400, "invalid_request", "Snooze for 1 to 365 days.");
+  }
+  if (!fromScript().items.items.some((item) => item.key === key)) {
+    return apiError(404, "not_found", "The requested item was not found.");
+  }
+  snoozed.set(key, new Date(Date.now() + days * 86_400_000).toISOString());
+  return new HttpResponse(null, { status: 204 });
+});
+
+/** `DELETE /api/v1/dashboard/items/{key}/snooze` (R13): ends the snooze; 204 also when there was none. */
+export const wakeDashboardItem = route("wakeDashboardItem", ({ params }) => {
+  snoozed.delete(String(params.key));
   return new HttpResponse(null, { status: 204 });
 });

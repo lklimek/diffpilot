@@ -1,0 +1,458 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "VerifyCommentsInput",
+  "description": "What one `verify_comments` job reads besides the checkout. Every text from GitHub, an earlier LLM job or the\nowner is untrusted data.",
+  "type": "object",
+  "properties": {
+    "pull_request": {
+      "description": "`owner/name#number`.",
+      "type": "string"
+    },
+    "title": {
+      "description": "The PR title as its author wrote it.",
+      "type": "string"
+    },
+    "description": {
+      "description": "The PR description as its author wrote it; none when empty.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "pr_context": {
+      "description": "The PR context of the latest analysis (LLM text), if one exists.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "project_profile": {
+      "description": "The project profile (`.claudius/project-profile.md` at the base of the latest analysis), if present.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "items": {
+      "description": "1..=[`MAX_ITEMS`] items with distinct ids.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/VerifyItem"
+      }
+    },
+    "earlier_decisions": {
+      "description": "The current decisions on other items of this pull request.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/EarlierDecision"
+      }
+    },
+    "question": {
+      "description": "The owner's question in a question pass; its item is one of `items`.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ItemQuestion"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "pull_request",
+    "title",
+    "items",
+    "earlier_decisions"
+  ],
+  "$defs": {
+    "VerifyItem": {
+      "description": "One item to assess.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "`C<no>`.",
+          "type": "string"
+        },
+        "kind": {
+          "description": "Source.",
+          "$ref": "#/$defs/CommentItemKind"
+        },
+        "author": {
+          "description": "Author login.",
+          "type": "string"
+        },
+        "author_kind": {
+          "description": "Author kind.",
+          "$ref": "#/$defs/AuthorKind"
+        },
+        "location": {
+          "description": "Discussed lines: at the head for a thread, at `commit` for a review-body item.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ItemLocation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "commit": {
+          "description": "The commit the comment was written on (its bot round's head, else its review's commit); null when unknown.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "description": "Title.",
+          "type": "string"
+        },
+        "body": {
+          "description": "Comment text.",
+          "type": "string"
+        },
+        "bot_severity": {
+          "description": "The bot's own severity words, a claim.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "bot_status": {
+          "description": "The bot's own status of its thread (thepastaclaw edits its comment), a claim.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BotThreadStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "replies": {
+          "description": "The thread's replies after the comment, oldest first: the latest [`MAX_REPLIES`], each at most\n[`MAX_REPLY_CHARS`] characters.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ThreadReply"
+          }
+        },
+        "earlier_replies": {
+          "description": "Earlier replies left out of `replies`.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "author",
+        "author_kind",
+        "title",
+        "body"
+      ]
+    },
+    "CommentItemKind": {
+      "description": "Where an item comes from (plan §2.1 I1–I4). Open enum.",
+      "oneOf": [
+        {
+          "description": "I1: a review thread.",
+          "type": "string",
+          "const": "thread"
+        },
+        {
+          "description": "I2: an item of a review body (no thread).",
+          "type": "string",
+          "const": "review_body"
+        },
+        {
+          "description": "I3: an item of a human PR-level comment.",
+          "type": "string",
+          "const": "pr_comment"
+        },
+        {
+          "description": "I4: a PR-level question built by the server from rounds (merge now, dismiss stale reviews).",
+          "type": "string",
+          "const": "pr_question"
+        }
+      ]
+    },
+    "AuthorKind": {
+      "description": "Who wrote the item: the bot rule (`Bot` type, `[bot]` login or Settings `known_bots`, RQ17).",
+      "oneOf": [
+        {
+          "description": "A person (also `claude` unless listed as a bot).",
+          "type": "string",
+          "const": "human"
+        },
+        {
+          "description": "A bot by the bot rule.",
+          "type": "string",
+          "const": "bot"
+        },
+        {
+          "description": "The server (PR-level questions).",
+          "type": "string",
+          "const": "diffpilot"
+        }
+      ]
+    },
+    "ItemLocation": {
+      "description": "The lines an item discusses: at the head for a thread; for a body item naming `path:range`, at the review's\ncommit, which may predate the head.",
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "Repository-relative path.",
+          "type": "string"
+        },
+        "lines": {
+          "description": "The lines; null for a file-level or outdated thread without a head line.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LineRange"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "path"
+      ]
+    },
+    "LineRange": {
+      "description": "Lines `start_line..=end_line`, 1-based, on the side given by the enclosing type.",
+      "type": "object",
+      "properties": {
+        "start_line": {
+          "description": "First line, 1-based.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "end_line": {
+          "description": "Last line, inclusive.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "start_line",
+        "end_line"
+      ]
+    },
+    "BotThreadStatus": {
+      "description": "thepastaclaw's own status of a thread, read from its status block (spike S13-1 M4); a GitHub fact, not a\ndecision. Open enum.",
+      "oneOf": [
+        {
+          "description": "\"Resolved\".",
+          "type": "string",
+          "const": "resolved"
+        },
+        {
+          "description": "\"Deferred (maintainer decision)\".",
+          "type": "string",
+          "const": "deferred"
+        },
+        {
+          "description": "\"Withdrawn\".",
+          "type": "string",
+          "const": "withdrawn"
+        },
+        {
+          "description": "\"No longer applies\".",
+          "type": "string",
+          "const": "no_longer_applies"
+        },
+        {
+          "description": "\"Disputed (left to the maintainers)\".",
+          "type": "string",
+          "const": "disputed"
+        }
+      ]
+    },
+    "ThreadReply": {
+      "description": "A reply in an item's thread (untrusted).",
+      "type": "object",
+      "properties": {
+        "author": {
+          "description": "Author login.",
+          "type": "string"
+        },
+        "author_kind": {
+          "description": "Author kind.",
+          "$ref": "#/$defs/ReplyAuthorKind"
+        },
+        "body": {
+          "description": "Text without bot markup; a cut text ends with `…`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "author",
+        "author_kind",
+        "body"
+      ]
+    },
+    "ReplyAuthorKind": {
+      "description": "Who wrote a reply.",
+      "oneOf": [
+        {
+          "description": "A person other than the pull request's author.",
+          "type": "string",
+          "const": "human"
+        },
+        {
+          "description": "A bot by the bot rule.",
+          "type": "string",
+          "const": "bot"
+        },
+        {
+          "description": "The pull request's author (a person).",
+          "type": "string",
+          "const": "owner"
+        }
+      ]
+    },
+    "EarlierDecision": {
+      "description": "A decision already made on an item of the pull request: in diffpilot, or recorded by a reply in the item's\nthread.",
+      "type": "object",
+      "properties": {
+        "item": {
+          "description": "`C<no>`.",
+          "type": "string"
+        },
+        "decision": {
+          "description": "The decision made in diffpilot; null for one a reply records, whose text is `reason`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DecisionKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "description": "The owner's reason, if given, or the reply's text.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "item"
+      ]
+    },
+    "DecisionKind": {
+      "description": "A decision (D1–D7; D8 is `reject` with a `blocker_gate` override; P1–P4 for PR-level questions). Open enum.",
+      "oneOf": [
+        {
+          "description": "D1: resolve, already fixed.",
+          "type": "string",
+          "const": "resolve"
+        },
+        {
+          "description": "D2: fix in this pull request.",
+          "type": "string",
+          "const": "fix_here"
+        },
+        {
+          "description": "D3: reject (with a reason); D8 with a `blocker_gate` override.",
+          "type": "string",
+          "const": "reject"
+        },
+        {
+          "description": "D4: handled in an existing pull request.",
+          "type": "string",
+          "const": "handled_in_pr"
+        },
+        {
+          "description": "D5: create a follow-up pull request.",
+          "type": "string",
+          "const": "follow_up_pr"
+        },
+        {
+          "description": "D6: upstream issue (link or create).",
+          "type": "string",
+          "const": "upstream_issue"
+        },
+        {
+          "description": "D7: TODO, out of scope for this pull request.",
+          "type": "string",
+          "const": "todo"
+        },
+        {
+          "description": "P1: merge now, remaining items become follow-ups.",
+          "type": "string",
+          "const": "merge_with_follow_ups"
+        },
+        {
+          "description": "P2: another round.",
+          "type": "string",
+          "const": "another_round"
+        },
+        {
+          "description": "P3: dismiss the listed stale bot reviews.",
+          "type": "string",
+          "const": "dismiss_stale_reviews"
+        },
+        {
+          "description": "P4: keep the reviews.",
+          "type": "string",
+          "const": "keep_reviews"
+        }
+      ]
+    },
+    "ItemQuestion": {
+      "description": "The owner's question about one item, with the earlier questions of its thread.",
+      "type": "object",
+      "properties": {
+        "item": {
+          "description": "`C<no>` of the item asked about.",
+          "type": "string"
+        },
+        "text": {
+          "description": "The question.",
+          "type": "string"
+        },
+        "thread": {
+          "description": "Earlier questions of the same thread with their answers, oldest first.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ThreadEntry"
+          }
+        }
+      },
+      "required": [
+        "item",
+        "text",
+        "thread"
+      ]
+    },
+    "ThreadEntry": {
+      "description": "An earlier question of a thread and its answer.",
+      "type": "object",
+      "properties": {
+        "question": {
+          "description": "The question.",
+          "type": "string"
+        },
+        "answer": {
+          "description": "The answer, if one was given.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "question"
+      ]
+    }
+  }
+}

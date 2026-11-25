@@ -6,7 +6,6 @@ use std::sync::Mutex;
 use contracts::agent::judge_work::{JudgeItem, JudgeWorkInput, part_values};
 use contracts::api::dashboard::{ItemKey, PartStatus, ScoreComponent};
 use contracts::job::result::{JobOutcome, JobResult};
-use contracts::job::spec::{CredentialKind, LlmCredentialRef};
 use contracts::time::Timestamp;
 use db::repo::jobs::ClaimParams;
 use jiff::SignedDuration;
@@ -15,7 +14,7 @@ use super::*;
 use crate::dashboard::judge::JudgeRanker;
 use crate::dashboard::score::{EligibilityJudgement, Freshness, JudgedPart, Judgement};
 use crate::dashboard::snapshot::{self, StoredLinkedIssue};
-use crate::pipeline::CREDENTIAL_ID;
+use db::repo::analyses::testing::CREDENTIAL as CREDENTIAL_ID;
 
 /// The runner's fake-provider answer: every asked part 0 (defect 0 and 0), eligibility as computed.
 fn neutral(input: &JudgeWorkInput) -> Value {
@@ -92,7 +91,7 @@ fn serve_with(
                 .db
                 .jobs()
                 .claim(ClaimParams {
-                    credential_ids: &[CREDENTIAL_ID.to_owned()],
+                    payer_ids: &[CREDENTIAL_ID.to_owned()],
                     job_token_hash: b"hash",
                     lease_until: now + SignedDuration::from_hours(1),
                     now,
@@ -109,6 +108,8 @@ fn serve_with(
                 .expect("judged")
                 .extend(input.items.iter().cloned());
             let result = JobResult {
+                assessment: None,
+                report: None,
                 job_id: job.id,
                 attempt: job.attempt,
                 outcome: JobOutcome::Succeeded {
@@ -137,10 +138,7 @@ async fn judged_world() -> World {
         .llm_credentials()
         .register(
             DEFAULT_TENANT,
-            &LlmCredentialRef {
-                id: CREDENTIAL_ID.to_owned(),
-                kind: CredentialKind::CodexChatgpt,
-            },
+            &contracts::ids::UserId(CREDENTIAL_ID.to_owned()),
             true,
             Timestamp::now(),
         )
@@ -308,7 +306,6 @@ async fn invalid_output_leaves_the_provisional_order() {
             ("WUI-298", Tier::P2, 376),
             ("NC-490", Tier::P2, 356),
             ("PLAT-1210", Tier::P3, 333),
-            ("CON-1541", Tier::P3, 302),
             ("TODO-3fa91c2e", Tier::P3, 263),
             ("CON-1520", Tier::P3, 243),
             ("CON-1525", Tier::P3, 191),

@@ -4,13 +4,11 @@ pub mod client;
 pub mod config;
 pub mod execute;
 pub mod git;
+pub mod launcher;
 pub mod phases;
 pub mod provider;
 pub mod scratch;
 pub mod scrub;
-pub mod sessions;
-pub mod skills;
-pub mod supervisor;
 pub mod worker;
 
 #[cfg(test)]

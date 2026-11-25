@@ -1087,7 +1087,6 @@ mod ranked {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use contracts::api::dashboard::{RankingState, RepositoryRule};
     use contracts::common::RepoRef;
-    use contracts::job::spec::{CredentialKind, LlmCredentialRef};
     use db::repo::dashboard::JudgeCounts;
     use reqwest::header::{ACCEPT, LOCATION};
     use serde_json::Value;
@@ -1113,6 +1112,7 @@ mod ranked {
             app_public_key_file: None,
             dashboard_fixture_dir: Some(repo_root().join("fixtures/dashboard/github")),
             dashboard_world_at: None,
+            review_loop_fixture_dir: None,
         };
         let router = fake_github::router(&config).expect("fake GitHub");
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1187,6 +1187,7 @@ mod ranked {
             watch_issues: false,
             ownership_policy: None,
             branch_patterns: Vec::new(),
+            ignored_checks: Vec::new(),
         }
     }
 
@@ -1197,18 +1198,6 @@ mod ranked {
         config.github.api_url = Url::parse(&github).expect("url");
         config.github.oauth_url = Url::parse(&github).expect("url");
         let db = Db::in_memory().await.expect("db");
-        db.llm_credentials()
-            .register(
-                DEFAULT_TENANT,
-                &LlmCredentialRef {
-                    id: crate::pipeline::CREDENTIAL_ID.to_owned(),
-                    kind: CredentialKind::CodexChatgpt,
-                },
-                true,
-                Timestamp::now(),
-            )
-            .await
-            .expect("credential");
         let mut state = AppState::with_queue(config, db);
         state.dashboard = DashboardHub::testing(
             Clock::starting_at(morning()),
@@ -1235,6 +1224,18 @@ mod ranked {
             )
             .await
             .expect("user");
+        state
+            .db
+            .llm_credentials()
+            .register(
+                DEFAULT_TENANT,
+                &contracts::ids::UserId(db::repo::analyses::testing::CREDENTIAL.to_owned()),
+                true,
+                Timestamp::now(),
+            )
+            .await
+            .expect("credential");
+
         let grant = sign_in(&github).await;
         let lock = lock_user("u1").await;
         store_sign_in_tokens(&state, &lock, DEFAULT_TENANT, &grant, Timestamp::now())

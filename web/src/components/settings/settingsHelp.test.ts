@@ -61,6 +61,13 @@ describe("settings help (owner request B3)", () => {
       expect(text).toContain(path);
   });
 
+  it("Slack names suggest only text a Slack message box keeps: a display name, never a member ID", () => {
+    const help = SETTINGS_HELP.slack_names;
+    const text = [help.what, help.when, help.empty, help.limits ?? "", help.example].join(" ");
+    expect(text).toContain("@jun.park");
+    expect(text).not.toMatch(/<@|member ID/);
+  });
+
   it("excluded authors, known bots and linked logins say exactly how each list works", () => {
     expect(SETTINGS_HELP.skip_authors.title).toBe("Excluded authors");
     expect(SETTINGS_HELP.skip_authors.what).toBe(

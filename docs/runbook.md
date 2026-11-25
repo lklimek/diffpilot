@@ -1,120 +1,52 @@
 # diffpilot runbook
 
-Operating the compose stack of `deploy/compose.yaml`: `server` (web UI and API), `runner` (root supervisor, runner
-and agents, ADR-013) and `egress-proxy` (Squid, the runner's only way out: all agent network traffic goes through
-the proxy; Codex's hosted web search is disabled). Variables: `.env.example`.
-Design background: `docs/implementation-plan.md` §5.4 (threat model), ADR-003 (LLM credential), ADR-013 (runner).
-Deploying elsewhere (published images, Portainer, every variable; no host specifics): `docs/deployment.md`.
+Operating `deploy/compose.yaml`: server, runner, networkless launcher, plan gateway and Squid. The launcher
+creates per-payer workers and one-shot dependency fetchers from digest-pinned images. Containers, gateway-only
+provider credentials and SG1–SG16 replace the old supervisor/login-volume runtime (ADR-025).
 
-Every block below is meant to be pasted as is into a root shell or a shell of a user in the `docker` group
-(marked). Paths assume the checkout in `/srv/diffpilot/app` and the configuration in `/srv/diffpilot/.env`.
-Define the helper once per shell:
+Requirements: Linux Docker Engine 28.0 or newer with isolated internal bridges, Compose with `!override`/`!reset`,
+Git, curl, jq, Python 3 and flock. Builds use at most two Cargo jobs. On the shared development host, wrap Docker/Cargo
+operations in `flock /data/tmp/diffpilot-heavy.lock` and use the prescribed Cargo wrapper.
+
+Before opening its socket, the launcher checks the Engine version and inspects `SR_WORKER_NETWORK` and
+`SR_JUDGE_NETWORK`. Both must exist, use the bridge driver, be internal and set
+`com.docker.network.bridge.gateway_mode_ipv4=isolated`. IPv6 must be disabled or set
+`com.docker.network.bridge.gateway_mode_ipv6=isolated`. Inspection failures stop startup. If a network has
+the wrong mode, stop its jobs and recreate that network from the Compose configuration during maintenance;
+changing the YAML alone does not alter an existing network. See [Docker's gateway modes](https://docs.docker.com/engine/network/port-publishing/#gateway-modes).
+
+Production examples use this helper; the Local stack section defines its separate `srl` command:
 
 ```sh
 sr() { docker compose --env-file /srv/diffpilot/.env -f /srv/diffpilot/app/deploy/compose.yaml "$@"; }
 ```
 
-Volumes (compose project `diffpilot`): `diffpilot_server-data` (SQLite database `diffpilot.sqlite`,
-bare mirrors), `diffpilot_runner-state` (Codex credential, agent sessions, mirrors, claudius checkout), and the
-disposable `diffpilot_tmp-*` volumes (section "Temporary volumes"). Networks:
-`public` 172.29.73.0/24 (server), `runner` 172.29.71.0/24 (internal and isolated: no route out and no host
-address, so the runner reaches only the server's runner listener and the proxy), `egress` 172.29.72.0/24 (proxy).
+## First deploy (empty database)
 
-## First deploy
+1. Register a GitHub App with callback `https://YOUR_HOST/auth/github/callback`, repository permissions
+   Pull requests read/write and Contents/Checks/Issues/Metadata read. Install it on the reviewed repositories.
+2. Keep the App private key server-only, uid 10010 mode 0400 in production. Configure `.env` from
+   `.env.example`: public URL, allowed logins, App IDs/client secret/key path, MemCan URL/token, encryption key
+   (`openssl rand -base64 32`), runner secret (`openssl rand -hex 32`), socket GID and image references.
+   Keep `.env` private. Preserve `SR_SECRET_KEY` with backups: changing it invalidates encrypted app data.
+3. Build server/runner/Squid/worker/fetch together; prepare the curated claudius context with
+   `deploy/containers/prepare-claudius.sh`. Pin worker/fetch by repository digest. The local helper below performs
+   these builds and obtains actual digests from a registry with its host port published on 127.0.0.1;
+   production should use its release registry.
+4. Create the four runtime files described below; run `deploy/check-production-config.sh --env-file FILE`
+   as a user able to read those files, or its container-based local helper. Production requires HTTPS.
+5. Start `docker compose --env-file FILE -f deploy/compose.yaml up -d --no-build --wait`. No preloaded Codex
+   login volume is needed. Sign in with GitHub, then link your plan in Settings as described below.
+6. Route the reverse proxy to the loopback published port. It must append `X-Forwarded-For`; configure
+   `SR_TRUSTED_PROXIES` for the proxy address. Confirm `/healthz`, Settings, an analysis and private Ask.
 
-Requirements: Docker Engine 28.0 or newer (bridge gateway mode `isolated` of the runner network; older engines
-ignore the option, and the runner's preflight then refuses to start with exit 78), Docker Compose 2.24.4 or newer (`!override` in the local variant), about 15 GB free
-disk for images and build cache, plus the scratch volumes. Check: `docker version -f '{{.Server.Version}}'`.
+MemCan must allow the server's direct source address and Squid's egress source address. Squid pins the configured
+MemCan host/port/address at startup; restart it after a DNS/address change. Every other private destination,
+metadata and loopback is denied. Do not add arbitrary LAN exceptions to make a failed job pass.
 
-1. Checkout (any user with access to `/srv/diffpilot`):
-
-   ```sh
-   sudo install -d -m 0755 /srv/diffpilot
-   sudo git clone https://github.com/lklimek/diffpilot.git /srv/diffpilot/app
-   ```
-
-2. Disk (nothing to prepare): compose creates every volume, and nothing is kept in RAM. The job work area holds
-   a full-history checkout per job (a large repository such as `dashpay/platform` takes about 1.7 GB) and has no
-   size limit, so keep several GB free on Docker's disk (`df -h "$(docker info -f '{{.DockerRootDir}}')"`). Where
-   that is the host's root filesystem, a full disk stops the whole host, not only this stack.
-
-3. GitHub App (github.com → Settings → Developer settings → GitHub Apps → the App):
-   - Callback URL, exactly: `https://review.klimek.ws/auth/github/callback` (no wildcard); "Expire user
-     authorization tokens" on.
-   - Repository permissions: Pull requests read and write; Contents, Checks, Issues, Metadata read-only.
-   - Installed on the repositories to review.
-   - Generate a private key and place it for the server's uid 10010, read-only:
-
-     ```sh
-     sudo install -d -m 0755 /srv/diffpilot/secrets
-     sudo install -o 10010 -g 10010 -m 0400 ~/Downloads/*.private-key.pem /srv/diffpilot/secrets/github-app.pem
-     ```
-
-4. Configuration (root; the file holds secrets, mode 0600):
-
-   ```sh
-   sudo install -m 0600 /srv/diffpilot/app/.env.example /srv/diffpilot/.env
-   sudo sed -i \
-     -e "s|^SR_SECRET_KEY=.*|SR_SECRET_KEY=$(openssl rand -base64 32)|" \
-     -e "s|^SR_RUNNER_SECRET=.*|SR_RUNNER_SECRET=$(openssl rand -hex 32)|" \
-     -e "s|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL=https://review.klimek.ws|" \
-     /srv/diffpilot/.env
-   sudoedit /srv/diffpilot/.env
-   ```
-
-   In the editor set `SR_ALLOWED_LOGINS` (the GitHub logins allowed to sign in, comma-separated:
-   `lklimek,Claudius-Maginificent`), `SR_GITHUB_APP_ID`, `SR_GITHUB_CLIENT_ID`, `SR_GITHUB_CLIENT_SECRET`,
-   `SR_MEMCAN_URL` (the full MCP endpoint, e.g. `http://memcan.lan:8190/mcp`), `SR_MEMCAN_TOKEN`, and
-   `SR_RUNNER_CLAUDIUS_REF` (a claudius commit SHA pins the agent's skills; recommended); keep the rest unless an
-   address clashes.
-   `SR_SECRET_KEY` encrypts stored tokens and cannot be rotated in v1: keep a copy with the backups.
-   `sudo /srv/diffpilot/app/deploy/check-production-config.sh --env-file /srv/diffpilot/.env` must pass:
-   besides development switches it refuses values left from `.env.example`, empty secrets, a runner secret under
-   32 characters, a public URL that is not https, `$` interpolation and local or development overrides, naming the
-   variable only; an unpinned skills ref (a branch such as `main`) is a warning.
-
-5. MemCan: the server connects directly, the agents through the egress proxy. Add the host name of
-   `SR_MEMCAN_URL` to MemCan's `MEMCAN_ALLOWED_HOSTS`, and both source addresses to its `TRAEFIK_IP_ALLOWLIST`:
-
-   | MemCan runs | server connects from | egress proxy connects from |
-   |---|---|---|
-   | on this Docker host | `172.29.73.2` (`SR_SERVER_PUBLIC_ADDR`) | `172.29.72.2` (`SR_PROXY_EGRESS_ADDR`) |
-   | on another host | this host's LAN address (Docker masquerades) | the same LAN address |
-
-   The proxy resolves the MemCan host name once at start and allows exactly that name, port and address (exit 65
-   when the name does not resolve). Check both paths after `sr up -d` (step 7); replace `HOST:PORT`. An answer
-   from MemCan itself (JSON "Provide a valid API Token", its `ip` field names the source it saw) means the
-   allow-list passed; Traefik's plain `Forbidden` means the source is missing; the proxy's own 403 page (HTML)
-   means `SR_MEMCAN_URL` does not match the request.
-
-   ```sh
-   sr exec server bash -c 'exec 3<>/dev/tcp/HOST/PORT; printf "GET /mcp HTTP/1.1\r\nHost: HOST:PORT\r\nConnection: close\r\n\r\n" >&3; cat <&3'
-   sr exec -u 10002 runner bash -c 'exec 3<>/dev/tcp/172.29.71.3/3128; printf "GET http://HOST:PORT/mcp HTTP/1.1\r\nHost: HOST:PORT\r\nConnection: close\r\n\r\n" >&3; cat <&3'
-   ```
-
-6. Build the images, one at a time (heavy; check `free -g` first, nothing else compiling):
-
-   ```sh
-   sr build egress-proxy && sr build runner && sr build server
-   ```
-
-7. Start and check (all three `healthy` within a minute):
-
-   ```sh
-   sr up -d
-   sr ps
-   ```
-
-8. Codex sign-in (once; see "LLM credential"). Then the owner's reverse proxy routes `review.klimek.ws` to
-   `127.0.0.1:3000` (`SR_PUBLISH_ADDR`:`SR_HTTP_PORT`); with Docker's userland proxy (the default), requests
-   enter the server from the public network's gateway `172.29.73.1`, which `SR_TRUSTED_PROXIES` trusts for
-   `X-Forwarded-For`. The reverse proxy must append the client address to `X-Forwarded-For` (nginx:
-   `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`): the failed access-token attempt limit counts
-   per client address, and without it all clients share one.
-
-9. Sign-in allowlist: `SR_ALLOWED_LOGINS` in `/srv/diffpilot/.env`, applied at every server start (logins added;
-   the others removed with their sessions, GitHub tokens and access tokens). After editing it: `sr up -d server`, then
-   `sr logs --since 5m server | grep 'sign-in allowlist set'` shows the logins added and removed.
+Gateway and Squid have distinct static addresses on every shared network, preventing automatic allocation from
+taking a later static address. When changing subnets, update `SR_GATEWAY_MODEL_ADDR`/`SR_PROXY_WORKER_ADDR` and
+`SR_PROXY_EGRESS_ADDR`/`SR_GATEWAY_EGRESS_ADDR` together, plus the runner-interface addresses in `.env.example`.
 
 ## Secrets as files (optional)
 
@@ -122,7 +54,7 @@ disk for images and build cache, plus the scratch volumes. Check: `docker versio
 `SR_MEMCAN_TOKEN` read-only from files in `SR_SECRETS_DIR` (default `/srv/diffpilot/secrets`) and passes
 `VAR_FILE` instead of `VAR`, so they do not show in `docker inspect` or Portainer (threat model AR-7). Instead of the
 secret lines of First deploy step 4 (root; the runner secret is read by the server's uid 10010 and the runner's
-10001, never by the agent's 10002, else the runner exits 78):
+10002; the worker never mounts these service-secret files):
 
 ```sh
 cd /srv/diffpilot/secrets
@@ -131,7 +63,7 @@ sudo sh -c 'umask 077; cat > sr-github-client-secret'   # paste the value, Enter
 sudo sh -c 'umask 077; cat > sr-memcan-token'           # paste the value, Enter, Ctrl-D
 sudo chown 10010:10010 sr-secret-key sr-github-client-secret sr-memcan-token
 sudo chmod 0400 sr-secret-key sr-github-client-secret sr-memcan-token
-sudo chown 10001:10010 sr-runner-secret && sudo chmod 0440 sr-runner-secret
+sudo chown 10002:10010 sr-runner-secret && sudo chmod 0440 sr-runner-secret
 sudo sed -i -E 's/^(SR_SECRET_KEY|SR_RUNNER_SECRET|SR_GITHUB_CLIENT_SECRET|SR_MEMCAN_TOKEN)=.*/\1=/' /srv/diffpilot/.env
 ```
 
@@ -143,85 +75,91 @@ sr() { docker compose --env-file /srv/diffpilot/.env -f /srv/diffpilot/app/deplo
 sudo /srv/diffpilot/app/deploy/check-production-config.sh --env-file /srv/diffpilot/.env --secret-files
 ```
 
-## LLM credential (Codex sign-in, "unusable" recovery)
+## Container runtime keys and legacy-volume cleanup
 
-The runner keeps one Codex credential at `/var/lib/diffpilot-runner/credentials/default/auth.json` in the
-`runner-state` volume (ADR-003). Sign in inside the running runner container as the runner uid; Codex reaches
-the Internet through the egress proxy. Never mount or copy the host's `~/.codex`, and never copy a credential
-that another Codex installation still uses (refresh tokens are single-use; both copies would break).
+Before starting v1.3, create `gateway-secret-key` with `openssl rand -base64 32` (canonical base64
+encoding of exactly 32 bytes). Generate `gateway-credentials-token` and `gateway-keys-token` separately
+with `openssl rand -hex 32`: each bearer token must contain at least 32 bytes after whitespace trimming,
+and the two scope tokens must differ. Keep the encryption key with its gateway state. Set their
+`SR_GATEWAY_*_PATH` variables; all three files require uid 10010, mode 0400 in production. The local host-uid server additionally
+reads the credentials token through its host group, using mode 0440 (see Local stack).
+Copy only the keys-scope token into `runner-gateway-keys-token`, uid 10002, mode 0400, and set
+`SR_RUNNER_GATEWAY_KEYS_TOKEN_PATH`. The two keys-scope files must contain exactly the same bytes.
+The runner receives no credentials-scope token. Run the production guard as root so it can compare the files
+without printing their contents. It checks these four files even when the other secrets come from `.env`.
+For an existing secrets-as-files installation, re-own `sr-runner-secret` to `10002:10010`, mode 0440,
+before restarting; the server reads through group 10010 and the runner through owner 10002.
+Set `SR_DOCKER_GID` to the host Docker socket's numeric group and pin both worker/fetch image digests.
 
-```sh
-sr exec -u 10001 runner install -d -m 0700 /var/lib/diffpilot-runner/credentials/default
-sr exec -it -u 10001 -e CODEX_HOME=/var/lib/diffpilot-runner/credentials/default runner codex login --device-auth
-sr exec -u 10001 runner test -s /var/lib/diffpilot-runner/credentials/default/auth.json && echo "credential present"
-```
-
-The device login prints a URL and a code: open the URL, enter the code, approve.
-
-**Unusable credential.** When a refresh fails (token reused, expired or revoked), the runner marks the master
-unusable (`auth.json.unusable` next to it, holding the master's digest), the runner log says "the Codex credential
-is unusable; sign in again", and Settings shows "Sign-in to the LLM provider is needed". Run the login commands
-above; the new credential has a different digest and is used from the next job on, without a restart. If the log
-says the state "could not be saved", sign in again before restarting the runner.
-
-**Moving a credential between volumes** (for example, from a test volume that is no longer used), volume to
-volume, never through the host:
+After the owner has confirmed a successful deployment, stop/remove legacy containers that still reference
+the old volumes, then run the following explicitly (replace `diffpilot` for a different Compose project):
 
 ```sh
-docker run --rm --network none -v OLD-VOLUME:/src:ro -v diffpilot_runner-state:/dst ubuntu:26.04 sh -c \
-  'install -d -o 10001 -g 10001 -m 0700 /dst/credentials/default &&
-   install -o 10001 -g 10001 -m 0600 /src/auth.json /dst/credentials/default/auth.json'
+sudo deploy/cleanup-legacy-volumes.sh diffpilot --after-successful-deploy
 ```
+
+The command is idempotent and prints removed volume names only. It refuses the entire cleanup if any target
+is attached to a running or stopped container. It removes only `<project>_runner-state`,
+`<project>_tmp-runner-codex-homes`, `<project>_tmp-runner-work` and `<project>_tmp-runner`, never mounts or reads
+them, and never revokes upstream credentials. Do not run against another installation or a live local stack.
+
+
+## LLM credential (Settings linking and relinking)
+
+Each payer opens Settings → Codex account → Link ChatGPT plan. Read the visible warning: linking may sign Codex
+out on other CLI machines; isolation from those sessions is not guaranteed. Only the owner completes the device
+flow in the browser. There is no API-key mode, credential export/import, CLI login in the runner or host-home
+mount. Automatic tests use fake auth only; operators must not run real-account auth experiments.
+
+A terminal credential failure or unknown refresh result shows relink needed; quarantine is deliberate. Relink
+through Settings rather than retrying/replaying refresh. The gateway keeps a single dedicated chain, durable
+in-flight marker and persist-before-use. Unknown outcomes stay quarantined across restart. Explicit Unlink is
+the only action that revokes upstream; worker cleanup and local key revocation do not unlink the account.
+
+Linking and usage pauses are per user. Other users can read shared analyses, but their Ask uses their own
+payer container and a private context pack. A first same-payer Ask above 80k context waits for explicit
+compaction; its input is billed and completion is persisted before the answer.
 
 ## Upgrade
 
-The schema is the numbered files in `crates/db/migrations`, append-only: the server applies new ones at its start,
-each in its own transaction (a failing one leaves the database at the previous version), and refuses to start when
-an applied one has changed or is unknown to it. `scripts/check-migrations.sh` (CI) keeps applied files unchanged.
-Never delete the database to upgrade.
+Prepare the new images/configuration without touching the running stack. Save the old commit, image tags and
+runtime env; stop new work and let effects finish. Stop runner/launcher first (this stops their managed workers),
+then all remaining services. Take the full stopped backup below before any migration. Never use `down -v` on a
+live installation. Apply the new image/digest env, run the production guard, then `up -d --no-build --wait`.
+Confirm health, preserved sign-in/settings and a new analysis/Ask. Rollback requires the old images/commit and
+the matching pre-migration full DB-volume backup; never start old binaries against the migrated database.
 
-1. Fetch the new version, keep the old commit and images for a rollback, check, build (services keep running):
+## Upgrade to v1.3
 
-   ```sh
-   cd /srv/diffpilot/app
-   git rev-parse HEAD | sudo tee /srv/diffpilot/previous-version   # read by the rollback
-   sudo git pull --ff-only
-   scripts/check-migrations.sh
-   git diff --name-status "$(cat /srv/diffpilot/previous-version)" -- crates/db/migrations   # only A lines; M or D: stop
-   for i in server runner egress-proxy; do docker tag "diffpilot-$i:local" "diffpilot-$i:rollback"; done
-   sr build egress-proxy && sr build runner && sr build server
-   ```
+**Container cut-over:** migration 0030 cleans existing analyses and review-loop data in place, including owner
+decisions, pending or claimed decision effects, queued notifications and queued MemCan feedback writes. Settings,
+sign-ins and stored GitHub authentication stay; see the [table inventory M01–M55](contracts/containers.md#persistence-and-cut-over).
+Before deploying, let pending decision effects finish or accept that they will be dropped without execution.
+Keep the full step-2 volume backup: restoring it with the previous images and commit is the only rollback path.
+After startup, every user must relink Codex before jobs can run. Watched PRs rebuild their review-loop data on the
+next probe; automatic assessments use quota and require Codex to be linked again. At step 3 of "Upgrade", check
+sign-in and rebuild an analysis instead of opening an old one.
 
-2. Stop, back up (section "Backup and restore", full backup), start the new version; migrations run now:
+Two optional variables are new; add them to `/srv/diffpilot/.env` to use them (step 1 of "Upgrade"):
 
-   ```sh
-   # export the analysis statistics first (section "Logs"): the new server container starts with an empty log
-   sr stop
-   # full backup here
-   sr up -d
-   sr ps
-   sr logs --since 10m server | grep -E 'server stopped|migration' || echo "no migration error"
-   ```
+| Variable | Required | Default | Meaning |
+|---|---|---|---|
+| `SR_THEPASTACLAW_STATUS_URL` | no | empty | URL of thepastaclaw's review-system status file, e.g. `https://thepastaclaw.github.io/review-system/data/status.json`. Set: the dashboard's thepastaclaw plug-in reads the file (no credential, revalidated by `ETag`) at most once a minute while someone uses the dashboard in a browser or any user watches a pull request, and notes on the pull requests it lists "thepastaclaw: reviewing (phase, step n of m)" or "thepastaclaw: queued (reason)"; it never changes Ready to merge (ADR-022). The file trails by up to about 20 minutes. The server then needs outbound HTTPS to that host (`thepastaclaw.github.io`). Must be `http://` or `https://`. Empty: off, no request. A bad value stops the server at start (exit 1). |
+| `SR_NOTIFY_DENY_PRIVATE` | no | `0` | `1`: users' notification channels (ntfy, webhook) and agents' push targets may not reach private or unique-local addresses; `0`: they may (Home Assistant or a self-hosted ntfy on the LAN). Loopback, link-local (`169.254.0.0/16`, `fe80::/10`), unspecified, multicast, broadcast and reserved addresses (also in IPv6 forms such as NAT64 or 6to4) and Teredo addresses are refused with either value, in the URL and after resolving a host name; notifications connect directly, never through a proxy from the environment. These hosts are outbound destinations chosen by users and agents, not by the operator: with `0` the server sends to any other `http`/`https` host they enter. A bad value stops the server at start (exit 1). |
 
-3. Verify: all three `healthy`, sign-in works, an existing analysis opens.
-
-**Rollback** (the new version fails, or a migration error in the log): once the new version has applied a new
-migration, the old image refuses to start against that database, so a rollback always means restoring the step-2
-backup together with the previous images and commit; everything written since the upgrade is lost.
-
-```sh
-sr stop
-# restore the step-2 backup here (section "Backup and restore")
-for i in server runner egress-proxy; do docker tag "diffpilot-$i:rollback" "diffpilot-$i:local"; done
-cd /srv/diffpilot/app && sudo git checkout --detach "$(cat /srv/diffpilot/previous-version)"   # back later: sudo git switch -
-sr up -d
-```
-
-**Binary older than the database:** a server image without a migration the database already holds stops with
-`the schema migration failed: migration N was previously applied but is missing in the resolved migrations` (exit
-1, restart loop). Never run an older image against an upgraded database: roll back with the matching backup.
-`... was previously applied but has been modified` means an applied migration was edited: the build is defective;
-roll back and report it, never delete the database.
+**Notifications** (ADR-023 decision 11). Each delivery is tried 3 times (now, after about 1 and 5 minutes, 10 s
+each); a channel or push target whose last delivery failed shows "Failing since …" with the error in Settings →
+Notifications (agents' targets in a PR's decision log). The server logs one `warn` "a notification target started
+failing" when a target starts failing and one `info` "a failing notification target delivers again" when it
+recovers, never per attempt; answers of the targets are not logged or shown. At most 30 messages an hour go to one
+target (a channel counted per user and kind, a push target per token; the count is stored, so a restart or removing
+and saving the channel does not reset it); more wait for the next free slot, and a Test press over the limit answers
+"try again later" without marking the channel failing. Events wait for their delivery however long the server was
+down. Agents' push targets receive nothing once their token is revoked or expired or its user leaves
+`SR_ALLOWED_LOGINS`, and nothing while the agent holds its feed stream. Changing a channel's or push target's
+kind or the scheme, host or port of its URL needs its secret entered again (or removed). Secrets of channels and
+push targets are encrypted under `SR_SECRET_KEY`; after replacing that key they cannot be decrypted: the target
+fails with "the stored secret could not be decrypted; set it again" until its owner saves the secret anew.
 
 ## Upgrade to v1.2
 
@@ -254,8 +192,8 @@ is corrupted. Finished analyses are not converted: their questions show as flags
      "SELECT kind, state, count(*) FROM jobs WHERE state IN ('claimed', 'running') GROUP BY kind, state;"
    ```
 
-2. Fetch and build as in "Upgrade" step 1 (it tags the old images as `rollback` and builds `runner` and `server`).
-   Then stop and copy the database volume to a new volume (volume to volume, nothing is deleted):
+2. Prepare the new images as in "Upgrade", retaining the old image references. For this historical v1-to-v1.1
+   migration, stop and copy the database volume to a new volume (nothing is deleted):
 
    ```sh
    sr stop
@@ -273,7 +211,7 @@ is corrupted. Finished analyses are not converted: their questions show as flags
    ```sh
    deploy/check-production-config.sh --env-file /srv/diffpilot/.env   # from /srv/diffpilot/app
    sr up -d
-   sr ps                                    # all three: healthy
+   sr ps                                    # check each configured service's health
    sr logs --since 5m server | grep -E 'server listening|dashboard scheduler started|schema migration failed'
    ```
 
@@ -305,7 +243,7 @@ configured per user in Settings.
 | Variable | Required | Default | Meaning |
 |---|---|---|---|
 | `SR_MEMCAN_UI_URL` | no | empty | Base URL of the MemCan web UI **including `/ui`**, e.g. `http://memcan.example.lan:8190/ui`. The dashboard links a MemCan TODO to `<base>/tasks/<uuid>`. Must be `http://` or `https://`; a trailing `/` is removed. Empty: TODOs show without links. A bad value stops the server at start (exit 1). |
-| `SR_PR_HYGIENE_URL` | no | empty | Base URL of the PR Hygiene service, e.g. `https://pr-hygiene.services.dash.org`. Set: the dashboard's PR Hygiene plug-in reads the service's public API (no credential) at most once a minute while someone uses the dashboard in a browser, shows its statements on pull requests and holds pull requests it does not list as ready out of Ready to merge (ADR-022). The server then needs outbound HTTPS to that host. Must be `http://` or `https://`. Empty: off, no request. A bad value stops the server at start (exit 1). |
+| `SR_PR_HYGIENE_URL` | no | empty | Base URL of the PR Hygiene service, e.g. `https://pr-hygiene.services.dash.org`. Set: the dashboard's PR Hygiene plug-in reads the service's public API (no credential) at most once a minute while someone uses the dashboard in a browser or any user watches a pull request, shows its statements on pull requests and holds pull requests it does not list as ready out of Ready to merge (ADR-022). The server then needs outbound HTTPS to that host. Must be `http://` or `https://`. Empty: off, no request. A bad value stops the server at start (exit 1). |
 
 Changed behaviour of an existing variable:
 
@@ -375,177 +313,66 @@ Every Settings option, with when it is used and an example: `docs/settings.md` (
 
 ## Backup and restore
 
-Two kinds: a daily **online backup** (`deploy/backup.sh`, services keep running) and a **full backup** with every
-service stopped (before an upgrade, and weekly). Both contain the Codex credential, `.env` and the secrets: store
-them like a password (root only, encrypted off-site).
+### Online database snapshot
 
-### Online backup (daily)
+`deploy/backup.sh` writes a consistent SQLite `VACUUM INTO` snapshot, configured env and secrets, plus
+`SHA256SUMS`; it retains 14 complete snapshots by default. It does **not** back up gateway state, thread volumes
+or assessment snapshot files. Its `--self-test` uses a throwaway database with a live writer. Schedule it as root
+(or an equivalently restricted service account), monitor its exit status and keep backups private/encrypted.
+`--restore DIR` requires server/runner stopped and restores only the database, retaining the replaced DB/WAL.
+Use a matching encryption key/config; restoring a DB alone can leave missing runtime files and requires fresh
+threads or replay from a context pack.
 
-`deploy/backup.sh` (root; needs `sqlite3` 3.27+ on the host: `apt-get install sqlite3`) writes
-`/srv/diffpilot/backup/<UTC stamp>/` (mode 0700, files 0600, `SHA256SUMS`): a consistent snapshot of the
-database (`VACUUM INTO` while the server writes; WAL mode), `credentials/` and `sessions/` of `runner-state`, a copy
-of `.env` and the secrets directory. It keeps the newest 14 (`SR_BACKUP_KEEP`), prints sizes only, never contents.
-Mirrors and the claudius checkout are re-created by the runner. The credential is a copy of the moment: a job
-running meanwhile may rotate it, and then the restored one is rejected at its first refresh (sign in again, section
-"LLM credential"). `deploy/backup.sh --self-test` backs up and restores a throwaway database under a live writer.
+### Full stopped backup and restore
 
-Schedule (root):
+1. Record compose project, code commit, image references and all env-file names. `sr stop runner launcher`, then
+   `sr stop` for the remaining services. Verify no container labelled `dp.managed=PROJECT` is running; do not
+   snapshot an active worker or gateway chain.
+2. Archive the entire `PROJECT_server-data` volume (DB/WAL plus non-secret frozen assessment snapshots),
+   `PROJECT_gateway-data` (encrypted tokens/generations/in-flight markers), `PROJECT_runtime-state`, and each
+   labelled per-payer `PROJECT-pr-*-work` volume. Keep gateway state and its own encryption key together.
+   Do not archive `launcher-socket`, `tmp-server`, C1 mirrors or C2 dependency caches; those are disposable.
+3. Separately archive all configuration, runtime secret files and the App key, preserving numeric owners/modes.
+   Backups contain credentials: mode 0700 directories, 0600 archives, encrypt before leaving the host.
+4. Restore into empty volumes with the **same names** while all services/workers remain stopped. Preserve
+   numeric ownership. Restore config/keys before starting. Never run an original and restored gateway chain
+   concurrently, or reuse an old refresh generation after newer use: quarantine/relink if outcome is unknown.
+5. Run the guard; start all services from the matching release. Launcher reconciliation and local key revoke
+   settle runtime objects. Check DB integrity/foreign keys, Settings, a new job and same-payer Ask. Missing
+   thread volumes fall back to a context pack. Restored snapshots must match the restored DB.
 
-```sh
-sudo tee /etc/systemd/system/diffpilot-backup.service > /dev/null <<'EOF'
-[Unit]
-Description=diffpilot online backup
-[Service]
-Type=oneshot
-ExecStart=/srv/diffpilot/app/deploy/backup.sh
-EOF
-sudo tee /etc/systemd/system/diffpilot-backup.timer > /dev/null <<'EOF'
-[Unit]
-Description=Daily diffpilot online backup
-[Timer]
-OnCalendar=*-*-* 03:30:00
-RandomizedDelaySec=15m
-Persistent=true
-[Install]
-WantedBy=timers.target
-EOF
-sudo systemctl daemon-reload && sudo systemctl enable --now diffpilot-backup.timer
-systemctl list-timers diffpilot-backup.timer; journalctl -u diffpilot-backup.service -n 20
-```
-
-A failed run exits non-zero, leaves only a `.partial-<stamp>` directory (removed by the next run) and never pushes
-out complete backups. Check daily (or add `OnFailure=` with your own notification unit to the service); both lines
-print nothing when all is well:
+A no-sudo volume archive on the dev host uses a one-off root container (operator action, after stopping):
 
 ```sh
-systemctl is-failed --quiet diffpilot-backup.service && echo "the last online backup FAILED (journalctl -u diffpilot-backup)"
-sudo find /srv/diffpilot/backup -mindepth 2 -maxdepth 2 -name SHA256SUMS -mmin -1560 | grep -q . || echo "no complete backup in the last 26 h"
+backup=/data/private-backups/diffpilot-local/$(date -u +%Y%m%dT%H%M%SZ)
+install -d -m 0700 "$backup"
+docker run --rm --network none --user 0:0 --entrypoint bash \
+  --mount type=volume,source=diffpilot-local_server-data,target=/source,readonly \
+  --mount "type=bind,source=$backup,target=/backup" diffpilot-local-server:local \
+  -ec 'umask 077; tar --numeric-owner -C /source -czf /backup/server-data.tar.gz .'
 ```
 
-**Off-site, encrypted** (the backup holds the Codex credential, `SR_SECRET_KEY` and the App key): encrypt on this
-host to a key whose private half is not on it, then copy, e.g. with `age` (`apt-get install age`; `age-keygen` on
-another machine gives the recipient `age1...`):
+Repeat with each required stopped volume and a distinct archive name. To restore, mount an empty destination
+read-write and the archive directory read-only, then `tar --numeric-owner -C /destination -xzf /backup/NAME`.
+Do not inspect or publish archive contents. Test restore in a separate project before discarding the original.
 
-```sh
-B=/srv/diffpilot/backup
-S="$(sudo find "$B" -mindepth 2 -maxdepth 2 -name SHA256SUMS -path "$B/[0-9]*T[0-9]*Z/*" -printf '%h\n' | sort | tail -n 1)"
-if [ -z "$S" ]; then echo "no complete online backup in $B" >&2; else S="$(basename "$S")"
-  sudo tar -C "$B" -cf - "$S" | age -r age1REPLACE_WITH_RECIPIENT | ssh backup-host "cat > diffpilot/$S.tar.age"; fi
-```
+## Temporary volumes and disk pressure
 
-Restore an online backup (server and runner stopped; the script refuses otherwise). It checks `SHA256SUMS` and the
-database's integrity, unpacks first, then moves the current database (with its `-wal`/`-shm`), `credentials/` and
-`sessions/` to `pre-restore-<UTC>/` in the same volume and puts the backed-up ones in place; delete those
-directories once the service works. `.env` and the secrets stay as they are (copy them by hand when the host is
-new). Test a restore now and then on a spare host or a copy of the volumes.
+Only `PROJECT_tmp-server` is a disposable Compose scratch volume. Remove it while server is stopped if startup
+cannot empty `/tmp`. Worker `/run/dp`, `/tmp`, CS2 home and CS2 Codex home are bounded tmpfs and disappear on
+stop. CS1 work volumes contain persistent thread history; removing one forces context-pack recovery. C1 and C2
+are caches, never credentials. Gateway-data and server-data are durable and must not be pruned.
 
-```sh
-sr stop server runner
-sudo /srv/diffpilot/app/deploy/backup.sh --restore /srv/diffpilot/backup/REPLACE_WITH_THE_STAMP
-sr up -d
-sr logs runner | grep -i credential
-```
+The runner's disk reserve stops new work below `SR_RUNNER_DISK_RESERVE_MIB` (default 2048 MiB), but is not a
+running-job quota. Monitor Docker disk usage and free inodes. Stop jobs before cleanup; never run broad Docker
+volume prune on this shared host. Legacy volumes have a dedicated guarded cleanup command below.
 
-### Full backup (stopped)
+## Exit and recovery
 
-A full backup is the `server-data` volume (consistent SQLite) and the `runner-state` volume, taken with every
-service stopped; the temporary volumes are never backed up. A graceful stop copies a running job's credential back
-to the master first. After a crash of the runner, start it once before the backup: only then has it recovered a
-credential that a job refreshed into `tmp-runner-codex-homes` (section "Temporary volumes"). The archives contain
-the Codex credential: store them like a password (root only, encrypted off-site), together with `.env`.
-
-```sh
-sudo install -d -m 0700 /srv/diffpilot/backup
-STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-sr stop
-for v in server-data runner-state; do
-  docker run --rm --network none -v "diffpilot_$v:/v:ro" -v /srv/diffpilot/backup:/backup ubuntu:26.04 \
-    tar -C /v --numeric-owner -czpf "/backup/$v-$STAMP.tar.gz" .
-done
-sudo cp /srv/diffpilot/.env "/srv/diffpilot/backup/env-$STAMP"
-sudo tar -C /srv/diffpilot/secrets --numeric-owner -czpf "/srv/diffpilot/backup/secrets-$STAMP.tar.gz" .
-sr start
-```
-
-Restore both volumes of one `STAMP` (on a new host: steps 1 to 4 and 6 of "First deploy" first, with the
-backed-up `.env`). `sr up --no-start` creates missing volumes without starting anything; the temporary volumes
-are emptied at start anyway.
-
-```sh
-STAMP=REPLACE_WITH_THE_BACKUP_STAMP
-sr up --no-start
-sr stop
-for v in server-data runner-state; do
-  docker run --rm --network none -v "diffpilot_$v:/v" -v /srv/diffpilot/backup:/backup:ro ubuntu:26.04 \
-    sh -c "find /v -mindepth 1 -delete && tar -C /v --numeric-owner -xzpf /backup/$v-$STAMP.tar.gz"
-done
-sr up -d
-sr logs runner | grep -i credential
-```
-
-## Temporary volumes
-
-Owner decision: nothing is kept in RAM, and scratch areas have no size limit for now. The scratch areas are Docker
-volumes whose names start with `tmp-` and that carry the label `diffpilot.volume=temporary`:
-
-| Volume | Mounted at | Holds |
-|---|---|---|
-| `diffpilot_tmp-runner-work` | runner `/work` | per-job checkout, the agent's `HOME` and `TMPDIR` |
-| `diffpilot_tmp-runner-codex-homes` | runner `/var/lib/diffpilot-runner/codex-homes` | per-job agent `CODEX_HOME` (a copy of the credential while a job runs) |
-| `diffpilot_tmp-runner` | runner `/tmp` | the runner's own temporary files |
-| `diffpilot_tmp-server` | server `/tmp` | the server's temporary files |
-
-Their content is disposable: never backed up, emptied at every start (the runner: after bringing a credential
-copy of an interrupted job back to the master, before the first job; the server: its entrypoint), and safe to
-delete whenever the stack is stopped. The only loss: after a crash, a credential a job had just refreshed lives
-only in `tmp-runner-codex-homes` until the runner's next start; deleting it before that means signing in again
-(section "LLM credential"). Remove them (they are created anew at the next start):
-
-```sh
-sr stop
-docker volume ls -q --filter label=diffpilot.volume=temporary --filter label=com.docker.compose.project=diffpilot \
-  | xargs -r docker volume rm
-sr up -d
-```
-
-Free-space reserve: the runner takes no job while the filesystem of `/work` (Docker's data root, shared by all
-volumes) has less than `SR_RUNNER_DISK_RESERVE_MIB` free (default 2048). It keeps polling the server, so session
-deletions still happen, but jobs stay queued. What you see:
-- `sr ps` shows the runner `unhealthy` (marker file `/var/lib/diffpilot-runner/disk-below-reserve`);
-- the runner log says `the job scratch filesystem is below its free-space reserve` with `free_mib` and
-  `required_mib`, at once and then every hour.
-
-What to do: free space on Docker's disk (`df -h "$(docker info -f '{{.DockerRootDir}}')"`; `docker system df`),
-for example by removing the temporary volumes as above. Within one poll after space is back, the runner logs
-`... has its free-space reserve again; taking jobs`, and the next healthcheck reports it `healthy`. The reserve
-only stops new jobs: a running job can still fill the disk. If a job's copy-back of the Codex credential then
-fails (`the agent's auth.json could not be copied back`), the rotated token is lost: sign in again (section "LLM
-credential").
-
-`docker volume rm` refuses a volume a container still uses (stopped containers included); then `sr down` first
-(containers and networks only, the durable volumes stay). A start that cannot empty a leftover stops with exit 1
-(runner: `could not empty ...`; server: `cannot empty /tmp`); remove the temporary volumes as above. A job
-directory that start-up recovery quarantined (runner-owned, mode 0700, ADR-013) stays in `tmp-runner-work` with an
-error log until removed this way.
-
-## Exit codes and restarts
-
-All services use `restart: unless-stopped`; `sr ps -a` and `docker inspect -f '{{.State.ExitCode}}'
-diffpilot-runner-1` show the last exit.
-
-| Exit | Service | Meaning | Action |
-|---|---|---|---|
-| 70 | runner | The supervisor's job-end sweep could not prove every agent process gone within `SR_SUPERVISOR_SWEEP_DEADLINE_MS`; it ended the container (fail closed, ADR-013). The restart starts clean. | Repeated exits (`docker inspect -f '{{.RestartCount}}'`): read the runner log before the exit; an agent may be resisting the sweep. Stop the runner (`sr stop runner`) if it loops. |
-| 71 | runner | The supervisor could not set itself up (capabilities, uids, control socket). | Check that the compose file's `cap_add`, `init` and `ipc` are unchanged and the image is the production image. |
-| 78 | runner | Preflight or the runner's own start-up check refused: the runner network is not isolated (a default route, or a gateway address answers), or `SR_RUNNER_SECRET_FILE` is readable by the agent uid 10002 (owned by it, any `other` bit, or a group bit with group 10002). The log line says which. | Network: upgrade Docker Engine to 28.0 or newer, keep the runner network's `gateway_mode_*: isolated` options, then `sr down && sr up -d` (networks are created anew). Secret file: section "Secrets as files". |
-| 64 | egress-proxy | `SR_MEMCAN_URL` is not `http(s)://host[:port][/path]`. | Fix `.env`, `sr up -d`. |
-| 65 | egress-proxy | The MemCan host name of `SR_MEMCAN_URL` does not resolve (the proxy pins its address at start). | Check DNS from the host (`getent hosts HOST`); the proxy retries with every restart. |
-| 1 | server, runner | Configuration or start-up error; the log's last line names the variable. `could not empty ...` (runner) or `cannot empty /tmp` (server): a leftover in a temporary volume could not be removed. | Fix `.env`, `sr up -d`. A leftover: section "Temporary volumes". |
-| 1 | server | `the schema migration failed` in the last log line: the image does not match the database (section "Upgrade"). | Roll back (section "Upgrade"); never delete the database. |
-
-**MemCan moved to another address:** the proxy keeps the address it resolved at its start, so agents keep
-connecting to the old one (and get nothing) until `sr restart egress-proxy`. The server resolves on every
-connection. Update MemCan's allow-list if the source addresses change (First deploy, step 5).
+On runner/launcher restart, reconciliation stops managed workers and locally revokes stale keys before jobs
+resume. Graceful launcher shutdown stops managed workers; worker volumes remain. A missing thread volume uses
+a context pack. Gateway unknown refresh outcomes remain quarantined across restart; Settings relink is required.
+Inspect component logs and health status; do not reintroduce the removed supervisor flags or credential files.
 
 ## Rotating the runner secret
 
@@ -567,7 +394,7 @@ sr logs --since 24h egress-proxy | grep -E '^[0-9]{10}\.'   # proxy access log o
 ```
 
 More detail: set `RUST_LOG=debug` (or `info,runner=debug`) in `.env`, then `sr up -d server runner`. The
-supervisor's messages are in the runner's log. All containers log through Docker's `local` driver with size-based
+launcher and gateway have separate service logs. All containers log through Docker's `local` driver with size-based
 rotation (server 50 MB x 10, runner 10 MB x 5, proxy 50 MB x 5; `deploy/compose.yaml`); a re-created container
 (`sr up -d` after a change, an upgrade) starts with an empty log.
 
@@ -611,61 +438,93 @@ full-URL logs and a host allow-list (`dstdomain` / `ssl::server_name` ACL files)
 
 ## Local stack (http://localhost)
 
-The same images and volumes on one machine, published on loopback only (`deploy/compose.local.yaml`). Its env file
-sets `SR_PUBLIC_URL=http://localhost:3000`; `deploy/check-production-config.sh --env-file FILE --local` checks it.
-Sign-in needs the GitHub App callback `http://localhost:3000/auth/github/callback` registered on the App.
+Only the owner/coordinator performs these commands on the dev host. The existing project is `diffpilot-local`;
+workers/tests must never inspect its secrets, mount its volumes or run its Compose commands. Automated acceptance
+uses `deploy/dev/test-local-containers.sh` with unique `v13w7-local-*` names/ports, synthetic secrets and a fake
+gateway. It removes every test container, network, volume and registry on exit.
 
-The development host's instance (compose project `diffpilot-local`) takes its generated secrets from
-`~/.config/diffpilot-local/stack.env` (mode 0600) and the App and MemCan secrets from
-`~/.config/diffpilot/secrets.env`; the App key `~/.config/diffpilot/github-app.pem` stays readable by the
-host user only, so `deploy/dev/compose.host-uid.yaml` runs the server under that uid (`SR_SERVER_UID`/`_GID` in
-`stack.env`). `stack.env` also holds `SR_ALLOWED_LOGINS=lklimek,Claudius-Maginificent`. Initialize a fresh data
-volume's ownership before the first server start, as shown below.
+The helper prepares files/images without starting or stopping the application. Its four subcommands are:
 
-```sh
-cd /data/git-worktrees/home-ubuntu-git-diffpilot-wp3-ops   # or any checkout of the same tree
-srl() { docker compose -p diffpilot-local --env-file ~/.config/diffpilot-local/stack.env \
-  --env-file ~/.config/diffpilot/secrets.env -f deploy/compose.yaml -f deploy/compose.local.yaml \
-  -f deploy/dev/compose.host-uid.yaml "$@"; }
-srl ps                 # state and health
-srl stop               # stop, keeping containers, networks and volumes
-srl start              # start again
-srl logs -f --since 10m server runner
-srl down               # remove containers and networks; volumes (database, Codex credential) stay
-```
+| ID | Command | Result |
+|---|---|---|
+| L1 | `prepare` | Build server (with gateway), runner/launcher, Squid, worker and fetch; start/reuse a local registry; save actual worker/fetch digest refs. |
+| L2 | `secrets DIR` | Create only absent NEW runtime secrets using a root container; no sudo or existing-secret read/copy/rotation. |
+| L3 | `env FILE` | Exclusively create a non-secret env file containing image refs, Docker GID, host uid/gid and runtime secret paths. |
+| L4 | `check ENV... RUNTIME_ENV` | Run the production guard in `--local` mode, same env order as Compose, inside a networkless root container. It validates explicit files without printing secret values; no engine socket mounted. |
 
-For a fresh `server-data` volume, run this once as the host user whose uid/gid are configured in
-`compose.host-uid.yaml`, before the first `srl up -d`. The host-uid override sets `volume.nocopy: true`
-so Docker does not replace this ownership with the image's uid 10010 on first mount. Without the chown,
-the fresh directory belongs to root and SQLite fails with "unable to open database file".
-Order: create/chown the volume with this one-off container, then start the server with all three Compose
-files (including the host-uid override). This changes only the volume directory's ownership:
+`SR_LOCAL_STATE_DIR` defaults to `~/.local/state/diffpilot-containers`. The helper uses a state lock; the caller
+also holds the host heavy lock. `SR_LOCAL_REGISTRY_PORT` defaults to 15000; the registry host port is published
+on 127.0.0.1. New registries use a dedicated NAT bridge with inter-container communication disabled and no
+other containers, a digest-pinned image, a read-only root, dropped capabilities and no-new-privileges; data
+is in the `<registry-name>-data` volume.
+The host can push via `localhost:PORT`; this is unauthenticated host access, not a registry authentication policy.
+`prepare` validates the network and hardening on reuse. A running legacy `registry:2.8.3` on the default bridge
+with the expected local label and loopback host binding is kept with a one-line notice; its bridge exposure
+and tag pin remain until the owner schedules replacement. The helper never stops or replaces it automatically.
+`SR_LOCAL_REGISTRY_IMAGE` overrides must include a SHA-256 digest. This registry bridge is not Docker
+`--internal`: Docker does not publish host ports for a container attached only to an internal network.
+Use a directory dedicated to the four new gateway files, separate from existing App/server secrets. The server
+runs under host uid/gid via `compose.host-uid.yaml`; this host's Docker socket GID is 1000.
 
 ```sh
-docker run --rm --network none --user 0:0 \
-  --mount type=volume,source=diffpilot-local_server-data,target=/var/lib/diffpilot,volume-nocopy \
-  ubuntu:26.04 chown "$(id -u):$(id -g)" /var/lib/diffpilot
+export SR_LOCAL_STATE_DIR=/data/local/diffpilot-container-prep
+export SR_DOCKER_GID=1000 SR_SERVER_UID=$(id -u) SR_SERVER_GID=$(id -g)
+lcp() { flock /data/tmp/diffpilot-heavy.lock deploy/dev/local-containers.sh "$@"; }
+lcp prepare
+lcp secrets /data/local/diffpilot-runtime-secrets
+lcp env /data/local/diffpilot-runtime.env
+lcp check ~/.config/diffpilot-local/stack.env ~/.config/diffpilot/secrets.env /data/local/diffpilot-runtime.env
 ```
 
-Codex login (once per runner-state volume): copy an existing login volume to volume, never from the host
-`~/.codex`; afterwards the source volume is retired (the refresh token is single-use, one live copy only):
+The helper generates gateway encryption key = base64 of 32 random bytes, distinct 32-byte hex credentials/keys
+bearers, and a runner copy of the newly created keys bearer. Gateway key/keys files are `10010:10010 0400`,
+credentials `10010:<host-gid> 0440`, runner keys `10002:10002 0400`. Reruns leave existing bytes and metadata
+untouched. A partial keys pair fails without opening it: the operator must restore the matching pair from its
+private backup or explicitly retire/recreate both files while services are stopped. Never print a key or copy
+old CLI credentials. If config files live elsewhere, pass their explicit paths to `check`; the helper does not
+search the owner's configuration directories.
+
+Before cut-over, let pending effects finish, stop runner/launcher then all services, and back up the entire
+`diffpilot-local_server-data` volume using the stopped archive procedure above. On a legacy installation the
+launcher service may not exist yet: stop the old runner first. Preserve old images/commit and old volumes for
+rollback. Add the runtime env as the **last** env file:
 
 ```sh
-docker run --rm --network none -v sr-spike-codex-home:/src:ro -v diffpilot-local_runner-state:/dst ubuntu:26.04 \
-  sh -c 'install -d -o 10001 -g 10001 -m 0700 /dst/credentials /dst/credentials/default &&
-         install -o 10001 -g 10001 -m 0600 /src/auth.json /dst/credentials/default/auth.json'
+srl() { docker compose -p diffpilot-local \
+  --env-file ~/.config/diffpilot-local/stack.env --env-file ~/.config/diffpilot/secrets.env \
+  --env-file /data/local/diffpilot-runtime.env \
+  -f deploy/compose.yaml -f deploy/compose.local.yaml -f deploy/dev/compose.host-uid.yaml "$@"; }
 ```
 
-First sign-in (owner, once per database): open `http://localhost:3000` in a browser on this host (or through an
-SSH tunnel `ssh -L 3000:127.0.0.1:3000 agentic`), choose "Sign in with GitHub", sign in as an allowed login
-(`lklimek`, from `SR_ALLOWED_LOGINS`), approve the App. The server binds the login to its GitHub id at this first
-sign-in.
+0030 upgrades the existing DB atomically in place: settings, sign-ins/GitHub auth, users, tenants, channels,
+PATs/webhooks, watches and snoozes survive; analysis/runtime/review decisions/effects are cleared. See
+[the keep/clean inventory](contracts/containers.md#persistence-and-cut-over). W10 export/import is dropped.
+Old Codex credentials are cleared; every payer relinks in Settings. On a fresh empty DB, initialize only its
+new volume directory ownership before first start; existing DB volumes must retain their ownership:
 
-Development without containers: `deploy/dev/stack.sh` (fake GitHub, fake provider, no isolation).
-`deploy/dev/real-codex-smoke.sh` with `SR_SMOKE_ISOLATION=supervisor` runs one analysis with the production runner
-image under its supervisor behind the egress proxy; `SR_SMOKE_STATE_VOLUME=diffpilot-local_runner-state` (local
-stack's runner stopped first) reuses the stack's Codex credential instead of a second copy.
+```sh
+# Fresh volume only; do not run recursively on an existing installation.
+docker run --rm --network none --user 0:0 --entrypoint chown \
+  --mount type=volume,source=diffpilot-local_server-data,target=/data,volume-nocopy \
+  diffpilot-local-server:local "$(id -u):$(id -g)" /data
+srl up -d --no-build --wait
+srl ps
+```
 
+Register `http://localhost:3000/auth/github/callback` in the GitHub App. Open localhost (or tunnel it), confirm
+preserved GitHub sign-in/settings, relink Codex in Settings after reading its logout-risk warning, then run a new
+analysis and private Ask. SK1: re-enter a secret only if its setting was lost or deliberately reset; never export
+secrets to a settings-transfer file. 0030 preserves stored application configuration, but not Codex linking.
+After successful deployment and rollback retention, remove legacy containers referencing the old volumes and
+run `deploy/cleanup-legacy-volumes.sh diffpilot-local --after-successful-deploy`. It refuses attached volumes,
+only removes the four named legacy volumes, never reads them, and never revokes upstream credentials.
+
+### Codex CLI upgrade (maintainers)
+
+Update Codex package/checksum/notices in `deploy/worker/Dockerfile`, lean presets and app-server tests together.
+The runner image contains no Codex binary. Rebuild server/worker together for checker ABI/format v3. Validate
+with offline worker/launcher image tests, CS3-through-Squid, isolated fake-gateway networking, schema smoke and
+both Playwright suites; auth fixtures are fake-only. Do not restore the removed real-login smoke harness.
 
 ### Usage and analysis statistics logs
 

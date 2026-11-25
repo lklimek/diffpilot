@@ -7,6 +7,7 @@ import type { AnalysisId, AnalysisSummary, AskQuestion, Tour } from "../api/gene
 import { filesHash } from "../components/files/model";
 import { rangeText } from "../components/section/format";
 import type { NotificationSupport } from "../components/settings/NotificationsCard";
+import { commentsPath } from "../screens/pr/paths";
 import { findStep } from "../screens/tour/sequence";
 import { usePrDisplayId } from "./tabStatus";
 
@@ -219,16 +220,18 @@ export function questionEvents(
         ? [flow ? `flow ${flow.position}` : "a flow", reviewPath(id, anchor.flow_id)]
         : anchor?.kind === "pr"
           ? ["the whole PR", reviewPath(id, "pr_context")]
-          : anchor?.kind === "lines"
-            ? [
-                anchor.range ? `${anchor.path}:${rangeText(anchor.range)}` : anchor.path,
-                `${reviewPath(id)}/files${filesHash({
-                  file: anchor.path,
-                  side: anchor.side,
-                  ...(anchor.range ? { line: anchor.range.start_line, end: anchor.range.end_line } : {}),
-                })}`,
-              ]
-            : ["a step", reviewPath(id, q.step_id)];
+          : anchor?.kind === "comment_item"
+            ? ["a review comment", commentsPath(tour.analysis.pr)]
+            : anchor?.kind === "lines"
+              ? [
+                  anchor.range ? `${anchor.path}:${rangeText(anchor.range)}` : anchor.path,
+                  `${reviewPath(id)}/files${filesHash({
+                    file: anchor.path,
+                    side: anchor.side,
+                    ...(anchor.range ? { line: anchor.range.start_line, end: anchor.range.end_line } : {}),
+                  })}`,
+                ]
+              : ["a step", reviewPath(id, q.step_id)];
     return [
       {
         key: `${id}:question:${q.id}:${q.state}`,

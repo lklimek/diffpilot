@@ -1,3 +1,4 @@
+import { assessmentHandlers } from "./assessment-settings";
 import { requestFlow, setBackgroundAnalysis } from "./flow-work";
 import { setAskEffort, setLlm } from "./set-llm";
 import { pauseAnalysis } from "./pause-analysis";
@@ -16,7 +17,10 @@ import {
   getDashboardRefresh,
   listDashboardItems,
   rankDashboardRefresh,
+  snoozeDashboardItem,
   startDashboardRefresh,
+  wakeDashboardItem,
+  watchDashboardPr,
 } from "./dashboard";
 import {
   createAccessToken,
@@ -46,6 +50,7 @@ import { listQuestions } from "./list-questions";
 import { postFeedback } from "./post-feedback";
 import { putReviewState } from "./put-review-state";
 import { resolvePr } from "./resolve-pr";
+import { reviewLoopHandlers } from "./review-loop";
 import { retryAnalysis } from "./retry-analysis";
 import { setControlledOwners } from "./set-controlled-owners";
 import { setFileViewed } from "./set-file-viewed";
@@ -54,6 +59,7 @@ import { updateComment } from "./update-comment";
 
 /** Handlers of the mocked endpoints (fixtures/pr-482 seed and screen scenarios), one file per endpoint. */
 export const handlers = [
+  ...assessmentHandlers,
   requestFlow,
   setBackgroundAnalysis,
   setLlm,
@@ -92,6 +98,8 @@ export const handlers = [
   getRepoSettings,
   getDashboard,
   hideDashboardMention,
+  snoozeDashboardItem,
+  wakeDashboardItem,
   listDashboardItems,
   startDashboardRefresh,
   getDashboardRefresh,
@@ -106,4 +114,6 @@ export const handlers = [
   listAccessTokens,
   createAccessToken,
   revokeAccessToken,
+  watchDashboardPr,
+  ...reviewLoopHandlers,
 ];

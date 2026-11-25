@@ -36,11 +36,17 @@ import {
 } from "./history";
 import { REVIEW_START_PATH, SETTINGS_PATH } from "../shell/paths";
 import { ShellActions, useShellSlots } from "../shell/ShellRoute";
-import { railText, reviewHref } from "./state";
+import { commentsHref, railText, reviewHref, watchErrorText } from "./state";
 import { useDashboardPage } from "./useDashboardPage";
 
 const errorText = (error: unknown) =>
   error instanceof ApiError ? error.message : "Something went wrong. Try again.";
+
+/** Why a snooze failed: the item left the list (404), the server's reason, or a retry hint. */
+const snoozeErrorText = (error: unknown) =>
+  error instanceof ApiError && error.status === 404
+    ? "Could not snooze this item: it is no longer in your list. Refresh to see the current list."
+    : `Could not snooze this item. Try again. ${errorText(error)}`;
 
 /** My work (plan §F, ADR-016): refresh state, headline and charts, the ranked list and the side panel. */
 export function DashboardScreen() {
@@ -94,7 +100,14 @@ export function DashboardScreen() {
   }, [snapshot, bar, page.allItems]);
 
   const snapshotAt = snapshot?.scanned_at ?? null;
-  const excluded = snapshot && <ExcludedItems exclusions={snapshot.exclusions} onNavigate={go} />;
+  const excluded = snapshot && (
+    <ExcludedItems
+      exclusions={snapshot.exclusions}
+      onNavigate={go}
+      onWake={(key) => page.wake.mutate({ key })}
+      wakingKeys={page.wake.pendingKeys}
+    />
+  );
   const stale = view?.stale && snapshotAt ? clockText(snapshotAt, now) : null;
   const actionErrors = [page.refresh.error, page.cancel.error, page.rankAgain.error].filter(
     (e): e is string => e !== null,
@@ -183,6 +196,36 @@ export function DashboardScreen() {
           </Tooltip>
         </StatusMessage>
       )}
+      {page.snooze.isError && (
+        <StatusMessage kind="error">
+          {snoozeErrorText(page.snooze.error)}{" "}
+          <Tooltip tip="Dismiss this error message">
+            <button type="button" className="underline" onClick={page.snooze.dismissError}>
+              Dismiss
+            </button>
+          </Tooltip>
+        </StatusMessage>
+      )}
+      {page.watch.isError && (
+        <StatusMessage kind="error">
+          {watchErrorText(page.watch.error)}{" "}
+          <Tooltip tip="Dismiss this error message">
+            <button type="button" className="underline" onClick={page.watch.dismissError}>
+              Dismiss
+            </button>
+          </Tooltip>
+        </StatusMessage>
+      )}
+      {page.wake.isError && (
+        <StatusMessage kind="error">
+          Could not wake this item. Try again. {errorText(page.wake.error)}{" "}
+          <Tooltip tip="Dismiss this error message">
+            <button type="button" className="underline" onClick={page.wake.dismissError}>
+              Dismiss
+            </button>
+          </Tooltip>
+        </StatusMessage>
+      )}
       {snapshot && view.empty && (
         <EmptyWork
           checkedAt={snapshot.scanned_at}
@@ -209,12 +252,22 @@ export function DashboardScreen() {
           sizes={page.sizes}
           onSizesChange={page.setSizes}
           reviewHref={reviewHref}
+          commentsHref={commentsHref}
+          onWatch={(item) =>
+            item.repo &&
+            item.number !== null &&
+            page.watch.mutate({ key: item.key, pr: { repo: item.repo, number: item.number } })
+          }
+          watchingKeys={page.watch.pendingKeys}
+          watchedKeys={page.watch.watchedKeys}
           onNavigate={go}
           onHelp={() => setHelpOpen(true)}
           keysEnabled={!helpOpen}
           stale={stale ? { at: stale, note: "It is replaced when a scan finishes." } : null}
           todos={snapshot.todos}
           notice={excluded}
+          onSnooze={(item, days) => page.snooze.mutate({ key: item.key, days })}
+          snoozingKeys={page.snooze.pendingKeys}
           now={now}
         />
       )}
@@ -249,11 +302,10 @@ export function DashboardScreen() {
       {main &&
         (snapshot && charts ? (
           <SidePanel main={main} railText={railText(snapshot)}>
-            <WaitingOnOthers items={snapshot.awaiting} now={now} />
+            <WaitingOnOthers items={snapshot.awaiting} now={now} slackNames={page.slackNames} />
             <ReadyToMerge
               items={snapshot.ready_to_merge}
               pending={snapshot.merge_state_pending}
-              held={snapshot.ready_to_merge_held}
               plugins={summary?.plugins}
             />
             <Yesterday

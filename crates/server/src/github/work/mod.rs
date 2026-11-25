@@ -35,8 +35,9 @@ pub(crate) use client::SEARCH_INTERVAL;
 pub use client::{TokenSource, UserTokens, WorkClient, WorkError};
 pub use details::{
     Actor, CheckContext, Comment, CommitNode, CommitRollup, Contexts, Count, HasNextPage,
-    HistoryPr, LinkedIssue, Login, Name, Nodes, PullDetail, PullRepository, Reach, ReviewNode,
-    ReviewRequest, ReviewThread, Reviewer, StatusRollup, TimelineRequest,
+    HistoryPr, LinkedIssue, Login, Name, Nodes, Oid, PROBE_BATCH, ProbeCommit, ProbeRollup,
+    PullDetail, PullProbe, PullRepository, Reach, Resolved, ReviewNode, ReviewRequest,
+    ReviewThread, Reviewer, RollupState, StatusRollup, TimelineRequest,
 };
 pub use enumerate::{AUTHORED_PAGES, AuthoredPulls, Enumeration};
 pub use reads::{PullFile, Release, RestMilestone, UserEvent, UserFeed};

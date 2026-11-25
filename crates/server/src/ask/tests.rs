@@ -18,7 +18,10 @@ use contracts::job::protocol::{Claim, ClaimResponse};
 use contracts::job::result::{JobFailureKind, JobOutcome, JobResult};
 use contracts::job::spec::{JobPriority, JobSpec};
 use contracts::job::state::JobState;
-use contracts::routes::{ASK_ANCHORED, ASK_QUESTION, LIST_QUESTIONS, RUNNER_CLAIM, RUNNER_RESULT};
+use contracts::routes::{
+    ASK_ANCHORED, ASK_PR_QUESTION, ASK_QUESTION, LIST_PR_QUESTIONS, LIST_QUESTIONS, RUNNER_CLAIM,
+    RUNNER_RESULT,
+};
 use contracts::time::Timestamp;
 use db::repo::analyses::NewAnalysis;
 use db::repo::analyses::testing::{job_spec, seed_analysis};
@@ -41,9 +44,10 @@ use crate::config::tests::test_config;
 use crate::jobs::executor::{ExecutorError, JobExecutor, JobHandle, JobRequest, JobUpdate};
 use crate::jobs::progress::ProgressHub;
 use crate::jobs::queue::QueueExecutor;
-use crate::pipeline::{self, CREDENTIAL_ID};
+use crate::pipeline;
 use crate::test_support::logs::LogCapture;
 use crate::test_support::session_cookie;
+use db::repo::analyses::testing::CREDENTIAL as CREDENTIAL_ID;
 
 const WAIT: Duration = Duration::from_secs(20);
 const QUESTION: &str = "Can broadcast_tx now send the same transaction twice?";
@@ -245,6 +249,62 @@ async fn fixture_with(queue: bool, github: Option<crate::config::GithubConfig>) 
         state,
         analysis,
         other,
+        cookie,
+        scripted,
+        _dir: dir,
+    }
+}
+
+/// File-backed PR fixture with no analysis rows or assessment passes.
+async fn private_fixture(queue: bool) -> Fixture {
+    let dir = tempfile::tempdir().unwrap();
+    let built = Command::new(fixture_dir().join("repo/build-repo.sh"))
+        .arg(dir.path().join("remotes/acme/node-client.git"))
+        .output()
+        .unwrap();
+    assert!(built.status.success());
+    let mut config = test_config();
+    config.data_dir = dir.path().join("data");
+    config.github.clone_url =
+        url::Url::parse(&format!("file://{}", dir.path().join("remotes").display())).unwrap();
+    let db = Db::open(&dir.path().join("private.sqlite")).await.unwrap();
+    db.users()
+        .upsert_member(
+            DEFAULT_TENANT,
+            "u1",
+            &db::repo::users::GithubProfile {
+                github_id: 1,
+                login: "lklimek".into(),
+                name: None,
+                avatar_url: None,
+            },
+            Timestamp::now(),
+        )
+        .await
+        .unwrap();
+    let pr: PrSummary =
+        serde_json::from_value(fixture_json("api-seed/default/pr-resolve.json")["pr"].clone())
+            .unwrap();
+    let repo = db
+        .repos()
+        .upsert(DEFAULT_TENANT, &pr.repo, None)
+        .await
+        .unwrap();
+    db.pull_requests()
+        .upsert(DEFAULT_TENANT, repo.id, &pr, Timestamp::now())
+        .await
+        .unwrap();
+    let scripted = Arc::new(Scripted::default());
+    let state = if queue {
+        AppState::with_queue(config, db)
+    } else {
+        AppState::new(config, db, scripted.clone())
+    };
+    let cookie = session_cookie(&state, DEFAULT_TENANT).await;
+    Fixture {
+        state,
+        analysis: AnalysisId::new_random(),
+        other: AnalysisId::new_random(),
         cookie,
         scripted,
         _dir: dir,
@@ -459,11 +519,7 @@ impl Fixture {
     async fn claim(&self) -> Option<Claim> {
         let request = json!({
             "runner_id": "runner-1",
-            "credentials": [{
-                "credential": { "id": CREDENTIAL_ID, "kind": "codex_chatgpt" },
-                "usable": true,
-            }],
-            "dropped_sessions": [],
+            "retired": [],
         });
         let secret = self.state.config.runner_secret.expose_secret().to_owned();
         let (status, body) = self.runner(RUNNER_CLAIM.path, &secret, request).await;
@@ -475,6 +531,8 @@ impl Fixture {
 
     async fn post_result(&self, claim: &Claim, outcome: JobOutcome) {
         let result = JobResult {
+            assessment: None,
+            report: None,
             job_id: claim.spec.job_id,
             attempt: claim.spec.attempt,
             outcome,
@@ -486,7 +544,20 @@ impl Fixture {
         self.post_job_result(claim, result).await;
     }
 
-    async fn post_job_result(&self, claim: &Claim, result: JobResult) {
+    async fn post_job_result(&self, claim: &Claim, mut result: JobResult) {
+        if let Some(session) = &mut result.session {
+            session.preflight = claim
+                .spec
+                .working_session
+                .as_ref()
+                .and_then(|w| w.preflight.clone())
+                .map(|mut p| {
+                    if p.state == contracts::runtime::PreflightState::Pending {
+                        p.state = contracts::runtime::PreflightState::Done;
+                    }
+                    Box::new(p)
+                });
+        }
         let uri = RUNNER_RESULT
             .path
             .replace("{id}", &claim.spec.job_id.to_string());
@@ -500,7 +571,7 @@ impl Fixture {
     /// A batch job of `analysis` on the pipeline credential.
     async fn batch_job(&self, analysis: AnalysisId, flow: &str) -> JobId {
         let mut spec = job_spec(analysis, contracts::agent::JobKind::AnalyseFlow);
-        spec.credential.id = CREDENTIAL_ID.to_owned();
+        spec.payer.0 = CREDENTIAL_ID.to_owned();
         self.state
             .db
             .jobs()
@@ -533,6 +604,8 @@ fn good_answer() -> Value {
 fn succeeded(job: JobId, output: Value) -> JobUpdate {
     JobUpdate::Finished {
         result: JobResult {
+            assessment: None,
+            report: None,
             job_id: job,
             attempt: 1,
             outcome: JobOutcome::Succeeded { output },
@@ -548,6 +621,8 @@ fn succeeded(job: JobId, output: Value) -> JobUpdate {
 fn finished(job: JobId, outcome: JobOutcome) -> JobUpdate {
     JobUpdate::Finished {
         result: JobResult {
+            assessment: None,
+            report: None,
             job_id: job,
             attempt: 1,
             outcome,
@@ -722,7 +797,7 @@ async fn ask_job_goes_through_the_executor_as_an_interactive_ask_job() {
     assert_eq!(spec.context_pack, None, "built at claim");
     assert_eq!(spec.skills, ["severity"], "shared rules require severity");
     assert_eq!(spec.session, None, "set at claim");
-    assert_eq!(spec.credential.id, CREDENTIAL_ID);
+    assert_eq!(spec.payer.0, CREDENTIAL_ID);
     assert_eq!(spec.access, contracts::job::access::AgentAccess::default());
     assert_eq!(
         f.state
@@ -839,6 +914,8 @@ async fn failed_ask_shows_a_plain_sentence_and_logs_no_secret_or_question() {
     f.post_job_result(
         &claim,
         JobResult {
+            assessment: None,
+            report: None,
             job_id: claim.spec.job_id,
             attempt: claim.spec.attempt,
             outcome: JobOutcome::Failed {
@@ -1068,7 +1145,7 @@ impl Fixture {
         };
         let id = record.question.id;
         let mut spec = job_spec(self.analysis, contracts::agent::JobKind::Ask);
-        spec.credential.id = CREDENTIAL_ID.to_owned();
+        spec.payer.0 = CREDENTIAL_ID.to_owned();
         let handle = self
             .state
             .executor
@@ -1644,12 +1721,16 @@ async fn private_working_thread_is_committed_without_advancing_analytic_and_refo
     f.post_job_result(
         &claim,
         JobResult {
+            assessment: None,
+            report: None,
             job_id: claim.spec.job_id,
             attempt: claim.spec.attempt,
             outcome: JobOutcome::Succeeded {
                 output: good_answer(),
             },
             session: Some(SessionReport {
+                last_context: None,
+                preflight: None,
                 thread_id: "private-a".to_owned(),
                 outcome: SessionOutcome::Resumed,
             }),
@@ -1881,7 +1962,7 @@ async fn ready_answer_of_a_job_flagged_for_cancel_is_not_published() {
     let (id, claim) = f.stopped_on_a_claimed_job().await;
     let job = claim.spec.job_id;
     let answer = || serde_json::from_value(good_answer()).expect("answer");
-    let shown = super::publish_provisional(&f.state, f.analysis, id, job, answer())
+    let shown = super::publish_provisional(&f.state, Some(f.analysis), id, job, answer())
         .await
         .expect("publish");
     assert!(shown.is_some_and(|question| question.answer.is_some()));
@@ -1901,7 +1982,7 @@ async fn ready_answer_of_a_job_flagged_for_cancel_is_not_published() {
         JobState::Claimed,
         "a claimed job is only flagged"
     );
-    let shown = super::publish_provisional(&f.state, f.analysis, id, job, answer())
+    let shown = super::publish_provisional(&f.state, Some(f.analysis), id, job, answer())
         .await
         .expect("publish");
     assert_eq!(shown, None);
@@ -2514,4 +2595,527 @@ async fn a_flow_question_without_a_buildable_tour_answers_like_the_tour_route() 
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
     assert_eq!(body["code"], "not_found");
+}
+
+/// A review-comment item of the fixture pull request (T-L4).
+async fn comment_item(state: &AppState, key: &str) -> db::repo::review_loop::ItemRecord {
+    use contracts::api::review_loop::{
+        AuthorKind, CommentItemKind, ItemGithubFacts, ItemLocation, ItemState,
+    };
+    let now = Timestamp::now();
+    state
+        .db
+        .review_loop()
+        .ensure_pr(DEFAULT_TENANT, 1, now)
+        .await
+        .expect("review-loop row");
+    let observed = db::repo::review_loop::ObservedItem {
+        kind: CommentItemKind::Thread,
+        stable_key: key.to_owned(),
+        author: "thepastaclaw".to_owned(),
+        author_kind: AuthorKind::Bot,
+        url: None,
+        location: Some(ItemLocation {
+            path: "src/rpc/client.rs".to_owned(),
+            lines: Some(contracts::common::LineRange {
+                start_line: 40,
+                end_line: 43,
+            }),
+        }),
+        title: "Unbounded retry".to_owned(),
+        body: "The retry loop has no upper bound.".to_owned(),
+        body_hash: format!("hash:{key}"),
+        head: contracts::ids::CommitSha("h".to_owned()),
+        round: Some(1),
+        bot_severity: None,
+        github: ItemGithubFacts {
+            resolved: Some(false),
+            resolved_by: None,
+            outdated: Some(false),
+            bot_status: None,
+            edited_after_decision: false,
+            replies: 0,
+            marker: None,
+        },
+        outside: None,
+    };
+    match state
+        .db
+        .review_loop()
+        .upsert_item(DEFAULT_TENANT, 1, &observed, ItemState::Undecided, now)
+        .await
+        .expect("upsert")
+    {
+        db::repo::review_loop::UpsertOutcome::New(item) => item,
+        other => panic!("expected a new item: {other:?}"),
+    }
+}
+
+/// Posts a question about `item` to the pull request's question route as the fixture user.
+async fn ask_on_pr(f: &Fixture, item: &str, text: &str) -> (StatusCode, Value) {
+    let path = ASK_PR_QUESTION
+        .path
+        .replace("{owner}", "acme")
+        .replace("{name}", "node-client")
+        .replace("{number}", "482");
+    let request = Request::post(path)
+        .header(header::COOKIE, &f.cookie)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("x-csrf-token", "csrf")
+        .body(Body::from(
+            json!({ "text": text, "anchor": { "kind": "comment_item", "item": item } }).to_string(),
+        ))
+        .expect("request");
+    json_of(
+        router(f.state.clone())
+            .oneshot(request)
+            .await
+            .expect("response"),
+    )
+    .await
+}
+
+/// With a finished analysis of the head, a question about a review comment goes to the Ask session with the
+/// comment as its subject (inside a data block), and is listed on the pull request's route.
+#[tokio::test]
+async fn comment_item_question_with_an_analysis_uses_the_ask_session() {
+    let f = fixture(false).await;
+    let pr: PrSummary =
+        serde_json::from_value(fixture_json("api-seed/default/pr-resolve.json")["pr"].clone())
+            .expect("pr");
+    f.state
+        .db
+        .pull_requests()
+        .upsert(DEFAULT_TENANT, 1, &pr, Timestamp::now())
+        .await
+        .expect("head");
+    let item = comment_item(&f.state, "k1").await;
+    let (status, body) = ask_on_pr(&f, &item.id.to_string(), "Is the retry bounded?").await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(body["anchor"]["kind"], "comment_item");
+    assert_eq!(body["mine"], true);
+    let id: QuestionId = serde_json::from_value(body["id"].clone()).expect("id");
+    let record = f
+        .state
+        .db
+        .questions()
+        .get(id, Timestamp::now())
+        .await
+        .expect("question");
+    assert_eq!(record.analysis_id, Some(f.analysis));
+    assert_eq!(record.pull_request_id, Some(1));
+    let job = f.scripted_job(id).await;
+    let prompt = &job.spec.prompt;
+    assert!(
+        prompt.contains("The question is about this review comment"),
+        "{prompt}"
+    );
+    let (before, after) = prompt
+        .split_once("The retry loop has no upper bound.")
+        .expect("the comment is in the prompt");
+    assert!(
+        before.contains("<<<DATA") && after.contains("<<<END"),
+        "fenced as data"
+    );
+    assert!(
+        f.state
+            .db
+            .review_loop()
+            .live_passes()
+            .await
+            .expect("passes")
+            .is_empty()
+    );
+
+    let path = LIST_PR_QUESTIONS
+        .path
+        .replace("{owner}", "acme")
+        .replace("{name}", "node-client")
+        .replace("{number}", "482");
+    let request = Request::get(path)
+        .header(header::COOKIE, &f.cookie)
+        .body(Body::empty())
+        .expect("request");
+    let (status, list) = json_of(
+        router(f.state.clone())
+            .oneshot(request)
+            .await
+            .expect("response"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    assert_eq!(list.as_array().map(Vec::len), Some(1), "{list}");
+}
+
+/// Without an analysis of the head (the PR moved on), the question is stored for the pull request and a
+/// private Ask job takes it; an item of another pull request is not found.
+#[tokio::test]
+async fn comment_item_question_without_an_analysis_starts_a_private_ask() {
+    let f = private_fixture(false).await;
+    let item = comment_item(&f.state, "k1").await;
+    let (status, body) = ask_on_pr(&f, &item.id.to_string(), "Is the retry bounded?").await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let id: QuestionId = serde_json::from_value(body["id"].clone()).expect("id");
+    let record = f
+        .state
+        .db
+        .questions()
+        .get(id, Timestamp::now())
+        .await
+        .expect("question");
+    assert_eq!(record.analysis_id, None);
+    let passes = f
+        .state
+        .db
+        .review_loop()
+        .live_passes()
+        .await
+        .expect("passes");
+    assert!(
+        passes.is_empty(),
+        "private Ask must not create an assessment pass"
+    );
+    let job = f.scripted_job(id).await;
+    assert_eq!(job.spec.kind, contracts::agent::JobKind::Ask);
+    assert_eq!(
+        serde_json::to_value(&job.spec.target).unwrap()["type"],
+        "pull_request_ask"
+    );
+    assert_eq!(job.spec.target.analysis_id(), None);
+    assert_eq!(job.spec.payer.0, "u1");
+    assert!(job.spec.assessment.is_none());
+    f.answer_with_good_answer(id).await;
+
+    let (status, body) = ask_on_pr(
+        &f,
+        &contracts::ids::CommentItemId::new_random().to_string(),
+        "Why?",
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let (status, body) = ask_on_pr(&f, &item.id.to_string(), "   ").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+#[tokio::test]
+async fn private_comment_ask_claim_has_verify_policy_and_reuses_its_private_thread() {
+    use contracts::job::result::{SessionOutcome, SessionReport};
+    use contracts::runtime::{SessionSeed, ThreadKind};
+    let f = private_fixture(true).await;
+    let item = comment_item(&f.state, "private-claim").await;
+    let quota = f
+        .state
+        .db
+        .assessments()
+        .quota(&contracts::ids::UserId("u1".into()), Timestamp::now())
+        .await
+        .unwrap();
+    for turn in 0..2 {
+        let (status, body) = ask_on_pr(&f, &item.id.to_string(), "Is this retry bounded?").await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        let id: QuestionId = serde_json::from_value(body["id"].clone()).unwrap();
+        f.queued_job(id).await;
+        let claim = f.claim().await.expect("private Ask claim");
+        assert_eq!(
+            serde_json::to_value(&claim.spec.target).unwrap()["type"],
+            "pull_request_ask"
+        );
+        assert!(claim.spec.session.is_none());
+        assert!(claim.spec.access.memcan.is_none());
+        assert!(claim.spec.assessment.is_none());
+        let route = claim.spec.working_session.as_ref().unwrap();
+        assert_eq!(route.kind, Some(ThreadKind::Verify));
+        assert_eq!(
+            route.preflight.as_ref().unwrap().seed,
+            SessionSeed::ContextPack
+        );
+        assert_eq!(
+            route.thread_id.as_deref(),
+            (turn == 1).then_some("private-verify")
+        );
+        assert!(
+            claim
+                .spec
+                .context_pack
+                .as_ref()
+                .unwrap()
+                .contains("The retry loop has no upper bound.")
+        );
+        f.post_job_result(
+            &claim,
+            JobResult {
+                job_id: claim.spec.job_id,
+                attempt: claim.spec.attempt,
+                outcome: JobOutcome::Succeeded {
+                    output: good_answer(),
+                },
+                session: Some(SessionReport {
+                    thread_id: "private-verify".into(),
+                    outcome: SessionOutcome::Resumed,
+                    last_context: None,
+                    preflight: None,
+                }),
+                assessment: None,
+                report: None,
+                usage: None,
+                skills_commit: None,
+                llm_call: None,
+            },
+        )
+        .await;
+        f.wait_for(id, |q| q.state == AskState::Answered).await;
+    }
+    assert_eq!(
+        f.state
+            .db
+            .assessments()
+            .quota(&contracts::ids::UserId("u1".into()), Timestamp::now())
+            .await
+            .unwrap(),
+        quota
+    );
+    assert!(
+        f.state
+            .db
+            .review_loop()
+            .live_passes()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn private_comment_ask_without_analysis_recovers_after_server_restart() {
+    let mut f = private_fixture(true).await;
+    let item = comment_item(&f.state, "restart-private").await;
+    let id = QuestionId::new_random();
+    f.state
+        .db
+        .questions()
+        .create_private_for_pr(
+            db::repo::questions::NewPrQuestion {
+                id,
+                pull_request_id: 1,
+                item: item.id,
+                parent_id: None,
+                user_id: "u1".into(),
+                text: "Does this retry end?".into(),
+            },
+            db::repo::questions::PrQuestionLimits {
+                per_pull_request: 100,
+                per_user: 30,
+                user_window_start: Timestamp::now() - SignedDuration::from_hours(1),
+            },
+            Timestamp::now(),
+        )
+        .await
+        .unwrap();
+    // Stop after durable submission/claim, before storing an answer.
+    let state = f.state.clone();
+    let follower = tokio::spawn(async move { super::job::run(&state, id).await });
+    let job = f.queued_job(id).await;
+    let claim = f.claim().await.unwrap();
+    assert_eq!(claim.spec.job_id, job);
+    follower.abort();
+    let _ = follower.await;
+    let mut config = test_config();
+    config.data_dir = f.state.config.data_dir.clone();
+    config.github.clone_url = f.state.config.github.clone_url.clone();
+    let db = Db::open(&f._dir.path().join("private.sqlite"))
+        .await
+        .unwrap();
+    f.state = AppState::with_queue(config, db);
+    assert_eq!(resume_unanswered(&f.state).await.unwrap(), 1);
+    f.post_result(
+        &claim,
+        JobOutcome::Succeeded {
+            output: good_answer(),
+        },
+    )
+    .await;
+    f.wait_for(id, |q| q.state == AskState::Answered).await;
+    assert_eq!(
+        f.state
+            .db
+            .questions()
+            .get(id, Timestamp::now())
+            .await
+            .unwrap()
+            .job_id,
+        Some(job)
+    );
+    assert!(
+        f.state
+            .db
+            .review_loop()
+            .live_passes()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        f.state
+            .db
+            .analyses()
+            .latest_for_pr(1, Default::default())
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn private_comment_ask_context_contains_only_its_payers_history() {
+    let f = private_fixture(true).await;
+    let item = comment_item(&f.state, "private-history").await;
+    crate::test_support::other_user_cookie(&f.state).await;
+    let mut ids = Vec::new();
+    for (user, text) in [
+        ("u2", "OTHER_PAYER_SECRET"),
+        ("u1", "MY_PRIVATE_CONTEXT"),
+        ("u1", "Current question"),
+    ] {
+        let id = QuestionId::new_random();
+        f.state
+            .db
+            .questions()
+            .create_private_for_pr(
+                db::repo::questions::NewPrQuestion {
+                    id,
+                    pull_request_id: 1,
+                    item: item.id,
+                    parent_id: None,
+                    user_id: user.into(),
+                    text: text.into(),
+                },
+                db::repo::questions::PrQuestionLimits {
+                    per_pull_request: 100,
+                    per_user: 30,
+                    user_window_start: Timestamp::now() - SignedDuration::from_hours(1),
+                },
+                Timestamp::now(),
+            )
+            .await
+            .unwrap();
+        if ids.len() < 2 {
+            f.state
+                .db
+                .questions()
+                .update(
+                    id,
+                    &QuestionUpdate::Answered(serde_json::from_value(good_answer()).unwrap()),
+                    Timestamp::now(),
+                )
+                .await
+                .unwrap();
+        }
+        ids.push(id);
+    }
+    let pr = f.state.db.pull_requests().get(1).await.unwrap().pr;
+    let pack = super::private_context_pack(&f.state.db, &pr, ids[2])
+        .await
+        .unwrap();
+    assert!(pack.contains("MY_PRIVATE_CONTEXT"));
+    assert!(!pack.contains("OTHER_PAYER_SECRET"));
+    assert!(pack.contains("<<<DATA") && pack.contains("<<<END"));
+}
+
+#[tokio::test]
+async fn private_ask_admission_loss_records_the_link_sentence() {
+    let f = private_fixture(true).await;
+    let item = comment_item(&f.state, "admission-loss").await;
+    let id = QuestionId::new_random();
+    f.state
+        .db
+        .questions()
+        .create_private_for_pr(
+            db::repo::questions::NewPrQuestion {
+                id,
+                pull_request_id: 1,
+                item: item.id,
+                parent_id: None,
+                user_id: "u1".into(),
+                text: "Does this retry end?".into(),
+            },
+            db::repo::questions::PrQuestionLimits {
+                per_pull_request: 100,
+                per_user: 30,
+                user_window_start: Timestamp::now() - SignedDuration::from_hours(1),
+            },
+            Timestamp::now(),
+        )
+        .await
+        .unwrap();
+    f.state
+        .db
+        .llm_credentials()
+        .remove_status("u1")
+        .await
+        .unwrap();
+    super::job::run(&f.state, id).await;
+    let question = f.question(id).await;
+    assert_eq!(question.state, AskState::Failed);
+    assert_eq!(
+        question.failure.as_deref(),
+        Some("Link your Codex account in Settings")
+    );
+}
+
+#[tokio::test]
+async fn required_first_ask_compaction_failure_discards_answer_and_shows_plain_cause() {
+    let f = fixture(true).await;
+    let previous = f.state.db.agent_sessions().generation(1).await.unwrap();
+    let generation = previous + 1;
+    f.state
+        .db
+        .container_sessions()
+        .save_analytic(
+            1,
+            &contracts::ids::UserId("u1".into()),
+            previous,
+            &db::repo::container_sessions::AnalyticThread {
+                thread_id: "analytic".into(),
+                generation,
+                last_context: Some(contracts::runtime::LastContext {
+                    tokens: 90_000,
+                    generation,
+                }),
+            },
+        )
+        .await
+        .unwrap();
+    let id = f.asked("f1.5", QUESTION).await;
+    f.queued_job(id).await;
+    let claim = f.claim().await.unwrap();
+    assert_eq!(
+        claim
+            .spec
+            .working_session
+            .as_ref()
+            .unwrap()
+            .preflight
+            .as_ref()
+            .unwrap()
+            .state,
+        contracts::runtime::PreflightState::Pending
+    );
+    f.post_result(
+        &claim,
+        JobOutcome::Succeeded {
+            output: good_answer(),
+        },
+    )
+    .await;
+    let question = f.wait_for(id, |q| q.state == AskState::Failed).await;
+    assert!(question.answer.is_none());
+    assert_eq!(
+        question.failure.as_deref(),
+        Some(
+            "The answer was discarded because the required context shortening was not confirmed. Ask again."
+        )
+    );
+    let stored = f.state.db.jobs().get(claim.spec.job_id).await.unwrap();
+    assert_eq!(stored.state, JobState::Failed);
+    assert_eq!(stored.attempt, 1);
 }

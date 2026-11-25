@@ -961,6 +961,41 @@
           "description": "GitHub refused a change made as the user (e.g. the Viewed mark); nothing was changed.",
           "type": "string",
           "const": "github_refused"
+        },
+        {
+          "description": "The review-loop item changed since the decision's revision; read it again (ADR-023).",
+          "type": "string",
+          "const": "item_changed"
+        },
+        {
+          "description": "Another agent holds the decision's claim.",
+          "type": "string",
+          "const": "claimed"
+        },
+        {
+          "description": "The claim's lease ended; the decision is back in the feed.",
+          "type": "string",
+          "const": "lease_expired"
+        },
+        {
+          "description": "An open effect of the decision is outside the claimer's capabilities.",
+          "type": "string",
+          "const": "capability_missing"
+        },
+        {
+          "description": "The user watches the maximum number of pull requests.",
+          "type": "string",
+          "const": "watch_limit_reached"
+        },
+        {
+          "description": "A notification URL must use `http` or `https`.",
+          "type": "string",
+          "const": "scheme_not_allowed"
+        },
+        {
+          "description": "A changed kind or URL origin of a notification target needs its secret replaced or removed.",
+          "type": "string",
+          "const": "secret_required"
         }
       ]
     },
@@ -1184,6 +1219,24 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "description": "A review-comment item of the pull request (ADR-023): with an analysis of the head its Ask session answers,\nwithout one a `verify_comments` question pass answers.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "comment_item"
+            },
+            "item": {
+              "description": "The item.",
+              "$ref": "#/$defs/CommentItemId"
+            }
+          },
+          "required": [
+            "kind",
+            "item"
+          ]
         }
       ]
     },
@@ -1227,6 +1280,11 @@
           "const": "base"
         }
       ]
+    },
+    "CommentItemId": {
+      "description": "Identifier of a review-loop item (a PR review comment, review-body item or PR-level question).",
+      "type": "string",
+      "format": "uuid"
     },
     "AskState": {
       "description": "State of a question.",

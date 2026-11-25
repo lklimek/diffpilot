@@ -1,3 +1,4 @@
+import { resetAssessmentSettings } from "../mocks/handlers/assessment-settings";
 import { RouterProvider } from "react-router/dom";
 // Renders the app's routes in memory against the msw handlers of src/mocks (screen tests).
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -13,6 +14,7 @@ import { resetSignOut } from "../mocks/handlers/get-me";
 import { setMockLanguage } from "../mocks/handlers/get-settings";
 import { resetLazyFlows } from "../mocks/lazy-flows";
 import { resetLive } from "../mocks/live-analysis";
+import { resetChannels, resetReviewLoop, resetWatch } from "../mocks/review-loop";
 import { resetStore } from "../mocks/review-store";
 import { setScenario } from "../mocks/scenarios";
 
@@ -22,6 +24,7 @@ export function startMockServer() {
   beforeAll(() => server.listen({ onUnhandledFrame: "error" }));
   afterEach(() => {
     server.resetHandlers();
+    resetAssessmentSettings();
     setFixtureState("default");
     setScenario(null);
     setMockLanguage(null);
@@ -29,6 +32,9 @@ export function startMockServer() {
     resetLazyFlows();
     resetSignOut();
     resetStore();
+    resetReviewLoop();
+    resetWatch();
+    resetChannels();
     reviewStates.reset();
     // Every test starts with the Ask chat hidden and empty, as on a first visit.
     for (const storage of [window.localStorage, window.sessionStorage])

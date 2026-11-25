@@ -9,7 +9,7 @@ test("PR URL → PR context → flow 1 introduction → step 1 via j", async ({ 
   await page.getByLabel("GitHub pull request URL").fill("https://github.com/acme/node-client/pull/482");
   await page.getByRole("button", { name: "Check" }).click();
   await page.getByRole("button", { name: "Start analysis", exact: true }).click();
-  await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}/progress$`));
+  await expect(page).toHaveURL(/\/pr\/acme\/node-client\/482$/);
   await page.getByRole("link", { name: "Open", exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}#pr_context$`));
   await expect(heading(page)).toHaveText("PR context: acme/node-client #482");
@@ -212,9 +212,10 @@ test("agent_output_xss_renders_as_text", async ({ page }) => {
   await page.locator('[data-mark="remark"]').first().hover();
   await expect(page.getByRole("dialog", { name: /^LLM remarks? at line/ })).toContainText(`Was: ${markup}`);
   await page.locator('[data-mark="thread"]').first().hover();
-  await expect(page.getByRole("dialog", { name: /^GitHub threads? at line/ })).toContainText(
-    markup.slice(0, 10),
-  );
+  const thread = page.getByRole("dialog", { name: /^GitHub threads? at line/ });
+  await expect(thread).toBeVisible();
+  await expect(thread).toContainText("@bob");
+  await expect(thread).not.toContainText(/<img|<script|window\.__xss/);
   await expectInert();
   expect(dialogs).toEqual([]);
 });

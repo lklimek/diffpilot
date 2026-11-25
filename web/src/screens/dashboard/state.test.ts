@@ -5,7 +5,8 @@ import itemsJson from "../../../../fixtures/dashboard/api/items.json";
 import scanningJson from "../../../../fixtures/dashboard/api/refresh-scanning.json";
 import rankingJson from "../../../../fixtures/dashboard/api/refresh-ranking.json";
 import failedJson from "../../../../fixtures/dashboard/api/refresh-failed.json";
-import { dashboardView, railText, reviewHref } from "./state";
+import { ApiError } from "../../api/client";
+import { dashboardView, railText, reviewHref, watchErrorText } from "./state";
 
 const SUMMARY = summaryJson as unknown as DashboardSummary;
 const FINISHED = SUMMARY.latest_refresh!;
@@ -199,5 +200,30 @@ describe("railText", () => {
     const snapshot = SUMMARY.snapshot!;
     expect(railText(snapshot)).toBe("More · waiting 3 · ready 1");
     expect(railText({ ...snapshot, ready_to_merge: [], merge_state_pending: null })).toBe("More · waiting 3");
+  });
+});
+
+describe("watchErrorText (RW1 from a My work row)", () => {
+  it("a private repository is a lasting refusal: no Try again", () => {
+    const text = watchErrorText(
+      new ApiError(
+        422,
+        "private_repository",
+        "The repository is private; diffpilot supports public repositories.",
+      ),
+    );
+    expect(text).toBe(
+      "Could not watch this pull request: its repository is private, and diffpilot reads public repositories only.",
+    );
+    expect(text).not.toMatch(/Try again/);
+  });
+
+  it("the 20-PR limit names the way out; other failures say to try again", () => {
+    expect(watchErrorText(new ApiError(409, "watch_limit_reached", "x"))).toBe(
+      "Could not watch this pull request: you watch 20 already. Unwatch one in Watched PRs first.",
+    );
+    expect(watchErrorText(new ApiError(503, "unavailable", "GitHub is not reachable."))).toBe(
+      "Could not watch this pull request. Try again. GitHub is not reachable.",
+    );
   });
 });

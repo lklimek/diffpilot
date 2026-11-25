@@ -10,8 +10,12 @@ pub mod judge_work;
 pub mod plan;
 pub mod pr_context;
 pub mod strict;
+pub mod verify_comments;
 
 pub use strict::StrictSchemaError;
+
+/// The claudius skills the shared prompt rules require (analysis, repair and Ask jobs).
+pub const ANALYSIS_SKILLS: [&str; 1] = ["severity"];
 
 /// Kind of an agent job (brief §5 Job kinds).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -27,17 +31,30 @@ pub enum JobKind {
     Ask,
     /// Judge dashboard items (no pull request, ADR-017).
     JudgeWork,
+    /// Assess a pull request's review comments, or answer a question about one (ADR-023).
+    VerifyComments,
 }
 
 impl JobKind {
-    /// Every job kind, in pipeline order, then the dashboard's.
-    pub const ALL: [JobKind; 5] = [
+    /// Every job kind, in pipeline order, then the dashboard's and the review loop's.
+    pub const ALL: [JobKind; 6] = [
         Self::Plan,
         Self::PrContext,
         Self::AnalyseFlow,
         Self::Ask,
         Self::JudgeWork,
+        Self::VerifyComments,
     ];
+
+    /// The claudius skills a job of this kind is given and needs (ADR-002); the runner gives only skills
+    /// the pinned worker image supplies. A `verify_comments` prompt states what it needs itself (ADR-002 amendment
+    /// 2026-11-23).
+    pub fn required_skills(self) -> &'static [&'static str] {
+        match self {
+            Self::Plan | Self::PrContext | Self::AnalyseFlow | Self::Ask => &ANALYSIS_SKILLS,
+            Self::JudgeWork | Self::VerifyComments => &[],
+        }
+    }
 
     /// The snake_case name used on the wire and in file names.
     pub fn as_str(self) -> &'static str {
@@ -47,6 +64,7 @@ impl JobKind {
             Self::AnalyseFlow => "analyse_flow",
             Self::Ask => "ask",
             Self::JudgeWork => "judge_work",
+            Self::VerifyComments => "verify_comments",
         }
     }
 }
@@ -74,5 +92,13 @@ pub fn output_schema(kind: JobKind) -> Result<Value, StrictSchemaError> {
         }
         JobKind::Ask => strict::output_schema_for::<ask::AskOutput>(),
         JobKind::JudgeWork => judge_work::output_schema(),
+        JobKind::VerifyComments => {
+            strict::output_schema_for::<verify_comments::VerifyCommentsOutput>()
+        }
     }
 }
+
+/// Owned claudius host-report read types.
+pub mod comment_report;
+/// Host-supplied review data files.
+pub mod pr_data;

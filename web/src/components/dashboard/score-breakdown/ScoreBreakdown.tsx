@@ -63,7 +63,7 @@ export function ScoreBreakdown({ item, now }: { item: WorkItem; now: Date }) {
                   </td>
                   <td>{part.basis}</td>
                   <td className="text-[11px] whitespace-nowrap text-muted" data-source>
-                    {source.llm && <ProvenanceTag source="llm" focusable={false} />}{" "}
+                    {source.llm && <ProvenanceTag source="llm" />}{" "}
                     {source.note && (
                       <Tooltip tip={source.tip}>
                         <span tabIndex={0} className="cursor-help">

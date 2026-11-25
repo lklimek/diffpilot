@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Development stack of diffpilot on localhost: fake GitHub, fake MemCan, server (embedded web UI), runner
+# Development stack on localhost: fake GitHub, fake MemCan, fake gateway, server (embedded web UI), runner
 # (fake provider).
 # Runs in the foreground; Ctrl+C or SIGTERM stops every component. Fake credentials only: generated per state
 # dir or taken from the fixture recordings.
@@ -20,6 +20,10 @@
 #   SR_DEV_DASHBOARD_WORLD    dashboard world fake GitHub serves (default: fixtures/dashboard/github)
 #   SR_DEV_DASHBOARD_WORLD_AT the instant that world was written for; fake GitHub moves its dates so that this
 #                             instant is the start-up time (default: 2026-11-18T19:30:00Z; empty: dates as written)
+#   SR_DEV_ASSESSMENT_METHOD optional fake fixture method: claudius_host or prompt_v4; default retains Settings
+#   SR_DEV_REVIEW_LOOP_RECORDINGS review-loop reads fake GitHub serves for PR 482: threads, reviews and comments of
+#                             Comments and the PR page (absolute path, e.g. <repo>/fixtures/review-loop/github;
+#                             default: none). A read that finds new comments queues a verify_comments job.
 #   SR_DEV_CLONE_URL        clone base (default: the fixture remote built into <state>/remotes)
 #   SR_DEV_RUNNER_LISTEN_ADDR  runner listener (default: 127.0.0.1:<free port>); for a runner in a container
 #
@@ -31,6 +35,7 @@
 #                FAKE_GITHUB_FIXTURE_DIR   = SR_DEV_GITHUB_RECORDINGS
 #                FAKE_GITHUB_DASHBOARD_FIXTURE_DIR = SR_DEV_DASHBOARD_WORLD
 #                FAKE_GITHUB_DASHBOARD_WORLD_AT    = SR_DEV_DASHBOARD_WORLD_AT
+#                FAKE_GITHUB_REVIEW_LOOP_FIXTURE_DIR = SR_DEV_REVIEW_LOOP_RECORDINGS
 #                FAKE_GITHUB_APP_URL       = SR_PUBLIC_URL (callback <url>/auth/github/callback)
 #                FAKE_GITHUB_APP_ID        = SR_GITHUB_APP_ID
 #                FAKE_GITHUB_APP_PUBLIC_KEY_FILE <state>/github-app-key.pub.pem (App JWTs are verified with it)
@@ -55,17 +60,15 @@
 #                SR_MEMCAN_URL             http://127.0.0.1:<fake-memcan port>/mcp (nothing listens with
 #                                          --without fake-memcan)
 #                SR_MEMCAN_TOKEN           random hex, shared with the fake MemCan
+#   fake-gateway SR_FAKE_GATEWAY_PORT    loopback-only admin fake; no provider traffic
+#                SR_GATEWAY_CREDENTIALS_TOKEN random credentials scope, shared with server
 #   runner       SR_RUNNER_SERVER_URL      http://<SR_RUNNER_LISTEN_ADDR>  (not started with --without runner)
 #                SR_RUNNER_SECRET          = the server's
 #                SR_RUNNER_ID              dev-runner
 #                SR_RUNNER_STATE_DIR       <state>/runner
-#                SR_RUNNER_PROVIDER        fake (fixture replay; ignores SR_RUNNER_CREDENTIAL_ID, default "default")
+#                SR_RUNNER_PROVIDER        fake (fixture replay)
 #                SR_RUNNER_FAKE_SCRIPT     <state>/fake-provider-script.json (absent: plain replay; format in
 #                                          crates/runner/src/provider/fake.rs)
-#                SR_RUNNER_DEV_NO_ISOLATION 1 (no supervisor in the dev stack; never in the image)
-# A runner under the supervisor, in the production image behind the egress proxy: deploy/dev/real-codex-smoke.sh
-# with SR_SMOKE_ISOLATION=supervisor (this stack with --without runner), or the whole stack in containers with
-# deploy/compose.yaml plus deploy/compose.local.yaml (docs/runbook.md, "Local stack").
 #
 # The sign-in allowlist is the fake user `alice` (SR_ALLOWED_LOGINS). Output: one line `SR_DEV_URL=<url>` when the
 # stack is ready, then `SR_DEV_STATE_DIR=<dir>`; the generated values are in <state>/stack.env (mode 600) for the
@@ -150,8 +153,8 @@ state="${SR_DEV_STATE_DIR:-$(mktemp -d /data/tmp/diffpilot-dev.XXXXXX)}"
 state="$(mkdir -p "$state" && cd "$state" && pwd)"
 mkdir -p "$state/logs" "$state/home" "$state/server" "$state/runner"
 chmod 700 "$state"
-read -r free_public github_port runner_port memcan_port < <(python3 -c 'import socket
-socks = [socket.socket() for _ in range(4)]
+read -r free_public github_port runner_port memcan_port gateway_port < <(python3 -c 'import socket
+socks = [socket.socket() for _ in range(5)]
 for s in socks:
     s.bind(("127.0.0.1", 0))
 print(*(s.getsockname()[1] for s in socks))')
@@ -160,6 +163,7 @@ runner_addr="${SR_DEV_RUNNER_LISTEN_ADDR:-127.0.0.1:$runner_port}"
 recordings="${SR_DEV_GITHUB_RECORDINGS:-$repo/fixtures/pr-482/github}"
 dashboard_world="${SR_DEV_DASHBOARD_WORLD:-$repo/fixtures/dashboard/github}"
 dashboard_world_at="${SR_DEV_DASHBOARD_WORLD_AT-2026-11-18T19:30:00Z}"
+review_loop="${SR_DEV_REVIEW_LOOP_RECORDINGS:-}"
 url="http://127.0.0.1:$public_port"
 github="http://127.0.0.1:$github_port"
 # A reused state dir keeps its secrets: the database holds tokens encrypted with SR_SECRET_KEY.
@@ -196,13 +200,14 @@ server_env=(
   SR_MEMCAN_URL="http://127.0.0.1:$memcan_port/mcp"
   SR_MEMCAN_TOKEN="$memcan_token"
 )
+gateway_token="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+server_env+=(SR_GATEWAY_ADMIN_URL="http://127.0.0.1:$gateway_port" SR_GATEWAY_CREDENTIALS_TOKEN="$gateway_token")
 runner_env=(
   SR_RUNNER_SERVER_URL="http://$runner_addr"
   SR_RUNNER_SECRET="$runner_secret"
   SR_RUNNER_ID=dev-runner
   SR_RUNNER_STATE_DIR="$state/runner"
   SR_RUNNER_PROVIDER=fake
-  SR_RUNNER_DEV_NO_ISOLATION=1
   SR_RUNNER_FAKE_SCRIPT="$state/fake-provider-script.json"
 )
 (umask 077 && printf '%s\n' "${server_env[@]}" "${runner_env[@]}" > "$state/stack.env")
@@ -228,6 +233,7 @@ if ! skipped fake-github; then
   start fake-github "$state" FAKE_GITHUB_LISTEN="127.0.0.1:$github_port" \
     FAKE_GITHUB_FIXTURE_DIR="$recordings" FAKE_GITHUB_DASHBOARD_FIXTURE_DIR="$dashboard_world" \
     ${dashboard_world_at:+FAKE_GITHUB_DASHBOARD_WORLD_AT="$dashboard_world_at"} \
+    ${review_loop:+FAKE_GITHUB_REVIEW_LOOP_FIXTURE_DIR="$review_loop"} \
     FAKE_GITHUB_APP_URL="$url" FAKE_GITHUB_APP_ID=1 \
     FAKE_GITHUB_APP_PUBLIC_KEY_FILE="$state/github-app-key.pub.pem" "$fake_github_bin"
   wait_for fake-github "$github/user"
@@ -237,10 +243,43 @@ if ! skipped fake-memcan; then
     FAKE_MEMCAN_PATH=/mcp "$fake_memcan_bin"
   wait_for fake-memcan "http://127.0.0.1:$memcan_port/_fake/state"
 fi
+start fake-gateway "$state" SR_FAKE_GATEWAY_PORT="$gateway_port" SR_GATEWAY_CREDENTIALS_TOKEN="$gateway_token" \
+  /usr/bin/python3 "$repo/deploy/dev/fake-gateway.py"
+wait_for fake-gateway "http://127.0.0.1:$gateway_port/admin/credentials/health"
 # The server reads a `.env` of its working directory or a parent: run it in the state dir.
 start server "$state" "${server_env[@]}" "$server_bin"
 wait_for server "$url/api/v1/me"
 if ! skipped runner; then
+  # Link the synthetic payer through the authenticated Settings route and fake gateway.
+  python3 - "$url" "${SR_DEV_ASSESSMENT_METHOD:-}" <<'PY'
+import http.cookiejar
+import json
+import sys
+import urllib.request
+
+client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+client.open(sys.argv[1] + "/auth/github/login", timeout=10).close()
+with client.open(sys.argv[1] + "/api/v1/me", timeout=10) as response:
+    me = json.load(response)
+request = urllib.request.Request(sys.argv[1] + "/api/v1/settings/codex/link",
+    data=json.dumps({"mode": "chatgpt_plan"}).encode(),
+    headers={"Content-Type": "application/json", "X-CSRF-Token": me["csrf_token"], "Origin": sys.argv[1]})
+client.open(request, timeout=20).close()
+client.open(sys.argv[1] + "/api/v1/settings/codex/link", timeout=20).close()
+with client.open(sys.argv[1] + "/api/v1/settings/codex", timeout=20) as response:
+    if json.load(response)["state"] != "linked":
+        raise SystemExit("fake gateway did not link the payer")
+# An isolated fixture can explicitly select either assessment adapter.
+if sys.argv[2]:
+    route = sys.argv[1] + "/api/v1/settings/comment-assessment"
+    with client.open(route, timeout=20) as response:
+        settings = json.load(response)
+    settings["config"]["primary_method"] = sys.argv[2]
+    request = urllib.request.Request(route,
+        method="PUT", data=json.dumps({"revision":settings["revision"], "config":settings["config"]}).encode(),
+        headers={"Content-Type":"application/json", "X-CSRF-Token":me["csrf_token"], "Origin":sys.argv[1]})
+    client.open(request, timeout=20).close()
+PY
   start runner "$state" "${runner_env[@]}" "$runner_bin"
 fi
 

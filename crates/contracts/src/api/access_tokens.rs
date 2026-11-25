@@ -13,6 +13,9 @@ use ts_rs::TS;
 pub enum TokenScope {
     /// Every safe read route marked `read` (`RouteAuth::SessionOrToken`), as the token's user.
     Read,
+    /// Claim and report decisions of the review-loop feed, and register the token's push target (ADR-023;
+    /// `RouteAuth::TokenOnly`); never decides.
+    ReviewLoopExecute,
 }
 
 impl TokenScope {
@@ -20,6 +23,7 @@ impl TokenScope {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Read => "read",
+            Self::ReviewLoopExecute => "review_loop_execute",
         }
     }
 }
@@ -60,7 +64,7 @@ pub struct AccessToken {
 pub struct CreateAccessToken {
     /// Name, 1–60 characters, unique among the user's tokens.
     pub name: String,
-    /// Requested scopes; v1.1 accepts only `read`.
+    /// Requested scopes: `read`, optionally with `review_loop_execute` (ADR-023).
     pub scopes: Vec<TokenScope>,
     /// Lifetime in days: one of [`CreateAccessToken::EXPIRY_DAYS`].
     pub expires_in_days: u32,

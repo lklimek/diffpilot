@@ -1,0 +1,589 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "JobResult",
+  "description": "The end of one job attempt; posting it twice for one attempt is idempotent.",
+  "type": "object",
+  "properties": {
+    "assessment": {
+      "description": "Frozen logical pass and independent method; absent outside assessment jobs.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AssessmentRunRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "report": {
+      "description": "Host-supplied review report, validated by server ingest; absent for other jobs.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CommentReport"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "job_id": {
+      "description": "Job id.",
+      "$ref": "#/$defs/JobId"
+    },
+    "attempt": {
+      "description": "Attempt the result belongs to.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "outcome": {
+      "description": "Outcome.",
+      "$ref": "#/$defs/JobOutcome"
+    },
+    "session": {
+      "description": "The agent session after the job, if a provider ran.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SessionReport"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "usage": {
+      "description": "Token usage of this job alone (delta of cumulative totals), if known.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Usage"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "skills_commit": {
+      "description": "Commit of the claudius checkout whose skills were exposed.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "llm_call": {
+      "description": "Outcome of the job's last LLM call, for the LLM status in Settings; none if no call was made.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LlmCallOutcome"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "job_id",
+    "attempt",
+    "outcome"
+  ],
+  "$defs": {
+    "AssessmentRunRef": {
+      "description": "Durable method identity carried by both job input and result; attempt is the enclosing job's fence.",
+      "type": "object",
+      "properties": {
+        "pass_id": {
+          "description": "Logical pass shared by an A/B pair and all its retries.",
+          "$ref": "#/$defs/PassId"
+        },
+        "method": {
+          "description": "Independent adapter.",
+          "$ref": "#/$defs/AssessmentMethod"
+        }
+      },
+      "required": [
+        "pass_id",
+        "method"
+      ]
+    },
+    "PassId": {
+      "description": "Identifier of a `verify_comments` pass over the items of one pull request.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "AssessmentMethod": {
+      "description": "An assessment adapter; native outputs retain their own validation contracts.",
+      "oneOf": [
+        {
+          "description": "Host-supplied claudius 4.2 report.",
+          "type": "string",
+          "const": "claudius_host"
+        },
+        {
+          "description": "Existing strict prompt v4 output.",
+          "type": "string",
+          "const": "prompt_v4"
+        }
+      ]
+    },
+    "CommentReport": {
+      "description": "Host report envelope; rows are decoded individually so a malformed row can be dropped.",
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "description": "Accepted versions are 4.2.x.",
+          "type": "string"
+        },
+        "metadata": {
+          "description": "Host provenance, matched against the server's input.",
+          "$ref": "#/$defs/ReportMetadata"
+        },
+        "comment_assessments": {
+          "description": "Independently parsed assessment rows; unknown report fields are ignored.",
+          "type": "array",
+          "items": true
+        }
+      },
+      "required": [
+        "schema_version",
+        "metadata",
+        "comment_assessments"
+      ]
+    },
+    "ReportMetadata": {
+      "description": "Required host-supplied provenance; other metadata is ignored.",
+      "type": "object",
+      "properties": {
+        "report_type": {
+          "description": "Must be comment_check.",
+          "type": "string"
+        },
+        "input_mode": {
+          "description": "Host-supplied is the only accepted mode.",
+          "type": "string"
+        },
+        "pr_number": {
+          "description": "GitHub PR number.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "commit": {
+          "description": "Commit assessed; a differing head is labelled rather than discarded.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "report_type",
+        "input_mode",
+        "pr_number",
+        "commit"
+      ]
+    },
+    "JobId": {
+      "description": "Identifier of a job (one agent run).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "JobOutcome": {
+      "description": "Outcome of a job attempt.",
+      "oneOf": [
+        {
+          "description": "The agent produced its final output (not yet validated; the server validates it).",
+          "type": "object",
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "const": "succeeded"
+            },
+            "output": {
+              "description": "JSON object for JSON jobs; a string containing the collected tagged file for flow jobs (ADR-014)."
+            }
+          },
+          "required": [
+            "outcome",
+            "output"
+          ]
+        },
+        {
+          "description": "The attempt failed.",
+          "type": "object",
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "const": "failed"
+            },
+            "kind": {
+              "description": "Failure kind.",
+              "$ref": "#/$defs/JobFailureKind"
+            },
+            "message": {
+              "description": "Plain description without internal or secret details.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "outcome",
+            "kind",
+            "message"
+          ]
+        },
+        {
+          "description": "Cancelled on request.",
+          "type": "object",
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "const": "cancelled"
+            }
+          },
+          "required": [
+            "outcome"
+          ]
+        },
+        {
+          "description": "The provider's usage limit was reached; never paid around (ADR-003).",
+          "type": "object",
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "const": "usage_limited"
+            },
+            "resets_at": {
+              "description": "When the limit resets, if known.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "date-time"
+            }
+          },
+          "required": [
+            "outcome"
+          ]
+        }
+      ]
+    },
+    "JobFailureKind": {
+      "description": "Kind of a failed attempt.",
+      "oneOf": [
+        {
+          "description": "A required agent skill is unavailable; administrator action is needed.",
+          "type": "string",
+          "const": "configuration"
+        },
+        {
+          "description": "The provider failed (non-zero exit, `turn.failed`, rejected schema).",
+          "type": "string",
+          "const": "provider_failed"
+        },
+        {
+          "description": "The final message was not JSON.",
+          "type": "string",
+          "const": "output_not_json"
+        },
+        {
+          "description": "The LLM credential cannot be refreshed; the owner must sign in again.",
+          "type": "string",
+          "const": "credential_unusable"
+        },
+        {
+          "description": "Fetching or checking out the repository failed.",
+          "type": "string",
+          "const": "checkout_failed"
+        },
+        {
+          "description": "The runtime cap was reached.",
+          "type": "string",
+          "const": "timeout"
+        },
+        {
+          "description": "A runner-side error.",
+          "type": "string",
+          "const": "internal"
+        },
+        {
+          "description": "The worker could not be started or attached.",
+          "type": "string",
+          "const": "worker_unavailable"
+        },
+        {
+          "description": "Relay or frame loss; stop the container before any subsequent turn.",
+          "type": "string",
+          "const": "worker_lost"
+        },
+        {
+          "description": "No usable credential exists for the payer.",
+          "type": "string",
+          "const": "credential_missing"
+        },
+        {
+          "description": "Terminal or quarantined credentials require explicit relink (gateway HTTP 403).",
+          "type": "string",
+          "const": "credential_relink"
+        },
+        {
+          "description": "Model metadata or the selected model is unavailable.",
+          "type": "string",
+          "const": "model_unavailable"
+        },
+        {
+          "description": "The gateway rejected a request's body or tool type.",
+          "type": "string",
+          "const": "upstream_rejected"
+        },
+        {
+          "description": "The report is not a supported host-supplied 4.2 report.",
+          "type": "string",
+          "const": "report_version_unsupported"
+        },
+        {
+          "description": "The provider rejected the strict output schema; no model repair or retry.",
+          "type": "string",
+          "const": "invalid_json_schema"
+        },
+        {
+          "description": "Required first-Ask compaction was skipped or not confirmed; the answer is discarded.",
+          "type": "string",
+          "const": "ask_compaction_unconfirmed"
+        }
+      ]
+    },
+    "SessionReport": {
+      "description": "The agent session after a job (ADR-004).",
+      "type": "object",
+      "properties": {
+        "last_context": {
+          "description": "Last-context estimate, never a billable cumulative total.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LastContext"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "preflight": {
+          "description": "Confirmed first-Ask preflight for this seed/generation, when applicable.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AskPreflight"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "thread_id": {
+          "description": "Provider session (Codex thread) id.",
+          "type": "string"
+        },
+        "outcome": {
+          "description": "How the session was obtained.",
+          "$ref": "#/$defs/SessionOutcome"
+        }
+      },
+      "required": [
+        "thread_id",
+        "outcome"
+      ]
+    },
+    "LastContext": {
+      "description": "Last-context estimate, separate from cumulative usage and billable job deltas.",
+      "type": "object",
+      "properties": {
+        "tokens": {
+          "description": "Input and output context tokens reported for the last completed turn.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "generation": {
+          "description": "Thread generation this estimate describes; missing/stale usage needs recovery.",
+          "type": "integer",
+          "format": "int64"
+        }
+      },
+      "required": [
+        "tokens",
+        "generation"
+      ]
+    },
+    "AskPreflight": {
+      "description": "First-Ask preflight bound to the working thread's seed and analytic generation.",
+      "type": "object",
+      "properties": {
+        "seed": {
+          "description": "Working-thread seed.",
+          "$ref": "#/$defs/SessionSeed"
+        },
+        "generation": {
+          "description": "Analytic generation at seeding.",
+          "type": "integer",
+          "format": "int64"
+        },
+        "state": {
+          "description": "Confirmed preflight state.",
+          "$ref": "#/$defs/PreflightState"
+        }
+      },
+      "required": [
+        "seed",
+        "generation",
+        "state"
+      ]
+    },
+    "SessionSeed": {
+      "description": "How a private working thread was seeded.",
+      "oneOf": [
+        {
+          "description": "Fork of the same payer's analytic thread.",
+          "type": "string",
+          "const": "fork"
+        },
+        {
+          "description": "Private context pack, including recovery after volume loss.",
+          "type": "string",
+          "const": "context_pack"
+        }
+      ]
+    },
+    "PreflightState": {
+      "description": "Durable first-Ask preflight state; pending is never interpreted as completed.",
+      "oneOf": [
+        {
+          "description": "Confirmed fresh parent context at or below 80k, or a context-pack seed.",
+          "type": "string",
+          "const": "not_needed"
+        },
+        {
+          "description": "Required, unknown, interrupted or not yet acknowledged.",
+          "type": "string",
+          "const": "pending"
+        },
+        {
+          "description": "Standalone compaction succeeded with turn/completed.",
+          "type": "string",
+          "const": "done"
+        }
+      ]
+    },
+    "SessionOutcome": {
+      "description": "How the job's agent session was obtained.",
+      "oneOf": [
+        {
+          "description": "The analysis's session was resumed.",
+          "type": "string",
+          "const": "resumed"
+        },
+        {
+          "description": "A new session was started (first job).",
+          "type": "string",
+          "const": "started"
+        },
+        {
+          "description": "The session was missing or unusable; a new one was seeded with the context pack.",
+          "type": "string",
+          "const": "started_after_loss"
+        }
+      ]
+    },
+    "Usage": {
+      "description": "Token usage.",
+      "type": "object",
+      "properties": {
+        "input_tokens": {
+          "description": "Input tokens, cached included.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "cached_input_tokens": {
+          "description": "Cached input tokens.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "output_tokens": {
+          "description": "Output tokens.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "requests": {
+          "description": "Model requests of the call, counted from the provider's events (one per batch of tool calls, and the\nanswer); null when not counted.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        }
+      },
+      "required": [
+        "input_tokens",
+        "cached_input_tokens",
+        "output_tokens"
+      ]
+    },
+    "LlmCallOutcome": {
+      "description": "Outcome and time of an LLM call.",
+      "type": "object",
+      "properties": {
+        "at": {
+          "description": "When the call ended.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "status": {
+          "description": "Whether it worked.",
+          "$ref": "#/$defs/LlmCallStatus"
+        }
+      },
+      "required": [
+        "at",
+        "status"
+      ]
+    },
+    "LlmCallStatus": {
+      "description": "Whether the LLM worked on its most recent call (brief §4.4).",
+      "oneOf": [
+        {
+          "description": "The call succeeded.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "working"
+            }
+          },
+          "required": [
+            "state"
+          ]
+        },
+        {
+          "description": "The call failed.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "not_working"
+            },
+            "message": {
+              "description": "Plain error message.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "message"
+          ]
+        }
+      ]
+    }
+  }
+}

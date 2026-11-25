@@ -1,17 +1,19 @@
 //! Scan answers → scoring facts (the skill's `analyze_pr` and issue mapping, plan §A.2). Pure; untrusted text is
 //! capped here, before it is stored.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use contracts::time::Timestamp;
+use sha2::{Digest, Sha256};
 
 use crate::dashboard::score::{
     CheckContext, CheckRollup, IssueFacts, MergeState, Mergeable, Milestone, MilestoneContext,
     OwnedChange, PrFacts, Relation, ReviewDecision, ScoreRules, classify_ci,
 };
-use crate::dashboard::snapshot::{StoredIssue, StoredLinkedIssue, StoredPr};
+use crate::dashboard::snapshot::{PrMark, StoredIssue, StoredLinkedIssue, StoredPr};
 use crate::github::work::{
-    Actor, Blockers, IssueCandidate, IssueRelation, ItemRef, PrCandidate, PrRelation, PullDetail,
+    Actor, Blockers, Count, IssueCandidate, IssueRelation, ItemRef, Nodes, PrCandidate, PrRelation,
+    ProbeCommit, ProbeRollup, PullDetail, PullProbe, Resolved, ReviewNode, RollupState,
     StatusRollup,
 };
 
@@ -74,6 +76,33 @@ fn rollup(found: Option<&StatusRollup>) -> Option<CheckRollup> {
             })
             .collect(),
     })
+}
+
+/// Bots whose last change request is followed by a review of theirs on another commit, in any state: the request no
+/// longer counts (K15 W2, K17 R5). A request on the current `head` (no newer head exists) or of an unknown commit
+/// keeps counting.
+fn rereviewed_bots(rules: &ScoreRules, reviews: &[ReviewNode], head: &str) -> BTreeSet<String> {
+    let mut requested: BTreeMap<&str, Option<&str>> = BTreeMap::new();
+    let mut moved_on = BTreeSet::new();
+    for review in reviews {
+        let Some(author) = review.author.as_ref().filter(|a| is_bot_actor(rules, a)) else {
+            continue;
+        };
+        let Some(login) = author.login.as_deref() else {
+            continue;
+        };
+        let commit = review.commit.as_ref().map(|c| c.oid.as_str());
+        if review.state == "CHANGES_REQUESTED" {
+            requested.insert(login, commit);
+            moved_on.remove(&name(login));
+        } else if let (Some(Some(at)), Some(commit)) = (requested.get(login), commit)
+            && *at != commit
+            && *at != head
+        {
+            moved_on.insert(name(login));
+        }
+    }
+    moved_on
 }
 
 /// The newest time of `times`.
@@ -187,12 +216,12 @@ pub(super) fn pr(
         .iter()
         .filter(|(login, state, _, bot)| state == "CHANGES_REQUESTED" && !bot && !scanned(login))
         .collect();
-    let changes_requested_human_at = newest(
-        human_cr
-            .iter()
-            .filter(|(login, ..)| !requested_logins.contains(&login.to_lowercase()))
-            .filter_map(|(_, _, at, _)| *at),
-    );
+    let changes_requested_human_at = human_cr
+        .iter()
+        .filter(|(login, ..)| !requested_logins.contains(&login.to_lowercase()))
+        .map(|(_, _, at, _)| *at)
+        .collect::<Option<Vec<_>>>()
+        .and_then(|times| times.into_iter().max());
     let last_comment = detail.comments.nodes.iter().max_by_key(|c| c.created_at);
     let last_author = last_comment.and_then(|c| c.author.as_ref());
     let awaiting_our_reply = last_author.is_some_and(|a| {
@@ -209,6 +238,7 @@ pub(super) fn pr(
                 .and_then(|n| n.commit.status_check_rollup.as_ref()),
         )
         .as_ref(),
+        |check| rules.is_ignored_check(&item.repo, check),
     );
     let default_branch = detail
         .base_repository
@@ -239,6 +269,15 @@ pub(super) fn pr(
         None => Milestone::Unassigned,
     };
     let author = detail.author.as_ref();
+    let mut changes_requested_by = with_state("CHANGES_REQUESTED");
+    // While GitHub's decision still requests changes, GitHub enforces the request: it stays.
+    if detail.review_decision.as_deref() != Some("CHANGES_REQUESTED") {
+        let rereviewed = rereviewed_bots(rules, &detail.reviews.nodes, &detail.head_ref_oid);
+        changes_requested_by.retain(|login| !rereviewed.contains(login));
+    }
+    let changes_requested_by_bot = latest
+        .iter()
+        .any(|(login, _, _, bot)| *bot && changes_requested_by.contains(&name(login)));
     let facts = PrFacts {
         repo: item.repo.clone(),
         number: item.number,
@@ -292,7 +331,8 @@ pub(super) fn pr(
         review_pending_for_us: pending_for_us,
         review_requested_at,
         review_request_age_is_approx: approx,
-        changes_requested_by: with_state("CHANGES_REQUESTED"),
+        changes_requested_by,
+        changes_requested_by_bot: Some(changes_requested_by_bot),
         changes_requested_by_human: !human_cr.is_empty(),
         changes_requested_human_at,
         reviews_truncated: detail
@@ -323,9 +363,11 @@ pub(super) fn pr(
             .as_ref()
             .is_some_and(|r| r.is_private),
         head_sha: name(&detail.head_ref_oid),
+        base_sha: detail.base_ref_oid.as_deref().map(name),
         created_at: detail.created_at,
         ci_red: ci.red.iter().map(|c| name(c)).collect(),
         ci_pending: ci.pending.iter().map(|c| name(c)).collect(),
+        ci_ignored: ci.ignored_not_passing.iter().map(|c| name(c)).collect(),
         linked_issues: detail
             .closing_issues_references
             .nodes
@@ -335,7 +377,134 @@ pub(super) fn pr(
                 title: capped(&issue.title, TITLE_CHARS),
             })
             .collect(),
+        mark: Some(detail_mark(detail)),
     }
+}
+
+/// The change mark of a pull request's details (Q2): its probe fields read as [`probe_mark`] reads a probe (plan §M).
+fn detail_mark(detail: &PullDetail) -> PrMark {
+    probe_mark(&PullProbe {
+        state: detail.state.clone(),
+        updated_at: detail.updated_at,
+        head_ref_oid: detail.head_ref_oid.clone(),
+        mergeable: detail.mergeable.clone(),
+        merge_state_status: detail.merge_state_status.clone(),
+        review_decision: detail.review_decision.clone(),
+        is_draft: detail.is_draft,
+        labels: detail.labels.clone(),
+        review_requests: Count {
+            total_count: detail.review_requests.total_count.unwrap_or_else(|| {
+                u32::try_from(detail.review_requests.nodes.len()).unwrap_or(u32::MAX)
+            }),
+        },
+        review_threads: Nodes {
+            total_count: None,
+            nodes: detail
+                .review_threads
+                .nodes
+                .iter()
+                .map(|t| Resolved {
+                    is_resolved: t.is_resolved,
+                })
+                .collect(),
+        },
+        commits: Nodes {
+            total_count: None,
+            nodes: detail
+                .commits
+                .nodes
+                .iter()
+                .map(|n| ProbeCommit {
+                    commit: ProbeRollup {
+                        status_check_rollup: n.commit.status_check_rollup.as_ref().map(|r| {
+                            RollupState {
+                                state: r.state.clone(),
+                                contexts: r.contexts.clone(),
+                            }
+                        }),
+                    },
+                })
+                .collect(),
+        },
+    })
+}
+
+/// The change mark of a pull request's change probe (Q18; plan §M).
+pub(super) fn probe_mark(probe: &PullProbe) -> PrMark {
+    let mut labels: Vec<String> = probe.labels.nodes.iter().map(|l| name(&l.name)).collect();
+    labels.sort();
+    let unresolved = probe
+        .review_threads
+        .nodes
+        .iter()
+        .filter(|t| !t.is_resolved)
+        .count();
+    PrMark {
+        state: name(&probe.state),
+        updated_at: probe.updated_at,
+        head: name(&probe.head_ref_oid),
+        mergeable: name(&probe.mergeable),
+        merge_state: name(&probe.merge_state_status),
+        review_decision: probe.review_decision.as_deref().map(name),
+        draft: probe.is_draft,
+        labels,
+        ci: probe
+            .commits
+            .nodes
+            .first()
+            .and_then(|n| n.commit.status_check_rollup.as_ref())
+            .map(|rollup| name(&rollup.state)),
+        ci_contexts_digest: probe
+            .commits
+            .nodes
+            .first()
+            .and_then(|n| n.commit.status_check_rollup.as_ref())
+            .map(ci_contexts_digest),
+        unresolved_threads: u32::try_from(unresolved).unwrap_or(u32::MAX),
+        review_requests: probe.review_requests.total_count,
+    }
+}
+
+/// Includes every input effective CI reads, sorted so GitHub's context order alone does not move the mark.
+fn ci_contexts_digest(rollup: &RollupState) -> String {
+    let mut contexts: Vec<_> = rollup
+        .contexts
+        .nodes
+        .iter()
+        .map(|context| {
+            let started = context.started_at.map(|at| at.to_string());
+            let created = context.created_at.map(|at| at.to_string());
+            let mut hash = Sha256::new();
+            for field in [
+                Some(context.typename.as_str()),
+                context.name.as_deref(),
+                context.status.as_deref(),
+                context.conclusion.as_deref(),
+                started.as_deref(),
+                context.workflow.as_deref(),
+                context.context.as_deref(),
+                context.state.as_deref(),
+                created.as_deref(),
+            ] {
+                hash.update([u8::from(field.is_some())]);
+                if let Some(text) = field {
+                    hash.update(u64::try_from(text.len()).unwrap_or(u64::MAX).to_le_bytes());
+                    hash.update(text.as_bytes());
+                }
+            }
+            hash.finalize()
+        })
+        .collect();
+    contexts.sort();
+    let mut hash = Sha256::new();
+    hash.update([u8::from(rollup.contexts.page_info.has_next_page)]);
+    for context in contexts {
+        hash.update(context);
+    }
+    hash.finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// GitHub's `mergeStateStatus`; an unknown value is [`MergeState::Unknown`].
@@ -415,6 +584,7 @@ mod tests {
     use contracts::common::RepoRef;
 
     use super::*;
+    use crate::dashboard::plugin::Overlay;
 
     fn node() -> serde_json::Value {
         serde_json::json!({
@@ -423,7 +593,8 @@ mod tests {
             "isCrossRepository": false, "additions": 10, "deletions": 2,
             "createdAt": "2026-11-08T10:00:00Z", "updatedAt": "2026-11-17T11:00:00Z",
             "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "reviewDecision": null,
-            "baseRefName": "main", "headRefName": "feat/pages", "headRefOid": "8c8acb6a35253739c2cb54e178ffa230638e9dfc",
+            "baseRefName": "main", "baseRefOid": "3d1f0c9a7b2e4d6f8a0c1e3b5d7f9a1c3e5b7d9f",
+            "headRefName": "feat/pages", "headRefOid": "8c8acb6a35253739c2cb54e178ffa230638e9dfc",
             "milestone": null, "baseRepository": null,
             "author": {"__typename": "User", "login": "alice"},
             "labels": {"nodes": []}, "participants": {"totalCount": 3},
@@ -486,6 +657,28 @@ mod tests {
         );
     }
 
+    /// The head and base commits the scan read are kept (the PR badge takes Ready to merge only at both); an answer
+    /// without the base commit keeps none.
+    #[test]
+    fn the_scanned_head_and_base_commits_are_kept() {
+        let detail: PullDetail = serde_json::from_value(node()).expect("detail");
+        let pr = stored(&detail);
+        assert_eq!(
+            (pr.head_sha.as_str(), pr.base_sha.as_deref()),
+            (
+                "8c8acb6a35253739c2cb54e178ffa230638e9dfc",
+                Some("3d1f0c9a7b2e4d6f8a0c1e3b5d7f9a1c3e5b7d9f")
+            )
+        );
+        let mut without = node();
+        without
+            .as_object_mut()
+            .expect("object")
+            .remove("baseRefOid");
+        let detail: PullDetail = serde_json::from_value(without).expect("detail");
+        assert_eq!(stored(&detail).base_sha, None);
+    }
+
     /// GitHub's merge state and the user's write access to the base repository are kept (Ready to merge); an
     /// unknown state or permission, or none, is not mergeable.
     #[test]
@@ -523,5 +716,260 @@ mod tests {
         );
         let detail: PullDetail = serde_json::from_value(node()).expect("no base repository");
         assert!(!stored(&detail).facts.viewer_can_write);
+    }
+
+    const OLD_HEAD: &str = "0a2e66fcf7525eb47f81eeedefd2591d4827d1e6";
+    const HEAD: &str = "8c8acb6a35253739c2cb54e178ffa230638e9dfc";
+
+    /// `(login, typename, state, commit)` as a review node; `None` leaves the commit out.
+    fn review(login: &str, typename: &str, state: &str, commit: Option<&str>) -> serde_json::Value {
+        let mut node = serde_json::json!({"author": {"__typename": typename, "login": login}, "state": state,
+            "submittedAt": "2026-11-22T17:37:41Z"});
+        if let Some(oid) = commit {
+            node["commit"] = serde_json::json!({"oid": oid});
+        }
+        node
+    }
+
+    /// The user's approved, ready-labelled PR with green CI, mergeable, nothing else to answer (dashpay/platform#5951
+    /// at the 2026-11-23 scan), with `reviews` in order: its change requests and whether it waits on others (K15).
+    fn blocked_by(reviews: Vec<serde_json::Value>) -> (Vec<String>, bool) {
+        blocked_by_with("APPROVED", reviews)
+    }
+
+    /// [`blocked_by`] with GitHub's review decision `decision`.
+    fn blocked_by_with(decision: &str, reviews: Vec<serde_json::Value>) -> (Vec<String>, bool) {
+        let mut node = node();
+        node["labels"] = serde_json::json!({"nodes": [{"name": "ready-for-human"}]});
+        node["reviewDecision"] = decision.into();
+        node["mergeStateStatus"] = "UNSTABLE".into();
+        node["baseRepository"] = serde_json::json!({"nameWithOwner": "acme/platform", "isPrivate": false,
+            "defaultBranchRef": {"name": "main"}, "viewerPermission": "WRITE"});
+        node["commits"] = serde_json::json!({"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS",
+            "contexts": {"pageInfo": {"hasNextPage": false}, "nodes": [{"__typename": "CheckRun", "name": "build",
+            "status": "COMPLETED", "conclusion": "SUCCESS", "startedAt": "2026-11-22T22:00:00Z"}]}}}}]});
+        node["reviews"] = serde_json::json!({"totalCount": reviews.len(), "nodes": reviews});
+        let detail: PullDetail = serde_json::from_value(node).expect("detail");
+        let facts = stored(&detail).facts;
+        let rules = ScoreRules::new("alice", &DashboardSettings::default());
+        let waits =
+            crate::dashboard::snapshot::waiting(&rules, &facts, &Overlay::default()).is_some();
+        (facts.changes_requested_by, waits)
+    }
+
+    /// K15 W2, K17 R5 (owner, 2026-11-23): a bot's change request ends when the same bot reviews another commit, in
+    /// any state; the PR then waits on others (dashpay/platform#5951: thepastaclaw's request on an old head, its
+    /// COMMENTED round on the new one).
+    #[test]
+    fn a_bots_change_request_ends_when_it_reviews_a_newer_head() {
+        let bot = |state, commit| review("thepastaclaw", "User", state, Some(commit));
+        assert_eq!(
+            blocked_by(vec![
+                bot("CHANGES_REQUESTED", OLD_HEAD),
+                bot("COMMENTED", HEAD),
+                review("alice", "User", "APPROVED", Some(HEAD)),
+            ]),
+            (vec![], true)
+        );
+        assert_eq!(
+            blocked_by(vec![
+                review("review-helper", "Bot", "CHANGES_REQUESTED", Some(OLD_HEAD)),
+                review("review-helper", "Bot", "APPROVED", Some(HEAD)),
+            ]),
+            (vec![], true),
+            "a later approval as before"
+        );
+    }
+
+    /// A bot's change request stands while the bot has not reviewed another commit, while the request is on the
+    /// current head (a later review of an older commit is no newer head), or the request's commit is unknown; a new
+    /// request on the newer head stands; another bot's review clears nothing; a person's request stands until GitHub
+    /// clears it.
+    #[test]
+    fn a_change_request_stands_until_its_bot_reviews_a_newer_head() {
+        let bot = |state, commit| review("thepastaclaw", "User", state, commit);
+        let blocked = |who: &str| (vec![who.to_owned()], false);
+        assert_eq!(
+            blocked_by(vec![
+                bot("CHANGES_REQUESTED", Some(OLD_HEAD)),
+                bot("COMMENTED", Some(OLD_HEAD)),
+            ]),
+            blocked("thepastaclaw"),
+            "not re-reviewed"
+        );
+        assert_eq!(
+            blocked_by(vec![
+                bot("COMMENTED", Some(HEAD)),
+                bot("CHANGES_REQUESTED", Some(OLD_HEAD)),
+            ]),
+            blocked("thepastaclaw"),
+            "a review before the request"
+        );
+        assert_eq!(
+            blocked_by(vec![
+                bot("CHANGES_REQUESTED", Some(OLD_HEAD)),
+                bot("COMMENTED", Some(HEAD)),
+                bot("CHANGES_REQUESTED", Some(HEAD)),
+            ]),
+            blocked("thepastaclaw"),
+            "a new request on the newer head"
+        );
+        assert_eq!(
+            blocked_by(vec![
+                bot("CHANGES_REQUESTED", None),
+                bot("COMMENTED", Some(HEAD)),
+            ]),
+            blocked("thepastaclaw"),
+            "the request's commit unknown"
+        );
+        assert_eq!(
+            blocked_by(vec![
+                bot("CHANGES_REQUESTED", Some(HEAD)),
+                bot("COMMENTED", Some(OLD_HEAD)),
+            ]),
+            blocked("thepastaclaw"),
+            "the request on the current head, a later review of an older commit"
+        );
+        assert_eq!(
+            blocked_by(vec![
+                bot("CHANGES_REQUESTED", Some(OLD_HEAD)),
+                review("DCG-Claude", "User", "COMMENTED", Some(HEAD)),
+            ]),
+            blocked("thepastaclaw"),
+            "another bot's review"
+        );
+        assert_eq!(
+            blocked_by(vec![
+                review("ana", "User", "CHANGES_REQUESTED", Some(OLD_HEAD)),
+                review("ana", "User", "COMMENTED", Some(HEAD)),
+            ]),
+            blocked("ana"),
+            "a person's stale request"
+        );
+    }
+
+    /// The change mark (plan §M) reads the same from the scan's details (Q2) and from the change probe (Q18) of one
+    /// answer, and each field it covers moves it.
+    #[test]
+    fn the_change_mark_reads_alike_from_the_details_and_the_probe() {
+        let mut answer = node();
+        answer["labels"] = serde_json::json!({"nodes": [{"name": "b"}, {"name": "a"}]});
+        answer["reviewRequests"] = serde_json::json!({"totalCount": 1, "nodes": [
+            {"requestedReviewer": {"__typename": "User", "login": "ana"}}]});
+        answer["reviewThreads"] = serde_json::json!({"nodes": [
+            {"isResolved": false, "isOutdated": false, "comments": {"nodes": []}},
+            {"isResolved": true, "isOutdated": false, "comments": {"nodes": []}}]});
+        answer["commits"] = serde_json::json!({"nodes": [{"commit": {"statusCheckRollup": {"state": "PENDING",
+            "contexts": {"pageInfo": {"hasNextPage": false}, "nodes": []}}}}]});
+        let marks = |answer: &serde_json::Value| {
+            let detail: PullDetail = serde_json::from_value(answer.clone()).expect("detail");
+            let probe: PullProbe = serde_json::from_value(answer.clone()).expect("probe");
+            (stored(&detail).mark.expect("scan mark"), probe_mark(&probe))
+        };
+        let (scan, probe) = marks(&answer);
+        assert_eq!(scan, probe);
+        assert_eq!(
+            scan,
+            PrMark {
+                state: "OPEN".into(),
+                updated_at: "2026-11-17T11:00:00Z".parse().expect("time"),
+                head: "8c8acb6a35253739c2cb54e178ffa230638e9dfc".into(),
+                mergeable: "MERGEABLE".into(),
+                merge_state: "CLEAN".into(),
+                review_decision: None,
+                draft: false,
+                labels: vec!["a".into(), "b".into()],
+                ci: Some("PENDING".into()),
+                ci_contexts_digest: Some(
+                    "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d".into()
+                ),
+                unresolved_threads: 1,
+                review_requests: 1,
+            }
+        );
+        let changes: [(&str, serde_json::Value); 9] = [
+            ("updatedAt", "2026-11-17T12:00:00Z".into()),
+            (
+                "headRefOid",
+                "1111111111111111111111111111111111111111".into(),
+            ),
+            ("mergeable", "CONFLICTING".into()),
+            ("mergeStateStatus", "BLOCKED".into()),
+            ("reviewDecision", "APPROVED".into()),
+            ("isDraft", true.into()),
+            ("labels", serde_json::json!({"nodes": [{"name": "a"}]})),
+            (
+                "reviewRequests",
+                serde_json::json!({"totalCount": 0, "nodes": []}),
+            ),
+            ("reviewThreads", serde_json::json!({"nodes": []})),
+        ];
+        for (field, value) in changes {
+            let mut changed = answer.clone();
+            changed[field] = value;
+            assert_ne!(marks(&changed).1, probe, "{field}");
+        }
+        let mut green = answer.clone();
+        green["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["state"] = "SUCCESS".into();
+        assert_ne!(marks(&green).1, probe, "CI");
+    }
+
+    #[test]
+    fn the_change_mark_sees_effective_ci_under_an_ignored_failure() {
+        let mut answer = node();
+        answer["mergeStateStatus"] = "UNSTABLE".into();
+        answer["reviewRequests"] = serde_json::json!({"totalCount": 0, "nodes": []});
+        answer["commits"] = serde_json::json!({"nodes": [{"commit": {"statusCheckRollup": {
+            "state": "FAILURE", "contexts": {"pageInfo": {"hasNextPage": false}, "nodes": [
+                {"__typename": "CheckRun", "name": "PR Hygiene", "status": "COMPLETED", "conclusion": "FAILURE"},
+                {"__typename": "CheckRun", "name": "lint", "status": "COMPLETED", "conclusion": "FAILURE"}
+            ]}
+        }}}]});
+        let mark = |answer: &serde_json::Value| {
+            probe_mark(&serde_json::from_value(answer.clone()).expect("probe"))
+        };
+        let red = mark(&answer);
+        let detail = serde_json::from_value(answer.clone()).expect("details");
+        assert_eq!(
+            stored(&detail).facts.ci,
+            crate::dashboard::score::CiEffective::Red
+        );
+        answer["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"][1]["conclusion"] =
+            "SUCCESS".into();
+        let green = mark(&answer);
+        assert_ne!(
+            red, green,
+            "the rollup stays FAILURE while effective CI changes"
+        );
+        let detail = serde_json::from_value(answer.clone()).expect("details");
+        assert_eq!(
+            stored(&detail).facts.ci,
+            crate::dashboard::score::CiEffective::Green
+        );
+        assert_eq!(stored(&detail).ci_red, Vec::<String>::new());
+        assert_eq!(
+            stored(&detail).mark,
+            Some(green.clone()),
+            "Q2 and Q18 agree"
+        );
+        answer["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"]
+            .as_array_mut()
+            .expect("contexts")
+            .reverse();
+        assert_eq!(mark(&answer), green, "ordering alone is not a change");
+    }
+
+    /// While GitHub's review decision still requests changes (a bot whose review counts on GitHub), the bot's request
+    /// stays in the facts, so the row keeps its "changes requested" tag and stays the user's move.
+    #[test]
+    fn a_bots_change_request_stands_while_github_still_requests_changes() {
+        let bot = |state, commit| review("thepastaclaw", "User", state, Some(commit));
+        assert_eq!(
+            blocked_by_with(
+                "CHANGES_REQUESTED",
+                vec![bot("CHANGES_REQUESTED", OLD_HEAD), bot("COMMENTED", HEAD)]
+            ),
+            (vec!["thepastaclaw".to_owned()], false)
+        );
     }
 }

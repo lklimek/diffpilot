@@ -67,6 +67,7 @@ fn pr() -> PrFacts {
         review_requested_at: None,
         review_request_age_is_approx: false,
         changes_requested_by: vec![],
+        changes_requested_by_bot: Some(false),
         changes_requested_by_human: false,
         changes_requested_human_at: None,
         reviews_truncated: false,
@@ -600,9 +601,12 @@ fn human_waiting_change_requests_and_unanswered_comments() {
         PartStatus::Estimated
     );
     assert!(
-        part(&invisible, C::HumanWaiting)
-            .basis
-            .contains("20 reviews")
+        part(&invisible, C::HumanWaiting).basis.contains(
+            "GitHub's review decision is changes requested, but the last 20 reviews hold no change request from \
+             another person"
+        ),
+        "{}",
+        part(&invisible, C::HumanWaiting).basis
     );
     let rerequested = scored(&cr(None, true, None));
     assert_eq!(
@@ -825,10 +829,13 @@ fn status(context: &str, state: &str) -> CheckContext {
 }
 
 fn classify(contexts: Vec<CheckContext>, truncated: bool) -> CiSummary {
-    classify_ci(Some(&CheckRollup {
-        contexts,
-        truncated,
-    }))
+    classify_ci(
+        Some(&CheckRollup {
+            contexts,
+            truncated,
+        }),
+        text::is_builtin_ignored_check,
+    )
 }
 
 #[test]
@@ -844,7 +851,7 @@ fn ci_classification_matches_skill_vectors() {
     assert_eq!(policy.effective, CiEffective::Green);
     assert!(policy.red.is_empty());
     assert_eq!(
-        policy.policy_not_passing,
+        policy.ignored_not_passing,
         ["PR Hygiene (PENDING)", "policy / reconcile (FAILURE)"]
     );
 
@@ -859,7 +866,7 @@ fn ci_classification_matches_skill_vectors() {
     );
     assert_eq!(red.effective, CiEffective::Red);
     assert_eq!(red.red, ["Clippy", "Test Suite", "ci/legacy"]);
-    assert_eq!(red.policy_not_passing, ["PR Hygiene (FAILURE)"]);
+    assert_eq!(red.ignored_not_passing, ["PR Hygiene (FAILURE)"]);
 
     let running = classify(
         vec![check(
@@ -946,8 +953,68 @@ fn ci_classification_matches_skill_vectors() {
         classify(vec![failed("a", "FAILURE")], true).effective,
         CiEffective::Red
     );
-    let none = classify_ci(None);
+    let none = classify_ci(None, text::is_builtin_ignored_check);
     assert_eq!((none.effective, none.red.len()), (CiEffective::None, 0));
+}
+
+/// K17 R4: a repository row's Ignored checks replace the built-ins (whole name, any case, `*` any text); an ignored
+/// check never makes CI red or pending and is listed as information; rows without a list keep the built-ins.
+#[test]
+fn ignored_checks_follow_the_repository_row() {
+    let settings = DashboardSettings {
+        repositories: vec![RepositoryRule {
+            repo: repo("acme", "platform"),
+            alias: None,
+            watch_issues: false,
+            ownership_policy: None,
+            branch_patterns: vec![],
+            ignored_checks: vec!["*lint*".into(), "Docs X.Y".into()],
+        }],
+        ..DashboardSettings::default()
+    };
+    let r = ScoreRules::new("alice", &settings);
+    let platform = repo("acme", "platform");
+    for (name, ignored) in [
+        ("Clippy lint", true),
+        ("LINT", true),
+        ("docs x.y", true),
+        ("Docs 1.2", false),
+        ("PR Hygiene", false),
+        ("Test Suite", false),
+    ] {
+        assert_eq!(r.is_ignored_check(&platform, name), ignored, "{name}");
+    }
+    let other = repo("acme", "wallet-ui");
+    for (name, ignored) in [
+        ("PR Hygiene", true),
+        ("PastaClaw review", true),
+        ("Clippy lint", false),
+    ] {
+        assert_eq!(r.is_ignored_check(&other, name), ignored, "{name}");
+    }
+    let ci = classify_ci(
+        Some(&CheckRollup {
+            contexts: vec![
+                ok("Build"),
+                failed("Clippy lint", "FAILURE"),
+                status("PR Hygiene", "PENDING"),
+            ],
+            truncated: false,
+        }),
+        |name| r.is_ignored_check(&platform, name),
+    );
+    assert_eq!(
+        (
+            ci.effective,
+            ci.pending.as_slice(),
+            ci.ignored_not_passing.as_slice()
+        ),
+        (
+            CiEffective::Pending,
+            ["PR Hygiene".to_owned()].as_slice(),
+            ["Clippy lint (FAILURE)".to_owned()].as_slice()
+        )
+    );
 }
 
 /// F39: the display size mark of a pull request from the fixed table (tiny < 150, small < 500, medium < 3000,
@@ -1758,6 +1825,7 @@ fn row(name: &str, alias: Option<&str>, patterns: &[&str]) -> RepositoryRule {
             path: "p.json".into(),
         }),
         branch_patterns: patterns.iter().map(|p| (*p).to_owned()).collect(),
+        ignored_checks: Vec::new(),
     }
 }
 
@@ -1846,41 +1914,27 @@ fn release_branch_patterns_fall_back_to_builtins() {
     );
 }
 
-#[test]
-fn approval_by_a_scanned_login_marks_ready() {
-    let ours = PrFacts {
-        labels: vec![],
-        review_requested_from_others: vec!["bob".into()],
-        ..pr()
-    };
-    let r = rules();
-    assert!(!ready_for_others(&r, &ours));
-    assert!(ready_for_others(
-        &r,
-        &PrFacts {
-            approved_by: vec!["Alice-CI".into()],
-            ..ours.clone()
-        }
-    ));
-    assert!(!ready_for_others(
-        &r,
-        &PrFacts {
-            approved_by: vec!["carol".into()],
-            ..ours.clone()
-        }
-    ));
-    assert!(ready_for_others(
-        &r,
-        &PrFacts {
-            labels: vec!["ready-for-human".into()],
-            ..ours
-        }
-    ));
+/// K15 by GitHub's signals alone: the read path's rule without a plug-in statement.
+fn waits_on_others(r: &ScoreRules, pr: &PrFacts) -> bool {
+    crate::dashboard::snapshot::waiting(r, pr, &crate::dashboard::plugin::Overlay::default())
+        .is_some()
+}
+
+/// The PRs [`waits_on_others`], longest wait first (K15 W5); a PR without a known request time waits since it was
+/// `opened`.
+fn awaiting_others<'a>(r: &ScoreRules, prs: &'a [PrFacts], opened: Timestamp) -> Vec<&'a PrFacts> {
+    let mut rows: Vec<(&PrFacts, Timestamp)> = prs
+        .iter()
+        .filter(|pr| waits_on_others(r, pr))
+        .map(|pr| (pr, pr.others_review_requested_at.unwrap_or(opened)))
+        .collect();
+    by_longest_wait(r, &mut rows);
+    rows.into_iter().map(|(pr, _)| pr).collect()
 }
 
 #[test]
-fn awaiting_others_lists_only_ready_prs_longest_wait_first() {
-    let ready = |number, author: &str, wait: Option<f64>| PrFacts {
+fn awaiting_others_lists_waiting_prs_longest_wait_first() {
+    let waiting = |number, author: &str, wait: Option<f64>| PrFacts {
         number,
         author: Some(author.into()),
         labels: vec!["ready-for-human".into()],
@@ -1889,89 +1943,146 @@ fn awaiting_others_lists_only_ready_prs_longest_wait_first() {
         ..pr()
     };
     let prs = vec![
-        ready(1, "alice", Some(1.2)),
+        waiting(1, "alice", Some(1.2)),
         PrFacts {
             labels: vec![],
-            approved_by: vec!["alice".into()],
             review_requested_from_others: vec!["team:core".into(), "carol".into()],
-            ..ready(2, "alice-ci", Some(6.0))
+            ..waiting(2, "alice-ci", Some(6.0))
         },
         PrFacts {
             mergeable: Mergeable::Conflicting,
-            ..ready(12, "alice", Some(9.0))
+            ..waiting(12, "alice", Some(9.0))
         },
-        ready(3, "alice", None),
+        waiting(3, "alice", None),
         PrFacts {
             is_draft: true,
-            ..ready(4, "alice", Some(9.0))
+            ..waiting(4, "alice", Some(9.0))
         },
-        ready(5, "bob", Some(9.0)),
+        waiting(5, "bob", Some(9.0)),
         PrFacts {
+            labels: vec![],
             review_requested_from_others: vec![],
-            ..ready(6, "alice", Some(9.0))
+            ..waiting(6, "alice", Some(9.0))
         },
         PrFacts {
             ci: CiEffective::Red,
-            ..ready(7, "alice", Some(9.0))
+            ..waiting(7, "alice", Some(9.0))
         },
         PrFacts {
             ci: CiEffective::None,
-            ..ready(8, "alice", Some(9.0))
+            ..waiting(8, "alice", Some(9.0))
         },
         PrFacts {
             unresolved_threads: 1,
-            ..ready(9, "alice", Some(9.0))
-        },
-        PrFacts {
-            labels: vec!["waiting-self-review".into()],
-            ..ready(10, "alice", Some(9.0))
+            ..waiting(9, "alice", Some(9.0))
         },
         PrFacts {
             labels: vec![],
-            approved_by: vec!["carol".into()],
-            ..ready(11, "alice-ci", Some(9.0))
+            review_decision: Some(ReviewDecision::Approved),
+            ..waiting(10, "alice", Some(9.0))
+        },
+        PrFacts {
+            review_requested_from_others: vec![],
+            ..waiting(11, "alice-ci", Some(7.0))
         },
     ];
-    let numbers: Vec<u32> = awaiting_others(&rules(), &prs)
-        .iter()
-        .map(|p| p.number)
-        .collect();
-    assert_eq!(numbers, [2, 1, 3]);
+    let numbers = |opened| -> Vec<u32> {
+        awaiting_others(&rules(), &prs, opened)
+            .iter()
+            .map(|p| p.number)
+            .collect()
+    };
+    assert_eq!(numbers(ago(1.0)), [11, 2, 1, 3]);
+    assert_eq!(
+        numbers(ago(30.0)),
+        [3, 11, 2, 1],
+        "no known request: waits since its opening"
+    );
 }
 
-/// B10: a ready PR of the user waits only on others (Waiting on others, not Needs you) unless something is the
-/// user's move: a review pending for a scanned login, a change request, a comment awaiting the reply, conflicts,
-/// a draft, or a merge the user can make (review decision approved; without a decision, a human approval).
+/// K15: the user's PR waits on others (Waiting on others, not Needs you) when nothing is the user's move (W2: no
+/// conflicts, CI green with ignored checks left out, no change request (people; a bot's until it reviews a newer
+/// head), no unresolved thread, no comment awaiting the reply, no review requested from the user; W1: the user's, not
+/// a draft) and it waits on people (W3): the ready label even when approved or mergeable, or a review requested from
+/// others while not approved and GitHub does not let the user merge it, also without the label or any approval.
 #[test]
 fn waits_on_others_only_when_nothing_is_the_users_move() {
     use crate::dashboard::score::ReviewDecision as D;
     let r = rules();
-    // dashpay/platform#5949 as stored.
-    let platform = PrFacts {
-        labels: vec!["ready-for-human".into()],
+    let requested = PrFacts {
         review_decision: Some(D::ReviewRequired),
-        approved_by: vec!["thepastaclaw".into()],
-        review_requested_from_others: ["ana", "ben", "cid", "dee", "eve", "fay"]
-            .map(Into::into)
-            .to_vec(),
+        review_requested_from_others: vec!["ana".into(), "team:core".into()],
         others_review_requested_at: Some(ago(1.0)),
+        merge_state: MergeState::Blocked,
+        viewer_can_write: true,
         ..pr()
     };
+    let labelled = PrFacts {
+        labels: vec!["Ready-For-Human".into()],
+        ..requested.clone()
+    };
     let cases = [
-        ("the reported PR", platform.clone(), true),
+        (
+            "a review requested, no label, no approval",
+            requested.clone(),
+            true,
+        ),
         (
             "only a team is requested",
             PrFacts {
                 review_requested_from_others: vec!["team:core".into()],
-                ..platform.clone()
+                ..requested.clone()
             },
             true,
         ),
         (
-            "no decision, only a bot approved",
+            "no review decision (no required review), merge blocked",
             PrFacts {
                 review_decision: None,
-                ..platform.clone()
+                ..requested.clone()
+            },
+            true,
+        ),
+        (
+            "approved: merging is the user's move",
+            PrFacts {
+                review_decision: Some(D::Approved),
+                ..requested.clone()
+            },
+            false,
+        ),
+        (
+            "GitHub lets the user merge it",
+            PrFacts {
+                merge_state: MergeState::Unstable,
+                review_decision: None,
+                ..requested.clone()
+            },
+            false,
+        ),
+        (
+            "nobody requested, no label",
+            PrFacts {
+                review_requested_from_others: vec![],
+                ..requested.clone()
+            },
+            false,
+        ),
+        ("ready label", labelled.clone(), true),
+        (
+            "ready label, approved and mergeable",
+            PrFacts {
+                review_decision: Some(D::Approved),
+                merge_state: MergeState::Clean,
+                ..labelled.clone()
+            },
+            true,
+        ),
+        (
+            "ready label, nobody requested",
+            PrFacts {
+                review_requested_from_others: vec![],
+                ..labelled.clone()
             },
             true,
         ),
@@ -1979,7 +2090,7 @@ fn waits_on_others_only_when_nothing_is_the_users_move() {
             "a review is pending for us",
             PrFacts {
                 review_pending_for_us: true,
-                ..platform.clone()
+                ..labelled.clone()
             },
             false,
         ),
@@ -1987,9 +2098,7 @@ fn waits_on_others_only_when_nothing_is_the_users_move() {
             "changes requested",
             PrFacts {
                 review_decision: Some(D::ChangesRequested),
-                changes_requested_by: vec!["ana".into()],
-                changes_requested_by_human: true,
-                ..platform.clone()
+                ..labelled.clone()
             },
             false,
         ),
@@ -1997,43 +2106,31 @@ fn waits_on_others_only_when_nothing_is_the_users_move() {
             "a bot requests changes",
             PrFacts {
                 changes_requested_by: vec!["coderabbitai".into()],
-                ..platform.clone()
+                ..labelled.clone()
             },
             false,
         ),
         (
-            "approved and mergeable: merging is the user's move",
+            "an unresolved thread",
             PrFacts {
-                review_decision: Some(D::Approved),
-                approved_by: vec!["ana".into()],
-                ..platform.clone()
+                unresolved_threads: 1,
+                ..labelled.clone()
             },
             false,
         ),
         (
-            "no decision, a human approved",
+            "CI running",
             PrFacts {
-                review_decision: None,
-                approved_by: vec!["ana".into(), "thepastaclaw".into()],
-                ..platform.clone()
+                ci: CiEffective::Pending,
+                ..labelled.clone()
             },
             false,
-        ),
-        (
-            "no decision, only a GitHub App approved (Bot type, no [bot] suffix)",
-            PrFacts {
-                review_decision: None,
-                approved_by: vec!["review-helper".into()],
-                approved_by_bots: vec!["review-helper".into()],
-                ..platform.clone()
-            },
-            true,
         ),
         (
             "a comment awaits our reply",
             PrFacts {
                 awaiting_our_reply: true,
-                ..platform.clone()
+                ..labelled.clone()
             },
             false,
         ),
@@ -2041,7 +2138,7 @@ fn waits_on_others_only_when_nothing_is_the_users_move() {
             "conflicts",
             PrFacts {
                 mergeable: Mergeable::Conflicting,
-                ..platform.clone()
+                ..labelled.clone()
             },
             false,
         ),
@@ -2049,7 +2146,15 @@ fn waits_on_others_only_when_nothing_is_the_users_move() {
             "draft",
             PrFacts {
                 is_draft: true,
-                ..platform.clone()
+                ..labelled.clone()
+            },
+            false,
+        ),
+        (
+            "someone else's",
+            PrFacts {
+                author: Some("bob".into()),
+                ..labelled.clone()
             },
             false,
         ),
@@ -2057,6 +2162,63 @@ fn waits_on_others_only_when_nothing_is_the_users_move() {
     for (case, facts, waits) in cases {
         assert_eq!(waits_on_others(&r, &facts), waits, "{case}");
     }
+}
+
+/// The owner's example, dashpay/platform#5949: the user's PR into the release branch v5.2-dev (default v5.1-dev),
+/// approved by a human and a bot, CI green except PR Hygiene pending (ignored), merge state unstable, the ready
+/// label and five requested reviewers: it waits on others (the label), it is not ready to merge.
+#[test]
+fn a_labelled_pr_into_a_release_branch_waits_on_others_not_ready_to_merge() {
+    let r = rules();
+    let ci = classify_ci(
+        Some(&CheckRollup {
+            contexts: vec![
+                ok("Rust tests"),
+                ok("JS tests"),
+                status("PR Hygiene", "PENDING"),
+            ],
+            truncated: false,
+        }),
+        |name| r.is_ignored_check(&repo("dashpay", "platform"), name),
+    );
+    let reviewers = [
+        "QuantumExplorer",
+        "shumkov",
+        "pauldelucia",
+        "ktechmidas",
+        "team:platform",
+    ];
+    let platform = PrFacts {
+        repo: repo("dashpay", "platform"),
+        number: 5949,
+        author: Some("alice".into()),
+        base_ref: Some("v5.2-dev".into()),
+        default_branch: Some("v5.1-dev".into()),
+        review_decision: Some(ReviewDecision::Approved),
+        approved_by: vec!["llbartekll".into(), "thepastaclaw".into()],
+        approved_by_bots: vec!["thepastaclaw".into()],
+        ci: ci.effective,
+        merge_state: MergeState::Unstable,
+        viewer_can_write: true,
+        labels: vec!["ready-for-human".into()],
+        review_requested_from_others: reviewers.map(Into::into).to_vec(),
+        others_review_requested_at: Some(ago(4.0)),
+        ..pr()
+    };
+    assert_eq!(platform.ci, CiEffective::Green, "PR Hygiene is ignored");
+    assert!(!ready_to_merge(&r, &platform), "the label needs a human");
+    assert!(waits_on_others(&r, &platform));
+    assert_eq!(ready_label(&r, &platform), Some("ready-for-human"));
+    assert!(
+        ready_to_merge(
+            &r,
+            &PrFacts {
+                labels: vec![],
+                ..platform.clone()
+            }
+        ),
+        "without the label: ready to merge (release branch, unstable only through an ignored check)"
+    );
 }
 
 /// A linked login listed as an excluded author: its pull requests are not shown as waiting on others either.
@@ -2076,16 +2238,16 @@ fn awaiting_others_leaves_out_excluded_authors() {
         ..pr()
     };
     let prs = vec![ready(1, "alice"), ready(2, "alice-ci")];
-    let numbers: Vec<u32> = awaiting_others(&ScoreRules::new("alice", &settings), &prs)
+    let numbers: Vec<u32> = awaiting_others(&ScoreRules::new("alice", &settings), &prs, ago(2.0))
         .iter()
         .map(|p| p.number)
         .collect();
     assert_eq!(numbers, [1]);
 }
 
-/// Ready to merge: the user's own PR into the default branch, not a draft, write access, every check passed (merge
-/// state clean or has hooks, CI not red) and nothing left to answer (no unresolved thread, change request or reply
-/// awaited); a stored snapshot without these facts lists none.
+/// Ready to merge (K17): the user's own PR into the default branch or a release branch, not a draft, write access,
+/// no conflicts, the merge state counts as clean (clean, has hooks, or unstable while only ignored checks did not
+/// pass), CI not red, nothing left to answer and no ready label; a stored snapshot without these facts lists none.
 #[test]
 fn ready_to_merge_when_github_lets_the_user_merge() {
     let r = rules();
@@ -2098,17 +2260,34 @@ fn ready_to_merge_when_github_lets_the_user_merge() {
     let cases = [
         ("clean", ready.clone(), true),
         (
-            "targets a branch other than the default branch",
+            "into a release branch (built-in vX.Y-dev)",
             PrFacts {
                 base_ref: Some("v1.0-dev".into()),
+                ..ready.clone()
+            },
+            true,
+        ),
+        (
+            "into a release branch, default branch not known",
+            PrFacts {
+                base_ref: Some("release/2.1".into()),
+                default_branch: None,
+                ..ready.clone()
+            },
+            true,
+        ),
+        (
+            "into a feature branch",
+            PrFacts {
+                base_ref: Some("feat/x".into()),
                 ..ready.clone()
             },
             false,
         ),
         (
-            "default branch not known",
+            "base branch not known",
             PrFacts {
-                default_branch: None,
+                base_ref: None,
                 ..ready.clone()
             },
             false,
@@ -2122,7 +2301,15 @@ fn ready_to_merge_when_github_lets_the_user_merge() {
             true,
         ),
         (
-            "a check that is not required fails (GitHub would allow the merge)",
+            "unstable only through ignored, skipped or neutral checks",
+            PrFacts {
+                merge_state: MergeState::Unstable,
+                ..ready.clone()
+            },
+            true,
+        ),
+        (
+            "unstable: a check that is not required fails",
             PrFacts {
                 merge_state: MergeState::Unstable,
                 ci: CiEffective::Red,
@@ -2131,9 +2318,26 @@ fn ready_to_merge_when_github_lets_the_user_merge() {
             false,
         ),
         (
+            "unstable: a check that is not required is running",
+            PrFacts {
+                merge_state: MergeState::Unstable,
+                ci: CiEffective::Pending,
+                ..ready.clone()
+            },
+            false,
+        ),
+        (
             "red CI",
             PrFacts {
                 ci: CiEffective::Red,
+                ..ready.clone()
+            },
+            false,
+        ),
+        (
+            "conflicts",
+            PrFacts {
+                mergeable: Mergeable::Conflicting,
                 ..ready.clone()
             },
             false,
@@ -2179,13 +2383,20 @@ fn ready_to_merge_when_github_lets_the_user_merge() {
             true,
         ),
         (
-            "still waiting on others' review",
+            "a review requested from others (approval is GitHub's merge state)",
             PrFacts {
-                labels: vec!["ready-for-human".into()],
                 review_requested_from_others: vec!["bob".into()],
                 ..ready.clone()
             },
             true,
+        ),
+        (
+            "the ready label: it needs a human",
+            PrFacts {
+                labels: vec!["ready-for-human".into()],
+                ..ready.clone()
+            },
+            false,
         ),
         (
             "blocked",
@@ -2204,7 +2415,7 @@ fn ready_to_merge_when_github_lets_the_user_merge() {
             false,
         ),
         (
-            "conflicts",
+            "dirty",
             PrFacts {
                 merge_state: MergeState::Dirty,
                 ..ready.clone()
@@ -2263,6 +2474,35 @@ fn ready_to_merge_when_github_lets_the_user_merge() {
     assert!(!ready_to_merge(&r, &old));
 }
 
+/// K17 R2: a repository row's Release branches decide which bases Ready to merge accepts besides the default branch.
+#[test]
+fn ready_to_merge_follows_the_rows_release_branches() {
+    let settings = DashboardSettings {
+        repositories: vec![RepositoryRule {
+            repo: repo("acme", "wallet-ui"),
+            alias: None,
+            watch_issues: false,
+            ownership_policy: None,
+            branch_patterns: vec!["stable/*".into()],
+            ignored_checks: vec![],
+        }],
+        ..DashboardSettings::default()
+    };
+    let r = ScoreRules::new("alice", &settings);
+    let into = |base: &str| PrFacts {
+        merge_state: MergeState::Clean,
+        viewer_can_write: true,
+        base_ref: Some(base.into()),
+        ..pr()
+    };
+    assert!(ready_to_merge(&r, &into("main")), "the default branch");
+    assert!(ready_to_merge(&r, &into("stable/3")));
+    assert!(
+        !ready_to_merge(&r, &into("v1.0-dev")),
+        "the row replaces the built-ins"
+    );
+}
+
 /// A merge state GitHub had not computed is pending only for a PR that would otherwise be checked for Ready to
 /// merge.
 #[test]
@@ -2275,6 +2515,7 @@ fn merge_state_pending_only_for_the_users_mergeable_prs() {
         ..pr()
     };
     assert!(merge_state_pending(&r, &unknown));
+    assert!(merge_state_pending_for_ready(&r, &unknown));
     assert!(!ready_to_merge(&r, &unknown));
     for (case, facts) in [
         (
@@ -2307,6 +2548,28 @@ fn merge_state_pending_only_for_the_users_mergeable_prs() {
         ),
     ] {
         assert!(!merge_state_pending(&r, &facts), "{case}");
+    }
+    for (case, facts) in [
+        (
+            "into a feature branch",
+            PrFacts {
+                base_ref: Some("feat/x".into()),
+                ..unknown.clone()
+            },
+        ),
+        (
+            "the ready label",
+            PrFacts {
+                labels: vec!["ready-for-human".into()],
+                ..unknown.clone()
+            },
+        ),
+    ] {
+        assert!(merge_state_pending(&r, &facts), "{case}: read again");
+        assert!(
+            !merge_state_pending_for_ready(&r, &facts),
+            "{case}: not counted"
+        );
     }
 }
 
@@ -2342,15 +2605,12 @@ fn merge_ready_by_display_id_without_excluded_authors() {
     assert!(scored(&prs[0]).excluded.is_none(), "still ranked");
 }
 
-/// K15 says a PR waits only on others when "nothing is the user's move", including "no merge the user can make";
-/// K17 and the docs say a PR in Ready to merge stays ranked. A PR GitHub lets the user merge (no required review,
-/// so no review decision; a review requested from someone else) must therefore not be listed as waiting only on
-/// others.
+/// K15 W4: Ready to merge and Waiting on others are disjoint; a PR ready to merge stays ranked, also when a review
+/// is still requested from someone else.
 #[test]
-fn a_pr_ready_to_merge_does_not_wait_only_on_others() {
+fn a_pr_ready_to_merge_does_not_wait_on_others() {
     let r = rules();
     let facts = PrFacts {
-        labels: vec!["ready-for-human".into()],
         review_requested_from_others: vec!["bob".into()],
         others_review_requested_at: Some(ago(2.0)),
         review_decision: None,
@@ -2363,19 +2623,16 @@ fn a_pr_ready_to_merge_does_not_wait_only_on_others() {
         ready_to_merge(&r, &facts),
         "precondition: GitHub lets the user merge it"
     );
-    assert!(
-        !waits_on_others(&r, &facts),
-        "listed under Waiting on others (nothing is your move) and Ready to merge at once"
-    );
+    assert!(!nothing_is_users_move(&r, &facts));
+    assert!(!waits_on_others(&r, &facts));
 }
 
-/// Waiting on others keeps GitHub's merge button as "a merge the user can make" (K15): a PR into a feature branch,
-/// or with a failed check that is not required, is the user's move although Ready to merge does not list it.
+/// K15 W3c keeps GitHub's merge button as "a merge the user can make": a PR into a feature branch, or with a failed
+/// check that is not required, is the user's move although Ready to merge does not list it.
 #[test]
-fn a_pr_github_lets_the_user_merge_does_not_wait_only_on_others() {
+fn a_pr_github_lets_the_user_merge_does_not_wait_on_a_requested_review() {
     let r = rules();
     let mergeable = PrFacts {
-        labels: vec!["ready-for-human".into()],
         review_requested_from_others: vec!["bob".into()],
         others_review_requested_at: Some(ago(2.0)),
         review_decision: None,
@@ -2393,9 +2650,10 @@ fn a_pr_github_lets_the_user_merge_does_not_wait_only_on_others() {
             },
         ),
         (
-            "a check that is not required failed",
+            "a check that is not required failed (CI green: the check is ignored)",
             PrFacts {
                 merge_state: MergeState::Unstable,
+                base_ref: Some("feat/x".into()),
                 ..mergeable.clone()
             },
         ),
@@ -2444,9 +2702,11 @@ fn text_rules_match_the_skill_patterns() {
         ("CodeRabbit", true),
         ("review", true),
         ("review-bot", false),
+        ("PastaClaw review", true),
+        ("pastaclaw reviews", false),
         ("Clippy", false),
     ] {
-        assert_eq!(text::is_policy_check(name), policy, "{name}");
+        assert_eq!(text::is_builtin_ignored_check(name), policy, "{name}");
     }
     assert_eq!(text::version(" v1.8.2+build.5 ", false), Some((1, 8, 2)));
     assert_eq!(text::version("1.8.x", false), None);

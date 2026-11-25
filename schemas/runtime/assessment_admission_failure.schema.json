@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AssessmentAdmissionFailure",
+  "description": "Pre-admission rejection consumes no slot.",
+  "oneOf": [
+    {
+      "description": "Daily logical-pass cap reached.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "const": "assessment_daily_limit"
+        },
+        "resets_at": {
+          "description": "Next UTC midnight.",
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "code",
+        "resets_at"
+      ]
+    },
+    {
+      "description": "No linked, unpaused credential is available.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "const": "credential_missing"
+        }
+      },
+      "required": [
+        "code"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,261 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WatchList",
+  "description": "Response of RW2.",
+  "type": "object",
+  "properties": {
+    "watches": {
+      "description": "Watches, newest first.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/WatchedPr"
+      }
+    },
+    "limit": {
+      "description": "Most watched PRs per user.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "passes_today": {
+      "description": "Assessment passes charged to the reader in the last 24 hours (automatic and question passes).",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "daily_limit": {
+      "description": "Passes per user and 24 hours; automatic passes stop at it.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "watches",
+    "limit",
+    "passes_today",
+    "daily_limit"
+  ],
+  "$defs": {
+    "WatchedPr": {
+      "description": "A watched pull request (RW2, V6).",
+      "type": "object",
+      "properties": {
+        "pr": {
+          "description": "Pull request.",
+          "$ref": "#/$defs/PrRef"
+        },
+        "title": {
+          "description": "Title.",
+          "type": "string"
+        },
+        "since": {
+          "description": "Watching since.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "last_probe_at": {
+          "description": "Last probe.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "last_auto_pass": {
+          "description": "Latest automatic assessment.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AutoPass"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "description": "State.",
+          "$ref": "#/$defs/WatchState"
+        },
+        "ended_at": {
+          "description": "When the watch ended (merged or closed).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "badge": {
+          "description": "State badge.",
+          "$ref": "#/$defs/PrBadgeView"
+        }
+      },
+      "required": [
+        "pr",
+        "title",
+        "since",
+        "state",
+        "badge"
+      ]
+    },
+    "PrRef": {
+      "description": "A pull request of a repository.",
+      "type": "object",
+      "properties": {
+        "repo": {
+          "description": "The repository.",
+          "$ref": "#/$defs/RepoRef"
+        },
+        "number": {
+          "description": "The pull request number.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "repo",
+        "number"
+      ]
+    },
+    "RepoRef": {
+      "description": "A GitHub repository.",
+      "type": "object",
+      "properties": {
+        "owner": {
+          "description": "Owner (user or organisation) login.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Repository name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "name"
+      ]
+    },
+    "AutoPass": {
+      "description": "The latest automatic assessment.",
+      "type": "object",
+      "properties": {
+        "at": {
+          "description": "When it ended.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "questions": {
+          "description": "Questions waiting for a decision when it ended.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "at",
+        "questions"
+      ]
+    },
+    "WatchState": {
+      "description": "State of a watch. Open enum.",
+      "oneOf": [
+        {
+          "description": "Probed on schedule.",
+          "type": "string",
+          "const": "active"
+        },
+        {
+          "description": "A pass waits for the bot's round to end.",
+          "type": "string",
+          "const": "waiting_for_bot_round"
+        },
+        {
+          "description": "An assessment job is queued or running.",
+          "type": "string",
+          "const": "job_running"
+        },
+        {
+          "description": "Today's automatic assessment limit is reached.",
+          "type": "string",
+          "const": "limit_reached"
+        },
+        {
+          "description": "No GitHub token pair: \"sign in again\".",
+          "type": "string",
+          "const": "paused"
+        },
+        {
+          "description": "The PR was merged or closed; watching ended.",
+          "type": "string",
+          "const": "ended"
+        }
+      ]
+    },
+    "PrBadgeView": {
+      "description": "The badge with the facts behind it (tooltip).",
+      "type": "object",
+      "properties": {
+        "badge": {
+          "description": "Badge; null when none applies or inputs are unknown.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PrBadge"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "facts": {
+          "description": "Facts diffpilot read that select it.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "missing": {
+          "description": "Inputs not known (no B5 while any is listed).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "facts",
+        "missing"
+      ]
+    },
+    "PrBadge": {
+      "description": "PR state badge (plan §3.9 B1–B5); first match wins.",
+      "oneOf": [
+        {
+          "description": "B1.",
+          "type": "string",
+          "const": "blocked_failing"
+        },
+        {
+          "description": "B2.",
+          "type": "string",
+          "const": "questions_waiting"
+        },
+        {
+          "description": "B3.",
+          "type": "string",
+          "const": "executing"
+        },
+        {
+          "description": "B4.",
+          "type": "string",
+          "const": "waiting_for_bot_round"
+        },
+        {
+          "description": "B5.",
+          "type": "string",
+          "const": "ready_to_merge"
+        }
+      ]
+    }
+  }
+}

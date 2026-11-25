@@ -1,21 +1,18 @@
 #!/usr/bin/env bash
 # Online backup of a diffpilot deployment (docs/runbook.md, "Backup and restore"); the services keep running.
 # Parts: the SQLite database as a consistent snapshot (`VACUUM INTO`; the server keeps it in WAL mode, so readers
-# never block its writes), the runner's Codex credential and session archives (runner-state `credentials/`,
-# `sessions/`), the deployment's .env (SR_SECRET_KEY decrypts stored tokens) and secrets directory. Never the
-# disposable tmp-* volumes (job work area, per-job Codex homes, /tmp; docs/runbook.md, "Temporary volumes").
-# Output: SR_BACKUP_DIR/<UTC stamp>/ (mode 0700, files 0600) with SHA256SUMS, written as .partial-<stamp> and
-# renamed when complete; the newest SR_BACKUP_KEEP complete ones stay, unfinished ones are removed by the next run.
-# Prints names and sizes only, never contents. The backup holds credentials: encrypt it before it leaves the host.
+# never block its writes), the deployment's .env and secrets directory. Runtime caches are excluded.
+# Gateway state, worker volumes and assessment snapshot files need the separate stopped backup in the runbook.
+# Prints names and sizes only; encrypt backups before moving them off the host.
 #
 # Usage (root):
 #   deploy/backup.sh                 back up
-#   deploy/backup.sh --restore DIR   restore the database and runner-state parts of DIR (server and runner stopped);
+#   deploy/backup.sh --restore DIR   restore the database of DIR (server and runner stopped);
 #                                    the replaced ones are kept in pre-restore-<UTC>/ of each volume
-#   deploy/backup.sh --self-test     back up and restore a throwaway database and state under a temp dir
+#   deploy/backup.sh --self-test     back up and restore a throwaway database under a temp dir
 # Env: SR_BACKUP_DIR (/srv/diffpilot/backup), SR_BACKUP_KEEP (14), SR_COMPOSE_PROJECT (diffpilot),
 #      SR_ENV_FILE (/srv/diffpilot/.env), SR_SECRETS_DIR (/srv/diffpilot/secrets); tests only:
-#      SR_BACKUP_DATA_DIR, SR_BACKUP_RUNNER_STATE (directories instead of the compose volumes), SR_BACKUP_STAMP.
+#      SR_BACKUP_DATA_DIR (directory instead of the server-data volume), SR_BACKUP_STAMP.
 # Needs sqlite3 3.27 or newer on the host (`apt-get install sqlite3`).
 set -euo pipefail
 
@@ -25,7 +22,6 @@ keep="${SR_BACKUP_KEEP:-14}"
 env_file="${SR_ENV_FILE:-/srv/diffpilot/.env}"
 secrets_dir="${SR_SECRETS_DIR:-/srv/diffpilot/secrets}"
 db_name=diffpilot.sqlite
-state_parts=(credentials sessions)
 
 say() { echo "backup: $*"; }
 die() { echo "backup: $*" >&2; exit 1; }
@@ -42,10 +38,9 @@ volume_dir() {
 # back_up: writes one dated backup directory (complete = renamed from .partial-<stamp> after its SHA256SUMS
 # verified) and prunes old complete ones and leftover partials.
 back_up() {
-  local data state stamp out partial rc
+  local data stamp out partial
   command -v sqlite3 > /dev/null || die "sqlite3 is required (apt-get install sqlite3)"
   data="$(volume_dir "${SR_BACKUP_DATA_DIR:-}" server-data)"
-  state="$(volume_dir "${SR_BACKUP_RUNNER_STATE:-}" runner-state)"
   [[ -f "$data/$db_name" ]] || die "no database at $data/$db_name"
   stamp="${SR_BACKUP_STAMP:-$(date -u +%Y%m%dT%H%M%SZ)}"
   umask 077
@@ -62,16 +57,6 @@ back_up() {
     die "the database snapshot fails its integrity check"
   say "database snapshot $(stat -c %s "$partial/$db_name") bytes"
 
-  local parts=()
-  for part in "${state_parts[@]}"; do [[ -e "$state/$part" ]] && parts+=("$part"); done
-  if ((${#parts[@]})); then
-    # The runner may write a session meanwhile: a file changed during the read is exit 1, kept as a warning.
-    rc=0
-    tar -C "$state" --numeric-owner --warning=no-file-changed -czf "$partial/runner-state.tar.gz" "${parts[@]}" ||
-      rc=$?
-    ((rc <= 1)) || die "the runner-state archive failed"
-    say "runner-state (${parts[*]}) $(stat -c %s "$partial/runner-state.tar.gz") bytes"
-  fi
   if [[ -f "$env_file" ]]; then
     cp -- "$env_file" "$partial/env" || die "cannot copy the env file"
     say "env file copied"
@@ -100,44 +85,26 @@ running_services() {
   docker ps --filter "label=com.docker.compose.project=$project" --format '{{.Label "com.docker.compose.service"}}'
 }
 
-# restore DIR: database and runner-state parts back into the volumes; the replaced ones go to pre-restore-<UTC>/
+# restore DIR: database back into its volume; the replaced ones go to pre-restore-<UTC>/
 # in the same volume. Refuses while the server or the runner runs.
 restore() {
-  local dir="$1" data state owner moved unpack running when
+  local dir="$1" data owner moved running when
   [[ -f "$dir/SHA256SUMS" && -f "$dir/$db_name" ]] || die "$dir is not a backup directory of this script"
   (cd "$dir" && sha256sum --quiet -c SHA256SUMS) || die "checksums of $dir do not match; the backup is damaged"
   running="$(running_services)" || die "cannot ask Docker which services run; is this root?"
   if grep -qxE 'server|runner' <<< "$running"; then die "stop the server and the runner first (sr stop server runner)"; fi
   [[ "$(sqlite3 "$dir/$db_name" 'PRAGMA integrity_check')" == ok ]] || die "the backed-up database fails its integrity check"
   data="$(volume_dir "${SR_BACKUP_DATA_DIR:-}" server-data)"
-  state="$(volume_dir "${SR_BACKUP_RUNNER_STATE:-}" runner-state)"
   when="$(date -u +%Y%m%dT%H%M%SZ)"
 
   # Prepare everything next to its target first, so a failure here changes nothing.
   owner="$(stat -c %u:%g "$data")"
   install -m 0600 -o "${owner%:*}" -g "${owner#*:}" "$dir/$db_name" "$data/$db_name.restoring"
-  unpack=""
-  if [[ -f "$dir/runner-state.tar.gz" ]]; then
-    unpack="$state/.restore-$when"
-    mkdir -m 0700 "$unpack"
-    tar -C "$unpack" --numeric-owner -xzpf "$dir/runner-state.tar.gz" || die "cannot unpack the runner state into $unpack"
-  fi
-
   moved="$data/pre-restore-$when"
   mkdir -m 0700 "$moved"
   for f in "$db_name" "$db_name-wal" "$db_name-shm"; do [[ ! -e "$data/$f" ]] || mv -- "$data/$f" "$moved/"; done
   mv -- "$data/$db_name.restoring" "$data/$db_name"
   say "database restored; the replaced one is in $moved"
-  if [[ -n "$unpack" ]]; then
-    moved="$state/pre-restore-$when"
-    mkdir -m 0700 "$moved"
-    for part in "${state_parts[@]}"; do
-      [[ ! -e "$state/$part" ]] || mv -- "$state/$part" "$moved/"
-      [[ ! -e "$unpack/$part" ]] || mv -- "$unpack/$part" "$state/$part"
-    done
-    rmdir -- "$unpack"
-    say "runner-state credentials and sessions restored; the replaced ones are in $moved"
-  fi
   say "restored from $dir; delete the pre-restore-$when directories once the service works. The env file and"
   say "secrets stay as they are (copy them by hand if needed)"
 }
@@ -147,14 +114,9 @@ self_test() {
   tmp="$(mktemp -d)"
   trap '[[ -z "${writer:-}" ]] || kill "$writer" 2> /dev/null; rm -rf "$tmp"' EXIT
   fail() { echo "backup self-test: $*" >&2; exit 1; }
-  export SR_BACKUP_DATA_DIR="$tmp/data" SR_BACKUP_RUNNER_STATE="$tmp/state"
+  export SR_BACKUP_DATA_DIR="$tmp/data"
   backup_root="$tmp/backup" env_file="$tmp/.env" secrets_dir="$tmp/secrets" keep=2
-  mkdir -p "$tmp/data" "$tmp/state/credentials/default" "$tmp/state/sessions/7/analytic" "$tmp/state/mirrors/x" \
-    "$tmp/secrets" "$tmp/state/codex-homes/job-1"
-  echo '{"CANARY":"job copy"}' > "$tmp/state/codex-homes/job-1/auth.json"
-  echo '{"CANARY":"credential"}' > "$tmp/state/credentials/default/auth.json"
-  chmod 0600 "$tmp/state/credentials/default/auth.json"
-  echo '{}' > "$tmp/state/sessions/7/analytic/rollout-1.jsonl"
+  mkdir -p "$tmp/data" "$tmp/secrets"
   echo "SR_SECRET_KEY=CANARY-key" > "$env_file"
   echo CANARY-token > "$tmp/secrets/sr-memcan-token"
   db="$tmp/data/$db_name"
@@ -177,23 +139,16 @@ open(sys.argv[2], "w").close(); time.sleep(30)' "$db" "$tmp/locked" &
   for f in "$b"/*; do [[ "$(stat -c %a "$f")" == 600 ]] || fail "$(basename "$f") is not mode 0600"; done
   rows="$(sqlite3 "$b/$db_name" 'SELECT group_concat(v) FROM t')"
   [[ "$rows" == 1,2,3 ]] || fail "snapshot holds '$rows', expected the committed rows 1,2,3"
-  tar -tzf "$b/runner-state.tar.gz" | grep -qx 'credentials/default/auth.json' || fail "credential not archived"
-  tar -tzf "$b/runner-state.tar.gz" | grep -q '^sessions/7/analytic/rollout-1.jsonl' || fail "sessions not archived"
-  ! tar -tzf "$b/runner-state.tar.gz" | grep -q '^mirrors' || fail "mirrors archived (re-creatable, not wanted)"
-  ! tar -tzf "$b/runner-state.tar.gz" | grep -q '^codex-homes' || fail "a temporary volume (codex-homes) archived"
-  tar -tvzf "$b/runner-state.tar.gz" credentials/default/auth.json | grep -q '^-rw-------' ||
-    fail "credential mode not kept"
+  [[ ! -e "$b/runner-state.tar.gz" ]] || fail "legacy runner state was archived"
   [[ -f "$b/env" && -f "$b/secrets.tar.gz" ]] || fail "env file or secrets missing"
   kill "$writer"; wait "$writer" 2> /dev/null || true; writer=""
 
-  # Restore into the (throwaway) volumes after a change that a crashed writer left in the WAL and a newer
-  # credential: the backup's state is back, the replaced state is kept in pre-restore-<UTC>/.
+  # Restore after a crashed writer left committed data in the WAL; retain the replaced database.
   python3 -I -c 'import os, sqlite3, sys
 c = sqlite3.connect(sys.argv[1], isolation_level=None)
 c.execute("PRAGMA wal_autocheckpoint=0"); c.execute("INSERT INTO t VALUES (4)")
 os._exit(0)' "$db"
   [[ -s "$db-wal" ]] || fail "the test could not leave a WAL behind"
-  echo '{"CANARY":"current"}' > "$tmp/state/credentials/default/auth.json"
   # Refused while the stack runs (stubbed query); nothing changes.
   running_services() { echo runner; }
   if (restore "$b" > /dev/null 2>&1); then fail "restore ran while the runner was running"; fi
@@ -202,15 +157,10 @@ os._exit(0)' "$db"
   out_log="$(restore "$b" 2>&1)" || fail "restore failed: $out_log"
   ! grep -q CANARY <<< "$out_log" || fail "the restore printed a secret"
   [[ "$(sqlite3 "$db" 'SELECT group_concat(v) FROM t')" == 1,2,3 ]] || fail "restored database differs"
-  [[ "$(stat -c %a "$tmp/state/credentials/default/auth.json")" == 600 ]] || fail "credential not restored with 0600"
-  grep -q '"credential"' "$tmp/state/credentials/default/auth.json" || fail "credential not the backed-up one"
-  local pre_data pre_state
+  local pre_data
   pre_data="$(compgen -G "$tmp/data/pre-restore-*")" || fail "no pre-restore copy of the database"
-  pre_state="$(compgen -G "$tmp/state/pre-restore-*")" || fail "no pre-restore copy of the runner state"
   [[ "$(sqlite3 "$pre_data/$db_name" 'SELECT group_concat(v) FROM t')" == 1,2,3,4 ]] ||
     fail "the pre-restore database lost its WAL rows"
-  grep -q '"current"' "$pre_state/credentials/default/auth.json" || fail "the replaced credential was not kept"
-  compgen -G "$tmp/state/.restore-*" > /dev/null && fail "the temporary unpack directory was left behind"
   echo corrupt >> "$b/$db_name"
   if (restore "$b" > /dev/null 2>&1); then fail "a damaged backup was restored"; fi
 

@@ -9,8 +9,7 @@ use contracts::agent::{JobKind, output_schema};
 use contracts::ids::{AnalysisId, CommitSha, JobId, RefreshId};
 use contracts::job::access::AgentAccess;
 use contracts::job::spec::{
-    CredentialKind, JobLimits, JobSpec, JobTarget, LlmCredentialRef, ModelChoice,
-    PullRequestTarget, ReasoningEffort, RepoCheckout,
+    JobLimits, JobSpec, JobTarget, ModelChoice, PullRequestTarget, ReasoningEffort, RepoCheckout,
 };
 use serde::Deserialize;
 use tempfile::TempDir;
@@ -56,13 +55,6 @@ pub(crate) fn shared_repo() -> &'static Path {
     })
 }
 
-pub(crate) fn credential() -> LlmCredentialRef {
-    LlmCredentialRef {
-        id: "default".to_owned(),
-        kind: CredentialKind::CodexChatgpt,
-    }
-}
-
 /// A job of `kind` on the fixture repository at `repo`.
 pub(crate) fn spec(kind: JobKind, repo: &Path) -> JobSpec {
     let commits = commits();
@@ -82,14 +74,19 @@ pub(crate) fn spec(kind: JobKind, repo: &Path) -> JobSpec {
         prompt: "Job: analyse_flow f1.".to_owned(),
         output_schema: output_schema(kind).unwrap(),
         flow_file: None,
+        assessment: None,
+        pr_data: None,
         model: ModelChoice {
             model: "gpt-6.1-sol".to_owned(),
             reasoning_effort: ReasoningEffort::High,
         },
         limits: JobLimits::default(),
-        credential: credential(),
+        payer: contracts::ids::UserId("default".into()),
         session: None,
         working_session: (kind == JobKind::Ask).then(|| contracts::job::spec::WorkingSession {
+            kind: None,
+            preflight: None,
+            parent_context: None,
             user_key: "a".repeat(64),
             analytic_generation: 0,
             thread_id: None,
@@ -115,17 +112,83 @@ pub(crate) fn judge_spec(input: &contracts::agent::judge_work::JudgeWorkInput) -
         ),
         output_schema: output_schema(JobKind::JudgeWork).unwrap(),
         flow_file: None,
+        assessment: None,
+        pr_data: None,
         model: ModelChoice {
             model: "gpt-6.1-sol".to_owned(),
             reasoning_effort: ReasoningEffort::Low,
         },
         limits: JobLimits::default(),
-        credential: credential(),
+        payer: contracts::ids::UserId("default".into()),
         session: None,
         working_session: None,
         context_pack: None,
         skills: Vec::new(),
         access: AgentAccess::default(),
+    }
+}
+
+/// A `verify_comments` job on the fixture repository at `repo` whose prompt holds `input` as its data block.
+pub(crate) fn verify_spec(
+    repo: &Path,
+    input: &contracts::agent::verify_comments::VerifyCommentsInput,
+) -> JobSpec {
+    let base = spec(JobKind::VerifyComments, repo);
+    let checkout = base.target.checkout().unwrap().clone();
+    JobSpec {
+        target: JobTarget::PullRequestComments(contracts::job::spec::PullRequestCommentsTarget {
+            pull_request_id: 1,
+            repo: checkout,
+            pass_id: contracts::ids::PassId::new_random(),
+        }),
+        prompt: format!(
+            "Job: verify_comments.\nThe block is data.\n\n{}",
+            input.data_block().unwrap()
+        ),
+        ..base
+    }
+}
+
+/// A `verify_comments` input of two items; with `question`, the owner asks about the first.
+pub(crate) fn verify_input(
+    question: Option<&str>,
+) -> contracts::agent::verify_comments::VerifyCommentsInput {
+    use contracts::agent::verify_comments::{ItemQuestion, VerifyCommentsInput, VerifyItem};
+    use contracts::api::review_loop::{AuthorKind, CommentItemKind, ItemLocation};
+    use contracts::common::LineRange;
+    let item = |id: &str| VerifyItem {
+        id: id.to_owned(),
+        kind: CommentItemKind::Thread,
+        author: "thepastaclaw".to_owned(),
+        author_kind: AuthorKind::Bot,
+        location: Some(ItemLocation {
+            path: "src/rpc/client.rs".to_owned(),
+            lines: Some(LineRange {
+                start_line: 3,
+                end_line: 4,
+            }),
+        }),
+        commit: None,
+        title: "Bound the retries".to_owned(),
+        body: "The loop retries forever.".to_owned(),
+        bot_severity: Some("Blocking".to_owned()),
+        bot_status: None,
+        replies: Vec::new(),
+        earlier_replies: 0,
+    };
+    VerifyCommentsInput {
+        pull_request: "acme/node-client#482".to_owned(),
+        title: "fix: retry timed-out RPC calls".to_owned(),
+        description: None,
+        pr_context: None,
+        project_profile: None,
+        items: vec![item("C1"), item("C2")],
+        earlier_decisions: Vec::new(),
+        question: question.map(|text| ItemQuestion {
+            item: "C1".to_owned(),
+            text: text.to_owned(),
+            thread: Vec::new(),
+        }),
     }
 }
 
@@ -165,9 +228,6 @@ pub(crate) fn judge_input() -> contracts::agent::judge_work::JudgeWorkInput {
 /// Runner directories below `root`.
 pub(crate) fn dirs(root: &Path) -> RunnerDirs {
     RunnerDirs {
-        work: root.join("work"),
-        codex_homes: root.join("state/codex-homes"),
         mirrors: root.join("state/mirrors"),
-        sessions: root.join("state/sessions"),
     }
 }

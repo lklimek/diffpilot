@@ -17,6 +17,7 @@ use contracts::agent::analyse_flow::{
 };
 use contracts::agent::plan::{PlanOutput, PlannedFlow};
 use contracts::agent::pr_context::PrContextOutput;
+use contracts::agent::verify_comments::VerifyItem;
 use contracts::api::deps::{DependencyStatus, DependencyView, RepositoryKind, TypeDefinition};
 use contracts::api::files::HunkPart;
 use contracts::api::pr::PrSummary;
@@ -42,10 +43,13 @@ const CONTEXT_PACK: &str = include_str!("../../../prompts/context_pack.md");
 
 /// Skills required by the shared prompt rules, including repair and Ask jobs.
 pub fn required_skills() -> Vec<String> {
-    vec!["severity".to_owned()]
+    contracts::agent::ANALYSIS_SKILLS
+        .iter()
+        .map(|skill| (*skill).to_owned())
+        .collect()
 }
 
-/// Owner default for sub-agents: off (ADR-002; threat model T5, `multi_agent = false`).
+/// Owner default for sub-agents: off (ADR-002; threat model T5, `[agents] enabled = false`).
 pub const SUB_AGENTS_DEFAULT: bool = false;
 /// Largest `plan`, `pr_context`, `analyse_flow` or `ask` prompt in bytes (about 32k tokens); a repair prompt
 /// may add its quoted output. Untrusted texts are clipped to fixed caps, so only a hunk listing can exceed it:
@@ -80,8 +84,10 @@ const MAX_PROMPT_USES: usize = 20;
 const MAX_LOOKUP_REPOS: usize = 5;
 /// Most crate names listed per lookup repository.
 const MAX_LOOKUP_CRATES: usize = 10;
-const MAX_DESCRIPTION_CHARS: usize = 16_000;
-const MAX_PROFILE_CHARS: usize = 16_000;
+/// Longest PR description quoted in a prompt, in characters.
+pub(crate) const MAX_DESCRIPTION_CHARS: usize = 16_000;
+/// Longest project profile quoted in a prompt, in characters.
+pub(crate) const MAX_PROFILE_CHARS: usize = 16_000;
 const MAX_EXCERPT_CHARS: usize = 2_000;
 const MAX_QUESTION_CHARS: usize = 4_000;
 /// Classic diff quoted in an `ask` prompt about lines, at most.
@@ -303,6 +309,8 @@ pub struct AskPrInput<'a> {
     pub plan: Option<&'a PlanOutput>,
     /// The stored PR context.
     pub pr_context: Option<&'a PrContextOutput>,
+    /// The review comment the question is about (T-L4); `None` for a question about the whole PR.
+    pub item: Option<&'a VerifyItem>,
     /// The reviewer's question.
     pub question: &'a str,
     /// Earlier questions of its thread, oldest first.
@@ -604,6 +612,19 @@ pub fn ask(input: &AskInput<'_>) -> Result<String, PromptError> {
     within_budget("ask", prompt, PROMPT_BUDGET_BYTES)
 }
 
+/// The review comment a question is about with an introduction, or nothing for a question about the whole PR.
+fn subject_block(item: Option<&VerifyItem>) -> Result<String, PromptError> {
+    let Some(item) = item else {
+        return Ok(String::new());
+    };
+    let comment = serde_json::to_string(item)?;
+    Ok(format!(
+        "{}\n{}",
+        part("comment_item")?,
+        json_block("review comment", &comment, MAX_ASK_CONTEXT_BYTES)?
+    ))
+}
+
 /// The `ask` prompt about lines without a single step (Files view): the lines, their classic diff, the server's
 /// owners of their changed lines and the overlapping steps in summary; no other flow analysis.
 pub fn ask_lines(input: &AskLinesInput<'_>) -> Result<String, PromptError> {
@@ -735,10 +756,75 @@ pub fn ask_pr(input: &AskPrInput<'_>) -> Result<String, PromptError> {
             ),
             ("question", &question),
             ("thread", &thread_block(input.thread)?),
+            ("subject", &subject_block(input.item)?),
         ],
     )?;
     let prompt = frame("ask", input.job, &task)?;
     within_budget("ask", prompt, PROMPT_BUDGET_BYTES)
+}
+
+/// A comment Ask without an analysis uses the same answer rules and data fences, with no MemCan profile.
+pub fn ask_comment(
+    pr: &PrSummary,
+    language: LlmLanguage,
+    item: &VerifyItem,
+    question: &str,
+    thread: &[ThreadQuestion<'_>],
+) -> Result<String, PromptError> {
+    let task = fill(
+        ASK_PR,
+        &[
+            ("ask_rules", part("ask_rules")?),
+            ("lenses", part("lenses")?),
+            (
+                "profile",
+                &profile(Profile {
+                    file: None,
+                    memcan: None,
+                })?,
+            ),
+            (
+                "flows",
+                &lines_block("planned flows", Vec::new(), MAX_ASK_CONTEXT_BYTES)?,
+            ),
+            (
+                "context",
+                &json_block("PR context", "", MAX_ASK_CONTEXT_BYTES)?,
+            ),
+            (
+                "question",
+                &clipped_data("question", question, MAX_QUESTION_CHARS)?,
+            ),
+            ("thread", &thread_block(thread)?),
+            ("subject", &subject_block(Some(item))?),
+        ],
+    )?;
+    let prompt = frame_inner("ask", pr, language, SUB_AGENTS_DEFAULT, None, &task)?;
+    within_budget("ask", prompt, PROMPT_BUDGET_BYTES)
+}
+
+/// Private recovery pack: public PR/comment context and only the payer's earlier final answers.
+pub fn comment_context(
+    pr: &PrSummary,
+    item: &VerifyItem,
+    earlier: &[(String, contracts::agent::ask::AskOutput)],
+) -> Result<String, PromptError> {
+    let mut pack = format!(
+        "Context pack for {}/{}#{} at head {}\n",
+        pr.repo.owner, pr.repo.name, pr.number, pr.head_sha.0
+    );
+    pack.push_str(&clipped_data(
+        "pull request",
+        &serde_json::to_string(pr)?,
+        MAX_ASK_CONTEXT_BYTES,
+    )?);
+    pack.push_str(&subject_block(Some(item))?);
+    pack.push_str(&json_block(
+        "your earlier answers",
+        &serde_json::to_string(earlier)?,
+        MAX_ASK_CONTEXT_BYTES,
+    )?);
+    within_budget("private context pack", pack, CONTEXT_PACK_BUDGET_BYTES)
 }
 
 /// The earlier questions of a follow-up's thread with an introduction, or nothing for a first question: the first
@@ -1379,9 +1465,51 @@ fn flow_task(input: &FlowInput<'_>) -> Result<String, PromptError> {
     )
 }
 
+/// Rules 4 (words never written), 5 (read-only), 6 (untrusted data) and 9 (GitHub tools) of the shared rules block
+/// as bullets, for a read-only job with its own template (`verify_comments`), so those rules have one source.
+pub(crate) fn read_only_rules() -> Result<String, PromptError> {
+    let rules = fill(
+        RULES,
+        &[
+            ("language", ""),
+            ("sub_agents", ""),
+            ("file_permission", ""),
+            ("output_instruction", ""),
+            ("defect_form", ""),
+        ],
+    )?;
+    Ok(rules
+        .lines()
+        .filter_map(|line| {
+            ["4. ", "5. ", "6. ", "9. "]
+                .iter()
+                .find_map(|number| line.strip_prefix(number))
+        })
+        .map(|rule| format!("- {}", rule.replace("  ", " ")))
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
 /// Header, rules block and pre-pass notices, then the task.
 fn frame(job: &str, context: JobContext<'_>, task: &str) -> Result<String, PromptError> {
-    let pr = context.pr;
+    frame_inner(
+        job,
+        context.pr,
+        context.language,
+        context.sub_agents,
+        Some(context.prepass),
+        task,
+    )
+}
+
+fn frame_inner(
+    job: &str,
+    pr: &PrSummary,
+    language: LlmLanguage,
+    sub_agents: bool,
+    prepass: Option<&Prepass>,
+    task: &str,
+) -> Result<String, PromptError> {
     let header = fill(
         HEADER,
         &[
@@ -1392,12 +1520,12 @@ fn frame(job: &str, context: JobContext<'_>, task: &str) -> Result<String, Promp
             ("head", &plain(&pr.head_sha.0)),
         ],
     )?;
-    let language = match context.language {
+    let language = match language {
         LlmLanguage::En => part("language_en")?,
         LlmLanguage::Pl => part("language_pl")?,
         LlmLanguage::Ru => part("language_ru")?,
     };
-    let sub_agents = if context.sub_agents {
+    let sub_agents = if sub_agents {
         part("sub_agents_on")?
     } else {
         part("sub_agents_off")?
@@ -1431,7 +1559,9 @@ fn frame(job: &str, context: JobContext<'_>, task: &str) -> Result<String, Promp
             ("defect_form", defect_form),
         ],
     )?;
-    let prepass = context.prepass;
+    let Some(prepass) = prepass else {
+        return Ok(format!("{header}\n{rules}\n{}\n", task.trim_end()));
+    };
     let mut sides: BTreeMap<&str, BTreeSet<LineSide>> = BTreeMap::new();
     let generated = prepass
         .not_rendered

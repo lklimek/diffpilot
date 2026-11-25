@@ -1,5 +1,22 @@
 # ADR-004: Agent sessions — archive, resume, compaction, loss, deletion
 
+## v1.3 container amendment (2026-11-24)
+
+One analytic thread and persistent worker volume belong to (PR,payer), with one job at a time. Same-payer
+Ask forks its analytic thread with immutable read-only MemCan policy; other users and lost-volume recovery
+use a private context pack. Before first forked Ask above 80k context, explicit compaction must complete and
+its seed/generation-bound preflight must be persisted. Attach/resume precedes every operation on an existing
+thread. The volume is the archive; no session copying. Verify methods use separate ephemeral threads;
+JudgeWork uses ephemeral CS2. Generation and attempt fencing prevent stale results from publishing.
+
+This amendment and [ADR-025](ADR-025-container-runtime.md) take precedence over the historical text below.
+
+
+> Amended for v1.3 by [ADR-025](ADR-025-container-runtime.md): per-payer containers, app-server,
+> gateway-only real credentials, file-based read-only GitHub tokens and host report 4.2.
+> KL1-A is closed: per-user ChatGPT-plan linking only; no API-key mode.
+
+
 - Status: accepted (coordinator, 2026-11-16, after spikes S1b, S7; amended 2026-11-16 after the WP1-A contract
   review)
 - Source: `docs/spikes/S1b-codex-sessions-isolation.md` findings 1, 3; `S7-llm-capability.md` finding 7;
@@ -115,3 +132,27 @@ rewritable migration); old analytic references must not be reused because they m
 - **Context packs stay bounded and built from stored documents only** (no Tour or diff work at claim): a lines
   question's touched steps are chosen at submit and stored with the question; a flow question's pack holds that flow
   in full within the asked-flow budget; a PR question's pack holds the usual stored results.
+
+## Addendum 2026-11-23: container threads and explicit first-Ask preflight
+
+ADR-025 supersedes the temporary 80k config override and uncompacted retry described above. Analytic
+checkpoints belong to (PR,payer). Only that analysis's payer can fork its analytic history; other readers
+seed a private context pack. Ask and comment Ask retain separate immutable kinds, with read-only MemCan
+and no MemCan respectively. Workers keep their volumes as the archive.
+
+Start, fork and resume always resend the full kind config: CS1 cwd `/work`, CS2 cwd `/tmp`. Existing threads
+attach and resume before any thread operation, with the attachment held through preflight and answer.
+The automatic limit stays min(400k, 90% of the selected model's context window) for every turn.
+
+For a new analytic fork, use the parent's last-context estimate, separately from billed tokens. Above 80k,
+run one explicit compaction and wait for successful `turn/completed`; unknown/stale context needs recovery.
+Persist pending/done/not-needed against the working seed, immutable kind and generation. An interrupted
+preflight never authorizes an uncompacted answer. Lost working threads reconcile or fork/seed afresh.
+A context-pack seed requires no first-Ask compaction. Bill all turn deltas, including compaction, without
+inherited fork totals. Recreate the private seed when the shared analytic generation advances.
+
+The server freezes routing at claim and fences checkpoint publication by attempt and generation. Generation
+numbers advance monotonically across a PR's payers, preventing a payer change from reusing an unrelated
+counter. Creation and Retry invalidate private seeds before dispatch while preserving the payer's analytic
+archive. Last-context estimates are stamped with the server's accepted checkpoint generation. Runner RPC,
+fixed config enforcement, context recovery and compaction acknowledgement belong to the app-server provider.

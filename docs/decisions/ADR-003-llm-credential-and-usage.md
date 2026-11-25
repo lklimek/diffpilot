@@ -1,5 +1,24 @@
 # ADR-003: LLM credential handling and usage limits
 
+## v1.3 container amendment (2026-11-24)
+
+Each payer links a ChatGPT plan through Settings and the gateway; `mode: chatgpt_plan` is the only mode.
+No API-key mode, paid fallback, CLI login, host credential import or worker credential copy exists. Linking may
+log Codex out on other machines; probability and scope are unknown. The gateway owns the encrypted dedicated
+refresh chain: one owner, near-expiry refresh only, durable in-flight marker, persist before use. Unknown
+outcome quarantines the generation for relinking; no forced/replayed refresh. Upstream revoke requires explicit
+unlink. Virtual keys expire within 90 minutes and work only on worker networks. Usage pauses are per payer;
+turn deltas include compaction and exclude fork inheritance. Auth acceptance uses fakes only.
+
+This amendment and [ADR-025](ADR-025-container-runtime.md) take precedence over the historical text below.
+
+
+> Amended for v1.3 by [ADR-025](ADR-025-container-runtime.md): per-payer containers, app-server,
+> gateway-only real credentials, file-based read-only GitHub tokens and host report 4.2.
+> KL1-A selects gateway-run ChatGPT-plan device linking only. No API-key mode or paid fallback;
+> credentials never enter workers. The master-copy lifecycle below describes the superseded runtime.
+
+
 - Status: accepted (coordinator, 2026-11-16, after spikes S1a, S1b)
 - Source: `docs/spikes/S1a-codex-basics.md` findings 1–2, 9; `S1b-codex-sessions-isolation.md` finding 10;
   plan §5.4 T1.

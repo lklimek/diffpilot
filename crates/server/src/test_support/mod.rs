@@ -3,6 +3,7 @@
 pub(crate) mod github;
 pub(crate) mod logs;
 pub(crate) mod pr_hygiene;
+pub(crate) mod thepastaclaw;
 
 use contracts::time::Timestamp;
 use db::repo::sessions::NewSession;
@@ -34,6 +35,16 @@ pub(crate) async fn session_cookie(state: &AppState, tenant: &str) -> String {
         )
         .await
         .expect("session");
+    if state
+        .db
+        .llm_credentials()
+        .status("u1")
+        .await
+        .expect("status")
+        .is_none()
+    {
+        link_payer(&state.db, tenant, "u1").await;
+    }
     // The test configuration's public URL is https, so the cookie carries the `__Host-` prefix.
     format!("__Host-sr_session={token}")
 }
@@ -76,5 +87,37 @@ pub(crate) async fn other_user_cookie(state: &AppState) -> String {
         )
         .await
         .expect("session");
+    if state
+        .db
+        .llm_credentials()
+        .status("u2")
+        .await
+        .expect("status")
+        .is_none()
+    {
+        link_payer(&state.db, DEFAULT_TENANT, "u2").await;
+    }
     "__Host-sr_session=private-user-two".to_owned()
+}
+
+/// Synthetic gateway status for tests that admit provider jobs; no real auth is involved.
+pub(crate) async fn link_payer(db: &db::repo::Db, tenant: &str, user: &str) {
+    db.llm_credentials()
+        .put_status(
+            tenant,
+            user,
+            &contracts::gateway::CredentialStatus {
+                telemetry: Default::default(),
+                challenge: None,
+                mode: contracts::gateway::CredentialMode::ChatgptPlan,
+                state: contracts::gateway::CredentialState::Linked,
+                relink_reason: None,
+                plan: None,
+                label: None,
+                paused_until: None,
+                last_call: None,
+            },
+        )
+        .await
+        .expect("fake linked plan");
 }

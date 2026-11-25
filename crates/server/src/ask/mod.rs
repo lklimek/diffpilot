@@ -6,9 +6,11 @@
 //!
 //! One follower task per open question drives it to `answered` or `failed` (also after a server restart:
 //! [`resume_unanswered`]). Ask jobs are claimed before batch jobs and never pre-empt a running job; the queue
-//! runs one job per PR, so a second question of the same analysis waits queued until the first ends.
+//! runs one job per (PR, payer) container; questions from the same payer wait until its current turn ends.
 
 mod job;
+mod private;
+pub(crate) use private::context_pack as private_context_pack;
 #[cfg(test)]
 mod tests;
 
@@ -21,7 +23,7 @@ use contracts::common::LineRange;
 use contracts::ids::{AnalysisId, JobId, QuestionId};
 use db::error::DbError;
 use db::repo::analyses::{AnalysisRecord, SessionState};
-use db::repo::questions::{Asked, NewQuestion, QuestionLimits, QuestionUpdate};
+use db::repo::questions::{Asked, NewQuestion, QuestionLimits, QuestionRecord, QuestionUpdate};
 use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex, PoisonError};
 
@@ -29,6 +31,7 @@ use contracts::time::Timestamp;
 use jiff::SignedDuration;
 
 pub use job::context_pack;
+pub(crate) use job::{CANCELLED, SERVER_ERROR, UNFIT_ANSWER};
 
 use crate::github::mirror::{MirrorError, is_tree_path, read_blob};
 use crate::pipeline::tour::{self, TourLoadError};
@@ -50,6 +53,9 @@ static FOLLOWING: LazyLock<Mutex<HashSet<QuestionId>>> = LazyLock::new(Mutex::de
 /// A question was not accepted.
 #[derive(Debug, thiserror::Error)]
 pub enum AskError {
+    /// The asker has no usable plan credential.
+    #[error(transparent)]
+    Payer(#[from] crate::jobs::payer::PayerError),
     /// The question is blank.
     #[error("the question is empty")]
     Empty,
@@ -68,6 +74,9 @@ pub enum AskError {
     /// The flow has no stored analysis.
     #[error("the flow is not analysed in the analysis")]
     UnknownFlow,
+    /// The review-comment item is not one of the analysed pull request's.
+    #[error("the comment item is not part of the pull request")]
+    UnknownItem,
     /// The parent is not a question of this user on this analysis.
     #[error("the question to follow up is not one of the user's on the analysis")]
     UnknownParent,
@@ -119,13 +128,7 @@ pub async fn ask(
     analysis: &AnalysisSummary,
     request: AnchoredAskRequest,
 ) -> Result<AskQuestion, AskError> {
-    let text = request.text.trim();
-    if text.is_empty() {
-        return Err(AskError::Empty);
-    }
-    if text.chars().count() > AskRequest::MAX_TEXT_CHARS {
-        return Err(AskError::TooLong);
-    }
+    let text = question_text(&request.text)?;
     if analysis.review_ready != Some(true)
         && !matches!(analysis.state, AnalysisState::Finished { .. })
     {
@@ -134,6 +137,7 @@ pub async fn ask(
     if superseded(&state.db.analyses().get(analysis.id).await?) {
         return Err(AskError::Superseded);
     }
+    crate::jobs::payer::require_linked(&state.db, user_id).await?;
     let now = Timestamp::now();
     let limits = QuestionLimits {
         per_analysis: MAX_QUESTIONS_PER_ANALYSIS,
@@ -190,8 +194,37 @@ pub async fn ask(
     Ok(question)
 }
 
+/// The question text without surrounding space: not empty, at most [`AskRequest::MAX_TEXT_CHARS`].
+pub(crate) fn question_text(text: &str) -> Result<&str, AskError> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(AskError::Empty);
+    }
+    if text.chars().count() > AskRequest::MAX_TEXT_CHARS {
+        return Err(AskError::TooLong);
+    }
+    Ok(text)
+}
+
 /// The first question of `parent`'s thread (one level: a follow-up's parent is its thread's first question); not
-/// found unless `parent` is this user's question on `analysis`, and refused unless `anchor` is the thread's.
+/// found unless `parent` is this user's question in the asker's scope (`in_scope`: its analysis or pull request), and
+/// refused unless `anchor` is the thread's.
+pub(crate) fn thread_root(
+    parent: &QuestionRecord,
+    user_id: &str,
+    in_scope: bool,
+    anchor: &AskAnchor,
+) -> Result<QuestionId, AskError> {
+    if !in_scope || parent.user_id != user_id {
+        return Err(AskError::UnknownParent);
+    }
+    if parent.question.anchor != *anchor {
+        return Err(AskError::FollowUpAnchor);
+    }
+    Ok(parent.question.parent_id.unwrap_or(parent.question.id))
+}
+
+/// [`thread_root`] of `parent` on `analysis`.
 async fn thread_of(
     state: &AppState,
     user_id: &str,
@@ -205,18 +238,17 @@ async fn thread_of(
         Err(DbError::NotFound) => return Err(AskError::UnknownParent),
         Err(error) => return Err(error.into()),
     };
-    if record.analysis_id != analysis.id || record.user_id != user_id {
-        return Err(AskError::UnknownParent);
-    }
-    if record.question.anchor != *anchor {
-        return Err(AskError::FollowUpAnchor);
-    }
-    Ok(record.question.parent_id.unwrap_or(record.question.id))
+    thread_root(
+        &record,
+        user_id,
+        record.analysis_id == Some(analysis.id),
+        anchor,
+    )
 }
 
 /// A step anchor names a stored step (and lines inside it); a lines anchor names a file of the diff on its side and
 /// at most [`AskAnchor::MAX_LINES`] lines of it; a flow anchor names a flow the Tour shows analysed; the PR always
-/// exists.
+/// exists; a comment-item anchor names an item of the analysed pull request.
 async fn check_anchor(
     state: &AppState,
     analysis: &AnalysisSummary,
@@ -243,6 +275,14 @@ async fn check_anchor(
             }
         }
         AskAnchor::Pr => {}
+        AskAnchor::CommentItem { item } => {
+            let pull_request = state.db.analyses().get(analysis.id).await?.pull_request_id;
+            match state.db.review_loop().item(*item).await {
+                Ok(record) if record.pull_request_id == pull_request => {}
+                Ok(_) | Err(DbError::NotFound) => return Err(AskError::UnknownItem),
+                Err(error) => return Err(error.into()),
+            }
+        }
         AskAnchor::Step { step_id, lines } => {
             let Some((_, step)) = job::stored_step(&state.db, analysis.id, step_id).await? else {
                 return Err(AskError::UnknownStep);
@@ -334,11 +374,18 @@ fn superseded(record: &AnalysisRecord) -> bool {
 /// under, so no answer appears after it. `None` when it is not shown.
 async fn publish_provisional(
     state: &AppState,
-    analysis: AnalysisId,
+    analysis: Option<AnalysisId>,
     question: QuestionId,
     job: JobId,
     answer: AskOutput,
 ) -> Result<Option<AskQuestion>, DbError> {
+    let Some(analysis) = analysis else {
+        return state
+            .db
+            .questions()
+            .publish_private_provisional(question, job, &answer, Timestamp::now())
+            .await;
+    };
     let db = &state.db;
     let event = state
         .progress
@@ -381,10 +428,15 @@ async fn publish_provisional(
 /// Stores a state change of `question` and publishes it under the analysis's update lock.
 async fn set(
     state: &AppState,
-    analysis: AnalysisId,
+    analysis: Option<AnalysisId>,
     question: QuestionId,
     update: &QuestionUpdate,
 ) -> Result<AskQuestion, DbError> {
+    let Some(analysis) = analysis else {
+        let now = Timestamp::now();
+        state.db.questions().update(question, update, now).await?;
+        return Ok(state.db.questions().get(question, now).await?.question);
+    };
     let db = &state.db;
     let event = state
         .progress

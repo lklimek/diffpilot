@@ -19,7 +19,7 @@ use crate::api::comments::{
 };
 use crate::api::dashboard::{
     DashboardEvent, DashboardSettings, DashboardSettingsView, DashboardSummary, ItemPage,
-    ItemQuery, RefreshStatus, SetTimeZoneRequest, SummaryQuery,
+    ItemQuery, RefreshStatus, SetTimeZoneRequest, SnoozeRequest, SummaryQuery,
 };
 use crate::api::deps::DependencyView;
 use crate::api::error::{ApiError, LoginError};
@@ -29,6 +29,14 @@ use crate::api::files::{FilesResponse, SetViewedRequest};
 use crate::api::pr::{ResolvePrRequest, ResolvePrResponse};
 use crate::api::questions::{AnchoredAskRequest, AskQuestion, AskRequest};
 use crate::api::review::ReviewState;
+use crate::api::review_loop::{
+    AgentPushPayload, CarryOverPage, CarryOverQuery, ChannelTestResult, Claim, ClaimRequest,
+    CodeContext, CommentItem, CommentLog, CommentsOverview, ContextQuery, DecideRequest,
+    DecideRest, Decision, DecisionBatchRequest, DecisionFeed, EffectReportRequest, EffectsPreview,
+    EffectsPreviewRequest, FeedDecision, FeedEvent, FeedQuery, GateMarkRequest, ItemActionRequest,
+    ItemsQuery, NotificationSettings, PrPage, PushTarget, PutChannelRequest, PutPushTargetRequest,
+    UserStreamEvent, WatchList, WebhookPayload,
+};
 use crate::api::settings::{
     RepoSettings, SetAskEffortRequest, SetControlledOwnersRequest, SetJudgeEffortRequest,
     SetLanguageRequest, Settings,
@@ -42,6 +50,8 @@ pub const SCHEMA_DIR: &str = "schemas/agent";
 pub const TS_DIR: &str = "web/src/api/generated";
 /// Directory of the JSON Schemas of what a token reads, relative to the repository root.
 pub const API_SCHEMA_DIR: &str = "schemas/api";
+/// Directory of provider-neutral runtime and gateway protocol schemas.
+pub const RUNTIME_SCHEMA_DIR: &str = "schemas/runtime";
 
 /// One JSON Schema of [`API_SCHEMA_DIR`]: a response body (SSE: event data), a query or the error body.
 #[derive(Clone, Copy, Debug)]
@@ -68,6 +78,23 @@ const fn api_schema<T: JsonSchema>(stem: &'static str, responses: &'static [Rout
 /// Every schema of [`API_SCHEMA_DIR`]: each route a token may read (`read` and `GET /api/v1/me`) names its
 /// response here (contract test).
 pub const API_SCHEMAS: &[ApiSchema] = &[
+    api_schema::<crate::api::assessment::AssessmentSettings>(
+        "assessment_settings",
+        &[routes::GET_ASSESSMENT_SETTINGS],
+    ),
+    api_schema::<crate::api::assessment::AssessmentComparison>(
+        "assessment_comparison",
+        &[routes::GET_ASSESSMENT_COMPARISON],
+    ),
+    api_schema::<crate::assessment::AssessmentConfig>("assessment_config", &[]),
+    api_schema::<crate::api::assessment::AssessmentSettingsUpdate>(
+        "assessment_settings_update",
+        &[],
+    ),
+    api_schema::<Vec<crate::api::review_loop::CommentSource>>(
+        "comment_sources",
+        &[routes::GET_COMMENT_SOURCES],
+    ),
     api_schema::<ApiError>("api_error", &[]),
     api_schema::<MeResponse>("me_response", &[routes::GET_ME]),
     api_schema::<DashboardSummary>("dashboard_summary", &[routes::GET_DASHBOARD]),
@@ -88,13 +115,32 @@ pub const API_SCHEMAS: &[ApiSchema] = &[
     api_schema::<LinesResponse>("lines_response", &[routes::GET_LINES]),
     api_schema::<DiffResponse>("diff_response", &[routes::GET_DIFF]),
     api_schema::<ReviewState>("review_state", &[routes::GET_REVIEW_STATE]),
-    api_schema::<Vec<AskQuestion>>("ask_question_list", &[routes::LIST_QUESTIONS]),
+    api_schema::<Vec<AskQuestion>>(
+        "ask_question_list",
+        &[routes::LIST_QUESTIONS, routes::LIST_PR_QUESTIONS],
+    ),
     api_schema::<FilesResponse>("files_response", &[routes::GET_FILES]),
     api_schema::<DependencyView>("dependency_view", &[routes::GET_DEPENDENCIES]),
     api_schema::<Vec<Feedback>>("feedback_list", &[routes::LIST_FEEDBACK]),
     api_schema::<PendingReview>("pending_review", &[routes::GET_PENDING_REVIEW]),
     api_schema::<Settings>("settings", &[routes::GET_SETTINGS]),
     api_schema::<RepoSettings>("repo_settings", &[routes::GET_REPO_SETTINGS]),
+    api_schema::<PrPage>("pr_page", &[routes::GET_PR_PAGE]),
+    api_schema::<CommentsOverview>("comments_overview", &[routes::GET_COMMENTS]),
+    api_schema::<ItemsQuery>("items_query", &[]),
+    api_schema::<Vec<CommentItem>>("comment_item_list", &[routes::LIST_COMMENT_ITEMS]),
+    api_schema::<ContextQuery>("context_query", &[]),
+    api_schema::<CodeContext>("code_context", &[routes::GET_COMMENT_CONTEXT]),
+    api_schema::<CommentLog>("comment_log", &[routes::GET_COMMENT_LOG]),
+    api_schema::<DecideRest>("decide_rest", &[routes::GET_DECIDE_REST]),
+    api_schema::<CarryOverQuery>("carry_over_query", &[]),
+    api_schema::<CarryOverPage>("carry_over_page", &[routes::LIST_CARRY_OVERS]),
+    api_schema::<WatchList>("watch_list", &[routes::LIST_WATCHES]),
+    api_schema::<UserStreamEvent>("user_stream_event", &[routes::USER_EVENTS]),
+    api_schema::<FeedQuery>("feed_query", &[]),
+    api_schema::<DecisionFeed>("decision_feed", &[routes::GET_DECISION_FEED]),
+    api_schema::<FeedDecision>("feed_decision", &[routes::GET_FEED_DECISION]),
+    api_schema::<FeedEvent>("feed_event", &[routes::DECISION_FEED_EVENTS]),
 ];
 
 const NOTE: &str = "This file is generated from crates/contracts by the test generated_artifacts_are_current \
@@ -148,6 +194,73 @@ pub fn generated_files() -> Result<Vec<GeneratedFile>, GenerateError> {
             contents: serde_json::to_string_pretty(&(api.schema)())? + "\n",
         });
     }
+    for (name, schema) in [
+        ("device_link", schema_of::<crate::gateway::DeviceLink>()),
+        (
+            "link_credential",
+            schema_of::<crate::gateway::LinkCredential>(),
+        ),
+        (
+            "assessment_run_ref",
+            schema_of::<crate::assessment::AssessmentRunRef>(),
+        ),
+        (
+            "assessment_admission_failure",
+            schema_of::<crate::assessment::AssessmentAdmissionFailure>(),
+        ),
+        (
+            "verify_comments_input",
+            schema_of::<crate::agent::verify_comments::VerifyCommentsInput>(),
+        ),
+        ("job_spec", schema_of::<crate::job::spec::JobSpec>()),
+        ("job_result", schema_of::<crate::job::result::JobResult>()),
+        (
+            "claim_request",
+            schema_of::<crate::job::protocol::ClaimRequest>(),
+        ),
+        (
+            "claim_response",
+            schema_of::<crate::job::protocol::ClaimResponse>(),
+        ),
+        (
+            "launcher_request",
+            schema_of::<crate::launcher::LauncherRequest>(),
+        ),
+        (
+            "launcher_response",
+            schema_of::<crate::launcher::LauncherResponse>(),
+        ),
+        (
+            "credential_status",
+            schema_of::<crate::gateway::CredentialStatus>(),
+        ),
+        ("mint_key", schema_of::<crate::gateway::MintKey>()),
+        ("minted_key", schema_of::<crate::gateway::MintedKey>()),
+        ("revoke_keys", schema_of::<crate::gateway::RevokeKeys>()),
+        (
+            "unlink_credential",
+            schema_of::<crate::gateway::UnlinkCredential>(),
+        ),
+        ("payer_usage", schema_of::<crate::gateway::PayerUsage>()),
+        ("pr_data", schema_of::<crate::agent::pr_data::PrData>()),
+        (
+            "comment_report",
+            schema_of::<crate::agent::comment_report::CommentReport>(),
+        ),
+        (
+            "report_row",
+            schema_of::<crate::agent::comment_report::ReportRow>(),
+        ),
+        (
+            "comment_sources",
+            schema_of::<Vec<crate::api::review_loop::CommentSource>>(),
+        ),
+    ] {
+        files.push(GeneratedFile {
+            path: format!("{RUNTIME_SCHEMA_DIR}/{name}.schema.json"),
+            contents: serde_json::to_string_pretty(&schema)? + "\n",
+        });
+    }
     files.push(GeneratedFile {
         path: format!("{TS_DIR}/types.ts"),
         contents: typescript_types()?,
@@ -196,6 +309,26 @@ fn typescript_types() -> Result<String, GenerateError> {
         declarations: BTreeMap::new(),
         duplicate: None,
     };
+    collector.visit::<crate::gateway::CredentialStatus>();
+    collector.visit::<crate::gateway::LinkCredential>();
+    collector.visit::<crate::gateway::DeviceLink>();
+    collector.visit::<crate::api::assessment::AssessmentSettings>();
+    collector.visit::<crate::api::assessment::AssessmentSettingsUpdate>();
+    collector.visit::<crate::api::assessment::AssessmentComparison>();
+    collector.visit::<crate::assessment::AssessmentAdmissionFailure>();
+    collector.visit::<crate::gateway::MintKey>();
+    collector.visit::<crate::gateway::RevokeKeys>();
+    collector.visit::<crate::gateway::UnlinkCredential>();
+    collector.visit::<crate::job::spec::JobTarget>();
+    collector.visit::<crate::runtime::AskPreflight>();
+    collector.visit::<crate::runtime::LastContext>();
+    collector.visit::<crate::runtime::ThreadKind>();
+    collector.visit::<crate::runtime::Workspace>();
+    collector.visit::<crate::launcher::WorkerStatus>();
+    collector.visit::<crate::agent::pr_data::PrData>();
+    collector.visit::<crate::agent::comment_report::CommentReport>();
+    collector.visit::<crate::agent::comment_report::ReportRow>();
+    collector.visit::<crate::api::review_loop::CommentSource>();
     collector.visit::<MeResponse>();
     collector.visit::<LogoutRequest>();
     collector.visit::<LoginError>();
@@ -240,9 +373,43 @@ fn typescript_types() -> Result<String, GenerateError> {
     collector.visit::<DashboardSettings>();
     collector.visit::<DashboardSettingsView>();
     collector.visit::<SetTimeZoneRequest>();
+    collector.visit::<SnoozeRequest>();
     collector.visit::<AccessToken>();
     collector.visit::<CreateAccessToken>();
     collector.visit::<CreatedAccessToken>();
+    collector.visit::<PrPage>();
+    collector.visit::<CommentsOverview>();
+    collector.visit::<ItemsQuery>();
+    collector.visit::<CommentItem>();
+    collector.visit::<ContextQuery>();
+    collector.visit::<CodeContext>();
+    collector.visit::<DecideRequest>();
+    collector.visit::<DecisionBatchRequest>();
+    collector.visit::<ItemActionRequest>();
+    collector.visit::<GateMarkRequest>();
+    collector.visit::<EffectsPreviewRequest>();
+    collector.visit::<EffectsPreview>();
+    collector.visit::<DecideRest>();
+    collector.visit::<Decision>();
+    collector.visit::<CommentLog>();
+    collector.visit::<CarryOverQuery>();
+    collector.visit::<CarryOverPage>();
+    collector.visit::<WatchList>();
+    collector.visit::<UserStreamEvent>();
+    collector.visit::<NotificationSettings>();
+    collector.visit::<PutChannelRequest>();
+    collector.visit::<ChannelTestResult>();
+    collector.visit::<PushTarget>();
+    collector.visit::<PutPushTargetRequest>();
+    collector.visit::<FeedQuery>();
+    collector.visit::<DecisionFeed>();
+    collector.visit::<FeedDecision>();
+    collector.visit::<FeedEvent>();
+    collector.visit::<ClaimRequest>();
+    collector.visit::<Claim>();
+    collector.visit::<EffectReportRequest>();
+    collector.visit::<WebhookPayload>();
+    collector.visit::<AgentPushPayload>();
     if let Some(name) = collector.duplicate {
         return Err(GenerateError::DuplicateTypeName(name));
     }

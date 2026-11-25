@@ -37,7 +37,7 @@ test("large PR warns in the check card and starts only on Start analysis anyway"
   await expect(page.getByRole("region", { name: "Pull request check" })).toHaveCount(0);
   await analyze(page);
   await startAnalysis(page, "Start analysis anyway");
-  await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}/progress`));
+  await expect(page).toHaveURL(/\/pr\/acme\/node-client\/482$/);
 });
 
 test("without history the large-PR note makes no timing claim", async ({ page }) => {

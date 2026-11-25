@@ -294,6 +294,8 @@ impl JobExecutor for ScriptedExecutor {
         }
         self.finished.lock().expect("lock").insert(handle.job_id);
         let result = JobResult {
+            assessment: None,
+            report: None,
             job_id: handle.job_id,
             attempt: 1,
             outcome,
@@ -499,6 +501,26 @@ async fn harness_with_app(app: bool) -> Harness {
         )
         .await
         .expect("user");
+    state
+        .db
+        .llm_credentials()
+        .put_status(
+            DEFAULT_TENANT,
+            &user.id,
+            &contracts::gateway::CredentialStatus {
+                telemetry: Default::default(),
+                challenge: None,
+                mode: contracts::gateway::CredentialMode::ChatgptPlan,
+                state: contracts::gateway::CredentialState::Linked,
+                relink_reason: None,
+                plan: None,
+                label: None,
+                paused_until: None,
+                last_call: None,
+            },
+        )
+        .await
+        .expect("fake linked plan");
     let lock = lock_user(&user.id).await;
     let grant = TokenGrant {
         access_token: SecretString::from(USER_TOKEN),
@@ -641,10 +663,10 @@ impl Harness {
         let request = json!({
             "runner_id": "runner-1",
             "credentials": [{
-                "credential": { "id": server::pipeline::CREDENTIAL_ID, "kind": "codex_chatgpt" },
+                "credential": { "id": self.user_id, "kind": "codex_chatgpt" },
                 "usable": true,
             }],
-            "dropped_sessions": [],
+            "retired": [],
         });
         let (status, body) = self
             .runner(RUNNER_CLAIM.path, "fake-runner-secret", request)
@@ -690,6 +712,8 @@ impl Harness {
     /// Posts the claimed attempt's result as the runner does.
     async fn complete(&self, claim: &Claim, outcome: JobOutcome) {
         let result = JobResult {
+            assessment: None,
+            report: None,
             job_id: claim.spec.job_id,
             attempt: claim.spec.attempt,
             outcome,
@@ -2268,7 +2292,11 @@ async fn restart_with_failing_preparation_cancels_live_jobs() {
     };
     let pending = queue
         .submit(JobRequest {
-            spec: db::repo::analyses::testing::job_spec(id, JobKind::Plan),
+            spec: {
+                let mut spec = db::repo::analyses::testing::job_spec(id, JobKind::Plan);
+                spec.payer.0 = h.user_id.clone();
+                spec
+            },
             priority: JobPriority::Batch,
             stage: JobStage::Plan { batch: 1 },
             generation: 0,
@@ -3184,6 +3212,8 @@ async fn each_job_is_claimable_only_after_the_previous_result_is_stored() {
             );
         }
         let result = JobResult {
+            assessment: None,
+            report: None,
             job_id: claim.spec.job_id,
             attempt: claim.spec.attempt,
             outcome: JobOutcome::Succeeded {
@@ -3344,7 +3374,7 @@ async fn late_usage_limit_of_an_old_round_pauses_the_new_round_with_its_time() {
     let analysis = h.seed_analysis().await;
     let id = analysis.to_string();
     let mut spec = db::repo::analyses::testing::job_spec(analysis, JobKind::Plan);
-    spec.credential.id = server::pipeline::CREDENTIAL_ID.to_owned();
+    spec.payer.0 = h.user_id.clone();
     let old = h
         .state
         .executor
@@ -3397,12 +3427,16 @@ async fn late_usage_limit_of_an_old_round_pauses_the_new_round_with_its_time() {
     assert!(queued, "the new round's plan job was not queued within 5 s");
     let resets_at = Timestamp::from_second(Timestamp::now().as_second() + 3).expect("time");
     let late = JobResult {
+        assessment: None,
+        report: None,
         job_id: old.job_id,
         attempt: claim.spec.attempt,
         outcome: JobOutcome::UsageLimited {
             resets_at: Some(resets_at),
         },
         session: Some(contracts::job::result::SessionReport {
+            last_context: None,
+            preflight: None,
             thread_id: "thread-of-the-old-round".to_owned(),
             outcome: contracts::job::result::SessionOutcome::Started,
         }),
@@ -3505,6 +3539,8 @@ async fn user_pause_keeps_the_running_result_and_next_job_uses_the_new_model() {
     assert_eq!(paused["state"]["reason"], "user");
     assert!(paused["state"]["paused_by"].is_string());
     let result = JobResult {
+        assessment: None,
+        report: None,
         job_id: first.spec.job_id,
         attempt: first.spec.attempt,
         outcome: JobOutcome::Succeeded {
@@ -3674,6 +3710,8 @@ async fn lazy_review_opens_after_context_before_any_flow() {
         }
         let claim = claim.expect("job");
         let result = JobResult {
+            assessment: None,
+            report: None,
             job_id: claim.spec.job_id,
             attempt: claim.spec.attempt,
             outcome: JobOutcome::Succeeded {
@@ -3783,6 +3821,8 @@ async fn lazy_review_opens_after_context_before_any_flow() {
     );
     assert!(h.runner_claim().await.is_none());
     let result = JobResult {
+        assessment: None,
+        report: None,
         job_id: claim.spec.job_id,
         attempt: claim.spec.attempt,
         outcome: JobOutcome::Succeeded {
@@ -3849,6 +3889,8 @@ async fn lazy_review_opens_after_context_before_any_flow() {
         StatusCode::OK
     );
     let result = JobResult {
+        assessment: None,
+        report: None,
         job_id: next.spec.job_id,
         attempt: next.spec.attempt,
         outcome: JobOutcome::Succeeded {
@@ -4431,7 +4473,7 @@ async fn unusable_credential_in_a_flow_job_stops_the_analysis_with_the_sign_in_s
     };
     assert_eq!(flow.map(|flow| flow.id.0), Some("f2".to_owned()));
     assert!(
-        message.contains("Sign-in to the LLM provider is needed"),
+        message.contains("Link your Codex account in Settings"),
         "{message}"
     );
     assert_eq!(
@@ -4633,4 +4675,35 @@ async fn schema_invalid_plan_output_is_repaired() {
         "{}",
         runs[1].1.prompt
     );
+}
+
+#[tokio::test]
+async fn nonrepairable_schema_and_relink_failures_stop_the_flow() {
+    for (kind, expected) in [
+        (
+            JobFailureKind::InvalidJsonSchema,
+            "The LLM answer was not in the expected format.",
+        ),
+        (
+            JobFailureKind::CredentialRelink,
+            "Link your Codex account in Settings",
+        ),
+    ] {
+        let h = harness().await;
+        h.executor.script("flow:f2", Script::FailKind(kind));
+        let id = h.create_fixture_analysis().await;
+        let failed = h
+            .wait_for_state(&id, |state| matches!(state, AnalysisState::Failed { .. }))
+            .await;
+        let AnalysisState::Failed { flow, message, .. } = failed.state else {
+            unreachable!("waited for failed");
+        };
+        assert_eq!(flow.map(|flow| flow.id.0), Some("f2".to_owned()));
+        assert!(message.contains(expected), "{message}");
+        assert_eq!(
+            h.executor.specs_of("flow:f2").len(),
+            1,
+            "no automatic retry"
+        );
+    }
 }
