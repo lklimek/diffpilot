@@ -307,7 +307,7 @@ describe("Tour: the user's questions", () => {
     expect(chat).toHaveTextContent("Does the node deduplicate broadcast_tx by transaction id?");
     expect(chat).toHaveTextContent("LLM answer");
     await user().click(
-      within(chat).getByRole("button", { name: /^Flows src\/rpc\/client\.rs:99 flow 1 · step 5/ }),
+      within(chat).getByRole("button", { name: "Step 1.5 · client.rs 99 · src/rpc/client.rs:99 (new code)" }),
     );
     await waitFor(() =>
       expect(within(nav()).getByRole("button", { name: /^Step 5: .*1 question asked/ })).toHaveAttribute(

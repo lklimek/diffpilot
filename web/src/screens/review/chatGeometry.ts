@@ -1,18 +1,15 @@
 import type { ChatGeometry, ChatSize } from "../../components/ask/chat/AskChat";
 
-/** Narrower windows get the chat as a full-width bottom sheet (proposal AC14). */
-export const NARROW_PX = 1100;
+const PHONE_PX = 640;
 const GAP = 8;
 const MIN_WIDTH = 320;
 const MIN_HEIGHT = 240;
 const HIDDEN_INSPECTOR_WIDTH = 460;
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+const finite = (value: number, fallback: number) => (Number.isFinite(value) ? value : fallback);
 
-/**
- * Where the chat is drawn (proposal AC2): over the Inspector, as wide as it, its bottom on top of the Inspector's
- * dock, 75 % of the room above by default; in the window's bottom-right corner with the Inspector hidden.
- */
+/** Default placement is above the Inspector dock; moved windows stay below the workspace top. */
 export function chatGeometry(
   viewport: { width: number; height: number },
   workspace: { top: number; right: number; bottom: number; width: number } | null,
@@ -20,22 +17,74 @@ export function chatGeometry(
   dockTop: number | null,
   size: ChatSize,
 ): ChatGeometry {
+  if (viewport.width < PHONE_PX) {
+    const height = size.phoneFull ? viewport.height : Math.round(viewport.height / 2);
+    return {
+      right: 0,
+      bottom: 0,
+      width: viewport.width,
+      height,
+      minWidth: viewport.width,
+      maxWidth: viewport.width,
+      minHeight: Math.round(viewport.height / 2),
+      maxHeight: viewport.height,
+      narrow: true,
+    };
+  }
+
   const ws = workspace && workspace.width > 0 ? workspace : null;
-  const narrow = viewport.width < NARROW_PX;
-  const shown = !narrow && inspector && inspector.width > (2 * MIN_WIDTH) / 3 ? inspector : null;
-  const right = GAP + (shown ? viewport.width - shown.right : ws ? viewport.width - ws.right : 0);
-  // Over the Inspector it sits right on the dock (no strip of Inspector text between them).
-  const bottom =
+  const shown = inspector && inspector.width > (2 * MIN_WIDTH) / 3 ? inspector : null;
+  const maxWidth = viewport.width - 2 * GAP;
+  const minWidth = Math.min(MIN_WIDTH, maxWidth);
+  const width = clamp(
+    finite(size.width ?? NaN, shown ? shown.width - 2 * GAP : HIDDEN_INSPECTOR_WIDTH),
+    minWidth,
+    maxWidth,
+  );
+  const position = size.position;
+  const moved = position && position !== "bottom-right";
+  const custom = typeof position === "object" ? position : undefined;
+  const atLeft = position === "top-left" || position === "bottom-left";
+  const atTop = position === "top-left" || position === "top-right";
+  const dockBottom =
     shown && dockTop !== null ? viewport.height - dockTop : GAP + (ws ? viewport.height - ws.bottom : 0);
-  const top = (ws?.top ?? 0) + GAP;
-  const maxHeight = Math.max(120, viewport.height - bottom - top);
+  const topLimit = clamp((ws?.top ?? 0) + GAP, GAP, Math.max(GAP, viewport.height - GAP - 1));
+  const defaultBottom = Math.max(GAP, dockBottom);
+  const baseBottom = moved ? GAP : defaultBottom;
+  const room = Math.max(1, viewport.height - topLimit - GAP);
+  const dockRoom = clamp(viewport.height - topLimit - defaultBottom, Math.min(120, room), room);
+  const maxHeight = moved ? room : dockRoom;
   const minHeight = Math.min(MIN_HEIGHT, maxHeight);
-  const maxWidth = narrow ? viewport.width - 2 * GAP : Math.max(MIN_WIDTH, viewport.width - right - 2 * GAP);
-  const width = narrow
-    ? maxWidth
-    : clamp(size.width ?? (shown ? shown.width - 2 * GAP : HIDDEN_INSPECTOR_WIDTH), MIN_WIDTH, maxWidth);
   const height = size.full
     ? maxHeight
-    : clamp(size.height ?? Math.round(maxHeight * 0.75), minHeight, maxHeight);
-  return { right, bottom, width, height, minWidth: MIN_WIDTH, maxWidth, minHeight, maxHeight, narrow };
+    : clamp(finite(size.height ?? NaN, Math.round(dockRoom * 0.75)), minHeight, maxHeight);
+
+  const maxRight = viewport.width - width - GAP;
+  const maxBottom = Math.max(GAP, viewport.height - height - topLimit);
+  const defaultRight = GAP + (shown ? viewport.width - shown.right : ws ? viewport.width - ws.right : 0);
+  const right = clamp(
+    custom ? finite(custom.right, defaultRight) : atLeft ? maxRight : moved ? GAP : defaultRight,
+    GAP,
+    maxRight,
+  );
+  const bottom = clamp(
+    size.full ? baseBottom : custom ? finite(custom.bottom, baseBottom) : atTop ? maxBottom : baseBottom,
+    GAP,
+    maxBottom,
+  );
+  const resizeFromRight = atLeft || Boolean(custom && right === maxRight);
+  const resizeFromBottom = atTop || Boolean(custom && bottom === maxBottom);
+  return {
+    right,
+    bottom,
+    width,
+    height,
+    minWidth,
+    minHeight,
+    maxWidth: resizeFromRight ? maxWidth : viewport.width - right - GAP,
+    maxHeight: resizeFromBottom ? room : viewport.height - bottom - topLimit,
+    narrow: false,
+    resizeFromRight,
+    resizeFromBottom,
+  };
 }

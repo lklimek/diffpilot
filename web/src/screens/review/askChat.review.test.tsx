@@ -46,26 +46,31 @@ function captureAsk() {
 }
 
 describe("Ask chat review repros", () => {
-  it("a thread chip labelled Files opens the Files view, as its label and tooltip say (AC7)", async () => {
+  it("a thread chip with selected lines opens those lines in Files (AC7)", async () => {
+    const reader = user();
     const router = renderRoute(
       `/analyses/${ID}/files#lines?file=src/rpc/client.rs&side=head&line=100&end=102`,
     );
     await screen.findByRole("button", { name: /^Ask.*: open your private chat/ });
-    await waitFor(() => expect(screen.getAllByText(/client\.rs/).length).toBeGreaterThan(0));
-    await user().keyboard("a");
-    await waitFor(() => expect(chat()).toHaveTextContent(/About:\s*Files\s*src\/rpc\/client\.rs:100–102/));
-    await user().type(field(), "Why the delay?{Enter}");
+    await screen.findByRole("heading", { name: "Your selection · client.rs lines 100–102" });
+    await reader.keyboard("a");
+    await waitFor(() => expect(chat()).toHaveTextContent(/About:\s*Step 1\.6 · client\.rs 100–102/));
+    await waitFor(() => expect(field()).toHaveFocus());
+    await reader.paste("Why the delay?");
+    await reader.keyboard("{Enter}");
     const thread = await waitFor(() => {
       const t = chat().querySelector<HTMLElement>("[data-thread]");
       expect(t).not.toBeNull();
       return t!;
     });
-    const chip = within(thread).getByRole("button", { name: /Files\s*src\/rpc\/client\.rs:100–102/ });
+    const chip = within(thread).getByRole("button", { name: /client\.rs 100–102/ });
+    expect(chip).toHaveAccessibleDescription(/Opens them in the Files view/);
     // Navigate away first so the click must bring the reader back.
     await act(() => router.navigate(`/analyses/${ID}#pr_context`));
-    await user().click(chip);
+    await reader.click(chip);
     expect(router.state.location.pathname).toBe(`/analyses/${ID}/files`);
-  });
+    expect(decodeURIComponent(router.state.location.hash)).toContain("line=100&end=102");
+  }, 10_000);
 
   it("asking about a classic-diff context line outside the step sends a lines anchor (server refuses step lines outside the step)", async () => {
     // The real server's classic diff carries three context lines around the step (http-api.md "Classic diff").
@@ -103,7 +108,9 @@ describe("Ask chat review repros", () => {
     try {
       await openTour("#f1.5");
       const inspector = screen.getByRole("complementary", { name: "Inspector" });
-      const diff = await within(inspector).findByRole("region", { name: /^Classic diff of / });
+      const diff = await within(inspector).findByRole("region", {
+        name: "Classic diff of src/rpc/client.rs",
+      });
       await user().click(await within(diff).findByRole("button", { name: "Ask the LLM about line 98" }));
       await user().click(within(diff).getByRole("button", { name: "Ask about this line" }));
       await user().type(field(), "Is this reached?{Enter}");
@@ -129,16 +136,16 @@ describe("Ask chat review repros", () => {
       expect(t).not.toBeNull();
       return t!;
     });
-    await user().click(within(thread).getByRole("button", { name: "Ask a follow-up" }));
-    await user().type(within(thread).getByRole("textbox", { name: /^Follow-up in this thread/ }), "half");
+    await user().click(within(thread).getByRole("button", { name: "Follow up on Q1" }));
+    await user().type(within(thread).getByRole("textbox", { name: /^Follow-up to Q1/ }), "half");
     await user().click(within(chat()).getByRole("button", { name: "Hide the Ask chat" }));
     await user().click(screen.getByRole("button", { name: /^Ask.*: open your private chat/ }));
     const again = chat().querySelector<HTMLElement>("[data-thread]")!;
-    const reply = within(again).queryByRole("textbox", { name: /^Follow-up in this thread/ });
+    const reply = within(again).queryByRole("textbox", { name: /^Follow-up to Q1/ });
     if (reply) expect(reply).toHaveValue("half");
     else {
-      await user().click(within(again).getByRole("button", { name: "Ask a follow-up" }));
-      expect(within(again).getByRole("textbox", { name: /^Follow-up in this thread/ })).toHaveValue("half");
+      await user().click(within(again).getByRole("button", { name: "Follow up on Q1" }));
+      expect(within(again).getByRole("textbox", { name: /^Follow-up to Q1/ })).toHaveValue("half");
     }
   });
 

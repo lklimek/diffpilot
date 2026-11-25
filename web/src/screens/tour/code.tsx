@@ -89,6 +89,7 @@ export interface CodeContext {
   flash?: Evidence | null;
   /** "Show in Inspector" of a remark or GitHub thread popover. */
   onShowInInspector?: (target: MarkerTarget) => void;
+  onAskRemark?: (annotation: Annotation) => void;
   /** "N.M" of a thread's step when it is not the step shown. */
   otherThreadStep?: (thread: GithubThread) => string | null;
 }
@@ -153,6 +154,7 @@ export function LinesCode({ ctx, lines, ...view }: LinesCodeProps) {
         onAskLine={ctx.onAskLine}
         onLoadDeleted={(block) => setOpened((all) => [...all, block.base_start])}
         onShowInInspector={ctx.onShowInInspector}
+        onAskRemark={ctx.onAskRemark}
         otherThreadStep={ctx.otherThreadStep}
       />
       {data.deleted

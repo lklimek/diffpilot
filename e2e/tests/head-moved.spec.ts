@@ -84,7 +84,8 @@ test("head moved: comment refused with pr_head_changed, Start analysis, the supe
   // PR's data was explicitly removed, http-api.md Ask) and the question is answered on it.
   await expect(chat.getByRole("alert")).toHaveCount(0);
   const asked = chat.getByRole("listitem", { name: "Question: Is this still current?", exact: true });
-  await expect(asked).toContainText("Asked by you");
+  await expect(asked.locator("time")).toHaveAttribute("datetime", /^\d{4}-\d{2}-\d{2}T/);
+  await expect(asked.locator("time")).toHaveAttribute("title", /^Asked by you · /);
   await expect(asked).toContainText("Answered on the superseded analysis.", { timeout: 60_000 });
   await checkScreen(page);
 });

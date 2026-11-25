@@ -84,6 +84,7 @@ export interface CodeViewProps {
   onLoadDeleted?: (block: DeletedBlock) => void;
   /** "Show in Inspector" of a pinned remark or thread popover; without it the link is not offered. */
   onShowInInspector?: (target: MarkerTarget) => void;
+  onAskRemark?: (annotation: Annotation) => void;
   /** "N.M" of a thread's step when it is not the step shown; its Show in Inspector then names that step. */
   otherThreadStep?: (thread: GithubThread) => string | null;
   /** Rating of each remark's step when the code mixes steps (Files view); a run takes the highest. */
@@ -157,6 +158,7 @@ interface LineContext {
   onAskLine?: (target: CommentTarget) => void;
   onFocusLine: (key: string) => void;
   onShowInInspector?: (target: MarkerTarget) => void;
+  onAskRemark?: (annotation: Annotation) => void;
   unrated: boolean;
   otherThreadStep?: (thread: GithubThread) => string | null;
   remarkOwner?: (annotation: Annotation) => string | null;
@@ -328,6 +330,7 @@ function Line({ ctx, side, line, text, tokens, row, removed = false, remarks }: 
               line={line}
               owner={ctx.remarkOwner?.(a)}
               unrated={ctx.bandOf ? ctx.bandOf(a) === null : ctx.unrated}
+              onAskRemark={ctx.onAskRemark}
               onShowInInspector={ctx.onShowInInspector}
             />
           ))}
@@ -704,6 +707,7 @@ export function CodeView({
   onEditComment,
   onDeleteComment,
   onShowInInspector,
+  onAskRemark,
   otherThreadStep,
   bandOf,
   remarkOwner,
@@ -847,6 +851,7 @@ export function CodeView({
     onAskLine,
     onFocusLine: setFocusKey,
     onShowInInspector,
+    onAskRemark,
     unrated: band === null,
     otherThreadStep,
     remarkOwner,

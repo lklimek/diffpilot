@@ -548,6 +548,12 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   });
   const pendingComments = pending.data?.comments ?? [];
   const pendingCount = pendingCountOf(pending);
+  const askRemark = (remark: Annotation) => {
+    const owner = tour.flows
+      .flatMap((flow) => flow.steps)
+      .find((s) => s.llm.annotations.some((annotation) => annotation.id === remark.id));
+    if (owner) chat.open({ anchor: { kind: "step", step_id: owner.id, lines: remark.range }, remark });
+  };
   const ctx: CodeContext = {
     hideContextChanges,
     analysisId,
@@ -577,6 +583,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
     onDeleteComment: comments.remove,
     flash: evidence ?? null,
     onShowInInspector: showInInspector,
+    onAskRemark: askRemark,
     otherThreadStep: (t) => {
       const owner = t.step_id && t.step_id !== step?.id ? findStep(tour, t.step_id) : undefined;
       return owner ? `${owner.flow.position}.${owner.step.number}` : null;
@@ -1039,6 +1046,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
             sections={sections}
             commentRef={commentRef}
             onAskLine={ctx.onAskLine}
+            onAskRemark={askRemark}
             onFlagAsComment={onFlagAsComment}
             commentPrefill={commentPrefill}
             onCommentPrefilled={() => setCommentPrefill(null)}

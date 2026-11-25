@@ -17,7 +17,7 @@ import {
   type ReviewComment,
   type ReviewCommentsOverview,
 } from "./provisional/comments";
-import { withoutRetried } from "./queries";
+import { withoutRetried } from "./questionHistory";
 import type {
   AnalysisId,
   AnchoredAskRequest,
