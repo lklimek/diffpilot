@@ -118,10 +118,11 @@ function Hunk({
             <button
               type="button"
               data-line-action
-              className={`${classes} hover:text-accent`}
+              className={`${classes} ml-1.5 cursor-pointer hover:text-accent`}
               tabIndex={ask.tabKey === at.key ? 0 : -1}
-              aria-label={`Line ${value}`}
-              title="Tab to open this line on GitHub."
+              aria-label={`Open line ${value} on GitHub, new tab`}
+              title={github.tip}
+              onClick={() => window.open(github.url, "_blank", "noopener,noreferrer")}
               onFocus={() => ask.onFocus(at.key)}
             >
               {value}
@@ -136,7 +137,7 @@ function Hunk({
               data-diff-line={l.kind}
               data-ask-side={at?.side}
               data-ask-number={at?.line}
-              className={`group/line grid min-w-full ${ask?.onAsk ? "grid-cols-[max-content_1.25rem_2ch_max-content]" : "grid-cols-[max-content_2ch_max-content]"} ${mine || github ? "min-h-6 items-center" : ""} ${kind.look}`}
+              className={`group/line grid min-w-full ${ask?.onAsk ? "grid-cols-[max-content_1.25rem_2ch_max-content]" : "grid-cols-[max-content_2ch_max-content]"} ${mine ? "min-h-6 items-center" : ""} ${kind.look}`}
             >
               <span
                 className={`grid items-center ${ask?.githubLine ? "grid-cols-[18px_5ch_5ch]" : "grid-cols-[0_5ch_5ch]"}`}

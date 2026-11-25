@@ -222,7 +222,7 @@ function Line({ ctx, side, line, text, tokens, row, removed = false, remarks, co
   const open = mine !== undefined && ctx.isOpen(key);
   const threads = ctx.threads.get(key);
   // A row with a marker button grows to the button's 24 px target.
-  const tall = Boolean(github || remarks?.length || threads || mine);
+  const tall = Boolean(remarks?.length || threads || mine);
   const selected = ctx.selection?.side === side && ctx.selection.from <= line && line <= ctx.selection.to;
   const hunk = ctx.hunkOf?.(side, line) ?? null;
   const hunkSelected = hunk !== null && hunk === ctx.selectedHunk;
@@ -271,7 +271,7 @@ function Line({ ctx, side, line, text, tokens, row, removed = false, remarks, co
           event.stopPropagation();
           ctx.onLineAction?.(target, { extend: event.shiftKey });
         }}
-        className={`${github ? "col-start-2 pl-1.5" : "sticky left-0"} row-start-1 cursor-pointer border-0 bg-transparent p-0 pr-2.5 text-right font-[inherit] hover:text-accent hover:underline ${selected ? "font-bold text-accent" : "text-muted"}`}
+        className={`${github ? "col-start-2 ml-1.5" : "sticky left-0"} row-start-1 cursor-pointer border-0 bg-transparent p-0 pr-2.5 text-right font-[inherit] hover:text-accent hover:underline ${selected ? "font-bold text-accent" : "text-muted"}`}
       >
         {line}
       </button>

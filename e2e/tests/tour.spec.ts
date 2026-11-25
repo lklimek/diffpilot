@@ -126,7 +126,8 @@ test("hard case 3: a step without flags has no Flags section; the low assessment
   await checkScreen(page);
 });
 
-test("classic diff of a step: d toggles the base → head view of the file", async ({ page }) => {
+test("classic diff of a step: d toggles the base → head view of the file", async ({ page, context }) => {
+  await context.route("https://github.com/**", (route) => route.fulfill({ body: "GitHub" }));
   await finishedReview(page);
   await openStep(page, 2, 1);
   const main = page.getByRole("main");
@@ -136,6 +137,12 @@ test("classic diff of a step: d toggles the base → head view of the file", asy
   await expect(diff).toBeVisible();
   await expect(diff).toContainText("Duration::from_secs(30)");
   await expect(diff).toContainText("Duration::from_secs(5)");
+  const removed = diff.locator('[data-diff-line="removed"]').first();
+  const popup = page.waitForEvent("popup");
+  await removed.getByRole("button", { name: /^Open line \d+ on GitHub, new tab$/ }).click();
+  const github = await popup;
+  await expect(github).toHaveURL(/\/pull\/482\/changes#diff-[a-f0-9]{64}L\d+$/);
+  await github.close();
   await checkScreen(page);
   await page.keyboard.press("d");
   await expect(diff).toHaveCount(0);

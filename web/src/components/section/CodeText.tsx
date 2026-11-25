@@ -1,4 +1,5 @@
 import { Fragment, useContext, type ReactNode } from "react";
+import { inApp } from "../inApp";
 import { GithubMark } from "../github/GithubMark";
 import { PathLinks } from "./pathLinks";
 
@@ -25,19 +26,7 @@ export function CodeText({ text, linkPaths = true }: { text: string; linkPaths?:
             className="font-mono underline"
             target={target.github ? "_blank" : undefined}
             rel={target.github ? "noopener noreferrer" : undefined}
-            onClick={(event) => {
-              if (
-                target.github ||
-                event.button !== 0 ||
-                event.metaKey ||
-                event.ctrlKey ||
-                event.shiftKey ||
-                event.altKey
-              )
-                return;
-              event.preventDefault();
-              links.onNavigate(target.href);
-            }}
+            onClick={target.github ? undefined : (event) => inApp(event, () => links.onNavigate(target.href))}
           >
             {token}
             {target.github && <GithubMark />}
@@ -52,7 +41,7 @@ export function CodeText({ text, linkPaths = true }: { text: string; linkPaths?:
     const result: ReactNode[] = [];
     let from = 0;
     for (const match of value.matchAll(PATH_TOKEN)) {
-      const token = match[0].replace(/\.+$/, "");
+      const token = match[0].replace(/[.?:]+$/, "");
       const anchor = link(token, match.index);
       if (!anchor) continue;
       result.push(value.slice(from, match.index), anchor);

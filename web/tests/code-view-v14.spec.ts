@@ -1,8 +1,48 @@
+import type { Locator } from "@playwright/test";
 import { expect, test } from "./fixtures";
 import { ANALYSIS_ID } from "./support";
 
 const review = `/analyses/${ANALYSIS_ID}`;
 const rpc = "src/rpc/client.rs";
+
+async function expectCodeLineHeight(row: Locator) {
+  await expect(row).toBeVisible();
+  const [height, lineHeight] = await row.evaluate((element) => [
+    element.getBoundingClientRect().height,
+    parseFloat(getComputedStyle(element).lineHeight),
+  ]);
+  expect(height).toBeCloseTo(lineHeight!, 1);
+}
+
+test("keeps code density in Flows, Files and the classic diff", async ({ page }) => {
+  await page.goto(`${review}#f1.2`);
+  const main = page.getByRole("main");
+  const row = main.locator('[data-line="95"][data-side="head"]');
+  await expectCodeLineHeight(row);
+  await row.hover();
+  await expectCodeLineHeight(row);
+  await page.keyboard.press("d");
+  const diff = main.getByRole("region", { name: `Classic diff of ${rpc}` });
+  await expectCodeLineHeight(diff.locator('[data-diff-line="context"]').first());
+  await page.goto(`${review}/files#lines?file=src%2Frpc%2Fclient.rs&side=head`);
+  await expectCodeLineHeight(main.locator('[data-line="95"][data-side="head"]'));
+});
+
+test("the classic diff number opens its GitHub line", async ({ page, context }) => {
+  await context.route("https://github.com/**", (route) => route.fulfill({ body: "GitHub" }));
+  await page.goto(`${review}#f1.2`);
+  await expect(page.getByRole("main").getByRole("button", { name: "Comment on line 89" })).toBeVisible();
+  await page.keyboard.press("d");
+  const diff = page.getByRole("main").getByRole("region", { name: `Classic diff of ${rpc}` });
+  const row = diff.locator('[data-ask-side="head"][data-ask-number="89"]');
+  const number = row.getByRole("button", { name: "Open line 89 on GitHub, new tab" });
+  const popup = page.waitForEvent("popup");
+  await number.click();
+  const github = await popup;
+  await expect(github).toHaveURL(/\/changes#diff-[a-f0-9]{64}R89$/);
+  expect(await github.evaluate(() => window.opener === null)).toBe(true);
+  await github.close();
+});
 
 test("U48: line GitHub links follow the diff side, expose a tab stop and support g", async ({
   page,
@@ -17,6 +57,14 @@ test("U48: line GitHub links follow the diff side, expose a tab stop and support
   await expect(link).toBeHidden();
   await line.hover();
   await expect(link).toBeVisible();
+  expect(
+    await link.evaluate((element) => {
+      const hitArea = getComputedStyle(element, "::before");
+      const { left, top, height } = element.getBoundingClientRect();
+      const hitsGutter = document.elementFromPoint(left + 22, top + height / 2) === element;
+      return [hitArea.width, hitArea.height, hitsGutter];
+    }),
+  ).toEqual(["24px", "24px", true]);
   await expect(link).toHaveAttribute("href", /\/pull\/482\/changes#diff-[a-f0-9]{64}R89$/);
   await page.mouse.move(0, 0);
   await line.focus();
@@ -45,8 +93,18 @@ test("U49: the review bar shows the current file and keeps its badges at 1280 an
   const banner = page.getByRole("banner");
   const path = banner.getByLabel(`Current file: ${rpc}`);
   await expect(path).toBeVisible();
+  await path.focus();
+  await expect(path).toBeFocused();
+  await expect(banner.getByRole("tooltip", { name: rpc, exact: true })).toBeVisible();
+  await expect(path).toHaveAccessibleDescription(rpc);
+  await expect(path.locator("xpath=ancestor-or-self::*[@aria-live]")).toHaveCount(0);
+  const checks = banner.getByRole("link", {
+    name: /^CI: 3 passed, 1 failed, 1 pending, 1 skipped, 1 neutral/,
+  });
+  await expect(checks).toContainText("CI: 3 passed, 1 failed, 1 pending, 1 skipped, 1 neutral");
+  await expect(checks).toHaveAccessibleDescription(/Check runs: .*\. Statuses: 1 pending\./);
   const badges = [
-    banner.getByRole("link", { name: /^Check runs:/ }),
+    checks,
     banner.getByText("EN", { exact: true }),
     banner.getByText("52d2da1", { exact: true }),
     banner.getByRole("button", { name: /^Your progress/ }),

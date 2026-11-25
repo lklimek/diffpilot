@@ -1,13 +1,7 @@
-import type { MouseEvent, ReactNode } from "react";
+import type { ReactNode } from "react";
+import { inApp } from "../inApp";
 import { Tooltip } from "../tooltip/Tooltip";
 import type { DepsLinks, LineTarget } from "./model";
-
-// A plain left click stays in the app; a modified or middle click opens the link the browser's way.
-export const inApp = (event: MouseEvent, follow: () => void) => {
-  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-  event.preventDefault();
-  follow();
-};
 
 // Base lines are of the base commit: said, since their numbers differ from the head's.
 const lineText = (t: LineTarget) =>

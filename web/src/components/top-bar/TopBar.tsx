@@ -1,7 +1,8 @@
-import { useEffect, useId, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { inApp } from "../inApp";
 import { GithubMark } from "../github/GithubMark";
-import { CHECKS_LINK_TIP, ciText, ciTip } from "../section/ci";
-import type { CiState, CiStatus, LlmLanguage, PrSummary } from "../../api/generated/types";
+import { CHECKS_LINK_TIP, ciBadgeText, ciText, ciTip } from "../section/ci";
+import type { CiStatus, LlmLanguage, PrSummary } from "../../api/generated/types";
 import { LanguageTag } from "../language-tag/LanguageTag";
 import { PENDING_INCOMPLETE } from "../section/format";
 import { Tooltip } from "../tooltip/Tooltip";
@@ -53,13 +54,6 @@ export interface ReviewViews {
 }
 
 const VIEW_NAMES = { flows: "Flows", files: "Files", deps: "Dependencies", comments: "Comments" } as const;
-
-// A plain left click stays in the app; a modified or middle click opens the link the browser's way.
-const inApp = (event: MouseEvent, follow: () => void) => {
-  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-  event.preventDefault();
-  follow();
-};
 
 /** `diffpilot › owner/repo #n [GitHub] › Flows ▾ / Files ▾ / Dependencies ▾` (brief §4 rule 5). */
 function Breadcrumb({ pr, view }: { pr: TopBarPr; view: ReviewViews }) {
@@ -184,25 +178,6 @@ function Breadcrumb({ pr, view }: { pr: TopBarPr; view: ReviewViews }) {
 const BUTTON =
   "cursor-pointer rounded-md border border-border bg-surface px-2 py-0.5 text-[12.5px] font-semibold text-text hover:border-accent";
 
-const CI_LABEL: Record<CiState, string> = {
-  passing: "passing",
-  failing: "failing",
-  pending: "pending",
-  no_failures: "partial",
-  none: "none reported",
-  not_checked: "not checked",
-};
-
-function ChecksText({ ci, compact }: { ci: CiStatus; compact: boolean }) {
-  if (!compact) return ciText(ci);
-  return (
-    <>
-      <span aria-hidden>CI: {CI_LABEL[ci.state]}</span>
-      <span className="sr-only">{ciText(ci)}</span>
-    </>
-  );
-}
-
 function pendingText(count: NonNullable<TopBarProps["pendingCount"]>): string {
   if (count === "unavailable") return "not available";
   if (count === "loading") return "…";
@@ -275,22 +250,24 @@ export function TopBar({
             {pr.title}
           </strong>
           {codeReview && currentPath && (
-            <code
-              className="review-current-path items-baseline text-xs font-normal text-muted"
-              role="group"
-              aria-label={`Current file: ${currentPath}`}
-              title={currentPath}
-            >
-              <span className="review-path-dot" aria-hidden>
-                ·&nbsp;
-              </span>
-              <span className="review-path-directory" aria-hidden>
-                <bdi>{currentPath.slice(0, split)}</bdi>
-              </span>
-              <bdi className="text-text" aria-hidden>
-                {currentPath.slice(split)}
-              </bdi>
-            </code>
+            <Tooltip tip={currentPath} className="review-path-tip">
+              <code
+                className="review-current-path items-baseline text-xs font-normal text-muted"
+                role="group"
+                aria-label={`Current file: ${currentPath}`}
+                tabIndex={0}
+              >
+                <span className="review-path-dot" aria-hidden>
+                  ·&nbsp;
+                </span>
+                <span className="review-path-directory" aria-hidden>
+                  <bdi>{currentPath.slice(0, split)}</bdi>
+                </span>
+                <bdi className="text-text" aria-hidden>
+                  {currentPath.slice(split)}
+                </bdi>
+              </code>
+            </Tooltip>
           )}
           <Tooltip tip={`Head commit analysed: ${pr.head_sha}`} className="shrink-0">
             <code tabIndex={0} className="text-xs text-muted">
@@ -310,9 +287,7 @@ export function TopBar({
                   ci.state === "failing" ? "border-high-bd bg-high-bg text-high" : "border-border text-text"
                 }`}
               >
-                <span className="truncate">
-                  <ChecksText ci={ci} compact={codeReview} />
-                </span>
+                <span className="truncate">{codeReview ? ciBadgeText(ci) : ciText(ci)}</span>
                 <GithubMark />
               </a>
             </Tooltip>
@@ -325,7 +300,7 @@ export function TopBar({
                   ci.state === "failing" ? "border-high-bd bg-high-bg text-high" : "border-border text-text"
                 }`}
               >
-                <ChecksText ci={ci} compact={codeReview} />
+                {codeReview ? ciBadgeText(ci) : ciText(ci)}
               </span>
             </Tooltip>
           )}
@@ -354,13 +329,13 @@ export function TopBar({
         )}
         {onHideContextChanges && (
           <Tooltip tip="Hides Rust comment and import changes in the main code view. The classic diff always shows them. Other languages are unchanged.">
-            <label className="flex cursor-pointer items-center gap-1 text-xs whitespace-normal">
+            <label className="review-context-toggle flex cursor-pointer items-center gap-1 text-xs whitespace-normal">
               <input
                 type="checkbox"
                 checked={hideContextChanges}
                 onChange={(e) => onHideContextChanges(e.target.checked)}
               />
-              Hide comment and import changes
+              <span className="review-context-label">Hide comment and import changes</span>
             </label>
           </Tooltip>
         )}

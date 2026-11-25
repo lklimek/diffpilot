@@ -1,9 +1,10 @@
-import { useRef, useState, type ComponentProps, type MouseEvent } from "react";
+import { useRef, useState, type ComponentProps } from "react";
 import { useQueries } from "@tanstack/react-query";
 import { ApiError } from "../../api/client";
 import type { LineRange, Step } from "../../api/generated/types";
 import type { StepFactsWithLeadingContext } from "../../api/provisional/stepFacts";
 import { linesQuery, useLines } from "../../api/queries";
+import { inApp } from "../../components/inApp";
 import { CONTEXT_ACTION, ContextFold } from "../../components/code-view/ContextFold";
 import { Tooltip } from "../../components/tooltip/Tooltip";
 import { StatusMessage } from "../../components/status/StatusMessage";
@@ -116,12 +117,7 @@ function useContextBatches(
         <a
           href={neighbour.href}
           className={CONTEXT_ACTION}
-          onClick={(event: MouseEvent) => {
-            if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
-              return;
-            event.preventDefault();
-            onStep(neighbour.step.id);
-          }}
+          onClick={(event) => inApp(event, () => onStep(neighbour.step.id))}
         >
           {neighbour.label} continues {direction}
         </a>

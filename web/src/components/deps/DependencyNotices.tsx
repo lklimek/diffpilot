@@ -1,7 +1,7 @@
 import { useId } from "react";
 import type { DependencyLimit, DependencyView } from "../../api/generated/types";
 import { Tooltip } from "../tooltip/Tooltip";
-import { inApp } from "./LineLinkTo";
+import { inApp } from "../inApp";
 import { count, hasChangedCrate, type DepsLinks } from "./model";
 
 /** The sentence of a repository without Cargo (brief 2026-11-20: Not available). */
