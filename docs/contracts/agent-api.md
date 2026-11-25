@@ -294,6 +294,6 @@ message or `Retry-After`) exits 4 with how long to wait instead.
 - Use `CommentCounts.needs_you` and `needs_you_gates` for the actionable queue and its gated subset. The dashboard
   exposes the same count as `CommentTally.needs_you` once the shared calculation lands. `undecided` retains its
   existing meaning. Check the assessment state for `queued` and `running` when interpreting an item.
-- The new repository coverage read lists repositories in the reader's rules or snapshot. The activity read
+- The new repository coverage read lists repositories tracked by the reader's tenant. The activity read
   exposes peer jobs in the reader's tenant with only kind and a response-local id. `GET /api/v1/me/prs` is a
   reader-specific history. The new reads return 501 `not_implemented` in B1. See [HTTP API](http-api.md#v14-dashboard-comments-and-activity).

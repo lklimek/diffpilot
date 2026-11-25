@@ -15,18 +15,12 @@ CREATE TABLE github_deliveries (
 CREATE INDEX github_deliveries_by_body ON github_deliveries (body_sha256, received_at);
 CREATE INDEX github_deliveries_by_received ON github_deliveries (received_at);
 
-CREATE TABLE app_installations_allowed (
-    installation_id      INTEGER NOT NULL PRIMARY KEY,
-    account_id           INTEGER NOT NULL,
-    account_login        TEXT NOT NULL COLLATE NOCASE,
-    repository_selection TEXT NOT NULL CHECK (repository_selection IN ('all', 'selected')),
-    resolved_at          TEXT NOT NULL
-) STRICT;
-
+-- Live coverage for tracked repositories (W13).
 CREATE TABLE app_repositories (
     owner           TEXT NOT NULL COLLATE NOCASE,
     name            TEXT NOT NULL COLLATE NOCASE,
-    installation_id INTEGER NOT NULL REFERENCES app_installations_allowed (installation_id) ON DELETE CASCADE,
+    repository_id   INTEGER NOT NULL UNIQUE,
+    installation_id INTEGER NOT NULL,
     suspended       INTEGER NOT NULL DEFAULT 0 CHECK (suspended IN (0, 1)),
     checked_at      TEXT NOT NULL,
     PRIMARY KEY (owner, name)

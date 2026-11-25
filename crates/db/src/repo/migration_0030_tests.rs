@@ -56,7 +56,6 @@ const CLEANED: &[&str] = &[
     "working_sessions",
 ];
 const NEW: &[&str] = &[
-    "app_installations_allowed",
     "app_repositories",
     "comment_decision_origins",
     "dashboard_ranking_resets",

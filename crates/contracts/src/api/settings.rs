@@ -190,14 +190,14 @@ pub struct SetJudgeEffortRequest {
     pub reasoning_effort: crate::job::spec::ReasoningEffort,
 }
 
-/// Live webhook coverage of repositories in the reader's rules or dashboard snapshot.
+/// Live webhook coverage of repositories tracked by the reader's tenant.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct RepositoryInstallations {
-    /// Repositories visible through those rules or snapshot.
+    /// Repositories tracked through owners to list, repository rules, watches, analyses or current snapshots.
     pub repositories: Vec<RepositoryInstallation>,
 }
 
-/// Whether an allowed GitHub App installation updates this repository.
+/// Whether the GitHub App updates this tracked repository.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct RepositoryInstallation {
     /// Repository.
@@ -215,32 +215,8 @@ pub struct GithubWebhook {
     pub webhook_url: Option<String>,
     /// When the last verified delivery was received.
     pub last_delivery_at: Option<Timestamp>,
-    /// Accounts configured to send deliveries.
-    pub allowed: Vec<AllowedInstallation>,
-    /// Verified deliveries from disallowed installations over the last 14 days.
-    pub refused_deliveries: u32,
-}
-
-/// An account allowed to send GitHub App webhook deliveries.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-pub struct AllowedInstallation {
-    /// GitHub account login.
-    pub account: String,
-    /// GitHub installation id, null while unresolved.
-    #[ts(type = "number | null")]
-    pub installation_id: Option<u64>,
-    /// Repository selection, null while unresolved.
-    pub repository_selection: Option<RepositorySelection>,
-}
-
-/// Whether a GitHub App installation covers all or selected repositories.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum RepositorySelection {
-    /// All repositories of the account.
-    All,
-    /// Selected repositories only.
-    Selected,
+    /// Verified deliveries dropped for untracked repositories over the last 14 days, installation-wide.
+    pub dropped_deliveries: u32,
 }
 
 /// Usage of the reader's dashboard ranking caps.

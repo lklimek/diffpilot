@@ -209,7 +209,7 @@ pub struct CommentItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub import_proposal: Option<ImportedGithubDecision>,
-    /// First sentence of the primary assessment description, at most 90 characters.
+    /// First sentence of the primary assessment description, cut at a word within 90 characters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub llm_title: Option<String>,
@@ -629,7 +629,7 @@ pub struct ImportedDecision {
     pub evidence_url: String,
     /// Verbatim excerpt supporting the decision.
     pub quote: String,
-    /// GitHub login of the configured relay when one spoke on the author's behalf.
+    /// GitHub login of the linked account that relayed the member's decision.
     pub relay: Option<String>,
 }
 

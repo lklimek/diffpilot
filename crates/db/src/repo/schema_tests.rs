@@ -371,7 +371,7 @@ async fn tenant_id_on_every_table() {
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
            AND name NOT IN ('_sqlx_migrations', 'tenants', 'users', 'llm_selection',
                'assessment_config', 'assessment_daily_usage',
-               'github_deliveries', 'app_installations_allowed', 'app_repositories', 'comment_decision_origins') ORDER BY name",
+               'github_deliveries', 'app_repositories', 'comment_decision_origins') ORDER BY name",
     )
     .fetch_all(&db.pool)
     .await
@@ -2594,19 +2594,18 @@ async fn github_webhook_schema_enforces_delivery_and_repository_keys() {
     let db = db().await;
     sqlx::raw_sql(
         "INSERT INTO github_deliveries (delivery_id, body_sha256, event, changes, state, received_at)
-         VALUES ('d1', 'hash', 'ping', '[]', 'pending', 't'), ('d2', 'hash', 'ping', '[]', 'ignored', 't');
-         INSERT INTO app_installations_allowed (installation_id, account_id, account_login, repository_selection, resolved_at)
-         VALUES (1, 2, 'Acme', 'selected', 't');
-         INSERT INTO app_repositories (owner, name, installation_id, checked_at)
-         VALUES ('Acme', 'Project', 1, 't');",
+         VALUES ('d1', 'hash', 'ping', '[]', 'pending', 't'), ('d2', 'hash', 'push', '[]', 'not_allowed', 't');
+         INSERT INTO app_repositories (owner, name, repository_id, installation_id, checked_at)
+         VALUES ('Acme', 'Project', 42, 1, 't');
+         UPDATE app_repositories SET name = 'Renamed' WHERE repository_id = 42;",
     ).execute(&db.pool).await.unwrap();
     for invalid in [
         "UPDATE github_deliveries SET delivery_id = 'd1' WHERE delivery_id = 'd2'",
         "UPDATE github_deliveries SET state = 'unknown' WHERE delivery_id = 'd1'",
         "UPDATE github_deliveries SET changes = 'invalid' WHERE delivery_id = 'd1'",
         "UPDATE github_deliveries SET changes = '{}' WHERE delivery_id = 'd1'",
-        "UPDATE app_installations_allowed SET repository_selection = 'unknown'",
-        "INSERT INTO app_repositories (owner, name, installation_id, checked_at) VALUES ('acme', 'project', 1, 't')",
+        "INSERT INTO app_repositories (owner, name, repository_id, installation_id, checked_at) VALUES ('acme', 'renamed', 43, 1, 't')",
+        "INSERT INTO app_repositories (owner, name, repository_id, installation_id, checked_at) VALUES ('Acme', 'Project', 42, 1, 't')",
     ] {
         assert!(
             sqlx::query(invalid).execute(&db.pool).await.is_err(),

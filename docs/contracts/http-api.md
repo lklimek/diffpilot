@@ -21,8 +21,8 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
 - Runner listener `SR_RUNNER_LISTEN_ADDR` serves `/runner/v1/*` ([runner protocol](runner-protocol.md)).
 - Webhook listener `SR_WEBHOOK_LISTEN_ADDR` defaults to `0.0.0.0:3002` and serves only `POST /webhooks/github`.
   The public listener returns 404 for `/webhooks/*`. The route registers `github_signature` authentication.
-  Its contract-only handler returns 501. The receiver will validate GitHub's signature and the installation
-  allowlist independently of the WAF. [ADR-026](../decisions/ADR-026-github-webhooks.md)
+  Its contract-only handler returns 501. The receiver will authenticate the delivery by GitHub signature and
+  App target, then check whether a tenant tracks the repository. [ADR-026](../decisions/ADR-026-github-webhooks.md)
 - `session`: session cookie (`__Host-sr_session`, Secure, HttpOnly, SameSite=Lax, Path=/; `sr_session` without
   Secure only when `SR_PUBLIC_URL` is http and no trusted proxy forwards https), opaque token stored hashed. A
   session lasts 7 days, ends after 24 h unused, and only while its user stays on the tenant's allowlist (ADR-007
@@ -978,9 +978,10 @@ The response and status in the table describe their final contract.
   `ItemText.inherited` and `older_prompt_judgements` fields remain readable. The optional R2 request defaults
   `rejudge_outdated` to false. B1 accepts the request with its existing refresh behaviour.
 - `WorkItem.live` and the summary's repository counts and `last_event_at` describe live webhook coverage.
-  `SnapshotMeta` omits `facts_checked_at`. Repository installations are limited to repositories in the reader's
-  rules or current snapshot. Webhook settings include the configured URL, last verified delivery, allowed
-  installation resolution and the 14-day refused count.
+  `SnapshotMeta` omits `facts_checked_at`. Repository installations come from the database and cover repositories
+  tracked by the reader's tenant through owners to list, repository rules, watches, analyses or current snapshots.
+  Webhook settings show secret configuration, the optional public URL, the last verified delivery and the
+  installation-wide 14-day count of verified deliveries dropped for untracked repositories.
 - Fact tags may include stable filter keys and labels. Work items may include stack position, size, dependent PR
   numbers and a matching release base. `Settings.llm_usage.this_month` uses the server-local month. The ranking
   usage reset starts counting from the reset time. `resets_at` is the next midnight in the reader's configured zone.
