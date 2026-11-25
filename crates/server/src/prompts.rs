@@ -1490,6 +1490,16 @@ pub(crate) fn read_only_rules() -> Result<String, PromptError> {
         .join("\n"))
 }
 
+/// The shared sentence appended to the rules for Polish and Russian output.
+pub(crate) fn translated_technical_terms(language: LlmLanguage) -> Result<String, PromptError> {
+    match language {
+        LlmLanguage::En => Ok(String::new()),
+        LlmLanguage::Pl | LlmLanguage::Ru => {
+            Ok(format!(" {}", part("translated_technical_terms")?))
+        }
+    }
+}
+
 /// Header, rules block and pre-pass notices, then the task.
 fn frame(job: &str, context: JobContext<'_>, task: &str) -> Result<String, PromptError> {
     frame_inner(
@@ -1520,11 +1530,17 @@ fn frame_inner(
             ("head", &plain(&pr.head_sha.0)),
         ],
     )?;
-    let language = match language {
-        LlmLanguage::En => part("language_en")?,
-        LlmLanguage::Pl => part("language_pl")?,
-        LlmLanguage::Ru => part("language_ru")?,
-    };
+    let language = fill(
+        match language {
+            LlmLanguage::En => part("language_en")?,
+            LlmLanguage::Pl => part("language_pl")?,
+            LlmLanguage::Ru => part("language_ru")?,
+        },
+        &[(
+            "translated_technical_terms",
+            &translated_technical_terms(language)?,
+        )],
+    )?;
     let sub_agents = if sub_agents {
         part("sub_agents_on")?
     } else {
@@ -1552,7 +1568,7 @@ fn frame_inner(
     let rules = fill(
         RULES,
         &[
-            ("language", language),
+            ("language", &language),
             ("sub_agents", sub_agents),
             ("file_permission", file_permission),
             ("output_instruction", output_instruction),
@@ -1994,3 +2010,40 @@ fn clip_bytes(text: &str, max_bytes: usize) -> (&str, usize) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+/// Pin the localized lines against the full English golden without copying the shared lines or fixture data.
+pub(crate) fn check_localized_golden(
+    english_path: &std::path::Path,
+    english: &str,
+    render: impl Fn(LlmLanguage) -> String,
+) {
+    use std::fmt::Write;
+
+    let mut localized = String::new();
+    for language in [LlmLanguage::Pl, LlmLanguage::Ru] {
+        let prompt = render(language);
+        assert_eq!(
+            prompt.lines().count(),
+            english.lines().count(),
+            "{language:?}"
+        );
+        writeln!(localized, "@@ {language:?}").expect("write to string");
+        for (line, original) in prompt.lines().zip(english.lines()) {
+            if line != original {
+                writeln!(localized, "{line}").expect("write to string");
+            }
+        }
+    }
+    let path = english_path.with_extension("languages.txt");
+    if std::env::var_os("UPDATE_GOLDEN").is_some() {
+        std::fs::write(&path, &localized).expect("write localized golden");
+    }
+    let golden = std::fs::read_to_string(&path).unwrap_or_default();
+    assert_eq!(
+        golden,
+        localized,
+        "{} differs (UPDATE_GOLDEN=1)",
+        path.display()
+    );
+}

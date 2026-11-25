@@ -969,6 +969,16 @@ fn instruction_files_get_the_t14_notice_in_every_prompt() {
 }
 
 #[test]
+fn localized_prompts_explain_translated_technical_terms() {
+    let rule = "At the first use of each translated technical term in each text, put the original English term in parentheses immediately after it.";
+    for (name, prompt) in all_prompts() {
+        let (instructions, _) = split(&prompt);
+        let localized = name.ends_with(".pl") || name.ends_with(".ru");
+        assert_eq!(instructions.contains(rule), localized, "{name}");
+    }
+}
+
+#[test]
 fn language_parameter_sets_the_llm_text_language() {
     let english = render_all(LlmLanguage::En);
     let polish = render_all(LlmLanguage::Pl);

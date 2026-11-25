@@ -714,7 +714,7 @@ fn prompt_names_the_users_language() {
     let rule = |language: &str| {
         format!(
             "- Write `why`, `next`, `alarm`, every `basis` and every `reason` in {language}; keys, component \
-             names and enum values stay as they are.\n"
+             names and enum values stay as they are."
         )
     };
     assert!(english.contains(&rule("English")), "{english}");
@@ -722,6 +722,22 @@ fn prompt_names_the_users_language() {
     let russian = prompt::render(&golden_input(), LlmLanguage::Ru).expect("prompt");
     assert!(russian.contains(&rule("Russian (русский)")), "{russian}");
     assert!(!polish.contains("{{language}}"));
+}
+
+#[test]
+fn judge_prompt_explains_translated_technical_terms() {
+    let rule = "At the first use of each translated technical term in each text, put the original English term in parentheses immediately after it.";
+    for language in [LlmLanguage::En, LlmLanguage::Pl, LlmLanguage::Ru] {
+        let prompt = prompt::render(&golden_input(), language).expect("prompt");
+        let (instructions, _) = prompt
+            .split_once(contracts::agent::judge_work::DATA_BLOCK_OPEN)
+            .expect("data block");
+        assert_eq!(
+            instructions.contains(rule),
+            language != LlmLanguage::En,
+            "{language:?}"
+        );
+    }
 }
 
 #[test]
@@ -843,6 +859,9 @@ fn golden_judge_work_prompt() {
         golden, prompt,
         "prompts/golden/judge_work.txt differs (UPDATE_GOLDEN=1)"
     );
+    crate::prompts::check_localized_golden(&path, &prompt, |language| {
+        prompt::render(&golden_input(), language).expect("prompt")
+    });
 }
 
 #[test]

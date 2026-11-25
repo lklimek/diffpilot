@@ -2331,6 +2331,24 @@ fn prompt_fences_untrusted_text_as_data() {
     assert!(polish.contains("Write every text value in Polish (polski)"));
 }
 
+#[test]
+fn verify_comments_prompt_explains_translated_technical_terms() {
+    let rule = "At the first use of each translated technical term in each text, put the original English term in parentheses immediately after it.";
+    let input = golden_input();
+    for language in [LlmLanguage::En, LlmLanguage::Pl, LlmLanguage::Ru] {
+        let prompt = prompt::render(&input, &summary(HEAD), language).expect("prompt");
+        let (instructions, _) = prompt
+            .split_once(agent::verify_comments::DATA_BLOCK_OPEN)
+            .expect("data block");
+        assert!(instructions.contains("`reply_drafts`, which are always in English"));
+        assert_eq!(
+            instructions.contains(rule),
+            language != LlmLanguage::En,
+            "{language:?}"
+        );
+    }
+}
+
 fn golden_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../prompts/golden")
 }
@@ -2379,6 +2397,9 @@ fn golden_verify_comments_prompt() {
         golden, prompt,
         "prompts/golden/verify_comments.txt differs (UPDATE_GOLDEN=1)"
     );
+    crate::prompts::check_localized_golden(&path, &prompt, |language| {
+        prompt::render(&golden_input(), &summary(HEAD), language).expect("prompt")
+    });
 }
 
 /// Plan §2.8: an automatic request the spacing or the daily cap holds back reads no code (the detection lock is

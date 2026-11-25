@@ -109,6 +109,8 @@ enum RankError {
     Executor(#[from] ExecutorError),
     #[error("the judge input could not be built")]
     Input(#[from] InputError),
+    #[error("the judge prompt could not be rendered")]
+    Prompt(#[from] crate::prompts::PromptError),
     #[error("the judge output schema is unavailable")]
     Schema(#[from] StrictSchemaError),
     #[error("the judgement could not be stored")]
@@ -144,6 +146,7 @@ impl RankError {
             | Self::Db(_)
             | Self::Executor(_)
             | Self::Input(_)
+            | Self::Prompt(_)
             | Self::Schema(_)
             | Self::Json(_) => "The ranking stopped on a server error",
         }
