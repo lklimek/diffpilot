@@ -8,7 +8,7 @@ exclude = ["tools/skills"]
 edition = "2024"
 rust-version = "1.99"
 publish = false
-license = "FSL-1.1-ALv2"
+license = "Apache-2.0"
 
 [workspace.dependencies]
 # Workspace crates (dependency direction: docs/implementation-plan.md §3, scripts/check-architecture.sh)

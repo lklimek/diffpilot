@@ -83,7 +83,7 @@ COPY --from=build /out/diffpilot-server /out/diffpilot-gateway /usr/local/bin/
 COPY --from=web /out/notices/ /usr/share/doc/diffpilot/
 COPY --from=build /out/notices/ /usr/share/doc/diffpilot/
 # After the notices: --chmod on a COPY that creates the directory would apply to the directory too.
-COPY --chmod=0644 LICENSE.md /usr/share/doc/diffpilot/LICENSE.md
+COPY --chmod=0644 LICENSE NOTICE /usr/share/doc/diffpilot/
 COPY --chmod=0755 deploy/server/healthcheck.sh /usr/local/bin/diffpilot-healthcheck
 COPY --chmod=0755 deploy/server/entrypoint.sh /usr/local/bin/diffpilot-server-entrypoint
 ENV SR_DATA_DIR=/var/lib/diffpilot \

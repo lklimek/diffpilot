@@ -43,7 +43,7 @@ runs:
           --label "org.opencontainers.image.source=$SOURCE"
           --label "org.opencontainers.image.url=$SOURCE"
           --label "org.opencontainers.image.documentation=$SOURCE/blob/$REVISION/docs/deployment.md"
-          --label "org.opencontainers.image.licenses=FSL-1.1-ALv2"
+          --label "org.opencontainers.image.licenses=Apache-2.0"
           --label "org.opencontainers.image.created=$(git log -1 --format=%cI "$REVISION")"
         )
         docker build "${labels[@]}" --label org.opencontainers.image.title=diffpilot-egress-proxy \
@@ -77,13 +77,13 @@ runs:
           rm -rf "$dir"
         }
         doc=/usr/share/doc/diffpilot
-        check diffpilot-server:local $doc/LICENSE.md $doc/packages.txt $doc/third-party-rust-server.txt \
+        check diffpilot-server:local $doc/LICENSE $doc/NOTICE $doc/packages.txt $doc/third-party-rust-server.txt \
           $doc/third-party-npm-web.txt
-        check diffpilot-runner:local $doc/LICENSE.md $doc/packages.txt $doc/third-party-rust-runner.txt \
+        check diffpilot-runner:local $doc/LICENSE $doc/NOTICE $doc/packages.txt $doc/third-party-rust-runner.txt \
           $doc/third-party-rust-analysis.txt $doc/codex/LICENSE $doc/codex/NOTICE $doc/codex/bubblewrap/COPYING \
           $doc/codex/bubblewrap/SOURCE $doc/github-mcp-server/LICENSE \
           $doc/github-mcp-server/third-party-licenses.linux.md $doc/github-mcp-server/third-party
-        check diffpilot-egress-proxy:local $doc/LICENSE.md $doc/packages.txt /usr/share/doc/squid-openssl/copyright
+        check diffpilot-egress-proxy:local $doc/LICENSE $doc/NOTICE $doc/packages.txt /usr/share/doc/squid-openssl/copyright
     - name: Egress proxy test
       shell: bash
       run: PROXY_SKIP_BUILD=1 deploy/egress-proxy/test.sh "$RUNNER_TEMP/egress-proxy-test.log"

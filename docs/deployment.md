@@ -85,13 +85,13 @@ and always run all three images at the **same** version: server and runner must 
 format), and the release workflow tests them together.
 
 Published images carry OCI labels (`org.opencontainers.image.version`, `.revision` (commit), `.source`, `.licenses`
-`FSL-1.1-ALv2`, `.created`):
+`Apache-2.0`, `.created`):
 
 ```sh
 docker image inspect -f '{{json .Config.Labels}}' docker.io/lklimek/diffpilot:<X.Y.Z>
 ```
 
-Licences: diffpilot is [FSL-1.1-ALv2](../LICENSE.md). Every image contains the licence text, the list of its Ubuntu
+Licences: diffpilot is [Apache-2.0](../LICENSE). Every image contains the licence text, the list of its Ubuntu
 packages with their source packages (`packages.txt`) and the notices of the bundled third-party software in
 `/usr/share/doc/diffpilot/` (layout, sources and known gaps: [`deploy/notices/README.md`](../deploy/notices/README.md));
 Ubuntu packages keep their copyright files in `/usr/share/doc/<package>/copyright`. The source code of the Ubuntu

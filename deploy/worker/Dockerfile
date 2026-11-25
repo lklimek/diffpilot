@@ -39,7 +39,7 @@ COPY deploy/worker/config.toml /etc/codex/config.toml
 COPY deploy/worker/gitconfig /etc/gitconfig
 COPY deploy/worker/config.toml deploy/worker/worker-config.py /usr/local/bin/
 COPY --chmod=0755 deploy/worker/dp-worker-entry deploy/worker/gh /usr/local/bin/
-COPY LICENSE.md /usr/share/doc/diffpilot/LICENSE.md
+COPY LICENSE NOTICE /usr/share/doc/diffpilot/
 RUN ln -s /opt/codex/bin/codex /usr/local/bin/codex \
  && ln -s /etc/codex/claudius/skills /etc/codex/skills \
  && test "$(cat /etc/codex/claudius/SOURCE_COMMIT)" = 71096d7d4481977added8761b2cfd63cd84852b4 \
