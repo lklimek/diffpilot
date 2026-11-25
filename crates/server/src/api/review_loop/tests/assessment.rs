@@ -481,9 +481,12 @@ async fn comments_reads_send_counts_and_omit_uncomputed_assessment_progress() {
     let w = world().await;
     let page = w.get(PR).await;
     let overview = w.get(&format!("{PR}/comments")).await;
-    for comments in [&page["comments"], &overview] {
+    for (comments, running) in [(&page["comments"], false), (&overview, true)] {
         let progress = &comments["assessment"];
-        assert_eq!(progress["running"], true);
+        assert_eq!(
+            progress["running"], running,
+            "the PR page starts no assessment; entering Comments does"
+        );
         assert!(progress.get("in_pass").is_none());
         assert!(progress.get("waiting").is_none());
         assert!(comments["counts"]["needs_you"].is_u64());
