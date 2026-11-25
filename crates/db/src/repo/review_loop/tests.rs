@@ -243,6 +243,7 @@ async fn items_are_numbered_once_and_revised_only_on_change() {
     ));
     let gated = rl
         .set_gates(
+            (T, "u1"),
             first.id,
             4,
             &[GateMark {
@@ -2513,4 +2514,99 @@ async fn effect_states(
         .iter()
         .map(|effect| effect.state)
         .collect()
+}
+
+#[tokio::test]
+async fn marks_cursor_paginates_timestamp_ties_and_history_is_append_only() {
+    let db = db().await;
+    sqlx::query("INSERT INTO memberships (tenant_id, user_id, created_at) VALUES (?, 'u1', 't')")
+        .bind(T)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let rl = db.review_loop();
+    let mut marks = Vec::new();
+    for no in 1..=101 {
+        let item = new_item(&db, &format!("mark-{no}")).await;
+        let mut mark = fix_decision(&item);
+        mark.kind = DecisionKind::NotAReviewPoint;
+        mark.effects.clear();
+        marks.push(mark);
+    }
+    let DecideOutcome::Stored(stored) = rl.decide(T, &marks, at(2)).await.unwrap() else {
+        panic!("marks stored");
+    };
+    let page = rl.marked_items(T, None).await.unwrap();
+    assert_eq!(page.items.len(), 100);
+    let mut order: Vec<_> = stored.iter().map(|mark| (mark.id, mark.item_no)).collect();
+    order.sort_unstable_by_key(|mark| std::cmp::Reverse(mark.0));
+    assert_eq!(
+        page.items.iter().map(|item| item.no).collect::<Vec<_>>(),
+        order
+            .iter()
+            .take(100)
+            .map(|(_, no)| *no)
+            .collect::<Vec<_>>(),
+    );
+    let next = (at(2), order[99].0);
+    assert_eq!(page.next_cursor, Some(format!("{}/{}", next.0, next.1)));
+    let tail = rl.marked_items(T, Some(next)).await.unwrap();
+    assert_eq!(tail.items.len(), 1);
+    assert_eq!(tail.items[0].no, order[100].1);
+    assert!(tail.next_cursor.is_none());
+
+    let id = stored[0].id.to_string();
+    assert!(
+        sqlx::query("UPDATE comment_item_marks SET reason = 'edited' WHERE id = ?")
+            .bind(&id)
+            .execute(&db.pool)
+            .await
+            .is_err()
+    );
+    assert!(matches!(
+        rl.undo(T, marks[0].item, marks[0].item_revision + 1, "u1", at(3))
+            .await
+            .unwrap(),
+        ActionOutcome::MarkUndone(_)
+    ));
+    assert!(
+        sqlx::query("UPDATE comment_item_marks SET undone_by = 'u2' WHERE id = ?")
+            .bind(&id)
+            .execute(&db.pool)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn marks_exclude_a_stale_assessment_batch() {
+    let db = db().await;
+    sqlx::query("INSERT INTO memberships (tenant_id, user_id, created_at) VALUES (?, 'u1', 't')")
+        .bind(T)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let item = new_item(&db, "selected-for-a-pass").await;
+    let mut mark = fix_decision(&item);
+    mark.kind = DecisionKind::NotAReviewPoint;
+    mark.effects.clear();
+    let rl = db.review_loop();
+    rl.decide(T, &[mark], at(2)).await.unwrap();
+    let stale = NewPass {
+        pull_request_id: PR,
+        user_id: Some("u1".into()),
+        cause: PassCause::Read,
+        head: head(),
+        sent: vec![SentItem {
+            item: item.id,
+            no: item.no,
+            fingerprint: "prepared-before-mark".into(),
+        }],
+        question: None,
+    };
+    assert_eq!(
+        rl.start_pass(T, &stale, at(3)).await.unwrap(),
+        PassStart::MarkedItem
+    );
+    assert!(rl.latest_pass(PR).await.unwrap().is_none());
 }

@@ -217,6 +217,9 @@ fn gate_name(gate: Gate) -> &'static str {
 
 fn offered(item: &EffectItem, kind: DecisionKind) -> bool {
     use DecisionKind as K;
+    if kind == K::NotAReviewPoint {
+        return true;
+    }
     match item.question {
         Some(PrQuestion::Merge) => matches!(kind, K::MergeWithFollowUps | K::AnotherRound),
         Some(PrQuestion::Dismiss) => matches!(kind, K::DismissStaleReviews | K::KeepReviews),
@@ -294,7 +297,9 @@ pub fn plan(
         return Err(DecisionError::TargetRequired);
     }
     let reason = non_empty(request.reason.as_deref());
-    if request.kind == K::Reject && reason.is_none() {
+    if (request.kind == K::Reject || (request.kind == K::NotAReviewPoint && !item.gates.is_empty()))
+        && reason.is_none()
+    {
         return Err(DecisionError::ReasonRequired);
     }
     let always_resolves = request.kind == K::Resolve || gate.is_some();
@@ -452,7 +457,7 @@ pub fn plan(
             }
             Some(message)
         }
-        K::AnotherRound | K::KeepReviews => None,
+        K::AnotherRound | K::KeepReviews | K::NotAReviewPoint => None,
     };
     Ok(Planned {
         effects: out.effects,

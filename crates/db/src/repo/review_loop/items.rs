@@ -16,6 +16,7 @@ use contracts::time::Timestamp;
 
 use super::super::jobs::ts;
 use super::super::{read_tx, write_tx};
+use super::marks::{ACTIVE_MARK_COLUMN, active_in_pass, end_marks, log_changes};
 use super::{
     ReviewLoop, json, json_col, opt_json_col, opt_ts_col, opt_wire_col, ts_col, u32_col, wire,
     wire_col,
@@ -94,6 +95,9 @@ pub struct ItemRecord {
     /// Candidate grounded and authorised by the host for this point.
     #[serde(skip)]
     pub import_candidate: Option<super::ImportCandidate>,
+    /// Active internal disposition.
+    #[serde(skip)]
+    pub active_mark: Option<super::ActiveMark>,
     /// Versioned source for a grounded body/comment point.
     pub source_id: Option<i64>,
     /// Verbatim source span.
@@ -332,6 +336,8 @@ pub enum PassStart {
     Started(PassId),
     /// Another pass of the PR is queued or running (one per PR).
     Busy(PassId),
+    /// A sent item was marked while preparing the batch.
+    MarkedItem,
 }
 
 const ITEM_COLUMNS: &str = "id, pull_request_id, item_no, kind, stable_key, author, author_kind, url, path,
@@ -357,6 +363,7 @@ fn item_from_row(row: &SqliteRow) -> Result<ItemRecord, DbError> {
     let first_round: Option<i64> = row.try_get("first_round")?;
     Ok(ItemRecord {
         import_candidate: opt_json_col(row, "import_candidate")?,
+        active_mark: opt_json_col(row, "active_mark")?,
         source_id: row.try_get("source_id")?,
         quote: row.try_get("quote")?,
         duplicate_of: opt_wire_col(row, "duplicate_of")?,
@@ -398,7 +405,7 @@ pub(super) async fn item_in(
     id: CommentItemId,
 ) -> Result<ItemRecord, DbError> {
     let row = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "SELECT {ITEM_COLUMNS} FROM comment_items WHERE id = ?"
+        "SELECT {ITEM_COLUMNS}, {ACTIVE_MARK_COLUMN} FROM comment_items WHERE id = ?"
     )))
     .bind(id.to_string())
     .fetch_optional(&mut **tx)
@@ -600,7 +607,7 @@ impl ReviewLoop<'_> {
     /// The PR's items by `C<no>`.
     pub async fn items(&self, pull_request_id: i64) -> Result<Vec<ItemRecord>, DbError> {
         sqlx::query(sqlx::AssertSqlSafe(format!(
-            "SELECT {ITEM_COLUMNS} FROM comment_items WHERE pull_request_id = ? ORDER BY item_no"
+            "SELECT {ITEM_COLUMNS}, {ACTIVE_MARK_COLUMN} FROM comment_items WHERE pull_request_id = ? ORDER BY item_no"
         )))
         .bind(pull_request_id)
         .fetch_all(self.pool)
@@ -617,7 +624,7 @@ impl ReviewLoop<'_> {
         no: u32,
     ) -> Result<Option<ItemRecord>, DbError> {
         sqlx::query(sqlx::AssertSqlSafe(format!(
-            "SELECT {ITEM_COLUMNS} FROM comment_items WHERE pull_request_id = ? AND item_no = ?"
+            "SELECT {ITEM_COLUMNS}, {ACTIVE_MARK_COLUMN} FROM comment_items WHERE pull_request_id = ? AND item_no = ?"
         )))
         .bind(pull_request_id)
         .bind(no)
@@ -650,6 +657,7 @@ impl ReviewLoop<'_> {
     /// Replaces an item's gates when it is still at `revision` (`Conflict` otherwise).
     pub async fn set_gates(
         &self,
+        (tenant, user): (&str, &str),
         id: CommentItemId,
         revision: u32,
         gates: &[GateMark],
@@ -674,13 +682,25 @@ impl ReviewLoop<'_> {
             super::origins::reopen_follower(&mut tx, id, now).await?;
         }
         let item = item_in(&mut tx, id).await?;
+        if !gates.is_empty()
+            && item
+                .active_mark
+                .as_ref()
+                .is_some_and(|m| m.mark.follows.is_some())
+        {
+            let marks = end_marks(&mut tx, tenant, id, user, now).await?;
+            let item = item_in(&mut tx, id).await?;
+            tx.commit().await?;
+            log_changes(marks);
+            return Ok(item);
+        }
         tx.commit().await?;
         Ok(item)
     }
 
     /// Stores an assessment of an item. A recommendation or gates other than the latest assessment's raise the item's
     /// revision, so a decision prepared on what was shown before is refused as changed.
-    /// Returns false for a status comment, whose assessments are never stored.
+    /// Returns false for status comments and actively marked items.
     pub async fn add_assessment(
         &self,
         tenant_id: &str,
@@ -761,6 +781,9 @@ impl ReviewLoop<'_> {
             return Ok(PassStart::Busy(super::super::jobs::parse_wire(
                 &live, "id",
             )?));
+        }
+        if active_in_pass(&mut tx, tenant_id, &pass.sent).await? {
+            return Ok(PassStart::MarkedItem);
         }
         let id = PassId::new_random();
         let items =
@@ -868,7 +891,7 @@ impl ReviewLoop<'_> {
     /// The item `id`.
     pub async fn item(&self, id: CommentItemId) -> Result<ItemRecord, DbError> {
         sqlx::query(sqlx::AssertSqlSafe(format!(
-            "SELECT {ITEM_COLUMNS} FROM comment_items WHERE id = ?"
+            "SELECT {ITEM_COLUMNS}, {ACTIVE_MARK_COLUMN} FROM comment_items WHERE id = ?"
         )))
         .bind(id.to_string())
         .fetch_optional(self.pool)
@@ -1008,7 +1031,7 @@ impl ReviewLoop<'_> {
         let ids = json(&ids)?;
         let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT i.*, i.pull_request_id AS tally_pr, a.body AS assessment_body, a.fingerprint AS assessment_fingerprint
-             FROM (SELECT {ITEM_COLUMNS} FROM comment_items WHERE pull_request_id IN (SELECT value FROM json_each(?))) i
+             FROM (SELECT {ITEM_COLUMNS}, {ACTIVE_MARK_COLUMN} FROM comment_items WHERE pull_request_id IN (SELECT value FROM json_each(?))) i
              LEFT JOIN comment_assessments a ON a.id = (SELECT MAX(l.id) FROM comment_assessments l WHERE l.item_id = i.id)
              ORDER BY i.pull_request_id, i.item_no",
         )))
@@ -1112,7 +1135,7 @@ pub(crate) async fn upsert_item_in(
     now: Timestamp,
 ) -> Result<UpsertOutcome, DbError> {
     let existing = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "SELECT {ITEM_COLUMNS} FROM comment_items WHERE pull_request_id = ? AND stable_key = ?"
+        "SELECT {ITEM_COLUMNS}, {ACTIVE_MARK_COLUMN} FROM comment_items WHERE pull_request_id = ? AND stable_key = ?"
     )))
     .bind(pull_request_id)
     .bind(&observed.stable_key)
@@ -1289,7 +1312,7 @@ pub(super) async fn pr_view_in(
 ) -> Result<PrView, DbError> {
     let row = pr_state_with(&mut **tx, pull_request_id).await?;
     let items = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "SELECT {ITEM_COLUMNS} FROM comment_items WHERE pull_request_id = ? ORDER BY item_no"
+        "SELECT {ITEM_COLUMNS}, {ACTIVE_MARK_COLUMN} FROM comment_items WHERE pull_request_id = ? ORDER BY item_no"
     )))
     .bind(pull_request_id)
     .fetch_all(&mut **tx)
@@ -1364,13 +1387,17 @@ pub(crate) async fn add_assessment_in(
     fingerprint: &str,
     description: Option<&str>,
 ) -> Result<bool, DbError> {
-    let status: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM comment_items WHERE id = ? AND status_comment)",
+    let excluded: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM comment_items i WHERE i.id = ? AND (
+            i.status_comment OR EXISTS (
+                SELECT 1 FROM comment_item_marks m WHERE m.item_id = i.id AND m.undone_at IS NULL
+            )
+        ))",
     )
     .bind(item.to_string())
     .fetch_one(&mut **tx)
     .await?;
-    if status {
+    if excluded {
         return Ok(false);
     }
     let latest = sqlx::query(

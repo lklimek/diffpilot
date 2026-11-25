@@ -8,6 +8,7 @@ use contracts::time::Timestamp;
 use super::super::jobs::ts;
 use super::super::write_tx;
 use super::items::{item_in, set_state_in, upsert_item_in};
+use super::marks::{end_marks, log_changes};
 use super::{ItemRecord, ObservedItem, ReviewLoop, UpsertOutcome, u32_col, wire_col};
 use crate::error::DbError;
 
@@ -16,6 +17,8 @@ use crate::error::DbError;
 pub enum ActionOutcome {
     /// Done; the item as it is now.
     Done(Box<ItemRecord>),
+    /// An internal mark ended and the item's earlier disposition is visible again.
+    MarkUndone(Box<ItemRecord>),
     /// The item changed since the revision named.
     ItemChanged,
     /// The item has no standing decision to act on.
@@ -73,6 +76,13 @@ impl ReviewLoop<'_> {
         let mut tx = write_tx(self.pool).await?;
         if item_in(&mut tx, item).await?.revision != revision {
             return Ok(ActionOutcome::ItemChanged);
+        }
+        let marks = end_marks(&mut tx, tenant_id, item, user_id, now).await?;
+        if !marks.is_empty() {
+            let record = item_in(&mut tx, item).await?;
+            tx.commit().await?;
+            log_changes(marks);
+            return Ok(ActionOutcome::MarkUndone(Box::new(record)));
         }
         let Some(decision) = standing(&mut tx, item).await? else {
             return Ok(ActionOutcome::NoDecision);

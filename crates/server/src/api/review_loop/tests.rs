@@ -31,6 +31,7 @@ use crate::state::AppState;
 use crate::test_support::session_cookie;
 
 mod assessment;
+mod marks;
 mod pr_history;
 mod propagation;
 mod watching;

@@ -6,8 +6,8 @@ use std::collections::{BTreeMap, HashMap};
 
 use contracts::api::review_loop::{
     AssessmentState, CommentItemKind, DecideRequest, DecisionKind, GateMark,
-    ImportedGithubDecision, ItemState, LeftOutItem, LeftOutReason, QueueEntry, QueueReason,
-    Recommendation,
+    ImportedGithubDecision, ItemMark, ItemState, LeftOutItem, LeftOutReason, QueueEntry,
+    QueueReason, Recommendation,
 };
 
 use super::effects::PrQuestion;
@@ -78,6 +78,7 @@ pub(super) struct StatusItem {
     #[cfg_attr(test, serde(default))]
     pub status_comment: bool,
     pub imported_decision: Option<ImportedGithubDecision>,
+    pub not_a_review_point: Option<ItemMark>,
     pub duplicate_of: Option<u32>,
     #[cfg_attr(test, serde(default))]
     pub decision_follows_primary: bool,
@@ -88,9 +89,10 @@ pub(super) struct StatusItem {
 /// The Comments list status, in N1 precedence order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(test, derive(serde::Deserialize), serde(rename_all = "snake_case"))]
-enum CommentStatus {
+pub(super) enum CommentStatus {
     StatusComments,
     Decided,
+    NotAReviewPoint,
     Duplicates,
     All,
     NeedsYou,
@@ -99,7 +101,7 @@ enum CommentStatus {
     NotAssessed,
 }
 
-fn comment_status(item: &StatusItem) -> CommentStatus {
+pub(super) fn comment_status(item: &StatusItem) -> CommentStatus {
     let linked = item.duplicate_of.is_some_and(|no| no != item.no);
     let awaits = item.gone_at.is_none()
         && matches!(
@@ -110,6 +112,8 @@ fn comment_status(item: &StatusItem) -> CommentStatus {
         CommentStatus::StatusComments
     } else if item.imported_decision.is_some() || item.state == ItemState::Outside {
         CommentStatus::Decided
+    } else if item.not_a_review_point.is_some() {
+        CommentStatus::NotAReviewPoint
     } else if linked && item.decision_follows_primary && item.gates.is_empty() {
         CommentStatus::Duplicates
     } else if matches!(
@@ -274,7 +278,11 @@ pub fn proposed(
     let incomplete = match recommendation.kind {
         K::Reject => reason.is_none(),
         K::HandledInPr | K::UpstreamIssue | K::Todo => recommendation.target.is_none(),
-        K::MergeWithFollowUps | K::AnotherRound | K::DismissStaleReviews | K::KeepReviews => true,
+        K::MergeWithFollowUps
+        | K::AnotherRound
+        | K::DismissStaleReviews
+        | K::KeepReviews
+        | K::NotAReviewPoint => true,
         K::Resolve | K::FixHere | K::FollowUpPr => false,
     };
     if incomplete {
@@ -330,6 +338,15 @@ mod tests {
 
     #[test]
     fn needs_you_matches_fixture() {
+        check_needs_you_fixture(false);
+    }
+
+    #[test]
+    fn needs_you_fixture_mark_cases() {
+        check_needs_you_fixture(true);
+    }
+
+    fn check_needs_you_fixture(marked: bool) {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
             "../../../../docs/contracts/fixtures/needs-you-cases.json"
         ))
@@ -349,7 +366,9 @@ mod tests {
             serde_json::from_value(fixture["expected_statuses"].clone()).unwrap();
         assert_eq!(items.len(), expected.len());
         for (item, status) in items.iter().zip(expected) {
-            assert_eq!(comment_status(item), status, "C{}", item.no);
+            if item.not_a_review_point.is_some() == marked {
+                assert_eq!(comment_status(item), status, "C{}", item.no);
+            }
         }
         let entries: Vec<QueueEntry> = serde_json::from_value(fixture["queue"].clone()).unwrap();
         let items = items.into_iter().map(|item| (item.no, item)).collect();
@@ -405,6 +424,7 @@ mod tests {
                         },
                         status_comment,
                         imported_decision: None,
+                        not_a_review_point: None,
                         duplicate_of: item.duplicate_of,
                         decision_follows_primary: false,
                         gone_at: None,

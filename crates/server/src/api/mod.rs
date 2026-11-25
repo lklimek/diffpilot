@@ -29,6 +29,7 @@ pub mod lines;
 mod llm_activity;
 #[cfg(test)]
 mod llm_activity_tests;
+mod marks;
 pub mod notifications;
 pub mod pr;
 pub mod questions;
@@ -74,6 +75,7 @@ pub fn router(state: AppState) -> Router {
         .merge(questions::routes())
         .merge(ranking_usage::routes())
         .merge(review_loop::routes())
+        .merge(marks::routes())
         .merge(review_state::routes())
         .merge(settings::routes())
         .merge(codex::routes())

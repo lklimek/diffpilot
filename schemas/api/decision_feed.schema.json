@@ -473,6 +473,11 @@
           "description": "P4: keep the reviews.",
           "type": "string",
           "const": "keep_reviews"
+        },
+        {
+          "description": "Record an internal mark without effects.",
+          "type": "string",
+          "const": "not_a_review_point"
         }
       ]
     },

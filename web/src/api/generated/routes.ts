@@ -92,6 +92,7 @@ export const routes = {
   getDecideRest: { method: "GET", path: "/api/v1/prs/{owner}/{name}/{number}/comments/decide-rest", auth: "read" },
   getCommentLog: { method: "GET", path: "/api/v1/prs/{owner}/{name}/{number}/comments/log", auth: "read" },
   listCarryOvers: { method: "GET", path: "/api/v1/comments/carry-overs", auth: "read" },
+  listMarkedItems: { method: "GET", path: "/api/v1/review-loop/not-a-review-point", auth: "read" },
   askPrQuestion: { method: "POST", path: "/api/v1/prs/{owner}/{name}/{number}/questions", auth: "session_csrf" },
   listPrQuestions: { method: "GET", path: "/api/v1/prs/{owner}/{name}/{number}/questions", auth: "read" },
   watchPr: { method: "PUT", path: "/api/v1/prs/{owner}/{name}/{number}/watch", auth: "session_csrf" },

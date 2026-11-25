@@ -69,7 +69,12 @@ fn item_list(nos: &[u32]) -> String {
 impl ApiErrorSource for ReviewLoopApiError {
     fn code(&self) -> ApiErrorCode {
         match self {
-            Self::Assess(error) if matches!(error.as_ref(), assess::AssessError::StatusComment) => {
+            Self::Assess(error)
+                if matches!(
+                    error.as_ref(),
+                    assess::AssessError::StatusComment | assess::AssessError::MarkedItem
+                ) =>
+            {
                 ApiErrorCode::Conflict
             }
             Self::Assess(_) => ApiErrorCode::Internal,
@@ -105,6 +110,9 @@ impl ApiErrorSource for ReviewLoopApiError {
         match self {
             Self::Assess(error) if matches!(error.as_ref(), assess::AssessError::StatusComment) => {
                 Cow::Borrowed("Status comments cannot be assessed.")
+            }
+            Self::Assess(error) if matches!(error.as_ref(), assess::AssessError::MarkedItem) => {
+                Cow::Borrowed("Items marked as not a review point cannot be assessed.")
             }
             Self::Assess(_) => {
                 Cow::Borrowed("The assessment could not be started. Try again later.")
@@ -533,6 +541,7 @@ async fn mark_gate(
     let (handle, no) = item_of(&state, &session, path).await?;
     review_loop::mark_gate(
         &state,
+        &session,
         &handle,
         no,
         request.gate,

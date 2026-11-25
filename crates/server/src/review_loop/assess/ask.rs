@@ -23,6 +23,10 @@ pub(super) use crate::ask::{CANCELLED, SERVER_ERROR, UNFIT_ANSWER};
 pub(super) const ITEM_GONE: &str =
     "The comment is no longer part of the pull request, so the question was not answered.";
 
+/// Failure sentence when the question would send a marked comment to an assessment.
+pub(super) const ITEM_MARKED: &str =
+    "This comment is marked as not a review point. Undo the mark to ask about it.";
+
 /// A question about a comment item was not accepted.
 #[derive(Debug, thiserror::Error)]
 pub enum ItemAskError {

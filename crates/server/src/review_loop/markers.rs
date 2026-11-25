@@ -389,6 +389,7 @@ pub(super) fn relay_kind(line: &str) -> Option<DecisionKind> {
     match kind {
         "withdrawn" => Some(DecisionKind::Reject),
         "deferred" => Some(DecisionKind::Todo),
+        "not_a_review_point" => None,
         _ => serde_json::from_value(serde_json::Value::String(kind.into())).ok(),
     }
 }

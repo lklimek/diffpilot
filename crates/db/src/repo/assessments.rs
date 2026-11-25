@@ -20,6 +20,9 @@ pub enum AssessmentError {
     /// No slot was consumed.
     #[error(transparent)]
     Admission(#[from] AssessmentAdmissionFailure),
+    /// A comment was marked while the pass input was being prepared.
+    #[error("an assessment item is marked as not a review point")]
+    MarkedItem,
     /// Storage or contract validation failed; the transaction is rolled back.
     #[error(transparent)]
     Database(#[from] DbError),
@@ -224,6 +227,9 @@ impl Assessments<'_> {
                 || review.question.is_some()
             {
                 return Err(DbError::Conflict.into());
+            }
+            if super::review_loop::active_in_pass(&mut tx, tenant, &review.sent).await? {
+                return Err(AssessmentError::MarkedItem);
             }
             let busy: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM comment_passes WHERE pull_request_id=? AND state IN ('queued','running'))")
                 .bind(input.pull_request_id).fetch_one(&mut *tx).await.map_err(DbError::from)?;

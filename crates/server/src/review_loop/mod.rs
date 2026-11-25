@@ -762,6 +762,7 @@ async fn ask_again(
             );
         }
         ActionOutcome::ItemChanged
+        | ActionOutcome::MarkUndone(_)
         | ActionOutcome::NoDecision
         | ActionOutcome::EffectClaimed
         | ActionOutcome::FollowerClaimed(_) => {
@@ -1240,7 +1241,9 @@ impl Loaded {
         self.items
             .iter()
             // An item the read no longer produces waits for nobody (plan §2.1).
-            .filter(|record| record.gone_at.is_none() && !record.status_comment)
+            .filter(|record| {
+                record.gone_at.is_none() && !record.status_comment && record.active_mark.is_none()
+            })
             .map(|record| queue::QueueItem {
                 no: record.no,
                 state: record.state,
@@ -1376,6 +1379,24 @@ impl Loaded {
         rows.iter()
             .map(|row| {
                 let record = self.item(row.item_no)?;
+                if row.decision.kind == DecisionKind::NotAReviewPoint {
+                    if record.revision != row.decision.item_revision {
+                        return Err(LoopError::ItemChanged(vec![record.no]));
+                    }
+                    if record.status_comment
+                        || record.active_mark.is_some()
+                        || !matches!(
+                            record.state,
+                            ItemState::Undecided | ItemState::Reopened | ItemState::AskedBack
+                        )
+                        || record.gone_at.is_some()
+                    {
+                        return Err(LoopError::Decision {
+                            no: record.no,
+                            error: DecisionError::KindNotOffered,
+                        });
+                    }
+                }
                 let dismissing = row.decision.kind == DecisionKind::DismissStaleReviews
                     && matches!(question_of(record), Some((PrQuestion::Dismiss, _)));
                 let listed;
@@ -1422,8 +1443,14 @@ pub async fn decide(
         .await?;
     match outcome {
         DecideOutcome::Stored(stored) => {
-            tracing::info!(pr, count = stored.len(), ?via, "decisions stored");
-            state.feed.wake_sync();
+            let real = stored
+                .iter()
+                .filter(|d| d.kind != DecisionKind::NotAReviewPoint)
+                .count();
+            if real != 0 {
+                tracing::info!(pr, count = real, ?via, "decisions stored");
+                state.feed.wake_sync();
+            }
             Ok(stored.into_iter().take(rows.len()).collect())
         }
         DecideOutcome::ItemChanged(nos) => Err(LoopError::ItemChanged(nos)),
@@ -1442,6 +1469,12 @@ impl Loaded {
         let mut seen = Vec::new();
         for row in rows {
             if seen.contains(&row.item_no) {
+                return Err(LoopError::Decision {
+                    no: row.item_no,
+                    error: DecisionError::KindNotOffered,
+                });
+            }
+            if row.decision.kind == DecisionKind::NotAReviewPoint && via == DecisionVia::Bulk {
                 return Err(LoopError::Decision {
                     no: row.item_no,
                     error: DecisionError::KindNotOffered,
@@ -1472,11 +1505,26 @@ impl Loaded {
         {
             return Err(LoopError::Decision { no, error });
         }
+        if rows.len() > 1 {
+            let gated_marks: Vec<_> = rows
+                .iter()
+                .filter(|row| {
+                    row.decision.kind == DecisionKind::NotAReviewPoint
+                        && gated.contains(&row.item_no)
+                })
+                .map(|row| row.item_no)
+                .collect();
+            if !gated_marks.is_empty() {
+                return Err(LoopError::GateRow(gated_marks));
+            }
+        }
+        let single_gate_mark = matches!(rows, [row]
+            if row.decision.kind == DecisionKind::NotAReviewPoint && gated.contains(&row.item_no));
         match via {
             DecisionVia::Group | DecisionVia::Bulk if !gated.is_empty() => {
                 return Err(LoopError::GateRow(gated));
             }
-            DecisionVia::Table => {
+            DecisionVia::Table if !single_gate_mark => {
                 let queue_items = self.queue_items(&[]);
                 let missing: Vec<u32> = queue::waiting(&queue_items)
                     .into_iter()
@@ -1594,6 +1642,7 @@ pub async fn act(
             state.feed.wake_sync();
             Ok(*record)
         }
+        ActionOutcome::MarkUndone(record) => Ok(*record),
         ActionOutcome::ItemChanged => Err(LoopError::ItemChanged(vec![no])),
         ActionOutcome::NoDecision | ActionOutcome::EffectClaimed => Err(LoopError::NotApplicable),
         ActionOutcome::FollowerClaimed(no) => Err(LoopError::FollowerClaimed(no)),
@@ -1630,6 +1679,7 @@ pub async fn skip(
 /// The owner marks (or clears his mark of) a gate.
 pub async fn mark_gate(
     state: &AppState,
+    session: &Session,
     handle: &PrHandle,
     no: u32,
     gate: Gate,
@@ -1657,7 +1707,13 @@ pub async fn mark_gate(
         });
     }
     match rl
-        .set_gates(record.id, revision, &gates, Timestamp::now())
+        .set_gates(
+            (&session.tenant_id, &session.user_id),
+            record.id,
+            revision,
+            &gates,
+            Timestamp::now(),
+        )
         .await
     {
         Ok(updated) => {

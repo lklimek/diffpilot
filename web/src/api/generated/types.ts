@@ -1632,6 +1632,10 @@ skills_commit: string | null, };
  */
 export type CommentCounts = {
 /**
+ * Items classified as not a review point.
+ */
+not_a_review_point?: number,
+/**
  * Items in the Needs you queue.
  */
 needs_you?: number,
@@ -1676,6 +1680,10 @@ total: number, };
  * A review-loop item with its assessment, decisions and effects (RC4).
  */
 export type CommentItem = {
+/**
+ * Active internal disposition.
+ */
+not_a_review_point?: ItemMark,
 /**
  * Whether the item is a bot status comment.
  */
@@ -1825,9 +1833,13 @@ export type CommentItemKind = "thread" | "review_body" | "pr_comment" | "pr_ques
 export type CommentKind = "line" | "file";
 
 /**
- * Response of RC10: decisions with effects, claims and reports; carry events; feed state.
+ * Response of RC10: decisions, marks, carry events and feed state.
  */
 export type CommentLog = {
+/**
+ * Marks and their undo history, oldest first.
+ */
+marks?: Array<MarkLogEntry>,
 /**
  * Agents subscribed now.
  */
@@ -2799,7 +2811,7 @@ export type DecisionId = string;
 /**
  * A decision (D1–D7; D8 is `reject` with a `blocker_gate` override; P1–P4 for PR-level questions). Open enum.
  */
-export type DecisionKind = "resolve" | "fix_here" | "reject" | "handled_in_pr" | "follow_up_pr" | "upstream_issue" | "todo" | "merge_with_follow_ups" | "another_round" | "dismiss_stale_reviews" | "keep_reviews";
+export type DecisionKind = "resolve" | "fix_here" | "reject" | "handled_in_pr" | "follow_up_pr" | "upstream_issue" | "todo" | "merge_with_follow_ups" | "another_round" | "dismiss_stale_reviews" | "keep_reviews" | "not_a_review_point";
 
 /**
  * The target a decision needs.
@@ -4493,6 +4505,23 @@ path: string,
 lines: LineRange | null, };
 
 /**
+ * Who marked an item as not a review point and when.
+ */
+export type ItemMark = {
+/**
+ * GitHub login of the mark's author.
+ */
+by: string,
+/**
+ * When the mark was recorded.
+ */
+at: string,
+/**
+ * Number of the primary item, if this mark follows it.
+ */
+follows?: number, };
+
+/**
  * Response of `GET /api/v1/dashboard/items`: ranked items of the latest snapshot, in rank order.
  */
 export type ItemPage = {
@@ -5049,6 +5078,110 @@ maintainers: Array<string>,
  * Known bot logins.
  */
 bots: Array<string>, };
+
+/**
+ * An internal mark and any subsequent undo, as shown in the decision log.
+ */
+export type MarkLogEntry = {
+/**
+ * Mark ID.
+ */
+id: DecisionId,
+/**
+ * Item number within the pull request.
+ */
+item_no: number,
+/**
+ * Reason given by the owner, if any.
+ */
+reason: string | null,
+/**
+ * When the mark ended, if it has ended.
+ */
+undone_at: string | null,
+/**
+ * GitHub login of the user who ended it.
+ */
+undone_by: string | null,
+/**
+ * GitHub login of the mark's author.
+ */
+by: string,
+/**
+ * When the mark was recorded.
+ */
+at: string,
+/**
+ * Number of the primary item, if this mark follows it.
+ */
+follows?: number, };
+
+/**
+ * Facts about an actively marked item for classifier review.
+ */
+export type MarkedItem = {
+/**
+ * Pull request containing the item.
+ */
+pr: PrRef,
+/**
+ * Item number within the pull request.
+ */
+no: number,
+/**
+ * Source kind.
+ */
+kind: CommentItemKind,
+/**
+ * GitHub login of the comment's author.
+ */
+author: string,
+/**
+ * Whether the author is a human or a bot.
+ */
+author_kind: AuthorKind,
+/**
+ * Plain-text item title.
+ */
+title: string,
+/**
+ * Link to the original item on GitHub, if any.
+ */
+url: string | null,
+/**
+ * GitHub login of the mark's author.
+ */
+by: string,
+/**
+ * When the mark was recorded.
+ */
+at: string,
+/**
+ * Whether the classifier recognised a status comment.
+ */
+status_comment: boolean, };
+
+/**
+ * Tenant-wide list of active marks, newest first.
+ */
+export type MarkedItems = {
+/**
+ * Up to 100 marked items.
+ */
+items: Array<MarkedItem>,
+/**
+ * Cursor of the next page.
+ */
+next_cursor: string | null, };
+
+/**
+ * Pagination query for the tenant's marked items.
+ */
+export type MarkedItemsQuery = {
+/**
+ * Cursor from the previous page.
+ */
+cursor?: string, };
 
 /**
  * A signed-in user.

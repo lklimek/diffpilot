@@ -27,18 +27,23 @@
     {"no": 19, "state": "assessing"},
     {"no": 20, "duplicate_of": 13, "state": "assessing", "assessment_state": {"state": "queued"}},
     {"no": 21, "duplicate_of": 13, "state": "outside", "decision_follows_primary": true, "status_comment": true},
-    {"no": 22, "duplicate_of": 13, "state": "outside", "decision_follows_primary": true}
+    {"no": 22, "duplicate_of": 13, "state": "outside", "decision_follows_primary": true},
+    {"no": 23, "not_a_review_point": {"by": "owner", "at": "2026-11-24T09:00:00Z"}},
+    {"no": 24, "duplicate_of": 23, "decision_follows_primary": true, "not_a_review_point": {"by": "owner", "at": "2026-11-24T09:00:00Z", "follows": 23}},
+    {"no": 25, "status_comment": true, "not_a_review_point": {"by": "owner", "at": "2026-11-24T09:00:00Z"}},
+    {"no": 26, "state": "outside", "not_a_review_point": {"by": "owner", "at": "2026-11-24T09:00:00Z"}}
   ],
   "queue": [
     {"item_nos": [16], "reason": "pr_question", "skipped": false},
     {"item_nos": [11], "reason": "gate", "skipped": false},
     {"item_nos": [10, 12, 14, 15, 17, 18, 19, 20, 99], "reason": "group", "skipped": false},
-    {"item_nos": [1, 2, 3, 4, 5, 6, 7, 8, 9, 21, 22], "reason": "group", "skipped": true}
+    {"item_nos": [1, 2, 3, 4, 5, 6, 7, 8, 9, 21, 22, 23, 24, 25, 26], "reason": "group", "skipped": true}
   ],
   "expected_statuses": [
     "status_comments", "decided", "decided", "duplicates", "decided", "decided", "decided", "decided",
     "all", "needs_you", "needs_you", "waiting", "needs_you", "assessing", "not_assessed", "needs_you",
-    "needs_you", "needs_you", "all", "waiting", "status_comments", "decided"
+    "needs_you", "needs_you", "all", "waiting", "status_comments", "decided",
+    "not_a_review_point", "not_a_review_point", "status_comments", "decided"
   ],
   "expected_needs_you": 5,
   "expected_needs_you_gates": 1

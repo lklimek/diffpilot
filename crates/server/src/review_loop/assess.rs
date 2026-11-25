@@ -127,6 +127,9 @@ pub enum AssessError {
     /// A status comment cannot be assessed as a review point.
     #[error("status comments cannot be assessed")]
     StatusComment,
+    /// An item marked as not a review point is excluded from assessment.
+    #[error("this item is marked as not a review point")]
+    MarkedItem,
     /// Frozen input could not be archived or recovered.
     #[error("the frozen assessment snapshot is unavailable")]
     Io(#[from] std::io::Error),
@@ -194,10 +197,14 @@ async fn request(
     by: Option<&str>,
 ) -> Result<PassQueued, AssessError> {
     let db = &state.db;
-    if let PassReason::AssessAgain(item) = reason
-        && db.review_loop().item(item).await?.status_comment
-    {
-        return Err(AssessError::StatusComment);
+    if let PassReason::AssessAgain(item) = reason {
+        let item = db.review_loop().item(item).await?;
+        if item.status_comment {
+            return Err(AssessError::StatusComment);
+        }
+        if item.active_mark.is_some() {
+            return Err(AssessError::MarkedItem);
+        }
     }
     let Some(pr_state) = db.review_loop().pr_state(pr).await? else {
         tracing::debug!(
@@ -270,6 +277,9 @@ async fn request(
     let mut selected_sources = HashSet::new();
     let sources = db.comment_sources().list(&record.tenant_id, pr).await?;
     for item in &items {
+        if item.active_mark.is_some() {
+            continue;
+        }
         let wanted = match asked {
             Some(asked) => {
                 item.id == asked
@@ -352,7 +362,15 @@ async fn request(
         });
     if sent.is_empty() && (reason == PassReason::Ask || !source_pending) {
         if let Some(question) = &question {
-            ask::fail(state, question.question.id, ask::ITEM_GONE).await?;
+            let marked = items
+                .iter()
+                .any(|item| Some(item.id) == asked && item.active_mark.is_some());
+            let message = if marked {
+                ask::ITEM_MARKED
+            } else {
+                ask::ITEM_GONE
+            };
+            ask::fail(state, question.question.id, message).await?;
         }
         return Ok(PassQueued::Skipped);
     }
@@ -419,6 +437,12 @@ async fn request(
     {
         PassStart::Started(id) => id,
         PassStart::Busy(_) => return Ok(PassQueued::AlreadyRunning),
+        PassStart::MarkedItem => {
+            if let Some(question) = &question {
+                ask::fail(state, question.question.id, ask::ITEM_MARKED).await?;
+            }
+            return Ok(PassQueued::Skipped);
+        }
     };
     let handle = match submit(state, &record.pr, pr, id, &input, language).await {
         Ok(handle) => handle,
@@ -747,10 +771,11 @@ async fn earlier_decisions(
     let decisions = state.db.review_loop().pr_decisions(pr).await?;
     let standing = super::standing(&decisions);
     let mut current = Vec::new();
-    for item in items
-        .iter()
-        .filter(|item| !item.status_comment && sent.iter().all(|sent| sent.id != item.id))
-    {
+    for item in items.iter().filter(|item| {
+        !item.status_comment
+            && item.active_mark.is_none()
+            && sent.iter().all(|sent| sent.id != item.id)
+    }) {
         if let Some(stored) = standing.get(&item.id.to_string()) {
             current.push(EarlierDecision {
                 item: format!("C{}", item.no),

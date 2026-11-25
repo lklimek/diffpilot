@@ -19,6 +19,7 @@ use contracts::time::Timestamp;
 use super::super::jobs::ts;
 use super::super::{read_tx, write_tx};
 use super::items::{PrView, item_in, pr_view_in, set_state_in};
+use super::marks::{MarkChange, end_marks, log_changes, store_mark};
 use super::{
     ReviewLoop, json, json_col, opt_json_col, opt_ts_col, opt_wire_col, ts_col, u32_col, wire,
     wire_col,
@@ -510,8 +511,10 @@ impl ReviewLoop<'_> {
         now: Timestamp,
     ) -> Result<DecideOutcome, DbError> {
         let mut tx = write_tx(self.pool).await?;
-        let outcome = store(&mut tx, tenant_id, decisions, now).await?;
+        let mut marks = Vec::new();
+        let outcome = store(&mut tx, tenant_id, decisions, now, &mut marks).await?;
         tx.commit().await?;
+        log_changes(marks);
         Ok(outcome)
     }
 
@@ -526,8 +529,10 @@ impl ReviewLoop<'_> {
     ) -> Result<DecideOutcome, E> {
         let mut tx = write_tx(self.pool).await?;
         let decisions = plan(pr_view_in(&mut tx, pull_request_id).await?)?;
-        let outcome = store(&mut tx, tenant_id, &decisions, now).await?;
+        let mut marks = Vec::new();
+        let outcome = store(&mut tx, tenant_id, &decisions, now, &mut marks).await?;
         tx.commit().await.map_err(DbError::from)?;
+        log_changes(marks);
         Ok(outcome)
     }
 
@@ -1011,6 +1016,7 @@ async fn store(
     tenant_id: &str,
     decisions: &[NewDecision],
     now: Timestamp,
+    marks: &mut Vec<MarkChange>,
 ) -> Result<DecideOutcome, DbError> {
     // Import visibility and Comments visits share the writer lock.
     let now = if decisions
@@ -1034,7 +1040,8 @@ async fn store(
         return Ok(DecideOutcome::ItemChanged(changed));
     }
     for new in decisions {
-        if let Some(previous) = current_id(tx, new.item).await?
+        if new.kind != DecisionKind::NotAReviewPoint
+            && let Some(previous) = current_id(tx, new.item).await?
             && let Some(no) = super::origins::claimed_follower(tx, &previous, now).await?
         {
             return Ok(DecideOutcome::FollowerClaimed(no));
@@ -1043,6 +1050,15 @@ async fn store(
     let mut ids = Vec::new();
     let mut superseded = Vec::new();
     for (new, item) in decisions.iter().zip(items) {
+        if new.kind == DecisionKind::NotAReviewPoint {
+            if let Some(mark) = store_mark(tx, tenant_id, &item, new, now, marks).await? {
+                ids.push((mark.id, Some(mark)));
+            }
+            continue;
+        }
+        if new.origin.is_none() && new.via != DecisionVia::Carried {
+            marks.extend(end_marks(tx, tenant_id, new.item, &new.user_id, now).await?);
+        }
         let supersedes = current_id(tx, new.item).await?;
         if let Some(previous) = &supersedes {
             super::actions::cancel_unclaimed(tx, previous, now).await?;
@@ -1120,7 +1136,7 @@ async fn store(
         };
         set_state_in(tx, new.item, state, now).await?;
         settle(tx, &id.to_string(), true, now).await?;
-        ids.push(id);
+        ids.push((id, None));
     }
     for (primary, user) in superseded {
         for (decision, item) in super::origins::followers(tx, &primary).await? {
@@ -1128,12 +1144,14 @@ async fn store(
         }
     }
     let mut stored = Vec::new();
-    for id in ids {
-        let mut found = decisions_where(tx, "d.id = ?", id.to_string()).await?;
-        stored.push(found.pop().ok_or(DbError::NotFound)?.decision);
-    }
-    for decision in &stored {
-        super::super::assessment_primary::capture_owner(tx, tenant_id, decision.id).await?;
+    for (id, mark) in ids {
+        if let Some(mark) = mark {
+            stored.push(mark);
+        } else {
+            let mut found = decisions_where(tx, "d.id = ?", id.to_string()).await?;
+            stored.push(found.pop().ok_or(DbError::NotFound)?.decision);
+            super::super::assessment_primary::capture_owner(tx, tenant_id, id).await?;
+        }
     }
     Ok(DecideOutcome::Stored(stored))
 }

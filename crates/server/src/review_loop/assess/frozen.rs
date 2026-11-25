@@ -128,6 +128,7 @@ impl Frozen {
         );
         for item in &self.items {
             if item.status_comment
+                || item.active_mark.is_some()
                 || item.kind == CommentItemKind::PrQuestion
                 || item.gone_at.is_some()
             {

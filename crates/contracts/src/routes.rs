@@ -675,6 +675,13 @@ pub const GET_COMMENT_LOG: Route = route(
     "/api/v1/prs/{owner}/{name}/{number}/comments/log",
     READ,
 );
+/// Active internal marks across the authenticated reader's tenant.
+pub const LIST_MARKED_ITEMS: Route = route(
+    "listMarkedItems",
+    Get,
+    "/api/v1/review-loop/not-a-review-point",
+    READ,
+);
 /// RC11: carry-over events and counts, one PR or all (`CarryOverQuery`).
 pub const LIST_CARRY_OVERS: Route =
     route("listCarryOvers", Get, "/api/v1/comments/carry-overs", READ);
@@ -877,6 +884,7 @@ pub const ROUTES: &[Route] = &[
     GET_DECIDE_REST,
     GET_COMMENT_LOG,
     LIST_CARRY_OVERS,
+    LIST_MARKED_ITEMS,
     ASK_PR_QUESTION,
     LIST_PR_QUESTIONS,
     WATCH_PR,

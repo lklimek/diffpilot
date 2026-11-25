@@ -197,6 +197,10 @@ pub enum NotAssessedReason {
 /// A review-loop item with its assessment, decisions and effects (RC4).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct CommentItem {
+    /// Active internal disposition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub not_a_review_point: Option<ItemMark>,
     /// Whether the item is a bot status comment.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[ts(as = "Option<bool>", optional)]
@@ -506,6 +510,8 @@ pub enum DecisionKind {
     DismissStaleReviews,
     /// P4: keep the reviews.
     KeepReviews,
+    /// Record an internal mark without effects.
+    NotAReviewPoint,
 }
 
 /// The target a decision needs.
@@ -1153,6 +1159,10 @@ pub struct AssessmentProgress {
 /// Item counts of a PR.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct CommentCounts {
+    /// Items classified as not a review point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub not_a_review_point: Option<u32>,
     /// Items in the Needs you queue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -1409,9 +1419,87 @@ pub struct CodeContext {
     pub notes: Vec<NoteElsewhere>,
 }
 
-/// Response of RC10: decisions with effects, claims and reports; carry events; feed state.
+/// Who marked an item as not a review point and when.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct ItemMark {
+    /// GitHub login of the mark's author.
+    pub by: String,
+    /// When the mark was recorded.
+    pub at: Timestamp,
+    /// Number of the primary item, if this mark follows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub follows: Option<u32>,
+}
+
+/// An internal mark and any subsequent undo, as shown in the decision log.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct MarkLogEntry {
+    /// Mark ID.
+    pub id: DecisionId,
+    /// Item number within the pull request.
+    pub item_no: u32,
+    /// Original mark.
+    #[serde(flatten)]
+    pub mark: ItemMark,
+    /// Reason given by the owner, if any.
+    pub reason: Option<String>,
+    /// When the mark ended, if it has ended.
+    pub undone_at: Option<Timestamp>,
+    /// GitHub login of the user who ended it.
+    pub undone_by: Option<String>,
+}
+
+/// Tenant-wide list of active marks, newest first.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct MarkedItems {
+    /// Up to 100 marked items.
+    pub items: Vec<MarkedItem>,
+    /// Cursor of the next page.
+    pub next_cursor: Option<String>,
+}
+
+/// Facts about an actively marked item for classifier review.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct MarkedItem {
+    /// Pull request containing the item.
+    pub pr: PrRef,
+    /// Item number within the pull request.
+    pub no: u32,
+    /// Source kind.
+    pub kind: CommentItemKind,
+    /// GitHub login of the comment's author.
+    pub author: String,
+    /// Whether the author is a human or a bot.
+    pub author_kind: AuthorKind,
+    /// Plain-text item title.
+    pub title: String,
+    /// Link to the original item on GitHub, if any.
+    pub url: Option<String>,
+    /// GitHub login of the mark's author.
+    pub by: String,
+    /// When the mark was recorded.
+    pub at: Timestamp,
+    /// Whether the classifier recognised a status comment.
+    pub status_comment: bool,
+}
+
+/// Pagination query for the tenant's marked items.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct MarkedItemsQuery {
+    /// Cursor from the previous page.
+    #[serde(default)]
+    #[ts(optional)]
+    pub cursor: Option<String>,
+}
+
+/// Response of RC10: decisions, marks, carry events and feed state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct CommentLog {
+    /// Marks and their undo history, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<MarkLogEntry>>", optional)]
+    pub marks: Vec<MarkLogEntry>,
     /// Agents subscribed now.
     pub subscribers: Vec<FeedSubscriber>,
     /// Open or claimed effects.
