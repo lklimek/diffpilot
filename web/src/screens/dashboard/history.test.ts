@@ -47,27 +47,23 @@ describe("workingDay", () => {
 });
 
 describe("headline (pull requests only, closed − opened)", () => {
-  it("counts this week from Monday to now, the previous working day, last week and four weeks", () => {
-    const h = headline(EVENTS, NOW);
-    expect(h.week).toEqual({ label: "Mon–Wed", closed: 3, opened: 1, net: 2 });
-    expect(h.yesterday).toEqual({ label: "Tue 17 Nov", closed: 2, opened: 0, net: 2 });
-    // Mon 9 – Sun 15 Nov: opened Mon 9 and Sat 14, merged Sun 15.
-    expect(h.lastWeek).toEqual({ label: "9–13 Nov", closed: 1, opened: 2, net: -1 });
-    expect(h.fourWeeks).toEqual({ net: 1, before: 0 });
+  it("counts calendar days, this week and month to date", () => {
+    const figures = headline(EVENTS, new Date(2026, 10, 18, 13));
+    expect(figures.today).toMatchObject({ label: "Wed 18 Nov", closed: 1, opened: 0 });
+    expect(figures.yesterday).toMatchObject({ label: "Tue 17 Nov", closed: 2, opened: 0 });
+    expect(figures.week).toMatchObject({ closed: 3, opened: 1 });
+    expect(figures.month).toMatchObject({ closed: 4, opened: 3 });
   });
 
-  it("on a Monday, yesterday is the Friday with the weekend after it", () => {
-    const h = headline(EVENTS, new Date(2026, 10, 16, 9));
-    expect(h.yesterday).toEqual({ label: "Fri 13 Nov", closed: 1, opened: 1, net: 0 });
-    expect(h.week.label).toBe("Mon");
-    expect(headline([], new Date(2026, 11, 2, 9)).lastWeek.label).toBe("23–27 Nov");
-    expect(headline([], new Date(2026, 11, 9, 9)).lastWeek.label).toBe("30 Nov – 4 Dec");
-  });
-
-  it("counts the four weeks before the last twenty working days", () => {
-    const h = headline([ev("pr_merged", 10, 21), ev("pr_merged", 9, 23), ev("pr_opened", 9, 22)], NOW);
-    // Window: Thu 22 Oct – Wed 18 Nov; before: Thu 24 Sep – Wed 21 Oct.
-    expect(h.fourWeeks).toEqual({ net: 0, before: 1 });
+  it("uses the configured time zone at midnight and includes weekend events on their calendar day", () => {
+    const events: HistoryEvent[] = [
+      { at: "2026-10-31T23:30:00Z", kind: "pr_opened", item_id: "acme/a#1" },
+      { at: "2026-11-01T02:00:00Z", kind: "pr_merged", item_id: "acme/a#2" },
+      { at: "2026-11-01T08:00:00Z", kind: "pr_merged", item_id: "acme/a#3" },
+    ];
+    const now = new Date("2026-11-01T07:00:00Z");
+    expect(headline(events, now, "Europe/Warsaw").today).toMatchObject({ closed: 1, opened: 1 });
+    expect(headline(events, now, "America/Los_Angeles").yesterday).toMatchObject({ closed: 1, opened: 1 });
   });
 });
 

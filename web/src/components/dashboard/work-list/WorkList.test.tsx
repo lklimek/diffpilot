@@ -2,8 +2,9 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState, type ComponentProps } from "react";
 import { describe, expect, it, vi } from "vitest";
-import type { SizeMark, TodosState, WorkItem } from "../../../api/generated/types";
-import { ALL_SIZES } from "../common/size";
+import type { TodosState, WorkItem } from "../../../api/generated/types";
+import { rowOpenLabel } from "../common/OpenExternal";
+import type { Filter } from "../filter-chips/filters";
 import { ITEMS, NOW, PROVISIONAL_ITEMS } from "../test-fixtures";
 import { reviewAction } from "../work-item/ItemAction";
 import { ALL_KINDS, WorkList, type ItemKind } from "./WorkList";
@@ -18,7 +19,7 @@ function List(props: {
   todos?: TodosState;
 }) {
   const [kinds, setKinds] = useState<ItemKind[]>(props.initial ?? ALL_KINDS);
-  const [sizes, setSizes] = useState<SizeMark[]>(ALL_SIZES);
+  const [filters, setFilters] = useState<Filter[]>([]);
   return (
     <>
       <input aria-label="search" />
@@ -26,8 +27,8 @@ function List(props: {
         items={props.items ?? ITEMS}
         kinds={kinds}
         onKindsChange={setKinds}
-        sizes={sizes}
-        onSizesChange={setSizes}
+        filters={filters}
+        onFiltersChange={setFilters}
         reviewHref={reviewHref}
         onNavigate={props.onNavigate}
         onHelp={props.onHelp}
@@ -42,9 +43,9 @@ const rowIds = () =>
   [...document.querySelectorAll("li[data-item]")].map((li) => li.getAttribute("data-item"));
 
 describe("WorkList", () => {
-  it("each ranked row's menu snoozes that item; P0 alarms have none; without onSnooze no menu", async () => {
+  it("the row menu snoozes the selected item and P0 alarms cannot be snoozed", async () => {
     const onSnooze = vi.fn();
-    const { rerender } = render(
+    render(
       <WorkList
         items={ITEMS}
         kinds={ALL_KINDS}
@@ -55,24 +56,20 @@ describe("WorkList", () => {
         now={NOW}
       />,
     );
-    const ranked = ITEMS.filter((item) => item.score.tier !== "p0");
-    const menus = screen.getAllByRole("button", { name: /^More actions for / });
-    expect(ranked.length).toBeLessThan(ITEMS.length);
-    expect(menus.map((b) => b.getAttribute("aria-label")).sort()).toEqual(
-      ranked.map((item) => `More actions for ${item.id}`).sort(),
-    );
-    const first = ranked[0]!;
+    const first = ITEMS.find((item) => item.score.tier !== "p0")!;
+    const alarm = ITEMS.find((item) => item.score.tier === "p0")!;
+    await userEvent.click(screen.getByRole("button", { name: `More actions for ${alarm.id}` }));
+    expect(screen.queryByRole("menuitem", { name: "Snooze…" })).toBeNull();
+    expect(screen.getByRole("menuitem", { name: "Open on GitHub" })).toHaveAttribute("href", alarm.url);
+    await userEvent.keyboard("{Escape}");
     await userEvent.click(screen.getByRole("button", { name: `More actions for ${first.id}` }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Snooze…" }));
     await userEvent.click(
       within(screen.getByRole("group", { name: `Snooze ${first.id}` })).getByRole("button", {
         name: "3 days",
       }),
     );
     expect(onSnooze).toHaveBeenCalledWith(first, 3);
-    rerender(
-      <WorkList items={ITEMS} kinds={ALL_KINDS} onKindsChange={vi.fn()} reviewHref={reviewHref} now={NOW} />,
-    );
-    expect(screen.queryByRole("button", { name: /^More actions for / })).toBeNull();
   });
 
   it("shows a plug-in's statement on its pull request's row, the further points once the row is expanded", async () => {
@@ -127,33 +124,23 @@ describe("WorkList", () => {
     expect(rowIds()).not.toContain("acme~platform~pr~1203");
   });
 
-  it("size toggles filter pull requests only; issues and TODOs stay; the last size on stays on", async () => {
+  it("uses a row size as a removable filter and keeps P0 alarms visible", async () => {
     render(<List />);
-    const group = screen.getByRole("group", { name: "Sizes shown" });
-    const tiny = within(group).getByRole("button", { name: /tiny 2/ });
-    const small = within(group).getByRole("button", { name: /small 2/ });
-    const medium = within(group).getByRole("button", { name: /medium 4/ });
-    const large = within(group).getByRole("button", { name: /large 0/ });
-    const huge = within(group).getByRole("button", { name: /huge 0/ });
-    for (const button of [tiny, small, medium, large, huge])
-      expect(button).toHaveAttribute("aria-pressed", "true");
-    expect(medium).toHaveAccessibleDescription(/issues and TODOs have no size/);
-    await userEvent.click(medium);
-    expect(rowIds()).not.toContain("acme~platform~pr~1203");
-    expect(rowIds()).toContain("acme~wallet-ui~pr~320");
+    expect(screen.queryByRole("group", { name: "Sizes shown" })).toBeNull();
+    await userEvent.click(screen.getAllByRole("button", { name: "Filter by size medium" })[0]!);
+    expect(rowIds()).toContain("acme~platform~pr~1203");
+    expect(rowIds()).not.toContain("acme~platform~issue~1210");
+    expect(screen.getByRole("group", { name: "P0 alarm PLAT-1187" })).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Remove filter size medium" }));
     expect(rowIds()).toContain("acme~platform~issue~1210");
-    expect(rowIds()).toContain("memcan~3fa91c2e-0000-4000-8000-000000000000");
-    for (const button of [tiny, large, huge]) await userEvent.click(button);
-    expect(small).toHaveAttribute("aria-disabled", "true");
-    expect(small).toHaveAccessibleDescription(/At least one size stays shown/);
   });
 
   it("each PR row shows its size pill; issues have none", () => {
     render(<List />);
     const row = (key: string) => document.querySelector(`li[data-item="${key}"]`)!;
     expect(
-      within(row("acme~platform~pr~1203") as HTMLElement).getByRole("img", {
-        name: "Change size: medium, 500 changed lines",
+      within(row("acme~platform~pr~1203") as HTMLElement).getByRole("button", {
+        name: "Filter by size medium",
       }),
     ).toBeInTheDocument();
     expect(row("acme~platform~issue~1210").querySelector("[data-size-pill]")).toBeNull();
@@ -218,9 +205,7 @@ describe("WorkList", () => {
       .nextElementSibling as HTMLElement;
     expect(within(notJudged).getByText("fix(ui): restore the focus ring on tabs")).toBeInTheDocument();
     // State-neutral: after a failed, cancelled or capped ranking nothing ranks it "next".
-    expect(
-      within(notJudged).getByText("Not judged yet: scored from computed parts and fixed estimates."),
-    ).toBeInTheDocument();
+    expect(within(notJudged).getByText("◌ not judged yet")).toBeInTheDocument();
   });
 
   it("marks provisional scores with ~ and every estimate in the breakdown", async () => {
@@ -465,12 +450,14 @@ describe("WorkList: a visible link out on every row (F38)", () => {
   it("each row and the P0 alarm have an icon link named and tipped 'Open <id> on GitHub', in a new tab", () => {
     render(<List />);
     for (const item of [pr, alarm]) {
-      const link = screen.getByRole("link", { name: `Open ${item.id} on GitHub (new tab)` });
+      const link = screen.getByRole("link", { name: rowOpenLabel(item) });
       expect(link).toHaveAttribute("href", item.url);
       expect(link).toHaveAttribute("target", "_blank");
       expect(link).toHaveAttribute("rel", "noopener noreferrer");
-      expect(link).toHaveAccessibleDescription(`Open ${item.id} on GitHub (new tab)`);
-      expect(link.querySelector("svg")).not.toBeNull();
+      expect(link).toHaveAccessibleDescription(rowOpenLabel(item));
+      expect(link.querySelector('[data-icon="github"]')).not.toBeNull();
+      const duplicate = document.querySelector(`a[aria-hidden="true"][href="${item.url}"]`);
+      expect(duplicate).toHaveAttribute("tabindex", "-1");
       expect(link.className).toMatch(/min-h-6/);
       expect(link.className).toMatch(/min-w-6/);
     }
@@ -494,7 +481,7 @@ describe("WorkList: a visible link out on every row (F38)", () => {
 
   it("clicking the icon does not expand or select the row", async () => {
     render(<List />);
-    const link = screen.getByRole("link", { name: `Open ${pr.id} on GitHub (new tab)` });
+    const link = screen.getByRole("link", { name: rowOpenLabel(pr) });
     link.addEventListener("click", (event) => event.preventDefault());
     const bubbled = vi.fn();
     // React handlers run at the root; a stopped click does not reach the body beyond it.
@@ -576,12 +563,11 @@ describe("WorkList: comments of a pull request (owner 2026-11-23)", () => {
     expect(link).toHaveAccessibleDescription(/counted from its last read/);
     await userEvent.click(link);
     expect(onNavigate).toHaveBeenCalledWith("/pr/acme/node-client/482/comments");
-    const watch = screen.getByRole("button", { name: `Watch #${unread.number} ${unread.title}` });
-    // One way: a saved Watch reads as a note; Unwatch lives in Watched PRs.
-    expect(watch).not.toHaveAttribute("aria-pressed");
+    await userEvent.click(screen.getByRole("button", { name: `More actions for ${unread.id}` }));
+    const watch = screen.getByRole("menuitemcheckbox", { name: "Watch comments" });
+    expect(watch).toHaveAttribute("aria-checked", "false");
     await userEvent.click(watch);
-    expect(onWatch).toHaveBeenCalledWith(unread);
-    expect(screen.queryByRole("button", { name: `Watch #${counted.number} ${counted.title}` })).toBeNull();
+    expect(onWatch).toHaveBeenCalledWith(unread, true);
     const issueRow = document.querySelector<HTMLElement>(`li[data-item="${issue.key}"]`)!;
     expect(within(issueRow).queryByRole("button", { name: /^Watch/ })).toBeNull();
     expect(issueRow.querySelector("[data-comments-link]")).toBeNull();
@@ -592,13 +578,21 @@ describe("WorkList: comments of a pull request (owner 2026-11-23)", () => {
     const one: WorkItem = { ...counted, comments: { total: 1, needs_you: 1 } };
     const { rerender } = render(list({ items: [one, unread], onWatch, watchingKeys: [unread.key] }));
     expect(screen.getByRole("link", { name: /^1 comment · 1 needs you:/ })).toBeVisible();
-    const saving = screen.getByRole("button", { name: `Watch #${unread.number} ${unread.title}` });
+    const menu = screen.getByRole("button", { name: `More actions for ${unread.id}` });
+    await userEvent.click(menu);
+    const saving = screen.getByRole("menuitemcheckbox", { name: "Watch comments" });
     expect(saving).toHaveAttribute("aria-disabled", "true");
     await userEvent.click(saving);
     expect(onWatch).not.toHaveBeenCalled();
-    rerender(list({ items: [one, unread], onWatch, watchedKeys: [unread.key] }));
-    expect(screen.queryByRole("button", { name: /^Watch/ })).toBeNull();
+    await userEvent.keyboard("{Escape}");
+    const watched = { ...unread, watched: true };
+    rerender(list({ items: [one, watched], onWatch }));
     expect(screen.getByText("Watching, comments not read yet")).toBeVisible();
+    await userEvent.click(menu);
+    const watching = screen.getByRole("menuitemcheckbox", { name: "Watch comments" });
+    expect(watching).toHaveAttribute("aria-checked", "true");
+    await userEvent.click(watching);
+    expect(onWatch).toHaveBeenCalledWith(watched, false);
   });
 
   it("a pull request the user watches whose comments were never read reads Watching, not Watch", () => {

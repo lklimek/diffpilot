@@ -1,4 +1,4 @@
-import { type ReactNode, useId, useRef } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Tooltip } from "../../tooltip/Tooltip";
 import { netTone, signed } from "../common/format";
 import { Segmented } from "../common/Segmented";
@@ -13,16 +13,12 @@ export interface PeriodCount {
   label: string;
 }
 
-/** Numbers of the headline, bucketed by the screen in the browser's time zone (plan §C.1). */
+/** Calendar periods in the dashboard time zone. */
 export interface HeadlineFigures {
-  /** This week so far. */
-  week: PeriodCount;
-  /** The previous working day. */
+  today: PeriodCount;
   yesterday: PeriodCount;
-  /** The previous week. */
-  lastWeek: PeriodCount;
-  /** Net of the last 20 working days, and of the 20 before them. */
-  fourWeeks: { net: number; before: number };
+  week: PeriodCount;
+  month: PeriodCount;
 }
 
 /** Chart granularity. */
@@ -48,7 +44,7 @@ interface HeadlineProps {
 
 const net = (period: PeriodCount) => period.closed - period.opened;
 
-function Tile({ label, value, sub, tip }: { label: string; value: number; sub: ReactNode; tip: string }) {
+function Tile({ label, value, sub, tip }: { label: string; value: number; sub: string; tip: string }) {
   return (
     <Tooltip tip={tip}>
       <div tabIndex={0} className="cursor-help rounded-md border border-border bg-surface-2 px-2.5 py-1.5">
@@ -62,10 +58,7 @@ function Tile({ label, value, sub, tip }: { label: string; value: number; sub: R
   );
 }
 
-/**
- * The main metric "PRs closed minus PRs opened" (mockup `renderHeadline`): this week as the hero, tiles for
- * yesterday, last week and four weeks, and the net chart by days or weeks. Pull requests only; no scope switch.
- */
+/** Today’s headline, three comparison periods and the longer chart. */
 export function Headline({
   figures,
   days,
@@ -80,75 +73,87 @@ export function Headline({
   const titleId = useId();
   const subId = useId();
   const chart = useRef<SVGSVGElement>(null);
+  const headline = useRef<HTMLDivElement>(null);
+  const [height, setHeight] = useState<number>();
+  useEffect(() => {
+    const element = headline.current;
+    if (!element || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry?.contentRect.height) setHeight(entry.contentRect.height + 8);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
   const points = unit === "day" ? days : weeks;
   const bar = selected === null ? undefined : points[selected];
-  const { week, yesterday, lastWeek, fourWeeks } = figures;
+  const { today, yesterday, week, month } = figures;
+  const minis = [
+    ["Yesterday", yesterday],
+    ["This week", week],
+    ["This month", month],
+  ] as const;
   return (
     <section
       aria-labelledby={titleId}
       className="@container grid gap-x-7 gap-y-1 rounded-lg border border-border bg-surface px-5 py-4"
     >
-      <div className="grid gap-x-7 gap-y-3 @min-[820px]:grid-cols-[minmax(250px,320px)_minmax(0,1fr)]">
-        <div>
-          <Tooltip tip="Net = closed − opened. Closed counts your PRs merged or closed without merge; opened counts PRs you opened. Positive means your open backlog shrank.">
+      <div className="grid items-start gap-x-7 gap-y-3 @min-[820px]:grid-cols-[minmax(250px,320px)_minmax(0,1fr)]">
+        <div ref={headline} data-headline-figures className="min-w-0">
+          <Tooltip tip="Today uses the time zone in Settings › GitHub sync. Net = closed − opened. Closed counts your PRs merged or closed without merge; opened counts PRs you opened. Positive means your open backlog shrank.">
             <h2 id={titleId} tabIndex={0} className="inline cursor-help text-[13px] font-semibold">
-              Closed − opened, this week
+              Closed − opened, today
             </h2>
           </Tooltip>
           <div
             aria-describedby={subId}
             data-headline-value
-            className={`mt-1.5 mb-0.5 text-[56px] leading-[1.05] font-bold tracking-tight tabular-nums ${netTone(net(week))}`}
+            className={`mt-1.5 mb-0.5 text-[56px] leading-[1.05] font-bold tracking-tight tabular-nums ${netTone(net(today))}`}
           >
-            {signed(net(week))}
+            {signed(net(today))}
           </div>
           <div id={subId} className="text-[13px] text-muted">
-            {week.label}: closed <b className="text-text">{week.closed}</b> · opened{" "}
-            <b className="text-text">{week.opened}</b> PRs
+            {today.label}: closed <b className="text-text">{today.closed}</b> · opened{" "}
+            <b className="text-text">{today.opened}</b> PRs
           </div>
           <div className="mt-3.5 grid grid-cols-3 gap-2">
-            <Tile
-              label="Yesterday"
-              value={net(yesterday)}
-              sub={`${yesterday.closed} − ${yesterday.opened}`}
-              tip={`${yesterday.label}: closed ${yesterday.closed}, opened ${yesterday.opened}`}
-            />
-            <Tile
-              label="Last week"
-              value={net(lastWeek)}
-              sub={lastWeek.label}
-              tip={`${lastWeek.label}: closed ${lastWeek.closed}, opened ${lastWeek.opened}`}
-            />
-            <Tile
-              label="4 weeks"
-              value={fourWeeks.net}
-              sub={
-                <>
-                  before: <span className={netTone(fourWeeks.before)}>{signed(fourWeeks.before)}</span>
-                </>
-              }
-              tip={`Net of the last 20 working days; the 20 before them: ${signed(fourWeeks.before)}`}
-            />
+            {minis.map(([label, period]) => (
+              <Tile
+                key={label}
+                label={label}
+                value={net(period)}
+                sub={`${period.closed} − ${period.opened}`}
+                tip={`${period.label}: closed ${period.closed}, opened ${period.opened}`}
+              />
+            ))}
           </div>
           {staleNote && <p className="mt-2 text-xs text-muted">{staleNote}</p>}
         </div>
         <div className="flex min-w-0 flex-col gap-1.5">
-          <div className="flex flex-wrap items-center gap-2.5">
-            <h3 className="text-sm font-semibold">
-              Net per {unit === "day" ? "working day" : "week"}, with cumulative total
-            </h3>
-            <span className="flex-1" />
-            <Segmented
-              label="Period"
-              value={unit}
-              onChange={onUnitChange}
-              options={[
-                { value: "day", label: "Days", tip: "Last 20 working days" },
-                { value: "week", label: "Weeks", tip: "Last 12 weeks" },
-              ]}
-            />
-          </div>
-          <NetChart points={points} unit={unit} selected={selected} onSelect={onSelect} chartRef={chart} />
+          <NetChart
+            points={points}
+            unit={unit}
+            selected={selected}
+            onSelect={onSelect}
+            chartRef={chart}
+            blockHeight={height}
+            header={
+              <div className="flex flex-wrap items-center gap-2.5">
+                <h3 className="text-sm font-semibold">
+                  Net per {unit === "day" ? "working day" : "week"}, with cumulative total
+                </h3>
+                <span className="flex-1" />
+                <Segmented
+                  label="Period"
+                  value={unit}
+                  onChange={onUnitChange}
+                  options={[
+                    { value: "day", label: "Days", tip: "Last 20 working days" },
+                    { value: "week", label: "Weeks", tip: "Last 12 weeks" },
+                  ]}
+                />
+              </div>
+            }
+          />
           {bar && listed && onSelect && (
             <BarPullRequests
               period={`${bar.full}${bar.partial ? " (so far)" : ""}`}

@@ -1,4 +1,4 @@
-import { useId, type ReactNode } from "react";
+import { useId } from "react";
 import type { KindCounts } from "../../../api/generated/types";
 import { buttonClass } from "../../button/button";
 import { clockText } from "../../format/time";
@@ -10,8 +10,6 @@ interface EmptyWorkProps {
   checkedAt: string;
   /** What the scan read before exclusion. */
   checked: KindCounts;
-  /** What the rules left out (the screen's excluded-items block). */
-  excluded?: ReactNode;
   /** The user's PRs waiting on others. */
   awaiting: number;
   /** Quick replies are present outside the ranked list. */
@@ -26,7 +24,6 @@ interface EmptyWorkProps {
 export function EmptyWork({
   checkedAt,
   checked,
-  excluded,
   awaiting,
   hasMentions = false,
   reviewStartHref,
@@ -51,7 +48,6 @@ export function EmptyWork({
         Checked at {clockText(checkedAt, now)}: {checked.pr} PRs, {checked.issue} issues and {checked.todo}{" "}
         open TODOs.
       </p>
-      {excluded}
       <p>
         <Tooltip tip="Open any pull request by URL">
           <a

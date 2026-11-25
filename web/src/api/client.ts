@@ -117,6 +117,10 @@ export function routePath(name: RouteName, params: Record<string, string> = {}):
   });
 }
 
+type ApiRoute = RouteName | { method: "POST"; path: string; auth: "session_csrf" };
+
+const routeSpec = (route: ApiRoute) => (typeof route === "string" ? routes[route] : route);
+
 interface CallOptions {
   params?: Record<string, string>;
   query?: Record<string, string | number>;
@@ -220,9 +224,10 @@ export interface AnalysisStreamHandlers {
 export function createApiClient(baseUrl = "") {
   let csrfToken: string | null | undefined;
 
-  async function send(name: RouteName, options: CallOptions, csrf: string | null): Promise<Response> {
-    const route = routes[name];
-    const url = new URL(baseUrl + routePath(name, options.params), globalThis.location?.origin);
+  async function send(name: ApiRoute, options: CallOptions, csrf: string | null): Promise<Response> {
+    const route = routeSpec(name);
+    const path = typeof name === "string" ? routePath(name, options.params) : name.path;
+    const url = new URL(baseUrl + path, globalThis.location?.origin);
     for (const [key, value] of Object.entries(options.query ?? {})) url.searchParams.set(key, String(value));
     const headers = new Headers({ Accept: "application/json", ...options.headers });
     if (options.body !== undefined) headers.set("Content-Type", "application/json");
@@ -245,8 +250,9 @@ export function createApiClient(baseUrl = "") {
     return new ApiError(response.status, "internal", "The server gave an unexpected answer. Retry later.");
   }
 
-  async function call<T>(name: RouteName, options: CallOptions = {}): Promise<T> {
-    const needsCsrf = routes[name].auth === "session_csrf";
+  async function call<T>(name: ApiRoute, options: CallOptions = {}): Promise<T> {
+    const route = routeSpec(name);
+    const needsCsrf = route.auth === "session_csrf";
     if (needsCsrf && csrfToken === undefined) await getMe();
     let response = await send(name, options, needsCsrf ? (csrfToken ?? null) : null);
     if (needsCsrf && response.status === 403) {
@@ -255,7 +261,7 @@ export function createApiClient(baseUrl = "") {
       await getMe();
       response = await send(name, options, csrfToken ?? null);
     }
-    if (response.status === 503 && IDEMPOTENT_METHODS.has(routes[name].method)) {
+    if (response.status === 503 && IDEMPOTENT_METHODS.has(route.method)) {
       const error = await errorOf(response.clone());
       if (error.code !== "unavailable") throw error;
       await new Promise((resolve) => setTimeout(resolve, retryAfterMs(response)));
@@ -288,6 +294,10 @@ export function createApiClient(baseUrl = "") {
 
   return {
     getMe,
+    postProvisional: <T>(path: string, body?: unknown) => {
+      if (!path.startsWith("/api/v1/")) throw new Error("Expected an app-relative API path.");
+      return call<T>({ method: "POST", path, auth: "session_csrf" }, { body });
+    },
     /** Ends the session (`POST /auth/logout`); the CSRF token of the old session is dropped. */
     logout: async (body: LogoutRequest) => {
       await call<void>("authLogout", { body });

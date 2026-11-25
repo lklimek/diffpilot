@@ -222,7 +222,7 @@ describe("useStartRefresh (R2)", () => {
       wrapper: w,
     });
     await waitFor(() => expect(result.current.summary.data).toBeDefined());
-    act(() => result.current.start.mutate());
+    act(() => result.current.start.mutate(false));
     await waitFor(() => expect(result.current.start.isSuccess).toBe(true));
     expect(client.getQueryData<DashboardSummary>(SUMMARY_KEY)?.latest_refresh?.state).toBe("scanning");
   });
@@ -237,7 +237,7 @@ describe("useStartRefresh (R2)", () => {
     const { result } = renderHook(() => ({ summary: useDashboardSummary(true), start: useStartRefresh() }), {
       wrapper: w,
     });
-    act(() => result.current.start.mutate());
+    act(() => result.current.start.mutate(false));
     await waitFor(() => expect(result.current.start.isError).toBe(true));
     expect(result.current.start.error).toMatchObject({ status: 409, code: "refresh_running" });
     await waitFor(() => expect(result.current.summary.data?.latest_refresh?.state).toBe("scanning"));

@@ -1,8 +1,9 @@
-import { HttpResponse } from "msw";
+import { http, HttpResponse } from "msw";
 import type {
   DashboardEvent,
   ExcludedItem,
   Mention,
+  MeResponse,
   DashboardSummary,
   ItemPage,
   RefreshStatus,
@@ -16,7 +17,9 @@ import provisionalJson from "../../../../fixtures/dashboard/api/items-provisiona
 import scanningJson from "../../../../fixtures/dashboard/api/refresh-scanning.json";
 import rankingJson from "../../../../fixtures/dashboard/api/refresh-ranking.json";
 import failedJson from "../../../../fixtures/dashboard/api/refresh-failed.json";
-import { setFixtureState } from "../fixtures";
+import { REJUDGE_ITEM_PATH, type DashboardItem, type MyWorkSummary } from "../../api/provisional/dashboard";
+import { dashboardCoverage, withDashboardFacts } from "../dashboard-v14";
+import { seedNow, setFixtureState } from "../fixtures";
 import { setScenario } from "../scenarios";
 import { apiError, route } from "./common";
 
@@ -53,8 +56,8 @@ export const SCRIPT_STEP_MS = 500;
 
 /** The state of a scenario before any R2–R4: summary and items. */
 interface Base {
-  summary: DashboardSummary;
-  items: ItemPage;
+  summary: MyWorkSummary;
+  items: Omit<ItemPage, "items"> & { items: DashboardItem[] };
 }
 
 /** Snapshot of the ranking refresh: scanned 09:24, not ranked yet, one item not judged. */
@@ -103,6 +106,9 @@ const noTimeZone = (): Base => ({
 const SCENARIOS = {
   /** A finished manual refresh of 08:12, ranked at 08:15. */
   normal: (): Base => ({ summary: SUMMARY, items: ITEMS }),
+  v14: (): Base => ({ summary: SUMMARY, items: ITEMS }),
+  "v14-no-app": (): Base => ({ summary: SUMMARY, items: ITEMS }),
+  "v14-rejudge-error": (): Base => ({ summary: SUMMARY, items: ITEMS }),
   /** Full external context on one compact PR note (owner 2026-11-23). */
   "mywork-details": (): Base => ({
     summary: SUMMARY,
@@ -270,6 +276,8 @@ interface Run {
   base: RefreshStatus;
   from: number;
   startedMs: number;
+  rejudgeOutdated: boolean;
+  appliedJudgements: boolean;
 }
 
 let scenarioName: DashboardScenario = "normal";
@@ -285,7 +293,8 @@ const hiddenMentions = new Set<string>();
 /** Snoozed item keys with the time they wake (R12); they persist across mock refreshes. */
 const snoozed = new Map<string, string>();
 /** Pull requests watched from My work (RW1, keys); their rows count the comments the watch read (none). */
-const watchedPrs = new Set<string>();
+const watchedPrs = new Map<string, boolean>();
+const rejudgedAt = new Map<string, number>();
 /** The time zone stored through R6b. */
 let timeZone: string | null = null;
 let runCount = 0;
@@ -299,6 +308,7 @@ export function resetDashboard(): void {
   hiddenMentions.clear();
   snoozed.clear();
   watchedPrs.clear();
+  rejudgedAt.clear();
   timeZone = null;
 }
 
@@ -429,7 +439,7 @@ function findRefresh(id: unknown): RefreshStatus | undefined {
 /** Summary and items of the current snapshot: a scripted refresh's once it scanned, else the scenario's. */
 /** The scripted summary and items with the snoozed items moved to Excluded (reason `snoozed`, owner SN1). */
 function current(): Base {
-  const view = fromScript();
+  const view = withV14(fromScript());
   const now = Date.now();
   for (const [key, until] of snoozed) if (Date.parse(until) <= now) snoozed.delete(key);
   const snapshot = view.summary.snapshot;
@@ -450,9 +460,14 @@ function current(): Base {
     merged_into: null,
     snoozed_until: snoozed.get(item.key)!,
   }));
+  const items = view.items.items.filter((item) => !asleep.includes(item));
+  const status_counts =
+    view.summary.status_counts &&
+    dashboardCoverage(items, exclusions.total + asleep.length, null).status_counts;
   return {
     summary: {
       ...view.summary,
+      ...(status_counts && { status_counts }),
       revision,
       snapshot: {
         ...snapshot,
@@ -467,7 +482,7 @@ function current(): Base {
     items: {
       ...view.items,
       revision,
-      items: view.items.items.filter((item) => !asleep.includes(item)),
+      items,
     },
   };
 }
@@ -487,6 +502,47 @@ function fromScript(): Base {
     summary: { ...base.summary, revision, latest_refresh: latest(), snapshot },
     items: { ...(ranked ? ITEMS : PROVISIONAL), revision },
   };
+}
+
+function withV14(view: Base): Base {
+  if (!scenarioName.startsWith("v14")) return view;
+  const noApp = scenarioName === "v14-no-app";
+  const holder = runStatus();
+  const now = Date.now();
+  if (run && !run.appliedJudgements && holder?.ranking?.state === "finished") {
+    const ended = run.startedMs + 7 * SCRIPT_STEP_MS;
+    run.appliedJudgements = true;
+    for (const item of view.items.items.map((item) => withDashboardFacts(item, noApp))) {
+      const state = item.judgement?.state;
+      const selected =
+        state === "queued" || state === "not_judged" || (run.rejudgeOutdated && state === "outdated");
+      if (selected && (rejudgedAt.get(item.key) ?? 0) < ended) {
+        rejudgedAt.set(item.key, ended - SCRIPT_STEP_MS);
+      }
+    }
+  }
+  const items = view.items.items.map((item) => {
+    const row = withDashboardFacts(item, noApp);
+    const started = rejudgedAt.get(item.key);
+    if (started === undefined || !row.judgement) return row;
+    if (now < started + SCRIPT_STEP_MS)
+      return { ...row, judgement: { ...row.judgement, state: "judging" as const } };
+    const judged_at = new Date(started + SCRIPT_STEP_MS).toISOString();
+    const llm = row.llm ?? item.llm;
+    return {
+      ...row,
+      judgement: { state: "current" as const, judged_at, outdated_because: null },
+      llm: llm && { ...llm, judged_at, inherited: false },
+      score: { ...row.score, state: "final" as const },
+    };
+  });
+  const revision = `${view.items.revision}-v14-${hashOf(items.map(({ judgement }) => judgement))}`;
+  const coverage = dashboardCoverage(
+    items,
+    view.summary.snapshot?.excluded ?? 0,
+    noApp ? null : "2026-11-18T09:02:00Z",
+  );
+  return { summary: { ...view.summary, ...coverage, revision }, items: { ...view.items, items, revision } };
 }
 
 /** Stores a changed refresh; one driven by the script stops following it. */
@@ -549,9 +605,11 @@ export const listDashboardItems = route("listDashboardItems", ({ request }) => {
     items: matching
       .slice(offset, offset + limit)
       .map((item) =>
-        watchedPrs.has(item.key) && !item.comments
-          ? { ...item, comments: { total: 0, needs_you: 0 }, watched: true }
-          : item,
+        watchedPrs.get(item.key) === true
+          ? { ...item, comments: item.comments ?? { total: 0, needs_you: 0 }, watched: true }
+          : watchedPrs.get(item.key) === false
+            ? { ...item, comments: item.comments ?? { total: 0, needs_you: 0 }, watched: false }
+            : item,
       ),
     next_cursor: next,
   };
@@ -568,17 +626,38 @@ export const listDashboardItems = route("listDashboardItems", ({ request }) => {
  */
 export const watchDashboardPr = route("watchPr", ({ params }) => {
   const { owner, name, number } = params as { owner: string; name: string; number: string };
+  watchedPrs.set(`${owner}~${name}~pr~${number}`, true);
   if (owner === "acme" && name === "node-client" && number === "482") return undefined;
-  watchedPrs.add(`${owner}~${name}~pr~${number}`);
   return new HttpResponse(null, { status: 204 });
 });
 
+export const unwatchDashboardPr = route("unwatchPr", ({ params }) => {
+  const { owner, name, number } = params as { owner: string; name: string; number: string };
+  watchedPrs.set(`${owner}~${name}~pr~${number}`, false);
+  if (owner === "acme" && name === "node-client" && number === "482") return undefined;
+  return new HttpResponse(null, { status: 204 });
+});
+
+export const rejudgeItem = http.post(REJUDGE_ITEM_PATH, ({ params, request }) => {
+  if (request.headers.get("X-CSRF-Token") !== (seedNow("me") as MeResponse).csrf_token) {
+    return apiError(403, "csrf_rejected", "The page is out of date. Reload it and try again.");
+  }
+  const item = current().items.items.find(({ key }) => key === params.key);
+  if (!item) return apiError(404, "not_found", "This item is no longer in your list.");
+  if (scenarioName === "v14-rejudge-error")
+    return apiError(503, "unavailable", "LLM ranking is unavailable.");
+  if (item.judgement?.state !== "outdated")
+    return apiError(409, "conflict", "This item has no outdated judgement.");
+  rejudgedAt.set(item.key, Date.now());
+  return new HttpResponse(null, { status: 202 });
+});
+
 /** Starts the script for `refresh` from step `from`; the replaced run keeps its snapshot as `previous`. */
-function startRun(refresh: RefreshStatus, from: number): RefreshStatus {
+function startRun(refresh: RefreshStatus, from: number, rejudgeOutdated = false): RefreshStatus {
   const own = runStatus();
   if (run && run.base.id !== refresh.id && holdsSnapshot(own)) previous = own;
   changed.delete(refresh.id);
-  run = { base: refresh, from, startedMs: Date.now() };
+  run = { base: refresh, from, startedMs: Date.now(), rejudgeOutdated, appliedJudgements: false };
   return runStatus()!;
 }
 
@@ -587,7 +666,17 @@ function startRun(refresh: RefreshStatus, from: number): RefreshStatus {
  * with ranking `cancelled`); 409 `refresh_running` while one scans; 429 `github_rate_limited` before a known
  * rate-limit reset.
  */
-export const startDashboardRefresh = route("startDashboardRefresh", () => {
+export const startDashboardRefresh = route("startDashboardRefresh", async ({ request }) => {
+  const text = await request.text();
+  let rejudgeOutdated = false;
+  if (text) {
+    try {
+      rejudgeOutdated =
+        (JSON.parse(text) as { rejudge_outdated?: boolean } | null)?.rejudge_outdated === true;
+    } catch {
+      return apiError(400, "invalid_request", "Expected a JSON refresh request.");
+    }
+  }
   const known = [latest(), ...changed.values()].filter((r): r is RefreshStatus => r !== null);
   if (known.some((r) => r.state === "scanning")) {
     return apiError(409, "refresh_running", "A refresh is already scanning.");
@@ -613,7 +702,7 @@ export const startDashboardRefresh = route("startDashboardRefresh", () => {
     started_at: new Date().toISOString(),
     log: ["refresh started (manual)"],
   };
-  return HttpResponse.json(startRun(started, 0), { status: 201 });
+  return HttpResponse.json(startRun(started, 0, rejudgeOutdated), { status: 201 });
 });
 
 /** `GET /api/v1/dashboard/refreshes/{id}`. */

@@ -25,12 +25,14 @@ function detail(step: ScanStep): string | null {
   return [count, step.detail].filter(Boolean).join(" · ") || null;
 }
 
+export const scanStepLabel = (key: ScanStepKey) => STEP[key]?.[0] ?? String(key).replaceAll("_", " ");
+
 /** The scan steps in order with their state (mockup `.steps`); the state is also given as text. */
 export function ScanSteps({ steps }: { steps: ScanStep[] }) {
   return (
     <ol className="m-0 flex list-none flex-wrap p-0">
       {steps.map((step) => {
-        const [label, about] = STEP[step.key] ?? [String(step.key).replaceAll("_", " "), ""];
+        const about = STEP[step.key]?.[1];
         return (
           <li
             key={step.key}
@@ -38,7 +40,7 @@ export function ScanSteps({ steps }: { steps: ScanStep[] }) {
             data-state={step.state}
             className={`min-w-[100px] flex-1 border border-l-0 border-border bg-surface px-2.5 py-1.5 text-[12.5px] first:rounded-l-md first:border-l last:rounded-r-md ${LOOK[step.state] ?? ""}`}
           >
-            {step.state === "running" && <Spinner />} {label}
+            {step.state === "running" && <Spinner />} {scanStepLabel(step.key)}
             <span className="sr-only"> ({step.state})</span>
             <small className="block text-[11px] font-normal text-muted">{detail(step) ?? about}</small>
           </li>

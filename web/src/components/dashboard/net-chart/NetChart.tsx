@@ -1,4 +1,12 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type Ref } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type MouseEvent,
+  type ReactNode,
+  type Ref,
+} from "react";
 import { Tooltip } from "../../tooltip/Tooltip";
 import { netTone, signed } from "../common/format";
 
@@ -62,6 +70,8 @@ interface NetChartProps {
   onSelect?: (index: number | null) => void;
   /** The chart's focusable SVG. */
   chartRef?: Ref<SVGSVGElement>;
+  header: ReactNode;
+  blockHeight?: number;
 }
 
 /**
@@ -69,9 +79,17 @@ interface NetChartProps {
  * SVG; focusable, ←/→/Home/End read one point into a live region; the same numbers as a table on request. With
  * `onSelect`, a click or Enter/Space on a bar chooses it; choosing it again lets it go.
  */
-export function NetChart({ points, unit, selected = null, onSelect, chartRef }: NetChartProps) {
+export function NetChart({
+  points,
+  unit,
+  selected = null,
+  onSelect,
+  chartRef,
+  header,
+  blockHeight,
+}: NetChartProps) {
   const box = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState(FALLBACK_WIDTH);
+  const [[width, height], setSize] = useState([FALLBACK_WIDTH, 128]);
   const [at, setAt] = useState<number | null>(null);
   const [reading, setReading] = useState("");
   const [table, setTable] = useState(false);
@@ -80,7 +98,9 @@ export function NetChart({ points, unit, selected = null, onSelect, chartRef }: 
     const element = box.current;
     if (!element || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(([entry]) => {
-      if (entry && entry.contentRect.width > 0) setWidth(Math.max(320, entry.contentRect.width));
+      if (entry && entry.contentRect.width > 0) {
+        setSize([entry.contentRect.width, Math.max(40, entry.contentRect.height)]);
+      }
     });
     observer.observe(element);
     return () => observer.disconnect();
@@ -96,10 +116,14 @@ export function NetChart({ points, unit, selected = null, onSelect, chartRef }: 
     else if (announced !== null) setReading(`Pull requests of ${announced} hidden`);
   }
   if (rows.length === 0) {
-    return <p className="text-xs text-muted">No pull request activity in this period.</p>;
+    return (
+      <>
+        {header}
+        <p className="text-xs text-muted">No pull request activity in this period.</p>
+      </>
+    );
   }
   const last = rows.at(-1)!;
-  const height = Math.round(Math.max(230, Math.min(320, width * 0.16)));
   const iw = width - MARGIN.l - MARGIN.r;
   const ih = height - MARGIN.t - MARGIN.b;
   const values = rows.flatMap((row) => [row.net, row.running]);
@@ -144,176 +168,183 @@ export function NetChart({ points, unit, selected = null, onSelect, chartRef }: 
     show(Math.max(0, Math.min(rows.length - 1, next)), true);
   };
   const hover = at === null ? null : rows[at]!;
-  const tipLeft = at === null ? 0 : cx(at) + 14 + 220 > width ? cx(at) - 14 - 220 : cx(at) + 14;
+  const tipLeft = at === null ? 0 : Math.max(0, Math.min(cx(at) + 14, width - 220));
 
   return (
     <div className="flex min-w-0 flex-col gap-1.5">
-      <div aria-hidden className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted">
-        <span>
-          <i className="mr-1.5 inline-block h-3 w-3 rounded-sm bg-c-pos align-[-2px]" />
-          closed more than opened
-        </span>
-        <span>
-          <i className="mr-1.5 inline-block h-3 w-3 rounded-sm bg-c-neg align-[-2px]" />
-          opened more than closed
-        </span>
-        <span>
-          <i className="mr-1.5 inline-block h-0.5 w-4 rounded-sm bg-text align-[3px]" />
-          cumulative total since the first {unit} shown
-        </span>
-        <span>
-          <i className="mr-1.5 inline-block h-3 w-3 rounded-sm border-[1.5px] border-dashed border-c-pos align-[-2px]" />
-          {now} so far
-        </span>
-      </div>
-      <div ref={box} className="relative min-h-[210px] w-full">
-        <svg
-          width={width}
-          height={height}
-          viewBox={`0 0 ${width} ${height}`}
-          role="img"
-          tabIndex={0}
-          aria-label={`Net closed minus opened pull requests per ${unit} for the last ${rows.length} ${unit}s; cumulative total ${signed(last.running)}. Use the left and right arrow keys to read each ${unit}.${onSelect ? ` Enter or Space lists the pull requests of the ${unit} read.` : ""}`}
-          ref={chartRef}
-          onKeyDown={onKeyDown}
-          onFocus={() => show(at ?? selected ?? rows.length - 1, true)}
-          onBlur={() => setAt(null)}
-          onMouseMove={(event) => {
-            const i = indexAt(event);
-            if (i !== null) show(i, false);
-            else setAt(null);
-          }}
-          onMouseLeave={() => setAt(null)}
-          onClick={(event) => {
-            const i = indexAt(event);
-            if (i === null) return;
-            setAt(i);
-            choose(i);
-          }}
-          className={`block overflow-visible rounded focus-visible:outline-offset-4 ${onSelect ? "cursor-pointer" : ""}`}
-        >
-          {/* Under the bars: the bar whose pull requests are listed. */}
-          {selected !== null && selected < rows.length && (
-            <rect
-              x={MARGIN.l + slot * selected}
-              y={MARGIN.t}
-              width={slot}
-              height={ih}
-              className="fill-accent opacity-[.14]"
-            />
-          )}
-          {grid.map((v) => (
-            <g key={v}>
-              <line
-                x1={MARGIN.l}
-                x2={width - MARGIN.r}
-                y1={y(v)}
-                y2={y(v)}
-                className={v === 0 ? "stroke-muted" : "stroke-border opacity-60"}
-              />
-              <text
-                x={MARGIN.l - 6}
-                y={y(v) + 4}
-                textAnchor="end"
-                className={`text-[11px] ${v === 0 ? "fill-text font-semibold" : "fill-muted"}`}
-              >
-                {signed(v)}
-              </text>
-            </g>
-          ))}
-          {rows.map((row, i) => (
-            <g key={`${row.label}-${i}`} data-point={i} data-selected={i === selected || undefined}>
-              {/* The running day or week: a dashed outline, visible on both themes and at net 0. */}
-              {row.partial ? (
-                <path
-                  data-partial
-                  d={
-                    row.net !== 0
-                      ? barPath(cx(i) - bar / 2, bar, y(0), y(row.net))
-                      : `M${cx(i) - bar / 2},${y(0) - 3}h${bar}v6h${-bar}Z`
-                  }
-                  strokeWidth={1.5}
-                  strokeDasharray="4 3"
-                  className={`fill-none ${row.net < 0 ? "stroke-c-neg" : "stroke-c-pos"}`}
-                />
-              ) : row.net !== 0 ? (
-                <path
-                  d={barPath(cx(i) - bar / 2, bar, y(0), y(row.net))}
-                  className={row.net > 0 ? "fill-c-pos" : "fill-c-neg"}
-                />
-              ) : (
-                <line
-                  x1={cx(i) - bar / 2}
-                  x2={cx(i) + bar / 2}
-                  y1={y(0)}
-                  y2={y(0)}
-                  strokeWidth={3}
-                  className="stroke-muted"
-                />
-              )}
-              {row.tick && (
-                <text x={cx(i)} y={height - 6} textAnchor="middle" className="fill-muted text-[11px]">
-                  {row.partial ? (unit === "day" ? "today" : "this wk") : row.label}
-                </text>
-              )}
-            </g>
-          ))}
-          <path
-            d={rows.map((row, i) => `${i ? "L" : "M"}${cx(i)},${y(row.running)}`).join("")}
-            fill="none"
-            strokeWidth={2}
-            strokeLinejoin="round"
-            className="stroke-text"
-          />
-          <circle
-            r={4.5}
-            cx={cx(rows.length - 1)}
-            cy={y(last.running)}
-            strokeWidth={2}
-            className="fill-text stroke-surface"
-          />
-          <text x={cx(rows.length - 1) + 9} y={y(last.running) + 4} className="fill-text text-xs font-bold">
-            {signed(last.running)}
-          </text>
-          {at !== null && (
-            <rect
-              x={MARGIN.l + slot * at}
-              y={MARGIN.t}
-              width={slot}
-              height={ih}
-              className="fill-text opacity-[.06]"
-            />
-          )}
-        </svg>
-        {hover && (
-          <div
-            aria-hidden
-            data-chart-tip
-            style={{ left: tipLeft, top: MARGIN.t + 4 }}
-            className="pointer-events-none absolute z-[5] w-max max-w-[220px] rounded-md bg-text px-2.5 py-1.5 text-xs leading-snug text-bg shadow-tip"
+      <div
+        data-headline-chart
+        className="flex min-w-0 flex-col gap-1.5"
+        style={{ height: blockHeight ?? 178 }}
+      >
+        {header}
+        <div aria-hidden className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-muted">
+          <span>
+            <i className="mr-1.5 inline-block h-3 w-3 rounded-sm bg-c-pos align-[-2px]" />
+            closed more than opened
+          </span>
+          <span>
+            <i className="mr-1.5 inline-block h-3 w-3 rounded-sm bg-c-neg align-[-2px]" />
+            opened more than closed
+          </span>
+          <span>
+            <i className="mr-1.5 inline-block h-0.5 w-4 rounded-sm bg-text align-[3px]" />
+            cumulative total since the first {unit} shown
+          </span>
+          <span>
+            <i className="mr-1.5 inline-block h-3 w-3 rounded-sm border-[1.5px] border-dashed border-c-pos align-[-2px]" />
+            {now} so far
+          </span>
+        </div>
+        <div ref={box} className="relative min-h-0 w-full flex-1">
+          <svg
+            width={width}
+            height={height}
+            viewBox={`0 0 ${width} ${height}`}
+            role="img"
+            tabIndex={0}
+            aria-label={`Net closed minus opened pull requests per ${unit} for the last ${rows.length} ${unit}s; cumulative total ${signed(last.running)}. Use the left and right arrow keys to read each ${unit}.${onSelect ? ` Enter or Space lists the pull requests of the ${unit} read.` : ""}`}
+            ref={chartRef}
+            onKeyDown={onKeyDown}
+            onFocus={() => show(at ?? selected ?? rows.length - 1, true)}
+            onBlur={() => setAt(null)}
+            onMouseMove={(event) => {
+              const i = indexAt(event);
+              if (i !== null) show(i, false);
+              else setAt(null);
+            }}
+            onMouseLeave={() => setAt(null)}
+            onClick={(event) => {
+              const i = indexAt(event);
+              if (i === null) return;
+              setAt(i);
+              choose(i);
+            }}
+            className={`absolute inset-0 block w-full overflow-visible rounded focus-visible:outline-offset-4 ${onSelect ? "cursor-pointer" : ""}`}
           >
-            <b>
-              {hover.full}
-              {hover.partial ? " (so far)" : ""}
-            </b>
-            <br />
-            closed {hover.closed} · opened {hover.opened}
-            <br />
-            {/* Neutral: the inverted tooltip gives the net tokens under 2.3:1 in both themes. */}
-            net <b>{signed(hover.net)}</b> · cumulative <b>{signed(hover.running)}</b>
-            {onSelect && (
-              <>
-                <br />
-                {at === selected
-                  ? "Click or press Enter to hide its pull requests"
-                  : "Click or press Enter to list its pull requests"}
-              </>
+            {/* Under the bars: the bar whose pull requests are listed. */}
+            {selected !== null && selected < rows.length && (
+              <rect
+                x={MARGIN.l + slot * selected}
+                y={MARGIN.t}
+                width={slot}
+                height={ih}
+                className="fill-accent opacity-[.14]"
+              />
             )}
-          </div>
-        )}
-        <span className="sr-only" aria-live="polite" data-chart-reading>
-          {reading}
-        </span>
+            {grid.map((v) => (
+              <g key={v}>
+                <line
+                  x1={MARGIN.l}
+                  x2={width - MARGIN.r}
+                  y1={y(v)}
+                  y2={y(v)}
+                  className={v === 0 ? "stroke-muted" : "stroke-border opacity-60"}
+                />
+                <text
+                  x={MARGIN.l - 6}
+                  y={y(v) + 4}
+                  textAnchor="end"
+                  className={`text-[11px] ${v === 0 ? "fill-text font-semibold" : "fill-muted"}`}
+                >
+                  {signed(v)}
+                </text>
+              </g>
+            ))}
+            {rows.map((row, i) => (
+              <g key={`${row.label}-${i}`} data-point={i} data-selected={i === selected || undefined}>
+                {/* The running day or week: a dashed outline, visible on both themes and at net 0. */}
+                {row.partial ? (
+                  <path
+                    data-partial
+                    d={
+                      row.net !== 0
+                        ? barPath(cx(i) - bar / 2, bar, y(0), y(row.net))
+                        : `M${cx(i) - bar / 2},${y(0) - 3}h${bar}v6h${-bar}Z`
+                    }
+                    strokeWidth={1.5}
+                    strokeDasharray="4 3"
+                    className={`fill-none ${row.net < 0 ? "stroke-c-neg" : "stroke-c-pos"}`}
+                  />
+                ) : row.net !== 0 ? (
+                  <path
+                    d={barPath(cx(i) - bar / 2, bar, y(0), y(row.net))}
+                    className={row.net > 0 ? "fill-c-pos" : "fill-c-neg"}
+                  />
+                ) : (
+                  <line
+                    x1={cx(i) - bar / 2}
+                    x2={cx(i) + bar / 2}
+                    y1={y(0)}
+                    y2={y(0)}
+                    strokeWidth={3}
+                    className="stroke-muted"
+                  />
+                )}
+                {row.tick && (width >= 420 || i % 2 === 0 || row.partial) && (
+                  <text x={cx(i)} y={height - 6} textAnchor="middle" className="fill-muted text-[11px]">
+                    {row.partial ? (unit === "day" ? "today" : "this wk") : row.label}
+                  </text>
+                )}
+              </g>
+            ))}
+            <path
+              d={rows.map((row, i) => `${i ? "L" : "M"}${cx(i)},${y(row.running)}`).join("")}
+              fill="none"
+              strokeWidth={2}
+              strokeLinejoin="round"
+              className="stroke-text"
+            />
+            <circle
+              r={4.5}
+              cx={cx(rows.length - 1)}
+              cy={y(last.running)}
+              strokeWidth={2}
+              className="fill-text stroke-surface"
+            />
+            <text x={cx(rows.length - 1) + 9} y={y(last.running) + 4} className="fill-text text-xs font-bold">
+              {signed(last.running)}
+            </text>
+            {at !== null && (
+              <rect
+                x={MARGIN.l + slot * at}
+                y={MARGIN.t}
+                width={slot}
+                height={ih}
+                className="fill-text opacity-[.06]"
+              />
+            )}
+          </svg>
+          {hover && (
+            <div
+              aria-hidden
+              data-chart-tip
+              style={{ left: tipLeft, top: MARGIN.t + 4 }}
+              className="pointer-events-none absolute z-[5] w-max max-w-[220px] rounded-md bg-text px-2.5 py-1.5 text-xs leading-snug text-bg shadow-tip"
+            >
+              <b>
+                {hover.full}
+                {hover.partial ? " (so far)" : ""}
+              </b>
+              <br />
+              closed {hover.closed} · opened {hover.opened}
+              <br />
+              {/* Neutral: the inverted tooltip gives the net tokens under 2.3:1 in both themes. */}
+              net <b>{signed(hover.net)}</b> · cumulative <b>{signed(hover.running)}</b>
+              {onSelect && (
+                <>
+                  <br />
+                  {at === selected
+                    ? "Click or press Enter to hide its pull requests"
+                    : "Click or press Enter to list its pull requests"}
+                </>
+              )}
+            </div>
+          )}
+          <span className="sr-only" aria-live="polite" data-chart-reading>
+            {reading}
+          </span>
+        </div>
       </div>
       <div>
         <Tooltip tip="Show the same numbers as a table">

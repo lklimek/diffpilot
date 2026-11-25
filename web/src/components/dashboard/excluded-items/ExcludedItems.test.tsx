@@ -2,7 +2,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { ExcludedItem, ExclusionReason, Exclusions } from "../../../api/generated/types";
-import { ExcludedItems } from "./ExcludedItems";
+import { ExcludedItems, exclusionDescription } from "./ExcludedItems";
 
 const item = (number: number, reason: ExclusionReason, extra: Partial<ExcludedItem> = {}): ExcludedItem => ({
   key: `acme~platform~pr~${number}`,
@@ -36,36 +36,13 @@ const EXCLUSIONS: Exclusions = {
 };
 
 describe("ExcludedItems", () => {
-  it("one quiet line counts the excluded items per reason, largest first", () => {
-    render(<ExcludedItems exclusions={EXCLUSIONS} />);
-    expect(screen.getByText(/^Excluded: 14/).textContent).toBe(
-      "Excluded: 14 — 9 outside your areas · 3 excluded authors · 2 drafts",
-    );
-    expect(screen.queryByRole("list")).toBeNull();
+  it("describes the reasons in descending count order", () => {
+    expect(exclusionDescription(EXCLUSIONS)).toBe("9 outside your areas · 3 excluded authors · 2 drafts");
   });
 
-  it("the open list has Hide in its top-right corner; it closes the list and returns the focus", async () => {
-    render(<ExcludedItems exclusions={EXCLUSIONS} />);
-    const toggle = screen.getByRole("button", { name: /Excluded: 14/ });
-    expect(screen.queryByRole("button", { name: "Hide excluded items" })).toBeNull();
-    await userEvent.click(toggle);
-    const hide = screen.getByRole("button", { name: "Hide excluded items" });
-    expect(hide).toHaveTextContent(/^Hide$/);
-    expect(hide).toHaveAccessibleDescription(/Hides the list/);
-    hide.focus();
-    await userEvent.keyboard("{Enter}");
-    expect(toggle.getAttribute("aria-expanded")).toBe("false");
-    expect(screen.queryAllByRole("group")).toHaveLength(0);
-    expect(toggle).toHaveFocus();
-  });
-
-  it("the disclosure lists the items by reason with links to GitHub; titles stay plain text", async () => {
+  it("lists items by reason with links to GitHub; titles stay plain text", async () => {
     const onNavigate = vi.fn();
     render(<ExcludedItems exclusions={EXCLUSIONS} onNavigate={onNavigate} />);
-    const toggle = screen.getByRole("button", { name: /Excluded: 14/ });
-    expect(toggle.getAttribute("aria-expanded")).toBe("false");
-    await userEvent.click(toggle);
-    expect(toggle.getAttribute("aria-expanded")).toBe("true");
     const groups = screen.getAllByRole("group");
     expect(groups.map((g) => g.getAttribute("aria-label"))).toEqual([
       "Outside your areas: 9",
@@ -86,7 +63,7 @@ describe("ExcludedItems", () => {
     expect(within(groups[2]!).queryByRole("link", { name: /settings guide/ })).toBeNull();
   });
 
-  it("names the item a merged one went into, says when the list is capped, and survives an unknown reason", async () => {
+  it("names the item a merged one went into, says when the list is capped, and survives an unknown reason", () => {
     const exclusions: Exclusions = {
       total: 250,
       counts: [
@@ -99,10 +76,9 @@ describe("ExcludedItems", () => {
       ],
     };
     render(<ExcludedItems exclusions={exclusions} />);
-    expect(screen.getByText(/^Excluded: 250/).textContent).toBe(
-      "Excluded: 250 — 249 by another rule · 1 merged into another item by the LLM",
+    expect(exclusionDescription(exclusions)).toBe(
+      "249 by another rule · 1 merged into another item by the LLM",
     );
-    await userEvent.click(screen.getByRole("button", { name: /Excluded: 250/ }));
     expect(screen.getByText("merged into PLAT-6")).toBeTruthy();
     expect(screen.getByRole("group", { name: "Another rule: 249" })).toBeTruthy();
     expect(screen.getByText("Listed: the first 2 of 250.")).toBeTruthy();
@@ -124,8 +100,6 @@ describe("ExcludedItems", () => {
       ],
     };
     const { rerender } = render(<ExcludedItems exclusions={exclusions} onWake={onWake} wakingKeys={[]} />);
-    expect(screen.getByText(/^Excluded: 3/).textContent).toBe("Excluded: 3 — 2 snoozed · 1 draft");
-    await userEvent.click(screen.getByRole("button", { name: /Excluded: 3/ }));
     const snoozed = within(screen.getByRole("group", { name: "Snoozed: 2" }));
     expect(snoozed.getByText(/^Items you snoozed\. Each comes back at its date/)).toBeTruthy();
     const when = new Intl.DateTimeFormat("en-GB", {
@@ -150,10 +124,10 @@ describe("ExcludedItems", () => {
 
   it("a snapshot without the record says so instead of 0; none excluded is a fact too", () => {
     const { rerender } = render(<ExcludedItems exclusions={undefined} />);
-    expect(screen.getByText("Excluded: not recorded for this snapshot — refresh to see it.")).toBeTruthy();
+    expect(screen.getByText("Exclusions were not recorded in this snapshot.")).toBeTruthy();
     expect(screen.queryByRole("button")).toBeNull();
     rerender(<ExcludedItems exclusions={{ total: 0, counts: [], items: [] }} />);
-    expect(screen.getByText("Excluded: none")).toBeTruthy();
+    expect(screen.getByText("No items are excluded or snoozed.")).toBeTruthy();
     expect(screen.queryByRole("button")).toBeNull();
   });
 });
