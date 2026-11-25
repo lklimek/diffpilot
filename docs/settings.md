@@ -14,15 +14,15 @@ Every option on the Settings page: what it is, when diffpilot uses it, what happ
 - **Empty or default:** Your unsent comment drafts in this tab are removed. Your GitHub pending review stays on GitHub.
 - **Example:** Sign out on a shared computer before you leave it.
 
-With the automatic refresh on and a time zone stored, the server keeps your GitHub sign-in after your last session ends, so the daily refresh can still scan. It keeps it for up to 30 days after your last sign-in; after that the automatic refresh says it needs you to sign in again.
+With the nightly scan on and a time zone stored, the server keeps your GitHub sign-in after your last session ends, so the nightly scan can keep running. It keeps it for up to 30 days after your last sign-in; after that the nightly scan says it needs you to sign in again.
 
 Personal access tokens keep working after Sign out.
 
 ### Sign out everywhere
 
-- **What:** Ends every session of yours in every browser, revokes all your personal access tokens and deletes the GitHub sign-in this server keeps for the automatic refresh. Nothing changes on GitHub.
+- **What:** Ends every session of yours in every browser, revokes all your personal access tokens and deletes the GitHub sign-in this server keeps for the nightly scan. Nothing changes on GitHub.
 - **When used:** When you press Sign out everywhere and confirm. The API does the same for POST /auth/logout with everywhere set.
-- **Empty or default:** Until you sign in again, the automatic refresh records that it needs you to sign in. Your unsent comment drafts in this tab are removed.
+- **Empty or default:** Until you sign in again, the nightly scan records that it needs you to sign in. Your unsent comment drafts in this tab are removed.
 - **Example:** Use it when a token or a browser session may have leaked.
 
 ## LLM
@@ -87,11 +87,11 @@ Personal access tokens keep working after Sign out.
 
 ## Notifications
 
-### Notify me when work finishes
+### Browser notifications
 
 - **What:** A browser notification when an Ask answer of yours arrives, a flow is analysed, or an analysis is ready to review, finishes or fails. It names the pull request and the flow or step, never the answer text; a click opens it.
 - **When used:** While a diffpilot tab showing that review or its progress is open and you are in another tab or window. A tab you are looking at does not notify. Several open tabs notify once.
-- **Empty or default:** Off. Turning it on asks the browser's permission; the choice is kept in this browser only.
+- **Empty or default:** Off. The browser asks for permission the first time you enable notifications. Each browser keeps its own choice.
 - **Limits:** Needs https (or localhost) and the browser's permission. Closed tabs do not notify. Mobile browsers show none.
 - **Example:** Ask a question, switch to your editor, and get a notification when the answer is ready.
 
@@ -245,18 +245,18 @@ When MemCan cannot be reached, the TODO rows of the earlier scan stay and each s
 - **Limits:** Up to 10 names (letters, digits, . _ or -, up to 100).
 - **Example:** home-infra.
 
-### Refresh my dashboard automatically every day
+### Run nightly scan
 
-- **What:** Runs one refresh a day at the time below, with your GitHub sign-in.
-- **When used:** The server checks every minute; it starts your run up to 9 minutes after the time. A run missed (server stopped) is caught up once on the same day; a manual refresh after the time counts for the day.
+- **What:** Runs once a night and judges only items never judged. Updates in between come from GitHub events and Refresh.
+- **When used:** At the local time below, with your GitHub sign-in.
 - **Empty or default:** On. It needs a time zone; without one it does not run.
 - **Example:** On, 06:00: My work is ready when you start.
 
-While it is on, the server keeps your GitHub sign-in for up to 30 days after your last sign-in. When the sign-in has ended, My work says the automatic refresh needs you to sign in again.
+While it is on, the server keeps your GitHub sign-in for up to 30 days after your last sign-in. When the sign-in has ended, My work says the nightly scan needs you to sign in again.
 
 ### Time of day
 
-- **What:** The local time of the daily refresh.
+- **What:** The local time of the nightly scan.
 - **When used:** Every day in your time zone.
 - **Empty or default:** 06:00.
 - **Limits:** HH:MM in steps of 15 minutes.
@@ -264,9 +264,9 @@ While it is on, the server keeps your GitHub sign-in for up to 30 days after you
 
 ### Time zone
 
-- **What:** Your time zone for the daily refresh, the day of the daily ranking limit and the history charts.
+- **What:** Your time zone for the nightly scan, the day of the daily ranking limit and the history charts.
 - **When used:** Your first visit to My work stores your browser's zone when none is stored.
-- **Empty or default:** Not set yet: the automatic refresh does not run.
+- **Empty or default:** Not set yet: the nightly scan does not run.
 - **Limits:** A time zone name such as Europe/Warsaw.
 - **Example:** Europe/Warsaw.
 
@@ -289,7 +289,7 @@ While it is on, the server keeps your GitHub sign-in for up to 30 days after you
 
 ### Access tokens
 
-- **What:** Personal access tokens let your agents read over HTTP what you can read here: My work, reviews and their questions. They are read-only.
+- **What:** Personal access tokens let agents use diffpilot over HTTP. A read token is read-only. Add review_loop_execute for an agent that claims decisions and reports their effects.
 - **When used:** When an agent sends Authorization: Bearer srp_… with a request.
 - **Empty or default:** No tokens: agents cannot read your data.
 - **Limits:** Name of 1 to 60 characters; lifetime of 30, 90 (default) or 365 days; at most 10 live tokens. The secret is shown once.
