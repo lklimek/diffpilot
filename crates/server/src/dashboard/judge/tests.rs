@@ -714,7 +714,7 @@ fn prompt_names_the_users_language() {
     let rule = |language: &str| {
         format!(
             "- Write `why`, `next`, `alarm`, every `basis` and every `reason` in {language}; keys, component \
-             names and enum values stay as they are.\n"
+             names and enum values stay as they are."
         )
     };
     assert!(english.contains(&rule("English")), "{english}");
@@ -722,6 +722,29 @@ fn prompt_names_the_users_language() {
     let russian = prompt::render(&golden_input(), LlmLanguage::Ru).expect("prompt");
     assert!(russian.contains(&rule("Russian (русский)")), "{russian}");
     assert!(!polish.contains("{{language}}"));
+}
+
+#[test]
+fn judge_prompt_explains_translated_technical_terms() {
+    let rule = "At the first use of each translated technical term in each text, put the original English term in parentheses immediately after it.";
+    for language in [LlmLanguage::En, LlmLanguage::Pl, LlmLanguage::Ru] {
+        let prompt = prompt::render(&golden_input(), language).expect("prompt");
+        let (instructions, _) = prompt
+            .split_once(contracts::agent::judge_work::DATA_BLOCK_OPEN)
+            .expect("data block");
+        assert_eq!(
+            instructions.contains(rule),
+            language != LlmLanguage::En,
+            "{language:?}"
+        );
+        assert_eq!(
+            instructions.contains(
+                "Never add English terms that dismiss risk, imply confirmation, quantify certainty, or otherwise violate the wording rules."
+            ),
+            language != LlmLanguage::En,
+            "{language:?}"
+        );
+    }
 }
 
 #[test]
@@ -755,11 +778,14 @@ fn golden_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../prompts/golden")
 }
 
-/// SHA-256 hex of the template and the output schema: what [`JUDGE_PROMPT_VERSION`] pins.
+/// SHA-256 hex of the template, shared PL/RU wording rule and output schema.
 fn prompt_hash(template: &str) -> String {
     let schema = contracts::agent::output_schema(JobKind::JudgeWork).expect("schema");
     let mut hash = Sha256::new();
     hash.update(template);
+    hash.update(
+        crate::prompts::translated_technical_terms(LlmLanguage::Pl).expect("language rule"),
+    );
     hash.update(schema.to_string());
     hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -795,7 +821,7 @@ fn golden_input() -> JudgeWorkInput {
 /// Message of a prompt or schema edit without a version decision.
 fn undecided(version: u32, hash: &str) -> String {
     format!(
-        "the judge prompt template or output schema changed (hash {hash}) and is not recorded under \
+        "the judge prompt or output schema changed (hash {hash}) and is not recorded under \
          JUDGE_PROMPT_VERSION {version} in prompts/golden/judge_work.versions. Decide: (a) a semantic change \
          (stored judgements should be re-judged): bump JUDGE_PROMPT_VERSION, then run with RECORD_PROMPT_HASH=1 to \
          record the hash under the new version; (b) a non-semantic edit (wording that cannot change an answer): run \
@@ -820,7 +846,7 @@ fn version_decision(
     }
 }
 
-/// The template with the output schema is recorded under the current `JUDGE_PROMPT_VERSION` (checked first:
+/// The prompt hash is recorded under the current `JUDGE_PROMPT_VERSION` (checked first:
 /// `RECORD_PROMPT_HASH=1` records it), and the rendered prompt is pinned (`UPDATE_GOLDEN=1` rewrites it).
 #[test]
 fn golden_judge_work_prompt() {
@@ -843,6 +869,9 @@ fn golden_judge_work_prompt() {
         golden, prompt,
         "prompts/golden/judge_work.txt differs (UPDATE_GOLDEN=1)"
     );
+    crate::prompts::check_localized_golden(&path, &prompt, |language| {
+        prompt::render(&golden_input(), language).expect("prompt")
+    });
 }
 
 #[test]

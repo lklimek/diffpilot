@@ -17,7 +17,7 @@ import {
   type ReviewComment,
   type ReviewCommentsOverview,
 } from "./provisional/comments";
-import { withoutRetried } from "./queries";
+import { withoutRetried } from "./questionHistory";
 import type {
   AnalysisId,
   AnchoredAskRequest,
@@ -302,25 +302,12 @@ export function useWatchPr(pr: PrRef) {
   const invalidate = useInvalidatePr(pr);
   return useMutation({
     mutationFn: (watch: boolean) => (watch ? api.watchPr(pr) : api.unwatchPr(pr)),
-    onSettled: () => Promise.all([invalidate(), client.invalidateQueries({ queryKey: ["watches"] })]),
-  });
-}
-
-/** Unwatch any PR from the watched list (RW1). */
-export function useUnwatch() {
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: (pr: PrRef) => api.unwatchPr(pr),
-    onSettled: () => client.invalidateQueries({ queryKey: ["watches"] }),
-  });
-}
-
-/** Watch a pasted PR (RW1), then refresh the watched list (RW2). */
-export function useAddWatch() {
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: (pr: PrRef) => api.watchPr(pr),
-    onSuccess: () => client.invalidateQueries({ queryKey: ["watches"] }),
+    onSettled: () =>
+      Promise.all([
+        invalidate(),
+        client.invalidateQueries({ queryKey: ["watches"] }),
+        client.invalidateQueries({ queryKey: ["pr-history"] }),
+      ]),
   });
 }
 

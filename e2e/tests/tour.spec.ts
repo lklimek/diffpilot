@@ -77,6 +77,12 @@ test("flows by importance, then quiet rows with Unexplained first; flow introduc
   await expect(heading(page)).toHaveText("5 Retry allowed?");
   const code = page.getByRole("region", { name: /^src\/rpc\/client\.rs, line/ });
   await expect(code).toContainText("should_retry");
+  await expect(page.getByRole("banner").getByLabel("Current file: src/rpc/client.rs")).toBeVisible();
+  const number = code.getByRole("button", { name: "Comment on line 99", exact: true });
+  await number.focus();
+  await expect(
+    code.getByRole("link", { name: "Open line 99 of src/rpc/client.rs on GitHub, new tab" }),
+  ).toHaveAttribute("href", /\/pull\/482\/changes#diff-[a-f0-9]{64}R99$/);
   // The assessment lives in the Inspector now and stays collapsed.
   await expect(inspector(page).getByRole("button", { name: /Assessment/ })).toHaveAttribute(
     "aria-expanded",
@@ -120,7 +126,8 @@ test("hard case 3: a step without flags has no Flags section; the low assessment
   await checkScreen(page);
 });
 
-test("classic diff of a step: d toggles the base → head view of the file", async ({ page }) => {
+test("classic diff of a step: d toggles the base → head view of the file", async ({ page, context }) => {
+  await context.route("https://github.com/**", (route) => route.fulfill({ body: "GitHub" }));
   await finishedReview(page);
   await openStep(page, 2, 1);
   const main = page.getByRole("main");
@@ -130,12 +137,23 @@ test("classic diff of a step: d toggles the base → head view of the file", asy
   await expect(diff).toBeVisible();
   await expect(diff).toContainText("Duration::from_secs(30)");
   await expect(diff).toContainText("Duration::from_secs(5)");
+  const removed = diff.locator('[data-diff-line="removed"]').first();
+  const number = removed.getByRole("button", { name: /^Open line \d+ on GitHub, new tab$/ });
+  await number.focus();
+  await expect(
+    removed.getByRole("link", { name: /^Open line \d+ of src\/config\.rs on GitHub, new tab$/ }),
+  ).toHaveAttribute("tabindex", "-1");
+  const popup = page.waitForEvent("popup");
+  await number.click();
+  const github = await popup;
+  await expect(github).toHaveURL(/\/pull\/482\/changes#diff-[a-f0-9]{64}L\d+$/);
+  await github.close();
   await checkScreen(page);
   await page.keyboard.press("d");
   await expect(diff).toHaveCount(0);
 });
 
-test("resume where left off: the tick and the last viewed block survive a reload and Home", async ({
+test("resume where left off: the tick and the last viewed block survive a reload and reopening the PR", async ({
   page,
 }) => {
   const id = await finishedReview(page);
@@ -151,12 +169,12 @@ test("resume where left off: the tick and the last viewed block survive a reload
   await expect(heading(page)).toContainText("Default timeout");
   await expect(ticked).toBeVisible();
 
-  await page.goto("/review");
+  await page.goto("/prs");
   await checkPr(page);
   const found = page.getByRole("status").filter({ hasText: "Analysis found." });
   await expect(found).toContainText("Your ticks, answers and last viewed block are kept");
   await checkScreen(page);
-  await found.getByRole("link", { name: "Open", exact: true }).click();
+  await found.getByRole("link", { name: "Open review", exact: true }).click();
   await expect(heading(page)).toContainText("Default timeout");
   await expect(ticked).toBeVisible();
   await checkScreen(page);

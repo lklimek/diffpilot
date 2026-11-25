@@ -58,9 +58,10 @@ test("a question on a step is answered, pinned to the step and kept over a reloa
   await openStep(page, 1, 5);
   const question = "Can broadcast_tx send the same transaction twice?";
   const thread = await ask(page, question);
-  await expect(thread).toContainText("Asked by you");
+  await expect(thread.locator("time")).toHaveAttribute("datetime", /^\d{4}-\d{2}-\d{2}T/);
+  await expect(thread.locator("time")).toHaveAttribute("title", /^Asked by you · /);
   // Pinned to the step: the thread names it, and the Inspector of the step keeps a copy.
-  await expect(thread).toContainText("flow 1 · step 5");
+  await expect(thread.getByRole("button", { name: /^Step 1\.5 · client\.rs 99/ })).toBeVisible();
   await expect(stepCopy(page)).toContainText(question);
   // Backtick spans are drawn as code, without the backticks.
   await expect(thread).toContainText(ANSWER.replaceAll("`", ""), { timeout: 60_000 });
@@ -109,9 +110,7 @@ test("usage limit: the question waits with the time it runs, then is answered", 
     .not.toBe("");
   expect(Date.parse(resumesAt), "the run time lies ahead").toBeGreaterThan(Date.now());
   await expect(
-    answers(page).getByText(
-      `Waiting for the LLM usage limit to reset; resumes at ${await clock(page, resumesAt)}.`,
-    ),
+    answers(page).getByText(`◌ usage limit · resumes at ${await clock(page, resumesAt)}`),
   ).toBeVisible();
   await checkScreen(page);
   await expect(answers(page)).toContainText("Answered once the limit reset.", { timeout: 90_000 });

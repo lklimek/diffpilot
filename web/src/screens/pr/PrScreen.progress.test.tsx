@@ -52,7 +52,7 @@ describe("Analysis progress on the PR page (brief §4.2, review-workflow-plan §
     expect(screen.queryByRole("link", { name: "Open" })).toBeNull();
     emit({ state: "finished", total: 5 });
     expect(screen.getByText("5 of 5 flows analysed")).toBeVisible();
-    expect(screen.getByRole("link", { name: "Open" })).toHaveAttribute("href", `/analyses/${ID}`);
+    expect(screen.getByRole("link", { name: "Open review" })).toHaveAttribute("href", `/analyses/${ID}`);
     expect(screen.queryByRole("button", { name: "Cancel analysis" })).toBeNull();
     act(() =>
       FakeEventSource.latest().emit({
@@ -60,7 +60,7 @@ describe("Analysis progress on the PR page (brief §4.2, review-workflow-plan §
         summary: { ...analysis, state: { state: "finished", total: 5 }, has_my_state: true },
       }),
     );
-    expect(screen.getByRole("link", { name: "Open" })).toHaveAttribute("href", `/analyses/${ID}`);
+    expect(screen.getByRole("link", { name: "Open review" })).toHaveAttribute("href", `/analyses/${ID}`);
     expectTrustWording(pageText());
   });
 
@@ -94,24 +94,22 @@ describe("Analysis progress on the PR page (brief §4.2, review-workflow-plan §
     expect(screen.getByText("Bad output.")).toBeVisible();
   });
 
-  it("Cancel analysis returns to the review start page with 'Analysis cancelled. Check the PR to start again.'", async () => {
+  it("Cancel analysis stays on the PR page and offers a fresh start", async () => {
     const router = await showAt({ state: "running", done: 1, total: 5 });
     await userEvent.click(screen.getByRole("button", { name: "Cancel analysis" }));
     await userEvent.click(screen.getByRole("button", { name: "Confirm cancel" }));
-    await waitFor(() => expect(router.state.location.pathname).toBe("/review"));
-    expect(liveAnalysis().state).toEqual({ state: "cancelled" });
-    expect(await screen.findByText("Analysis cancelled. Check the PR to start again.")).toBeVisible();
-    expect(screen.getByLabelText("GitHub pull request URL")).toHaveValue(analysis.pr.html_url);
+    await waitFor(() => expect(liveAnalysis().state).toEqual({ state: "cancelled" }));
+    emit({ state: "cancelled" });
+    expect(await screen.findByText(/Analysis cancelled\./)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Start analysis" })).toBeEnabled();
+    expect(router.state.location.pathname).toBe("/pr/acme/node-client/482");
   });
 
-  it("cancelled elsewhere (event): the PR page stays, with Check and start (plan §3.1)", async () => {
+  it("cancelled elsewhere: the PR page stays, with Start analysis", async () => {
     const router = await showAt({ state: "running", done: 1, total: 5 });
     emit({ state: "cancelled" });
-    expect(await screen.findByText("Analysis cancelled.")).toBeVisible();
-    expect(screen.getByRole("link", { name: "Check and start" })).toHaveAttribute(
-      "href",
-      `/review?pr=${encodeURIComponent(analysis.pr.html_url)}`,
-    );
+    expect(await screen.findByText(/Analysis cancelled\./)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Start analysis" })).toBeEnabled();
     expect(router.state.location.pathname).toBe("/pr/acme/node-client/482");
   });
 

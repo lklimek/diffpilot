@@ -3,8 +3,8 @@
 /** My work, the start page. */
 export const MY_WORK_PATH = "/";
 
-/** The review start page ("Review a PR"); `/?pr=` and `/?login_error=` redirect here with their query. */
-export const REVIEW_START_PATH = "/review";
+/** Pull request history and PR opener. */
+export const PRS_PATH = "/prs";
 
 /** Settings. */
 export const SETTINGS_PATH = "/settings";

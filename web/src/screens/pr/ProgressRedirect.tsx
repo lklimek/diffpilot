@@ -10,7 +10,14 @@ export function ProgressRedirect() {
   const { analysisId = "" } = useParams();
   const { search } = useLocation();
   const analysis = useAnalysisOnce(analysisId);
-  if (analysis.data) return <Navigate to={{ pathname: prPath(analysis.data.pr), search }} replace />;
+  if (analysis.data)
+    return (
+      <Navigate
+        to={{ pathname: prPath(analysis.data.pr), search }}
+        state={{ progressId: analysisId }}
+        replace
+      />
+    );
   return (
     <main id="main" className="flex min-h-screen flex-col items-center justify-center gap-4 px-8">
       {analysis.isError ? (

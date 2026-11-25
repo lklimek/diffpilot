@@ -4,16 +4,16 @@ import { expect, type Page } from "@playwright/test";
 /** The fixture PR of fixtures/pr-482. */
 export const PR_URL = "https://github.com/acme/node-client/pull/482";
 
-/** Fills the PR URL and presses Check (a lookup; nothing starts). */
+/** Fills the PR URL and opens its PR page (nothing starts). */
 export async function analyze(page: Page, url = PR_URL): Promise<void> {
   await page.getByLabel("GitHub pull request URL").fill(url);
-  await page.getByRole("button", { name: "Check" }).click();
+  await page.getByRole("button", { name: "Open", exact: true }).click();
 }
 
-/** Starts the analysis from the check card (`name`: "Start analysis" or "Start analysis anyway"). */
+/** Starts the analysis from its PR page (`name`: "Start analysis" or "Start analysis anyway"). */
 export async function startAnalysis(page: Page, name = "Start analysis"): Promise<void> {
   await page
-    .getByRole("region", { name: "Pull request check" })
+    .getByRole("region", { name: "Review the code" })
     .getByRole("button", { name, exact: true })
     .click();
 }

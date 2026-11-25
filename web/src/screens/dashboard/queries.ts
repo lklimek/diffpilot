@@ -424,6 +424,7 @@ export function useWatchItem() {
       return Promise.all([
         client.invalidateQueries({ queryKey: ["dashboard-items"] }),
         client.invalidateQueries({ queryKey: ["watches"] }),
+        client.invalidateQueries({ queryKey: ["pr-history"] }),
       ]);
     },
   });

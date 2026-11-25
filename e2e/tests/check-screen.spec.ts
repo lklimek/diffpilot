@@ -20,12 +20,11 @@ const page = (
     }
   </script></body></html>`;
 
-// Home's form (web/src/components/pr-form/PrUrlForm.tsx): a URL field and its submit control.
-const home = (submit: string) =>
-  `<form><label>GitHub pull request URL <input type="url"></label>${submit.replace('type="button"', 'type="submit"')}</form>`;
-// A Settings → Notifications channel (web/src/components/settings/NotificationChannelCard.tsx): another URL form,
-// not Home even with its field required.
-const channel = `<form novalidate><label>URL <input type="url" required></label>${tooltip("Save", "Saves the channel.")}</form>`;
+// The PR opener (web/src/components/pr-form/PrUrlForm.tsx): a URL field and its submit control.
+const prOpener = (submit: string) =>
+  `<form><label>GitHub pull request URL <input type="text" inputmode="url"></label>${submit.replace('type="button"', 'type="submit"')}</form>`;
+// An unrelated URL field can also opt into the URL keyboard. The opener rule must check the field's label.
+const channel = `<form novalidate><label>URL <input type="url" inputmode="url" required></label>${tooltip("Save", "Saves the channel.")}</form>`;
 
 const cases: [string, string, RegExp | null][] = [
   ["a clean screen", page(tooltip("Ticks", "Steps you marked reviewed."), "<p>3 of 7 steps</p>"), null],
@@ -73,18 +72,22 @@ const cases: [string, string, RegExp | null][] = [
     page("", '<button type="button" aria-describedby="gone">Fact</button>'),
     /aria-describedby names no element: .*gone/,
   ],
-  ["Home with Check and its tooltip", page("", home(tooltip("Check", "Looks the pull request up."))), null],
   [
-    "Home with Check but no tooltip",
-    page("", home('<button type="submit">Check</button>')),
-    /required tooltip missing: Check .*Check/,
+    "PR opener with Open and its tooltip",
+    page("", prOpener(tooltip("Open", "Opens the pull request."))),
+    null,
   ],
   [
-    "Home without Check",
-    page("", home(tooltip("Open", "Opens the pull request."))),
-    /required control missing: Check \(0 of 1 rendered\)/,
+    "PR opener with Open but no tooltip",
+    page("", prOpener('<button type="submit">Open</button>')),
+    /required tooltip missing: Open pull request .*Open/,
   ],
-  ["a notification channel's URL form (not Home: no Check)", page("", channel), null],
+  [
+    "PR opener without Open",
+    page("", prOpener(tooltip("Check", "Looks the pull request up."))),
+    /required control missing: Open pull request \(0 of 1 rendered\)/,
+  ],
+  ["a notification channel's URL form with its own label", page("", channel), null],
   [
     "a trigger without keyboard focus",
     page(

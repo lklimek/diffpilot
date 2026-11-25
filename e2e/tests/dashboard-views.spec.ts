@@ -1,7 +1,14 @@
 // What My work shows of one ranked snapshot: excluded items with their reason, a PR waiting only on others
 // outside Needs you, change-size pills and filter chips, the kind toggles
-// remembered over a reload; and Recent reviews on the review start page.
-import { analyze, checkScreen, signIn } from "../support/app";
+// remembered over a reload; and analysis history on Pull requests.
+import {
+  analyseAllRemainingFlows,
+  analyze,
+  checkScreen,
+  PR_PAGE_PATH,
+  signIn,
+  waitForState,
+} from "../support/app";
 import {
   JUDGE_DATA,
   ranked,
@@ -121,13 +128,36 @@ test("the kind toggles are remembered over a reload", async ({ page }) => {
   expect(await rowIds(page)).toEqual(expect.arrayContaining(ISSUES));
 });
 
-test("Recent reviews on the review start page lists the user's analysis", async ({ page }) => {
+test("Pull requests history lists the user's analysis and filters by watch", async ({ page }) => {
   await signIn(page);
   const id = await analyze(page);
-  await page.goto("/review");
-  const recent = page.getByRole("region", { name: "Recent reviews" });
-  const link = recent.getByRole("link", { name: /^acme\/node-client #482\b/ });
-  await expect(link).toHaveCount(1);
-  await expect(link).toHaveAttribute("href", new RegExp(`/analyses/${id}(/progress)?$`));
+  await analyseAllRemainingFlows(page);
+  await waitForState(page, id, "finished");
+  await page.goto("/prs");
+
+  const history = page.getByRole("list", { name: "Your pull requests" });
+  const row = history.getByRole("listitem").filter({ hasText: "acme/node-client #482" });
+  await expect(row).toHaveCount(1);
+  await expect(row).toContainText("analysis finished");
+  await expect(row.getByRole("link", { name: /^acme\/node-client #482\b/ })).toHaveAttribute(
+    "href",
+    PR_PAGE_PATH,
+  );
+  await expect(row.getByRole("link", { name: "Review acme/node-client #482", exact: true })).toHaveAttribute(
+    "href",
+    `/analyses/${id}`,
+  );
   await checkScreen(page);
+
+  const watched = page.getByRole("button", { name: "Watched", exact: true });
+  await watched.click();
+  await expect(page).toHaveURL("/prs?show=watched");
+  await expect(row).toHaveCount(0);
+
+  await page.getByRole("button", { name: "All", exact: true }).click();
+  await row.getByRole("button", { name: "More actions for acme/node-client #482" }).click();
+  await page.getByRole("menuitem", { name: "Watch", exact: true }).click();
+  await expect(row).toContainText("watching since");
+  await watched.click();
+  await expect(row).toHaveCount(1);
 });

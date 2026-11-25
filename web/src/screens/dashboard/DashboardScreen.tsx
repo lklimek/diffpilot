@@ -35,7 +35,7 @@ import {
   throughputWeeks,
   weeklySeries,
 } from "./history";
-import { GITHUB_SYNC_SETTINGS_PATH, LLM_USAGE_PATH, REVIEW_START_PATH } from "../shell/paths";
+import { GITHUB_SYNC_SETTINGS_PATH, LLM_USAGE_PATH, PRS_PATH } from "../shell/paths";
 import { ShellActions, useShellSlots } from "../shell/ShellRoute";
 import {
   commentsHref,
@@ -311,7 +311,7 @@ export function DashboardScreen() {
                 checked={snapshot.checked}
                 awaiting={snapshot.awaiting.length}
                 hasMentions={(summary.mentions ?? []).length > 0}
-                reviewStartHref={REVIEW_START_PATH}
+                reviewStartHref={PRS_PATH}
                 onNavigate={go}
                 now={now}
               />

@@ -54,6 +54,7 @@ import { postFeedback } from "./post-feedback";
 import { putReviewState } from "./put-review-state";
 import { resolvePr } from "./resolve-pr";
 import { reviewLoopHandlers } from "./review-loop";
+import { getPrHistory } from "./pr-history";
 import { retryAnalysis } from "./retry-analysis";
 import { setControlledOwners } from "./set-controlled-owners";
 import { setFileViewed } from "./set-file-viewed";
@@ -73,6 +74,7 @@ export const handlers = [
   resolvePr,
   createAnalysis,
   listMyAnalyses,
+  getPrHistory,
   getAnalysis,
   getTour,
   getLines,

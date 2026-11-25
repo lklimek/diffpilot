@@ -130,18 +130,21 @@ test("TODO rows: hidden when MemCan TODOs are switched off, back when on", async
   await expect(workList(page).getByRole("button", { name: `Details of ${TODOS[0]}` })).toBeVisible();
 });
 
-test("a PR row's Review opens /review with the PR checked; /?pr= moves there", async ({ page }) => {
+test("a PR row's Review opens the PR page without starting analysis; /?pr= moves there", async ({ page }) => {
   await signIn(page);
   const row = workList(page).locator('li[data-item="acme~node-client~pr~482"]');
   await row.getByRole("link", { name: /^Review pull request /, exact: false }).click();
-  await expect(page).toHaveURL(`/review?pr=${encodeURIComponent(PR_URL)}`);
-  await expect(page.getByLabel("GitHub pull request URL")).toHaveValue(PR_URL);
-  await expect(page.getByRole("region", { name: "Pull request check" })).toBeVisible();
+  await expect(page).toHaveURL("/pr/acme/node-client/482");
+  await expect(
+    page.getByRole("region", { name: "Review the code" }).getByRole("button", { name: /^Start analysis/ }),
+  ).toBeVisible();
   await checkScreen(page);
 
   await page.goto(`/?pr=${encodeURIComponent(PR_URL)}`);
-  await expect(page).toHaveURL(`/review?pr=${encodeURIComponent(PR_URL)}`);
-  await expect(page.getByRole("region", { name: "Pull request check" })).toBeVisible();
+  await expect(page).toHaveURL("/pr/acme/node-client/482");
+  await expect(
+    page.getByRole("region", { name: "Review the code" }).getByRole("button", { name: /^Start analysis/ }),
+  ).toBeVisible();
 });
 
 test("cancel during a scan: the scan stops, the list stays", async ({ page }) => {

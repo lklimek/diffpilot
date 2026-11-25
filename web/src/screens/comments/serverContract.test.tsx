@@ -6,11 +6,11 @@ import { http, HttpResponse } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeEventSource } from "../../__tests__/fake-event-source";
 import { renderRoute, startMockServer } from "../../__tests__/screen";
-import type { AnalysisSummary, CommentItem, DecideRequest, Gate } from "../../api/generated/types";
+import type { CommentItem, DecideRequest, Gate } from "../../api/generated/types";
 import { COMMENTS_POLL_MS } from "../../api/review-loop";
 import { DISMISS_MESSAGE, dismissBody } from "../../mocks/effects-plan";
-import { seedFor } from "../../mocks/fixtures";
 import { BOT_CHANGE_REQUESTS, listItems, resetReviewLoop } from "../../mocks/review-loop";
+import { setScenario } from "../../mocks/scenarios";
 
 const server = startMockServer();
 const PR = "/pr/acme/node-client/482";
@@ -403,18 +403,10 @@ describe("Keyboard (plan §3.8): s skips a group question as the card says", () 
 
 describe("V0 PR page stays reachable (plan §3.1)", () => {
   it("opening the PR page of a PR whose latest analysis was cancelled keeps the PR page", async () => {
-    const analysis = seedFor("default", "analysis") as AnalysisSummary;
+    setScenario("existing-cancelled");
     const router = renderRoute(PR);
-    await screen.findByRole("heading", { level: 1, name: /acme\/node-client #482/ });
-    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
-    act(() =>
-      FakeEventSource.latest().emit({
-        event: "analysis",
-        summary: { ...analysis, state: { state: "cancelled" } },
-      }),
-    );
-    // Give the redirect effect a chance to run.
-    await act(async () => {});
+    expect(await screen.findByText("Analysis cancelled.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Start analysis" })).toBeEnabled();
     expect(router.state.location.pathname).toBe(PR);
     expect(screen.getByRole("button", { name: "Process PR comments" })).toBeVisible();
   });

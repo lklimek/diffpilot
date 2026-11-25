@@ -32,7 +32,9 @@ import { READ_FAILURE } from "../../components/comments/parts";
 import { StatusPopover } from "../../components/status/StatusPopover";
 import { clockText } from "../../components/format/time";
 import { StatusMessage } from "../../components/status/StatusMessage";
+import { prGithubUrl } from "../../components/github/links";
 import { ReviewTopBar } from "../shell/ReviewTopBar";
+import { AnalysisPathLinks } from "../review/AnalysisPathLinks";
 import { PrAskChatProvider } from "../review/askChat";
 import { commentsPath, prOfParams, prPath } from "../pr/paths";
 
@@ -178,11 +180,13 @@ export function CommentsRoute() {
   return (
     <div className="flex min-h-screen flex-col">
       <ReviewTopBar
-        pr={
-          o
-            ? { repo: pr.repo, number: pr.number, title: o.title, html_url: o.url, head_sha: o.head }
-            : undefined
-        }
+        pr={{
+          repo: pr.repo,
+          number: pr.number,
+          title: o?.title ?? "",
+          html_url: o?.url ?? prGithubUrl(pr),
+          head_sha: o?.head ?? "",
+        }}
         login={me.data?.user?.login ?? null}
         view={
           o
@@ -193,7 +197,6 @@ export function CommentsRoute() {
                 depsHref: base && `${base}/deps`,
                 commentsHref: hrefs.questions,
                 prPageHref: prPath(pr),
-                prContextHref: prPath(pr),
                 onNavigate: go,
               }
             : undefined
@@ -298,9 +301,11 @@ export function CommentsRoute() {
             }}
           />
         )}
-        <WithAsk pr={pr} items={items.data}>
-          {body}
-        </WithAsk>
+        <AnalysisPathLinks analysisId={analysis} head={o?.head ?? null}>
+          <WithAsk pr={pr} items={items.data}>
+            {body}
+          </WithAsk>
+        </AnalysisPathLinks>
       </main>
     </div>
   );

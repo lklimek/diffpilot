@@ -35,6 +35,7 @@ import {
   type Refusal,
 } from "../review-loop";
 import { readStore } from "../review-store";
+import { recordPrOpened } from "./pr-history";
 import { answerLater } from "./ask-question";
 import { apiError, route } from "./common";
 
@@ -69,10 +70,20 @@ const isRefusal = (value: unknown): value is Refusal => Array.isArray(value) && 
 
 /** RC1–RC17, RW1–RW2, RN1–RN3 of the review loop (plan §6) over the store of review-loop.ts. */
 export const reviewLoopHandlers = [
-  route(
-    "getPrPage",
-    forPr(() => HttpResponse.json(prPage())),
-  ),
+  route("getPrPage", (info) => {
+    if (info.params.owner === "acme" && info.params.name === "private-repo") {
+      return apiError(
+        422,
+        "private_repository",
+        "This repository is private. Only public repositories can be analysed.",
+      );
+    }
+    return forPr(() => {
+      const page = prPage();
+      recordPrOpened(page.pr, page.title);
+      return HttpResponse.json(page);
+    })(info);
+  }),
   route(
     "getComments",
     forPr(() => HttpResponse.json(overview())),

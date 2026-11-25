@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -37,7 +37,11 @@ function Harness(over: Partial<AskChatProps> & { questions?: AskQuestion[] }) {
     draft,
     onDraft: setDraft,
     replyDrafts,
-    onReplyDraft: (id, text) => setReplyDrafts((all) => ({ ...all, [id]: text })),
+    onReplyDraft: (id, edit) =>
+      setReplyDrafts((all) => ({
+        ...all,
+        [id]: typeof edit === "string" ? edit : edit(all[id] ?? ""),
+      })),
     now: NOW,
     signInHref: "/auth/github/login",
     onSend: vi.fn(),
@@ -81,15 +85,29 @@ describe("AskChat (proposal AC3–AC10)", () => {
       .filter((li) => li.dataset.thread);
     expect(threads.map((t) => t.dataset.thread)).toEqual(["a", "c"]);
     const chip = within(threads[0]!).getByRole("button", {
-      name: /^Flows src\/rpc\/client\.rs:99 flow 1 · step 5/,
+      name: "Step 1.5 · client.rs 99 · src/rpc/client.rs:99 (new code)",
     });
+    expect(chip).toHaveTextContent("Step 1.5 · client.rs 99");
+    expect(chip).toHaveAccessibleDescription(/src\/rpc\/client\.rs:99 \(new code\)/);
+    const subject = within(within(chat()).getByRole("form", { name: "New question" })).getByLabelText(
+      "Step 1.5 · client.rs 99 · src/rpc/client.rs:99 (new code)",
+    );
+    expect(subject).toHaveAccessibleDescription(/src\/rpc\/client\.rs:99/);
     fireEvent.click(chip);
     expect(onGoto).toHaveBeenCalledWith(STEP);
     expect(within(threads[1]!).getByRole("button", { name: "Whole PR" })).toBeVisible();
+    expect(threads[0]).toHaveTextContent(/Q1.*answered/);
+    expect(threads[1]).toHaveTextContent(/Q2.*answered/);
+    expect(chat()).toHaveTextContent("New question");
+    const show = within(threads[0]!).getByRole("button", { name: "Show Q1" });
+    expect(show).toHaveAttribute("aria-expanded", "false");
+    expect(within(threads[0]!).queryByRole("list", { name: "Follow-ups" })).toBeNull();
+    fireEvent.click(show);
+    expect(show).toHaveAttribute("aria-expanded", "true");
     // The follow-up sits under its first question, without a chip.
     const followUps = within(threads[0]!).getByRole("list", { name: "Follow-ups" });
     expect(followUps).toHaveTextContent("Question b?");
-    expect(within(followUps).queryByRole("button", { name: /^Flows/ })).toBeNull();
+    expect(within(followUps).queryByRole("button", { name: /^Step / })).toBeNull();
     expectTrustWording(chat().textContent ?? "");
   });
 
@@ -198,19 +216,26 @@ describe("AskChat (proposal AC3–AC10)", () => {
     const thread = within(chat())
       .getAllByRole("listitem")
       .find((li) => li.dataset.thread === "c")!;
-    await user.click(within(thread).getByRole("button", { name: "Ask a follow-up" }));
-    const reply = within(thread).getByRole("textbox", { name: /^Follow-up in this thread/ });
+    const older = within(chat()).getByRole("listitem", { name: "Question: Question a?" });
+    await user.click(within(older).getByRole("button", { name: "Show Q1" }));
+    await user.click(within(older).getByRole("button", { name: "Follow up on Q1" }));
+    await user.type(within(older).getByRole("textbox", { name: /^Follow-up to Q1/ }), "kept on Q1");
+    await user.click(within(thread).getByRole("button", { name: "Follow up on Q2" }));
+    expect(within(older).queryByRole("textbox")).toBeNull();
+    expect(within(thread).getByRole("button", { name: "Send follow-up" })).toBeVisible();
+    expect(field()).toBeVisible();
+    const reply = within(thread).getByRole("textbox", { name: /^Follow-up to Q2/ });
     expect(reply).toHaveFocus();
     await user.type(reply, "And later?");
     await user.keyboard("{Escape}");
     expect(onHide).not.toHaveBeenCalled();
     expect(within(thread).queryByRole("textbox")).toBeNull();
-    await user.click(within(thread).getByRole("button", { name: "Ask a follow-up" }));
-    expect(within(thread).getByRole("textbox", { name: /^Follow-up in this thread/ })).toHaveValue(
-      "And later?",
-    );
+    await user.click(within(thread).getByRole("button", { name: "Follow up on Q2" }));
+    expect(within(thread).getByRole("textbox", { name: /^Follow-up to Q2/ })).toHaveValue("And later?");
     await user.keyboard("{Enter}");
     expect(onReply).toHaveBeenCalledWith(expect.objectContaining({ id: "c" }), "And later?");
+    await user.click(within(older).getByRole("button", { name: "Follow up on Q1" }));
+    expect(within(older).getByRole("textbox", { name: /^Follow-up to Q1/ })).toHaveValue("kept on Q1");
     await user.click(field());
     await user.keyboard("{Escape}");
     expect(onHide).toHaveBeenCalled();
@@ -234,6 +259,8 @@ describe("AskChat (proposal AC3–AC10)", () => {
     const [a, c, d] = within(chat())
       .getAllByRole("listitem")
       .filter((li) => li.dataset.thread);
+    await user.click(within(a!).getByRole("button", { name: "Show Q1" }));
+    await user.click(within(c!).getByRole("button", { name: "Show Q2" }));
     await user.click(within(a!).getByRole("button", { name: "Use as review comment" }));
     expect(onUseAsComment).toHaveBeenCalledWith(expect.objectContaining({ id: "a" }));
     expect(within(c!).queryByRole("button", { name: "Use as review comment" })).toBeNull();
@@ -266,7 +293,8 @@ describe("AskChat (proposal AC3–AC10)", () => {
     const thread = within(chat())
       .getAllByRole("listitem")
       .find((li) => li.dataset.thread === "a")!;
-    expect(thread).toHaveTextContent(/^new/);
+    expect(within(thread).getByText("new", { exact: true })).toBeVisible();
+    expect(within(thread).getByRole("list", { name: "Follow-ups" })).toBeVisible();
   });
 
   it("a 401 offers Sign in again and keeps the text", async () => {
@@ -286,7 +314,7 @@ describe("AskChat (proposal AC3–AC10)", () => {
     expect(field()).toHaveValue("Why?");
   });
 
-  it("a question still waiting says so in one line, with a spinner and the time since it was asked", () => {
+  it("names the question a waiting card is queued behind", () => {
     render(
       <Harness
         questions={[
@@ -298,11 +326,19 @@ describe("AskChat (proposal AC3–AC10)", () => {
     const [a, b] = within(chat())
       .getAllByRole("listitem")
       .filter((li) => li.dataset.thread);
-    expect(within(a!).getByRole("status")).toHaveTextContent(/^Being written$/);
-    expect(a).toHaveTextContent("Being written · asked 2 min ago");
-    expect(a!.querySelector(".animate-spin")).not.toBeNull();
-    expect(within(b!).getByRole("status")).toHaveTextContent(/^Queued behind your earlier question$/);
-    expect(b).toHaveTextContent("Queued behind your earlier question · asked 1 min ago");
+    expect(a).toHaveTextContent("◔ answering");
+    expect(b).toHaveTextContent("◌ waits for Q1");
+  });
+
+  it("shows when a waiting question starts answering while the chat is open", async () => {
+    const pending = q("a", 8, STEP, { state: "pending", answer: null });
+    const { rerender } = render(<Harness questions={[pending]} />);
+    expect(chat()).toHaveTextContent("◌ waiting");
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    rerender(<Harness questions={[{ ...pending, state: "answering" }]} />);
+    await waitFor(() =>
+      expect(within(chat()).getByRole("status")).toHaveTextContent(/◔ answering since \d{2}:\d{2}/),
+    );
   });
 
   it("a follow-up draft is the caller's: it is there again when the chat comes back", async () => {
@@ -311,8 +347,8 @@ describe("AskChat (proposal AC3–AC10)", () => {
     const thread = within(chat())
       .getAllByRole("listitem")
       .find((li) => li.dataset.thread === "c")!;
-    await user.click(within(thread).getByRole("button", { name: "Ask a follow-up" }));
-    expect(within(thread).getByRole("textbox", { name: /^Follow-up in this thread/ })).toHaveValue("kept");
+    await user.click(within(thread).getByRole("button", { name: "Follow up on Q2" }));
+    expect(within(thread).getByRole("textbox", { name: /^Follow-up to Q2/ })).toHaveValue("kept");
     unmount();
   });
 
@@ -331,10 +367,27 @@ describe("AskChat (proposal AC3–AC10)", () => {
     const item = chat().querySelector<HTMLElement>('[data-thread="c"]')!;
     item.getBoundingClientRect = () => ({ top: 900, bottom: 960 }) as DOMRect;
     list.getBoundingClientRect = () => ({ top: 0, bottom: 200 }) as DOMRect;
-    const scrolled = vi.fn();
-    item.scrollIntoView = scrolled;
+    let visible = false;
+    const scrolled = vi.fn(() => {
+      visible = true;
+    });
+    const onSeen = vi.fn();
+    // Use the actual answer's location rather than the card's.
+    const query = item.querySelectorAll.bind(item);
+    vi.spyOn(item, "querySelectorAll").mockImplementation((selector) => {
+      const matches = query(selector);
+      const outcome = matches[0] as HTMLElement | undefined;
+      if (outcome) {
+        outcome.scrollIntoView = scrolled;
+        outcome.getBoundingClientRect = () =>
+          (visible ? { top: 20, bottom: 80, height: 60 } : { top: 900, bottom: 960, height: 60 }) as DOMRect;
+      }
+      return matches;
+    });
     rerender(
       <Harness
+        unread={new Set([pending.id])}
+        onSeen={onSeen}
         questions={[
           ...QUESTIONS.slice(0, 2),
           { ...pending, state: "answered", answer: { answer: "Done.", evidence: [] } },
@@ -344,7 +397,8 @@ describe("AskChat (proposal AC3–AC10)", () => {
     const jump = await within(chat()).findByRole("button", { name: "↓ New answer" });
     await user.click(jump);
     expect(scrolled).toHaveBeenCalled();
-    expect(within(chat()).queryByRole("button", { name: "↓ New answer" })).toBeNull();
+    await waitFor(() => expect(within(chat()).queryByRole("button", { name: "↓ New answer" })).toBeNull());
+    expect(onSeen).toHaveBeenCalledWith([pending.id]);
   });
 
   it("the top-left corner resizes width and height together by dragging; Enter on a separator still resets", () => {

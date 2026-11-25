@@ -3,29 +3,29 @@ import { expect, test } from "./fixtures";
 import { analyze } from "./screens-support";
 import { ANALYSIS_ID } from "./support";
 
-// Light and dark screenshots of every Home, progress and Settings state at 1440 and 3440 (plan §12.5).
+// Light and dark screenshots of every Pull requests, progress and Settings state at 1440 and 3440 (plan §12.5).
 // Runs only with SCREENSHOT_DIR set, e.g. SCREENSHOT_DIR=/data/artifacts/diffpilot/<date>/wp3-screens.
 const dir = process.env.SCREENSHOT_DIR;
 const progress = `/analyses/${ANALYSIS_ID}/progress`;
 
 const STATES: [string, (page: Page) => Promise<unknown>][] = [
-  ["home-signed-out", (p) => p.goto("/review?scenario=signed-out")],
-  ["home-login-not-allowed", (p) => p.goto("/review?scenario=signed-out&login_error=login_not_allowed")],
-  ["home-signed-in", (p) => p.goto("/review")],
+  ["home-signed-out", (p) => p.goto("/prs?scenario=signed-out")],
+  ["home-login-not-allowed", (p) => p.goto("/prs?scenario=signed-out&login_error=login_not_allowed")],
+  ["home-signed-in", (p) => p.goto("/prs")],
   [
     "home-not-a-pr",
-    (p) => p.goto("/review").then(() => analyze(p, "https://github.com/acme/node-client/issues/5")),
+    (p) => p.goto("/prs").then(() => analyze(p, "https://github.com/acme/node-client/issues/5")),
   ],
   [
     "home-private",
-    (p) => p.goto("/review").then(() => analyze(p, "https://github.com/acme/private-repo/pull/1")),
+    (p) => p.goto("/prs").then(() => analyze(p, "https://github.com/acme/private-repo/pull/1")),
   ],
-  ["home-resume", (p) => p.goto("/review?state=resume").then(() => analyze(p))],
-  ["home-head-moved", (p) => p.goto("/review?scenario=head-moved").then(() => analyze(p))],
-  ["home-in-progress", (p) => p.goto("/review?scenario=existing-running").then(() => analyze(p))],
-  ["home-paused", (p) => p.goto("/review?scenario=existing-paused").then(() => analyze(p))],
-  ["home-failed", (p) => p.goto("/review?scenario=existing-failed").then(() => analyze(p))],
-  ["home-no-app", (p) => p.goto("/review?scenario=no-app").then(() => analyze(p))],
+  ["home-resume", (p) => p.goto("/prs?state=resume").then(() => analyze(p))],
+  ["home-head-moved", (p) => p.goto("/prs?scenario=head-moved").then(() => analyze(p))],
+  ["home-in-progress", (p) => p.goto("/prs?scenario=existing-running").then(() => analyze(p))],
+  ["home-paused", (p) => p.goto("/prs?scenario=existing-paused").then(() => analyze(p))],
+  ["home-failed", (p) => p.goto("/prs?scenario=existing-failed").then(() => analyze(p))],
+  ["home-no-app", (p) => p.goto("/prs?scenario=no-app").then(() => analyze(p))],
   [
     "home-cancelled",
     (p) =>

@@ -9,6 +9,7 @@ export type ShortcutAction =
   | "tick_step"
   | "toggle_old_code"
   | "comment"
+  | "github_line"
   | "ask"
   | "next_remark"
   | "help"
@@ -43,6 +44,7 @@ export const SHORTCUTS: { key: string; label: string; action: ShortcutAction; te
     text: "next step with LLM remarks (its first remark flashes)",
   },
   { key: "s", label: "s", action: "switch_view", text: "switch to the Files view at this step's lines" },
+  { key: "g", label: "g", action: "github_line", text: "open the current line on GitHub (new tab)" },
   { key: "?", label: "?", action: "help", text: "this help" },
   { key: "Escape", label: "Esc", action: "close", text: "close" },
 ];
@@ -69,6 +71,7 @@ export const FILES_SHORTCUTS: typeof SHORTCUTS = [
   },
   { key: "a", label: "a", action: "ask", text: "open the Ask chat about the selected lines, hunk or file" },
   { key: "s", label: "s", action: "switch_view", text: "switch to the Flows view at this place" },
+  { key: "g", label: "g", action: "github_line", text: "open the current line on GitHub (new tab)" },
   { key: "?", label: "?", action: "help", text: "this help" },
   {
     key: "Escape",

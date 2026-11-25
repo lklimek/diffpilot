@@ -7,7 +7,7 @@ import type { AnalysisId, AnalysisSummary, AskQuestion, Tour } from "../api/gene
 import { filesHash } from "../components/files/model";
 import { rangeText } from "../components/section/format";
 import type { NotificationSupport } from "../components/settings/NotificationsCard";
-import { commentsPath } from "../screens/pr/paths";
+import { commentsPath, prPath } from "../screens/pr/paths";
 import { findStep } from "../screens/tour/sequence";
 import { usePrDisplayId } from "./tabStatus";
 
@@ -165,12 +165,7 @@ const reviewPath = (id: AnalysisId, fragment?: string) =>
  * The analysis finished or failed between `before` and `after`; a finish after a reopening counts again. Its
  * `finished_at` (the last finish) tells attempts apart in every tab.
  */
-function analysisEnded(
-  before: AnalysisSummary,
-  after: AnalysisSummary,
-  pr: string,
-  failedPath: string,
-): WorkEvent[] {
+function analysisEnded(before: AnalysisSummary, after: AnalysisSummary, pr: string): WorkEvent[] {
   const id = after.id;
   const state = after.state.state;
   if (state !== "finished" && state !== "failed") return [];
@@ -188,7 +183,7 @@ function analysisEnded(
           key,
           title: `Analysis failed — ${pr}`,
           body: "Open diffpilot to see what failed and try again.",
-          path: failedPath,
+          path: prPath(after.pr),
         },
   ];
 }
@@ -217,7 +212,7 @@ export function tourEvents(before: Tour, after: Tour, pr: string): WorkEvent[] {
           },
     ];
   });
-  return [...flows, ...analysisEnded(before.analysis, after.analysis, pr, reviewPath(id))];
+  return [...flows, ...analysisEnded(before.analysis, after.analysis, pr)];
 }
 
 /** The user's own questions answered or failed since `before`; never the question or answer text. */
@@ -232,12 +227,13 @@ export function questionEvents(
     const was = before.find((b) => b.id === q.id)?.state;
     if (q.mine === false || (was !== "pending" && was !== "answering")) return [];
     if (q.state !== "answered" && q.state !== "failed") return [];
-    const found = q.step_id === undefined ? undefined : findStep(tour, q.step_id);
-    const anchor = q.anchor as AskQuestion["anchor"] | undefined;
+    const anchor = q.anchor;
+    const stepId = q.step_id ?? (anchor?.kind === "step" ? anchor.step_id : undefined);
+    const found = stepId === undefined ? undefined : findStep(tour, stepId);
     const flow = anchor?.kind === "flow" ? tour.flows.find((f) => f.id === anchor.flow_id) : undefined;
     // Lines of a file open in the Files view; the rest in Flows.
     const [where, path] = found
-      ? [`flow ${found.flow.position}, step ${found.step.number}`, reviewPath(id, q.step_id)]
+      ? [`flow ${found.flow.position}, step ${found.step.number}`, reviewPath(id, stepId)]
       : anchor?.kind === "flow"
         ? [flow ? `flow ${flow.position}` : "a flow", reviewPath(id, anchor.flow_id)]
         : anchor?.kind === "pr"
@@ -253,7 +249,7 @@ export function questionEvents(
                     ...(anchor.range ? { line: anchor.range.start_line, end: anchor.range.end_line } : {}),
                   })}`,
                 ]
-              : ["a step", reviewPath(id, q.step_id)];
+              : ["a step", reviewPath(id, stepId)];
     return [
       {
         key: `${id}:question:${q.id}:${q.state}`,
@@ -272,7 +268,7 @@ export function questionEvents(
 export function progressEvents(before: AnalysisSummary, after: AnalysisSummary, pr: string): WorkEvent[] {
   if (before.id !== after.id) return [];
   const id = after.id;
-  const ended = analysisEnded(before, after, pr, `${reviewPath(id)}/progress`);
+  const ended = analysisEnded(before, after, pr);
   if (ended.length) return ended;
   if (!before.review_ready && after.review_ready)
     return [

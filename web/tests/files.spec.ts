@@ -98,7 +98,9 @@ test("line numbers select lines (click, Shift+click, drag); the permalink reopen
   const thread = chat.locator("[data-thread]").last();
   await expect(thread).toContainText("Why return Exhausted here?");
   await expect(
-    thread.getByRole("button", { name: /^Files src\/rpc\/client\.rs:104–106 flow 1 · step 7/ }),
+    thread.getByRole("button", {
+      name: "Step 1.7 · client.rs 104–106 · src/rpc/client.rs:104–106 (new code)",
+    }),
   ).toBeVisible();
   // The Inspector keeps a read-only copy of the selection's threads.
   await expect(
@@ -133,7 +135,7 @@ test("the breadcrumb switches views and keeps the place; s goes back", async ({ 
   const crumbs = page.getByRole("navigation", { name: "Breadcrumb" });
   await expect(crumbs.getByRole("link", { name: "diffpilot" })).toHaveAttribute("href", "/");
   await crumbs.getByRole("button", { name: "View: Files" }).click();
-  await crumbs.getByRole("link", { name: "Flows" }).click();
+  await crumbs.getByRole("menuitemradio", { name: "Flows" }).click();
   await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}#f1\\.5$`));
   await expect(page.getByRole("main").locator("h2:not([data-column-title])").first()).toContainText(
     "Retry allowed?",

@@ -106,7 +106,7 @@ test("PR page → Comments → the LLM assessment arrives → a decision stores 
     "Assessment pending or running · 0 of 12 comments assessed",
     "3 (thepastaclaw)",
   ]);
-  await expect(page.getByRole("region", { name: "Review a PR" })).toContainText("No analysis yet.");
+  await expect(page.getByRole("region", { name: "Review the code" })).toContainText("No analysis yet.");
   await checkScreen(page);
 
   await card.getByRole("link", { name: "Open Comments →" }).click();
@@ -122,8 +122,10 @@ test("PR page → Comments → the LLM assessment arrives → a decision stores 
   const queue = page.getByRole("navigation", { name: "Queue" });
   const queueStatus = queue.getByRole("button", { name: /^Status: / });
   await queueStatus.click();
-  await queue.getByRole("menuitemradio", { name: /^Assessing now · 12$/ }).click();
-  await queue.getByRole("button", { name: new RegExp(`^${ITEM} ${ITEM_TITLE}`) }).click();
+  await queue.getByRole("menuitemradio", { name: "Pending or assessing · 12", exact: true }).click();
+  await queue
+    .getByRole("button", { name: new RegExp(`^${ITEM} ${ITEM_TITLE} .*pending or assessing$`) })
+    .click();
   const questionTitle = `${ITEM} · ${ITEM_TITLE}`;
   const pendingQuestion = page.getByRole("article", { name: ITEM, exact: true });
   await expect(pendingQuestion.getByRole("heading", { name: questionTitle, exact: true })).toBeVisible();

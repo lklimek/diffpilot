@@ -1,7 +1,7 @@
 import { type Page } from "@playwright/test";
 import { pauseClock, settle } from "./clock-support";
 import { expect, test } from "./fixtures";
-import { expectAccessible, expectKeyboardTooltips, netChartBar, PR_URL } from "./screens-support";
+import { expectAccessible, expectKeyboardTooltips, netChartBar } from "./screens-support";
 import { ANALYSIS_ID } from "./support";
 
 // My work at `/` (plan §F) against the msw dashboard scenarios
@@ -714,38 +714,26 @@ test.describe("My work (msw)", () => {
   }
 });
 
-test.describe("review start from a PR row (msw)", () => {
-  const row = (page: Page) =>
-    page.getByRole("listitem").filter({ hasText: "feat(rpc): retry with backoff on timeout" });
-
-  test("new: Review opens the review start page with the PR, checked on arrival: Start analysis", async ({
-    page,
-  }) => {
-    await page.goto("/?dashboard=review-new");
-    await row(page)
-      .getByRole("link", { name: /^Review pull request / })
-      .click();
-    await expect(page).toHaveURL(/\/review\?pr=/);
-    await expect(page.getByLabel(/pull request URL/i)).toHaveValue(PR_URL);
-    await expect(page.getByRole("button", { name: "Start analysis", exact: true })).toBeVisible();
-  });
-
-  test("found: the row opens the review of the current head", async ({ page }) => {
-    await page.goto("/?dashboard=review-found");
-    await row(page)
-      .getByRole("link", { name: /^Open review of / })
-      .click();
-    await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}`));
-  });
-
-  test("moved: the review start page says the PR has moved", async ({ page }) => {
-    await page.goto("/?dashboard=review-moved");
-    await row(page)
-      .getByRole("link", { name: /^Open review of / })
-      .click();
-    await expect(page.getByLabel(/pull request URL/i)).toHaveValue(PR_URL);
-    await expect(page.getByText("The PR has moved.")).toBeVisible();
-  });
+test.describe("Review from a My work row (msw)", () => {
+  const path = "/pr/acme/node-client/482";
+  for (const mode of ["new", "found", "moved"] as const) {
+    test(`${mode}: Review opens the PR page before any analysis action`, async ({ page }) => {
+      await page.goto(`/?dashboard=review-${mode}`);
+      const row = page.getByRole("listitem").filter({ hasText: "feat(rpc): retry with backoff on timeout" });
+      await row.getByRole("link", { name: /^Review pull request / }).click();
+      await expect(page).toHaveURL(path);
+      const panel = page.getByRole("region", { name: "Review the code" });
+      if (mode === "found") {
+        await panel.getByRole("link", { name: "Open review", exact: true }).click();
+        await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}`));
+      } else if (mode === "moved") {
+        await expect(panel.getByText("The PR has moved.")).toBeVisible();
+        await expect(panel.getByRole("button", { name: "Start analysis of the new head" })).toBeVisible();
+      } else {
+        await expect(panel.getByRole("button", { name: "Start analysis", exact: true })).toBeVisible();
+      }
+    });
+  }
 });
 
 test("failed mention hide keeps the row and count and shows a retry message", async ({ page }) => {

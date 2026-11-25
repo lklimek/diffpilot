@@ -147,8 +147,7 @@ test("the PR line keeps its title and head commit at 1280 px and everything at 1
     await open(page, "real-tiny");
     const banner = page.getByRole("banner");
     const items = [banner.locator("strong").first(), banner.locator("code").first()];
-    if (width === 1600)
-      items.push(banner.getByText(/^EN$/), banner.getByRole("link", { name: /^Check runs/ }));
+    if (width === 1600) items.push(banner.getByText(/^EN$/), banner.getByRole("link", { name: /^CI:/ }));
     for (const item of items) await expect(item).toBeInViewport();
   }
 });

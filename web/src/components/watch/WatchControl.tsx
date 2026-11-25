@@ -5,7 +5,7 @@ import { clockText } from "../format/time";
 import { MenuItem } from "../menu/MenuButton";
 import { Tooltip } from "../tooltip/Tooltip";
 
-const OFFER = "New comments would be read and assessed automatically; uses LLM tokens.";
+export const WATCH_OFFER = "New comments would be read and assessed automatically; uses LLM tokens.";
 const WATCH_TIP =
   "diffpilot checks this pull request for new comments and reviews, assesses them with its LLM and notifies you. Uses GitHub requests and LLM tokens.";
 
@@ -31,7 +31,7 @@ export function WatchControl(props: WatchControlProps) {
       <MenuItem
         label="Watch comments"
         selection={{ kind: "checkbox", checked: props.watching }}
-        description={OFFER}
+        description={WATCH_OFFER}
         disabledReason={reason}
         onSelect={() => onChange(!props.watching)}
       />
@@ -47,7 +47,7 @@ export function WatchControl(props: WatchControlProps) {
         .filter(Boolean)
         .join(" · ")
     : variant === "state"
-      ? OFFER
+      ? WATCH_OFFER
       : null;
   const summary = note && <span className="text-xs text-muted">{note}</span>;
   return (

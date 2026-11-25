@@ -4,7 +4,7 @@ import { SettingsCard } from "./Card";
 import { FormRow } from "./FormRow";
 import { HelpTip } from "./HelpTip";
 
-const LANGUAGES: Record<LlmLanguage, string> = { en: "English", pl: "Polski", ru: "Русский" };
+import { LANGUAGE_OPTION } from "../language-tag/LanguageTag";
 
 interface LanguageCardProps {
   /** Current language of LLM texts. */
@@ -33,7 +33,7 @@ export function LanguageCard({ language, busy, error, onChange }: LanguageCardPr
           onChange={(event) => onChange(event.target.value as LlmLanguage)}
           className="w-fit rounded-md border border-muted bg-surface px-2 py-1"
         >
-          {Object.entries(LANGUAGES).map(([value, name]) => (
+          {Object.entries(LANGUAGE_OPTION).map(([value, name]) => (
             <option key={value} value={value}>
               {name}
             </option>

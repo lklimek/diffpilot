@@ -31,12 +31,15 @@ const row = (analysis: AnalysisSummary): MyAnalysis => ({
   created_at: analysis.created_at,
 });
 
+export const myAnalyses = (): MyAnalyses =>
+  scenario().myAnalyses?.() ?? { analyses: [row(liveAnalysis()), ...OLDER] };
+
 /** `GET /api/v1/analyses`: the fixture analysis and two older ones, newest first (scenario overrides). */
 export const listMyAnalyses = route("listMyAnalyses", ({ request }) => {
   const limit = Number(new URL(request.url).searchParams.get("limit") ?? 20);
   if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
     return apiError(400, "invalid_request", "The limit must be between 1 and 100.");
   }
-  const body: MyAnalyses = scenario().myAnalyses?.() ?? { analyses: [row(liveAnalysis()), ...OLDER] };
+  const body = myAnalyses();
   return HttpResponse.json({ analyses: body.analyses.slice(0, limit) });
 });

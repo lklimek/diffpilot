@@ -35,7 +35,7 @@ job tokens are known only by that shape: the server keeps just their hash) and a
 | `dashboard-ranking.spec.ts`       | the ranking waits for a running review analysis; a cancelled ranking → Retry ranking                                  |
 | `dashboard-failures.spec.ts`      | GitHub rate limit: failed with "Retry at HH:MM", 429 until then; GitHub down: a plain message; the previous list stays |
 | `dashboard-text.spec.ts`          | hostile TODO and LLM text (markup, markdown and `javascript:` links) renders as text (`dashboard_llm_text_renders_as_text`) |
-| `dashboard-views.spec.ts`         | Excluded disclosure with its reason; a PR waiting only on others; size pills and Sizes shown; kind toggles kept over a reload; Recent reviews |
+| `dashboard-views.spec.ts`         | Excluded disclosure with its reason; a PR waiting only on others; size pills and Sizes shown; kind toggles kept over a reload; Pull requests history with review links and the Watched filter |
 | `dashboard-language.spec.ts`      | Polish chosen: every ranking job's prompt asks for Polish                                                             |
 | `dashboard-settings.spec.ts`      | Dashboard settings validation and save, ranking effort; access token: bearer reads, writes 403, revoked 401; second user |
 | `review-loop.spec.ts`             | PR page "Process PR comments" → Comments → the verify_comments assessment → a decision whose preview is what is stored → Decision log; an execute token claims it (RF3) and reports its fix done (RF4) |

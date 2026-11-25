@@ -6,10 +6,8 @@ import type { TodosState, WorkItem } from "../../../api/generated/types";
 import { rowOpenLabel } from "../common/OpenExternal";
 import type { Filter } from "../filter-chips/filters";
 import { ITEMS, NOW, PROVISIONAL_ITEMS } from "../test-fixtures";
-import { reviewAction } from "../work-item/ItemAction";
+import { reviewHref } from "../../../screens/dashboard/state";
 import { ALL_KINDS, WorkList, type ItemKind } from "./WorkList";
-
-const reviewHref = (item: WorkItem) => `/review?pr=${encodeURIComponent(item.url ?? "")}`;
 
 function List(props: {
   items?: WorkItem[];
@@ -277,9 +275,7 @@ describe("WorkList", () => {
     );
 
     fireEvent.keyDown(document.body, { key: "v" });
-    expect(onNavigate).toHaveBeenCalledWith(
-      `/review?pr=${encodeURIComponent("https://github.com/acme/platform/pull/1203")}`,
-    );
+    expect(onNavigate).toHaveBeenCalledWith("/pr/acme/platform/1203");
 
     fireEvent.keyDown(document.body, { key: "g" });
     expect(open).toHaveBeenCalledWith(
@@ -303,17 +299,13 @@ describe("WorkList", () => {
     expect(onHelp).not.toHaveBeenCalled();
   });
 
-  it("links a PR to its review: Review without an analysis, Open when the head moved", () => {
+  it("links a PR to its main page with or without an analysis", () => {
     render(<List items={PROVISIONAL_ITEMS} />);
     const plain = document.querySelector('[data-item="acme~platform~pr~1203"] a[data-review-link]');
     expect(plain).toHaveTextContent("Review");
     const moved = document.querySelector('[data-item="acme~node-client~pr~482"] a[data-review-link]');
-    expect(moved).toHaveTextContent("Open");
-    expect(moved).not.toHaveTextContent("review");
-    expect(moved).toHaveAttribute(
-      "href",
-      `/review?pr=${encodeURIComponent("https://github.com/acme/node-client/pull/482")}`,
-    );
+    expect(moved).toHaveTextContent("Review");
+    expect(moved).toHaveAttribute("href", "/pr/acme/node-client/482");
   });
 
   it("review links have unique accessible names that start with the visible label", () => {
@@ -327,25 +319,15 @@ describe("WorkList", () => {
       expect(name).toMatch(/#\d+ /);
     }
     expect(new Set(names).size).toBe(names.length);
-    expect(screen.getByRole("link", { name: /^Open review of #482 / })).toBeVisible();
+    expect(screen.getByRole("link", { name: /^Review pull request #482 / })).toBeVisible();
     expect(screen.getByRole("link", { name: /^Review pull request #1203 / })).toBeVisible();
   });
 
-  it.each([
-    [{ head_moved: false, has_my_state: true }, /ticks and answers are kept/, true],
-    [{ head_moved: false, has_my_state: false }, /^Opens your review\./, false],
-    [{ head_moved: true, has_my_state: true }, /^The PR moved\./, false],
-  ])("every Open link says it starts nothing (%j)", (review, extra, kept) => {
-    const item = PROVISIONAL_ITEMS.find((i) => i.kind === "pr" && i.review);
-    expect(item).toBeDefined();
-    const { tip, label } = reviewAction({
-      ...item!,
-      review: { ...item!.review!, ...review, analysed_head: "0123456789abcdef" },
-    });
-    expect(label).toBe("Open");
-    expect(tip).toMatch(/starts nothing\./i);
-    expect(tip).toMatch(extra);
-    expect(tip.includes("ticks and answers are kept")).toBe(kept);
+  it("the Review tooltip tells the reader where analysis can start", () => {
+    render(<List items={PROVISIONAL_ITEMS} />);
+    expect(screen.getByRole("link", { name: /^Review pull request #482 / })).toHaveAccessibleDescription(
+      "Opens the pull request page, where you can start or open its analysis.",
+    );
   });
 
   it("a plain click on a review link navigates in the app; a modified click keeps the browser's", () => {

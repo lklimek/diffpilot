@@ -139,9 +139,9 @@ describe("AnalysisProgress (brief §4.2)", () => {
     show({ state: "finished", total: 5 });
     expect(screen.getByText("5 of 5 flows analysed")).toBeVisible();
     expect(bar()).toHaveAttribute("aria-valuenow", "5");
-    expect(screen.getByRole("link", { name: "Open" })).toHaveAttribute("href", "/analyses/a1");
-    expect(screen.queryByRole("link", { name: /review/i })).toBeNull();
-    expect(screen.getByRole("link", { name: "Open" })).toHaveAccessibleDescription(
+    expect(screen.getByRole("link", { name: "Open review" })).toHaveAttribute("href", "/analyses/a1");
+    expect(screen.queryByRole("link", { name: /^Review$/i })).toBeNull();
+    expect(screen.getByRole("link", { name: "Open review" })).toHaveAccessibleDescription(
       /^Opens the review\. Starts nothing\.$/,
     );
     expect(buttons()).toEqual([]);
@@ -158,9 +158,9 @@ describe("AnalysisProgress (brief §4.2)", () => {
         onRetry={vi.fn()}
       />,
     );
-    expect(screen.getByRole("link", { name: "Open" })).toHaveAttribute("href", "/analyses/a1");
+    expect(screen.getByRole("link", { name: "Open review" })).toHaveAttribute("href", "/analyses/a1");
     expect(screen.queryByRole("link", { name: /resume/i })).toBeNull();
-    expect(screen.getByRole("link", { name: "Open" })).toHaveAccessibleDescription(
+    expect(screen.getByRole("link", { name: "Open review" })).toHaveAccessibleDescription(
       /ticks and answers are kept.*Starts nothing/,
     );
   });
@@ -178,7 +178,7 @@ describe("AnalysisProgress (brief §4.2)", () => {
         onBackground={vi.fn()}
       />,
     );
-    const open = screen.getByRole("link", { name: "Open" });
+    const open = screen.getByRole("link", { name: "Open review" });
     const actions = screen.getByRole("group", { name: "Analysis actions" });
     expect(actions).toContainElement(screen.getByRole("button", { name: "Cancel analysis" }));
     expect(actions).not.toContainElement(open);
@@ -200,9 +200,9 @@ describe("AnalysisProgress (brief §4.2)", () => {
       />,
     );
     const headline = screen.getByText("0 of 2 flows analysed. The review is open.");
-    expect(headline.parentElement).toContainElement(screen.getByRole("link", { name: "Open" }));
+    expect(headline.parentElement).toContainElement(screen.getByRole("link", { name: "Open review" }));
     expect(headline.closest("[aria-live]")).not.toBeNull();
-    expect(screen.getByRole("link", { name: "Open" }).closest("[aria-live]")).toBeNull();
+    expect(screen.getByRole("link", { name: "Open review" }).closest("[aria-live]")).toBeNull();
     const stages = screen.getByRole("list", { name: "Analysis stages" });
     expect(stages.nextElementSibling).toContainElement(
       screen.getByRole("group", { name: "Analysis actions" }),
@@ -696,7 +696,7 @@ it("opens the review as soon as context is ready while flows are still running",
   );
   expect(screen.getByText("1 of 5 flows analysed. The review is open.")).toBeVisible();
   expect(screen.queryByText("Between two jobs: the server starts the next one.")).not.toBeInTheDocument();
-  expect(screen.getByRole("link", { name: "Open" })).toHaveAttribute("href", "/analyses/a1");
+  expect(screen.getByRole("link", { name: "Open review" })).toHaveAttribute("href", "/analyses/a1");
   expect(screen.getByRole("button", { name: "Cancel analysis" })).toBeVisible();
 });
 
@@ -715,7 +715,7 @@ it.each([false, true])(
       />,
     );
     expect(screen.getByText("No flow job is running. Open the review to choose a flow.")).toBeVisible();
-    expect(screen.getByRole("link", { name: "Open" })).toBeVisible();
+    expect(screen.getByRole("link", { name: "Open review" })).toBeVisible();
   },
 );
 
@@ -738,7 +738,7 @@ it("plan ready with background off: not stuck; says so and offers Open and Analy
       "The plan is ready. Nothing is being analysed. Choose a flow to analyse, or analyse all remaining flows.",
     ),
   ).toBeVisible();
-  expect(screen.getByRole("link", { name: "Open" })).toBeVisible();
+  expect(screen.getByRole("link", { name: "Open review" })).toBeVisible();
   // The remaining count is visible next to the button, not only in its tooltip.
   expect(screen.getByText("4 not analysed")).toBeVisible();
   await userEvent.click(screen.getByRole("button", { name: "Analyse all remaining flows" }));

@@ -42,15 +42,19 @@ test("a question, its follow-up and the subject across Flows and Files", async (
   await expect(panel.getByRole("textbox", { name: "Your question" })).toBeFocused();
   // Threads oldest first, the newest still being answered.
   await expect(panel.locator("[data-thread]")).toHaveCount(4);
-  await expect(panel.getByText("2. The client retries.")).toBeVisible();
+  const first = panel.locator("[data-thread]").first();
+  const show = first.getByRole("button", { name: "Show Q1" });
+  await expect(show).toHaveAttribute("aria-expanded", "false");
+  await show.click();
+  await expect(first.getByText("2. The client retries.")).toBeVisible();
   await panel.getByRole("textbox", { name: "Your question" }).fill("Is the backoff capped?");
   await page.keyboard.press("Enter");
   const mine = panel.locator("[data-thread]").last();
   await expect(mine).toContainText("Is the backoff capped?");
   await expect(mine).toContainText("Mock answer", { timeout: 10_000 });
-  await mine.getByRole("button", { name: "Ask a follow-up" }).click();
-  await mine.getByRole("textbox", { name: /^Follow-up in this thread/ }).fill("And the jitter?");
-  await page.keyboard.press("Enter");
+  await mine.getByRole("button", { name: "Follow up on Q5" }).click();
+  await mine.getByRole("textbox", { name: /^Follow-up to Q5/ }).fill("And the jitter?");
+  await mine.getByRole("button", { name: "Send follow-up" }).click();
   await expect(mine.getByRole("list", { name: "Follow-ups" })).toContainText("And the jitter?");
   // The Inspector keeps a read-only copy; Open in chat goes back to the thread.
   const copy = page
@@ -67,7 +71,7 @@ test("a question, its follow-up and the subject across Flows and Files", async (
   await page.goto(
     `/analyses/${ANALYSIS_ID}/files?scenario=ask-thread#lines?file=src/rpc/client.rs&side=head&line=100&end=102`,
   );
-  await expect(chat(page)).toContainText(/About:\s*Files\s*src\/rpc\/client\.rs:100–102/);
+  await expect(chat(page)).toContainText(/About:\s*Step 1\.6 · client\.rs 100–102/);
   await expectTrustWording(page);
   await expectAccessible(page);
   // Esc hides it; the launcher brings it back.

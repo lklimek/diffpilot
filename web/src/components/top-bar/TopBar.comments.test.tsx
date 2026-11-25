@@ -24,13 +24,13 @@ describe("TopBar view menu: Comments (review-workflow-plan §3)", () => {
           filesHref: "/analyses/a/files",
           depsHref: "/analyses/a/deps",
           commentsHref: "/pr/acme/node-client/482/comments",
-          prContextHref: "/analyses/a#pr_context",
+          prPageHref: "/pr/acme/node-client/482",
           onNavigate,
         }}
       />,
     );
     await userEvent.click(screen.getByRole("button", { name: "View: Flows" }));
-    const comments = screen.getByRole("link", { name: "Comments" });
+    const comments = screen.getByRole("menuitemradio", { name: "Comments" });
     expect(comments).toHaveAttribute("href", "/pr/acme/node-client/482/comments");
     await userEvent.click(comments);
     expect(onNavigate).toHaveBeenCalledWith("/pr/acme/node-client/482/comments");
@@ -48,16 +48,18 @@ describe("TopBar view menu: Comments (review-workflow-plan §3)", () => {
           depsHref: null,
           commentsHref: "/pr/acme/node-client/482/comments",
           prPageHref: "/pr/acme/node-client/482",
-          prContextHref: "/pr/acme/node-client/482",
           onNavigate: vi.fn(),
         }}
       />,
     );
     await userEvent.click(screen.getByRole("button", { name: "View: Comments" }));
-    const list = screen.getByRole("list");
-    const flows = within(list).getByRole("link", { name: /Flows/ });
+    const list = screen.getByRole("menu");
+    const flows = within(list).getByRole("menuitemradio", { name: /Flows/ });
     expect(flows).toHaveTextContent("Needs an analysis");
     expect(flows).toHaveAttribute("href", "/pr/acme/node-client/482");
-    expect(within(list).getByRole("link", { name: "Comments" })).toHaveAttribute("aria-current", "page");
+    expect(within(list).getByRole("menuitemradio", { name: "Comments" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
   });
 });

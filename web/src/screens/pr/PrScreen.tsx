@@ -1,36 +1,32 @@
-import { Tooltip } from "../../components/tooltip/Tooltip";
-import { Link, useNavigate, useParams } from "react-router";
+import { Link, useLocation, useNavigate, useParams } from "react-router";
 import { ApiError } from "../../api/client";
 import { useMe } from "../../api/queries";
-import {
-  useCommentItems,
-  useCommentsOverview,
-  usePrPage,
-  useReadComments,
-  useWatchPr,
-} from "../../api/review-loop";
+import { useCommentItems, usePrPage, useReadComments, useWatchPr } from "../../api/review-loop";
 import { useNow } from "../../app/now";
 import { useUserEventNotifications } from "../../app/userEvents";
-import { buttonClass } from "../../components/button/button";
+import { usePrTabSubject } from "../../app/tabStatus";
+import { prGithubUrl } from "../../components/github/links";
+import type { AnalysisId } from "../../api/generated/types";
 import { CollapsibleSection } from "../../components/collapsible/CollapsibleSection";
-import { commentsByNo, needsYouCount } from "../../components/comments/queueStatus";
+import { commentStatus } from "../../components/comments/queueStatus";
 import { ProcessCommentsCard } from "../../components/comments/ProcessCommentsCard";
 import { OpenExternal } from "../../components/dashboard/common/OpenExternal";
 import { StatusPopover } from "../../components/status/StatusPopover";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { ReviewTopBar } from "../shell/ReviewTopBar";
-import { MY_WORK_PATH, REVIEW_START_PATH } from "../shell/paths";
-import { LiveReview } from "./LiveReview";
+import { MY_WORK_PATH } from "../shell/paths";
+import { PrReviewPanel } from "./PrReviewPanel";
 import { commentsPath, prOfParams } from "./paths";
 
 const errorText = (error: unknown) =>
   error instanceof ApiError ? error.message : "Something went wrong. Try again.";
 
-/** V0 PR page (plan §3.1): header, Watch, "Review a PR" (the analysis's progress) and "Process PR comments". */
+/** V0 PR page (plan §3.1): header, "Review the code" and "Process PR comments". */
 export function PrScreen() {
   const pr = prOfParams(useParams());
   const page = usePrPage(pr);
-  const overview = useCommentsOverview(pr, Boolean(page.data));
+  const { progressId } = (useLocation().state ?? {}) as { progressId?: AnalysisId };
+  usePrTabSubject(pr);
   const items = useCommentItems(pr, Boolean(page.data));
   const me = useMe();
   const login = me.data?.user?.login ?? null;
@@ -45,11 +41,13 @@ export function PrScreen() {
   return (
     <div className="flex min-h-screen flex-col">
       <ReviewTopBar
-        pr={
-          data
-            ? { repo: pr.repo, number: pr.number, title: data.title, html_url: data.url, head_sha: data.head }
-            : undefined
-        }
+        pr={{
+          repo: pr.repo,
+          number: pr.number,
+          title: data?.title ?? "",
+          html_url: prGithubUrl(pr),
+          head_sha: data?.head ?? "",
+        }}
         ci={data?.ci ?? undefined}
         checksHref={data ? `${data.url}/checks` : undefined}
         login={login}
@@ -98,36 +96,23 @@ export function PrScreen() {
             {read.isError && <StatusMessage kind="error">{errorText(read.error)}</StatusMessage>}
             {watch.isError && <StatusMessage kind="error">{errorText(watch.error)}</StatusMessage>}
             <div className="grid items-start gap-3.5 lg:grid-cols-2">
-              <div className="rounded-lg border border-border bg-surface px-4 pb-3.5">
-                <CollapsibleSection title="Review a PR" level={2} storageKey={key("review")}>
-                  {data.analysis ? (
-                    <LiveReview analysisId={data.analysis.id} />
-                  ) : (
-                    <>
-                      <p>No analysis yet.</p>
-                      <Tooltip tip="Opens Review a PR with this pull request: check it and start its analysis.">
-                        <a
-                          href={`${REVIEW_START_PATH}?pr=${encodeURIComponent(data.url)}`}
-                          onClick={(event) => {
-                            event.preventDefault();
-                            void navigate(`${REVIEW_START_PATH}?pr=${encodeURIComponent(data.url)}`);
-                          }}
-                          className={buttonClass("primary")}
-                        >
-                          Check and start
-                        </a>
-                      </Tooltip>
-                    </>
-                  )}
-                </CollapsibleSection>
-              </div>
+              <CollapsibleSection
+                title="Review the code"
+                level={2}
+                storageKey={key("review")}
+                className="rounded-lg border border-border bg-surface px-4 pb-3.5"
+              >
+                <PrReviewPanel
+                  key={display}
+                  pr={pr}
+                  language={me.data?.user?.language}
+                  progressId={progressId}
+                  previous={data.analysis}
+                />
+              </CollapsibleSection>
               <ProcessCommentsCard
                 summary={data.comments}
-                needsYou={needsYouCount(
-                  data.comments.counts.undecided,
-                  overview.data?.queue,
-                  commentsByNo(items.data),
-                )}
+                needsYou={items.data?.filter((item) => commentStatus(item) === "needs_you").length}
                 watch={data.watch}
                 watchBusy={watch.isPending}
                 onWatchChange={(on) => watch.mutate(on)}

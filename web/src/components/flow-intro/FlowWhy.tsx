@@ -59,7 +59,7 @@ export function FlowWhy({
             <b className="shrink-0 text-llm">Why this flow</b>
             {!open && (
               <span className="truncate text-muted">
-                — <CodeText text={flow.llm.introduction.problem_before} />
+                — <CodeText text={flow.llm.introduction.problem_before} linkPaths={false} />
               </span>
             )}
           </button>

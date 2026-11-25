@@ -44,20 +44,16 @@ describe("threadsOf", () => {
 });
 
 describe("subjectOf", () => {
-  it("names a step with its view, lines, flow and step", () => {
+  it("names a step with its flow, step and lines", () => {
     expect(subjectOf(step("f1.5"), tour)).toMatchObject({
-      view: "Flows",
-      code: "src/rpc/client.rs:99",
-      text: "flow 1 · step 5 · Retry allowed?",
+      text: "Step 1.5 · client.rs 99",
       what: "this step",
     });
   });
 
   it("names lines with the step they lie in, a whole file, a flow and the whole PR", () => {
     expect(subjectOf(step("f1.6", { start_line: 100, end_line: 102 }), tour)).toMatchObject({
-      view: "Files",
-      code: "src/rpc/client.rs:100–102",
-      text: "flow 1 · step 6",
+      text: "Step 1.6 · client.rs 100–102",
       what: "these lines",
     });
     expect(
@@ -65,21 +61,16 @@ describe("subjectOf", () => {
         { kind: "lines", path: "src/a.rs", side: "base", range: { start_line: 3, end_line: 9 } },
         tour,
       ),
-    ).toMatchObject({ view: "Files", code: "src/a.rs:3–9 (old code)", text: "", what: "these lines" });
+    ).toMatchObject({ text: "a.rs 3–9 (old code)", what: "these lines" });
     expect(subjectOf({ kind: "lines", path: "src/a.rs", side: "head", range: null }, tour)).toMatchObject({
-      view: "Files",
-      code: "src/a.rs",
-      text: "whole file",
+      text: "a.rs",
       what: "this file",
     });
     expect(subjectOf({ kind: "flow", flow_id: "f2" }, tour)).toMatchObject({
-      view: "Flows",
-      code: null,
-      text: "flow 2 · Default timeout 30 s → 5 s",
+      text: "Flow 2",
       what: "this flow",
     });
     expect(subjectOf({ kind: "pr" }, tour)).toMatchObject({
-      view: null,
       text: "Whole PR",
       what: "the whole PR",
     });

@@ -24,17 +24,18 @@ import type {
 } from "./generated/types";
 import { api } from "./client";
 import { reviewStates } from "./review-state";
+import { withoutRetried } from "./questionHistory";
 
 /** The signed-in user and CSRF token. */
 export const useMe = () => useQuery({ queryKey: ["me"], queryFn: api.getMe });
 
 /** The reader's own analyses, the latest per PR, newest first (Recent reviews); disabled while signed out. */
-export const useMyAnalyses = (enabled: boolean) =>
-  useQuery({ queryKey: ["my-analyses"], queryFn: () => api.listMyAnalyses(), enabled });
+export const useMyAnalyses = (enabled: boolean, limit?: number) =>
+  useQuery({ queryKey: ["my-analyses", limit], queryFn: () => api.listMyAnalyses({ limit }), enabled });
 
 /** The review-ready analysis's tour, including pending flow placeholders. */
-export const useTour = (id: AnalysisId) =>
-  useQuery({ queryKey: ["tour", id], queryFn: () => api.getTour(id) });
+export const useTour = (id: AnalysisId, enabled = true) =>
+  useQuery({ queryKey: ["tour", id], queryFn: () => api.getTour(id), enabled });
 
 /** The query of a range's lines, shared by `useLines` and one-off reads of the same cache entry. */
 export const linesQuery = (id: AnalysisId, query: RangeQuery) => ({
@@ -108,26 +109,6 @@ function arrive(client: QueryClient, id: AnalysisId, question: AskQuestion, repl
 }
 
 /**
- * The questions without failed ones asked again: a failed question gives way to a later one with the same text,
- * subject and thread ("Ask again"), unless follow-ups hang on it.
- */
-export function withoutRetried(questions: readonly AskQuestion[]): AskQuestion[] {
-  const key = (q: AskQuestion) => JSON.stringify([q.text, q.anchor, q.parent_id ?? null]);
-  const parents = new Set(questions.flatMap((q) => (q.parent_id ? [q.parent_id] : [])));
-  return questions.filter(
-    (q) =>
-      q.state !== "failed" ||
-      parents.has(q.id) ||
-      !questions.some(
-        (later) =>
-          later.id !== q.id &&
-          key(later) === key(q) &&
-          Date.parse(later.created_at) > Date.parse(q.created_at),
-      ),
-  );
-}
-
-/**
  * Asks in the Ask chat: a new thread about `anchor`, or a follow-up (`parent_id`) that keeps its thread's anchor.
  * The pending question joins the list; its answer arrives on the event stream.
  */
@@ -140,8 +121,8 @@ export const useAskInChat = (id: AnalysisId) => {
 };
 
 /** The PR's files with their hunks and the user's GitHub Viewed marks; read again when the tab regains focus. */
-export const useFiles = (id: AnalysisId) =>
-  useQuery({ queryKey: ["files", id], queryFn: () => api.getFiles(id), refetchOnWindowFocus: true });
+export const useFiles = (id: AnalysisId, enabled = true) =>
+  useQuery({ queryKey: ["files", id], queryFn: () => api.getFiles(id), refetchOnWindowFocus: true, enabled });
 
 /** The Cargo map of the head commit with conversion facts and crate notes (ADR-021). */
 export const useDependencies = (id: AnalysisId) =>
@@ -301,7 +282,9 @@ export const useCommentActions = (id: AnalysisId) => {
 };
 
 /** Resolves a PR URL: the PR now, its latest analysis, head moved, commenting available. */
-export const useResolvePr = () => useMutation({ mutationFn: (url: string) => api.resolvePr({ url }) });
+export const prCheckKey = (url: string) => ["pr-check", url] as const;
+export const useResolvePr = (url: string) =>
+  useQuery({ queryKey: prCheckKey(url), queryFn: () => api.resolvePr({ url }), retry: false });
 
 /** Requests a fresh analysis of a PR at the head the user saw. */
 export const useCreateAnalysis = () => useMutation({ mutationFn: api.createAnalysis });

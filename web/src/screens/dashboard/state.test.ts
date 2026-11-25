@@ -161,20 +161,18 @@ describe("dashboardView: nightly scan notes", () => {
 
 describe("reviewHref (plan §F.1 PR row actions)", () => {
   const nc482 = ITEMS.find((i) => i.id === "NC-482")!;
-  const start = `/review?pr=${encodeURIComponent("https://github.com/acme/node-client/pull/482")}`;
+  const start = "/pr/acme/node-client/482";
 
-  it("head moved since the analysis: the review start page with the PR (it says the PR moved)", () => {
+  it("head moved since the analysis: the PR main page", () => {
     expect(nc482.review?.head_moved).toBe(true);
     expect(reviewHref(nc482)).toBe(start);
   });
 
-  it("analysis of the current head: the review itself", () => {
-    expect(reviewHref({ ...nc482, review: { ...nc482.review!, head_moved: false } })).toBe(
-      `/analyses/${nc482.review!.analysis_id}`,
-    );
+  it("analysis of the current head: the PR main page", () => {
+    expect(reviewHref({ ...nc482, review: { ...nc482.review!, head_moved: false } })).toBe(start);
   });
 
-  it("no analysis: the review start page with the PR", () => {
+  it("no analysis: the PR main page", () => {
     expect(reviewHref({ ...nc482, review: null })).toBe(start);
   });
 });
@@ -204,7 +202,7 @@ describe("watchErrorText (RW1 from a My work row)", () => {
 
   it("the 20-PR limit names the way out; other failures say to try again", () => {
     expect(watchErrorText(new ApiError(409, "watch_limit_reached", "x"))).toBe(
-      "Could not watch this pull request: you watch 20 already. Unwatch one in Watched PRs first.",
+      "Could not watch this pull request: you watch 20 already. Stop watching one under Pull requests first.",
     );
     expect(watchErrorText(new ApiError(503, "unavailable", "GitHub is not reachable."))).toBe(
       "Could not watch this pull request. Try again. GitHub is not reachable.",

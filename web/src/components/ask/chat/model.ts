@@ -1,27 +1,50 @@
 // The Ask chat's threads, subjects and unread answers: plain functions of the questions and the tour.
 import type {
+  Annotation,
   AskAnchor,
   AskQuestion,
   CommentItemId,
+  LineRange,
   LineSide,
   QuestionId,
   Step,
   Tour,
 } from "../../../api/generated/types";
-import { rangeText } from "../../section/format";
+import { askOrder, type HistoryQuestion } from "../../../api/questionHistory";
+import { annotationName, rangeText } from "../../section/format";
+
+/** The opening line of a draft from a remark; the capture names its lines. */
+export const remarkQuote = /^> LLM remark \([^\n]+?, (lines? \d+(?:–\d+)?)\):[^\n]*(?:\n{1,2}|$)/;
+
+const linesLabel = (range: LineRange) =>
+  `${range.start_line === range.end_line ? "line" : "lines"} ${rangeText(range)}`;
+
+/** The quoted lines label when it matches the question's selected anchor. */
+export function remarkLines(text: string, anchor: AskAnchor): string | undefined {
+  const range = anchor.kind === "step" ? anchor.lines : anchor.kind === "lines" ? anchor.range : null;
+  const quoted = text.match(remarkQuote)?.[1];
+  return range && quoted === linesLabel(range) ? quoted : undefined;
+}
+
+/** The quoted context uses the existing plain-text question contract. */
+export function quoteRemark(remark: Annotation): string {
+  const lines = linesLabel(remark.range);
+  const title = (remark.text || remark.is || remark.was).replace(/\s+/g, " ").trim();
+  return `> LLM remark (${annotationName(remark)}, ${lines}): ${title}\n\n`;
+}
 
 /** A first question with its follow-ups, oldest first. */
 export interface ChatThread {
-  root: AskQuestion;
+  root: HistoryQuestion;
   followUps: AskQuestion[];
 }
 
 const asked = (a: AskQuestion, b: AskQuestion) => Date.parse(a.created_at) - Date.parse(b.created_at);
 
 /** Threads oldest first; a follow-up of a follow-up joins the thread of its first question (one level). */
-export function threadsOf(questions: readonly AskQuestion[]): ChatThread[] {
+export function threadsOf(questions: readonly HistoryQuestion[]): ChatThread[] {
   const byId = new Map(questions.map((q) => [q.id, q]));
-  const rootOf = (q: AskQuestion): AskQuestion => {
+  const rootOf = (q: HistoryQuestion): HistoryQuestion => {
     const seen = new Set<QuestionId>();
     let at = q;
     while (at.parent_id && byId.has(at.parent_id) && !seen.has(at.id)) {
@@ -37,16 +60,15 @@ export function threadsOf(questions: readonly AskQuestion[]): ChatThread[] {
     if (root.id !== q.id) thread.followUps.push(q);
     threads.set(root.id, thread);
   }
-  return [...threads.values()].sort((a, b) => asked(a.root, b.root));
+  return [...threads.values()].sort((a, b) => askOrder(a.root.firstAsk ?? a.root, b.root.firstAsk ?? b.root));
 }
 
 /** How a subject is named: in a chip, the field's placeholder and the Ask buttons. */
 export interface Subject {
-  /** The view its chip opens; null for the whole PR. */
-  view: "Flows" | "Files" | "Comments" | null;
-  /** `path:lines` (or the path), drawn as code; null without lines. */
-  code: string | null;
+  /** Compact chip label. */
   text: string;
+  /** Full path, range and side for the tooltip and accessible name. */
+  fileLabel?: string;
   /** "this step", "these lines", "this file", "this flow", "the whole PR". */
   what: string;
   /** Tooltip of its chip. */
@@ -56,7 +78,10 @@ export interface Subject {
 const findStep = (tour: Tour, id: string): Step | undefined =>
   tour.flows.flatMap((f) => f.steps).find((s) => s.id === id);
 const flowOfStep = (tour: Tour, id: string) => tour.flows.find((f) => f.steps.some((s) => s.id === id));
+const basename = (path: string) => path.split("/").at(-1) ?? path;
 const old = (side: LineSide) => (side === "base" ? " (old code)" : "");
+const fileLabel = (path: string, side: LineSide, range: LineRange | null): string =>
+  `${path}${range ? `:${rangeText(range)}` : ""} (${side === "base" ? "old" : "new"} code)`;
 
 /** The per-PR numbers (`C<no>`) of the review-comment items the chat knows. */
 export type ItemNumbers = ReadonlyMap<CommentItemId, number>;
@@ -68,8 +93,6 @@ export function commentSubject(item: CommentItemId, numbers: ItemNumbers = NO_NU
   const no = numbers.get(item);
   const name = no === undefined ? "a review comment" : `review comment C${no}`;
   return {
-    view: "Comments",
-    code: null,
     text: no === undefined ? "Review comment" : `Comment C${no}`,
     what: "this comment",
     tip: `Asked about ${name}. Opens it in Comments; the chat stays open.`,
@@ -78,8 +101,6 @@ export function commentSubject(item: CommentItemId, numbers: ItemNumbers = NO_NU
 
 /** The whole pull request as a subject. */
 export const WHOLE_PR: Subject = {
-  view: null,
-  code: null,
   text: "Whole PR",
   what: "the whole PR",
   tip: "Asked about the whole pull request, not one place. Opens the PR context; the chat stays open.",
@@ -89,49 +110,37 @@ export const WHOLE_PR: Subject = {
 export function subjectOf(anchor: AskAnchor, tour: Tour, numbers: ItemNumbers = NO_NUMBERS): Subject {
   switch (anchor.kind) {
     case "step": {
-      const step = findStep(tour, anchor.step_id);
       const flow = flowOfStep(tour, anchor.step_id);
-      const where =
-        step && flow ? `flow ${flow.position} · step ${step.number}` : "a step not in these flows";
-      if (anchor.lines) {
-        return {
-          view: "Files",
-          code: step ? `${step.facts.file}:${rangeText(anchor.lines)}${old(step.facts.side)}` : null,
-          text: where,
-          what: "these lines",
-          tip: "Asked about these lines. Opens them in the Files view; the chat stays open.",
-        };
-      }
+      const step = flow?.steps.find((s) => s.id === anchor.step_id);
+      const range = anchor.lines ?? step?.facts.range;
+      const text =
+        flow && step && range
+          ? `Step ${flow.position}.${step.number} · ${basename(step.facts.file)} ${rangeText(range)}${old(step.facts.side)}`
+          : "A step not in these flows";
       return {
-        view: "Flows",
-        code: step ? `${step.facts.file}:${rangeText(step.facts.range)}${old(step.facts.side)}` : null,
-        text: step ? `${where} · ${step.llm.title}` : where,
-        what: "this step",
-        tip: "Asked on this step. Opens it in the Flows view; the chat stays open.",
+        text,
+        fileLabel: step && range ? fileLabel(step.facts.file, step.facts.side, range) : undefined,
+        what: anchor.lines ? "these lines" : "this step",
+        tip: anchor.lines
+          ? "Asked about these lines. Opens them in the Files view; the chat stays open."
+          : "Asked on this step. Opens it in the Flows view; the chat stays open.",
       };
     }
-    case "lines":
-      return anchor.range
-        ? {
-            view: "Files",
-            code: `${anchor.path}:${rangeText(anchor.range)}${old(anchor.side)}`,
-            text: "",
-            what: "these lines",
-            tip: "Asked about these lines. Opens them in the Files view; the chat stays open.",
-          }
-        : {
-            view: "Files",
-            code: `${anchor.path}${old(anchor.side)}`,
-            text: "whole file",
-            what: "this file",
-            tip: "Asked about this file. Opens it in the Files view; the chat stays open.",
-          };
+    case "lines": {
+      const { path, side, range } = anchor;
+      return {
+        text: `${basename(path)}${range ? ` ${rangeText(range)}` : ""}${old(side)}`,
+        fileLabel: fileLabel(path, side, range),
+        what: range ? "these lines" : "this file",
+        tip: range
+          ? "Asked about these lines. Opens them in the Files view; the chat stays open."
+          : "Asked about this file. Opens it in the Files view; the chat stays open.",
+      };
+    }
     case "flow": {
       const flow = tour.flows.find((f) => f.id === anchor.flow_id);
       return {
-        view: "Flows",
-        code: null,
-        text: flow ? `flow ${flow.position} · ${flow.llm.title}` : "a flow not in this analysis",
+        text: flow ? `Flow ${flow.position}` : "A flow not in this analysis",
         what: "this flow",
         tip: "Asked about this flow as a whole. Opens its introduction; the chat stays open.",
       };
@@ -191,7 +200,11 @@ function about(anchor: AskAnchor, place: AskAnchor, tour: Tour): boolean {
 }
 
 /** The threads about a place (its Inspector copy), oldest first. */
-export function questionsAt(questions: readonly AskQuestion[], place: AskAnchor, tour: Tour): ChatThread[] {
+export function questionsAt(
+  questions: readonly HistoryQuestion[],
+  place: AskAnchor,
+  tour: Tour,
+): ChatThread[] {
   return threadsOf(questions).filter((t) => about(t.root.anchor, place, tour));
 }
 

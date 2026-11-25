@@ -4,8 +4,8 @@ import { ApiError } from "../../api/client";
 import type { DashboardSummary, RefreshStatus, SnapshotMeta, WorkItem } from "../../api/generated/types";
 import type { DashboardItem } from "../../api/provisional/dashboard";
 import type { RankingNotice } from "../../components/dashboard/refresh-control/RefreshControl";
-import { commentsPath } from "../pr/paths";
-import { REVIEW_START_PATH } from "../shell/paths";
+import { commentsPath, prPath } from "../pr/paths";
+import { PRS_PATH } from "../shell/paths";
 
 /** A schedule or limit note, shown as a banner. */
 export interface DashboardNote {
@@ -136,13 +136,10 @@ export function withLegacyDailyCap(item: DashboardItem): DashboardItem {
 }
 
 /**
- * Where a pull request row's review action goes (plan §F.1): its review when an analysis of the current head
- * exists, else the review start page with the PR (it says when the PR moved since an analysis).
+ * The review action of a My work row opens the PR main page.
  */
 export function reviewHref(item: WorkItem): string {
-  const review = item.review;
-  if (review && !review.head_moved) return `/analyses/${review.analysis_id}`;
-  return `${REVIEW_START_PATH}?pr=${encodeURIComponent(item.url ?? "")}`;
+  return item.repo && item.number !== null ? prPath({ repo: item.repo, number: item.number }) : PRS_PATH;
 }
 
 /** In-app href of a pull request row's Comments (owner 2026-11-23). */
@@ -165,7 +162,7 @@ export function watchErrorText(error: unknown, watching = true): string {
   if (error instanceof ApiError && error.code === "private_repository")
     return "Could not watch this pull request: its repository is private, and diffpilot reads public repositories only.";
   if (error instanceof ApiError && error.code === "watch_limit_reached")
-    return "Could not watch this pull request: you watch 20 already. Unwatch one in Watched PRs first.";
+    return "Could not watch this pull request: you watch 20 already. Stop watching one under Pull requests first.";
   const reason = error instanceof ApiError ? error.message : "Something went wrong.";
   return `Could not watch this pull request. Try again. ${reason}`;
 }

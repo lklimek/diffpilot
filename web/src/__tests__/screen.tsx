@@ -1,4 +1,5 @@
 import { resetAssessmentSettings } from "../mocks/handlers/assessment-settings";
+import { resetPrHistory } from "../mocks/handlers/pr-history";
 import { RouterProvider } from "react-router/dom";
 // Renders the app's routes in memory against the msw handlers of src/mocks (screen tests).
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -33,6 +34,7 @@ export function startMockServer() {
     setScenario(null);
     setMockLanguage(null);
     resetLive();
+    resetPrHistory();
     resetLazyFlows();
     resetSignOut();
     resetStore();

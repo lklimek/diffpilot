@@ -1253,6 +1253,18 @@ async fn a_new_prompt_version_alone_reassesses_nothing() {
     );
     let first = live_pass(&f.state).await;
     assert_eq!(first.user_id.as_deref(), Some("u1"));
+    let runs = f
+        .state
+        .db
+        .assessments()
+        .runs(
+            DEFAULT_TENANT,
+            &contracts::ids::UserId("u1".into()),
+            first.id,
+        )
+        .await
+        .expect("assessment runs");
+    assert_eq!(runs[0].version, VERIFY_PROMPT_VERSION.to_string());
     assert!(ingest_all(&f.state, &first, None).await);
     let stored = f
         .state
@@ -2331,20 +2343,46 @@ fn prompt_fences_untrusted_text_as_data() {
     assert!(polish.contains("Write every text value in Polish (polski)"));
 }
 
+#[test]
+fn verify_comments_prompt_explains_translated_technical_terms() {
+    let rule = "At the first use of each translated technical term in each text, put the original English term in parentheses immediately after it.";
+    let input = golden_input();
+    for language in [LlmLanguage::En, LlmLanguage::Pl, LlmLanguage::Ru] {
+        let prompt = prompt::render(&input, &summary(HEAD), language).expect("prompt");
+        let (instructions, _) = prompt
+            .split_once(agent::verify_comments::DATA_BLOCK_OPEN)
+            .expect("data block");
+        assert!(instructions.contains("`reply_drafts`, which are always in English"));
+        assert_eq!(
+            instructions.contains(rule),
+            language != LlmLanguage::En,
+            "{language:?}"
+        );
+        assert_eq!(
+            instructions.contains(
+                "Never add English terms that dismiss risk, imply confirmation, quantify certainty, or otherwise violate the wording rules."
+            ),
+            language != LlmLanguage::En,
+            "{language:?}"
+        );
+    }
+}
+
 fn golden_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../prompts/golden")
 }
 
-/// SHA-256 hex of the template and the output schema: what [`VERIFY_PROMPT_VERSION`] pins.
+/// SHA-256 hex of the template, shared PL/RU wording rule and output schema.
 fn prompt_hash(template: &str) -> String {
     let schema = agent::output_schema(JobKind::VerifyComments).expect("schema");
     let mut hash = Sha256::new();
     hash.update(template);
+    hash.update(prompts::translated_technical_terms(LlmLanguage::Pl).expect("language rule"));
     hash.update(schema.to_string());
     hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// The template with the output schema is recorded under the current [`VERIFY_PROMPT_VERSION`]
+/// The prompt hash is recorded under the current [`VERIFY_PROMPT_VERSION`]
 /// (`RECORD_PROMPT_HASH=1` records it; a semantic change bumps the version, which each new assessment records and
 /// which re-assesses nothing by itself), and the rendered prompt is pinned (`UPDATE_GOLDEN=1` rewrites it).
 #[test]
@@ -2361,7 +2399,7 @@ fn golden_verify_comments_prompt() {
     if !recorded {
         assert!(
             std::env::var_os("RECORD_PROMPT_HASH").is_some(),
-            "the verify_comments template or output schema changed (hash {hash}) and is not recorded under \
+            "the verify_comments prompt or output schema changed (hash {hash}) and is not recorded under \
              VERIFY_PROMPT_VERSION {VERIFY_PROMPT_VERSION} in prompts/golden/verify_comments.versions. A semantic \
              change bumps VERIFY_PROMPT_VERSION; then (or for a wording-only edit) run with RECORD_PROMPT_HASH=1."
         );
@@ -2379,6 +2417,9 @@ fn golden_verify_comments_prompt() {
         golden, prompt,
         "prompts/golden/verify_comments.txt differs (UPDATE_GOLDEN=1)"
     );
+    crate::prompts::check_localized_golden(&path, &prompt, |language| {
+        prompt::render(&golden_input(), &summary(HEAD), language).expect("prompt")
+    });
 }
 
 /// Plan §2.8: an automatic request the spacing or the daily cap holds back reads no code (the detection lock is

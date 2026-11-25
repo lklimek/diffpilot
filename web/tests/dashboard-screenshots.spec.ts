@@ -88,12 +88,11 @@ for (const [width, height] of [
       await expect(page.getByRole("region", { name: "Pull requests of Mon 16 Nov" })).toBeVisible();
       await shoot(page, `dashboard-normal-bar-list-${colorScheme}-${width}`);
       if (colorScheme === "light") {
-        // Where the NC-482 row leads: review start at /review (new, moved; checked on arrival) or the review
-        // itself (found).
+        // The NC-482 row leads to its PR page in every state.
         for (const [scenario, link] of [
           ["review-new", /^Review pull request /],
-          ["review-moved", /^Open review of /],
-          ["review-found", /^Open review of /],
+          ["review-moved", /^Review pull request /],
+          ["review-found", /^Review pull request /],
         ] as const) {
           await openDashboard(page, scenario);
           await page
@@ -101,8 +100,7 @@ for (const [width, height] of [
             .filter({ hasText: NC482 })
             .getByRole("link", { name: link })
             .click();
-          if (scenario !== "review-found")
-            await expect(page.getByRole("region", { name: "Pull request check" })).toBeVisible();
+          await expect(page.getByRole("region", { name: "Review the code" })).toBeVisible();
           await page.waitForTimeout(800);
           await shoot(page, `review-start-${scenario.slice("review-".length)}-${colorScheme}-${width}`);
         }
