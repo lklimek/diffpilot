@@ -3,7 +3,7 @@
     "method": "POST",
     "url": "https://api.github.com/graphql",
     "body": {
-      "query": "query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){pullRequest(number:$pr){comments(first:100,after:$after){totalCount pageInfo{hasNextPage endCursor} nodes{id databaseId author{login __typename} body createdAt lastEditedAt url}}}}}",
+      "query": "query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){pullRequest(number:$pr){comments(first:100,after:$after){totalCount pageInfo{hasNextPage endCursor} nodes{id databaseId author{login __typename ... on User{databaseId} ... on Bot{databaseId}} body createdAt lastEditedAt url}}}}}",
       "variables": {
         "o": "acme",
         "n": "node-client",
