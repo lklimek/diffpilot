@@ -2595,24 +2595,22 @@ async fn github_webhook_schema_enforces_delivery_and_repository_keys() {
     sqlx::raw_sql(
         "INSERT INTO github_deliveries (delivery_id, body_sha256, event, action, changes, state, received_at)
          VALUES ('00000000-0000-4000-8000-000000000001', printf('%064x',1), 'ping', NULL, '[]', 'pending', 't'),
-                ('00000000-0000-4000-8000-000000000002', printf('%064x',1), 'pull_request', 'opened', '[]', 'not_allowed', 't');
-         UPDATE github_deliveries SET error = 'dispatch_failed' WHERE event = 'pull_request';
+                ('00000000-0000-4000-8000-000000000002', printf('%064x',1), 'pull_request', 'opened', '[]', 'not_allowed', 't'),
+                ('00000000-0000-4000-8000-000000000003', printf('%064x',1), 'check_run', 'created', '[]', 'ignored', 't'),
+                ('00000000-0000-4000-8000-000000000004', printf('%064x',1), 'pull_request', 'locked', '[]', 'ignored', 't'),
+                ('00000000-0000-4000-8000-000000000005', printf('%064x',1), 'github_app_authorization', NULL, '[]', 'ignored', 't');
+         UPDATE github_deliveries SET error = 'upstream_rate_limit' WHERE action = 'opened';
          INSERT INTO app_repositories (owner, name, repository_id, installation_id, checked_at)
          VALUES ('Acme', 'Project', 42, 1, 't');
          UPDATE app_repositories SET name = 'Renamed' WHERE repository_id = 42;",
     ).execute(&db.pool).await.unwrap();
     for invalid in [
-        "UPDATE github_deliveries SET delivery_id = '00000000-0000-4000-8000-000000000001' WHERE event = 'pull_request'",
+        "UPDATE github_deliveries SET delivery_id = '00000000-0000-4000-8000-000000000001' WHERE action = 'opened'",
         "UPDATE github_deliveries SET delivery_id = '0000000-00000-4000-8000-000000000001'",
         "UPDATE github_deliveries SET delivery_id = '00000000-0000-4000-8000-00000000000g'",
         "UPDATE github_deliveries SET body_sha256 = printf('%063x',1)",
         "UPDATE github_deliveries SET body_sha256 = printf('%063x',1) || 'g'",
         "UPDATE github_deliveries SET body_sha256 = printf('%064x',1) || char(0) || 'hidden'",
-        "UPDATE github_deliveries SET event = 'push'",
-        "UPDATE github_deliveries SET action = 'opened' WHERE event = 'ping'",
-        "UPDATE github_deliveries SET action = 'rerequested' WHERE event = 'pull_request'",
-        "UPDATE github_deliveries SET error = 'upstream said bad request'",
-        "UPDATE github_deliveries SET error = 'unregistered_code'",
         "UPDATE github_deliveries SET state = 'unknown'",
         "UPDATE github_deliveries SET changes = 'invalid'",
         "UPDATE github_deliveries SET changes = '{}'",
@@ -2623,6 +2621,35 @@ async fn github_webhook_schema_enforces_delivery_and_repository_keys() {
             sqlx::query(invalid).execute(&db.pool).await.is_err(),
             "{invalid}"
         );
+    }
+    let max_length = "a_".repeat(32);
+    let too_long = "a".repeat(65);
+    for (column, update) in [
+        ("event", "UPDATE github_deliveries SET event = ?"),
+        ("action", "UPDATE github_deliveries SET action = ?"),
+        ("error", "UPDATE github_deliveries SET error = ?"),
+    ] {
+        sqlx::query(update)
+            .bind(&max_length)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        for invalid in [
+            "",
+            "Uppercase",
+            "with space",
+            "x\0hidden",
+            too_long.as_str(),
+        ] {
+            assert!(
+                sqlx::query(update)
+                    .bind(invalid)
+                    .execute(&db.pool)
+                    .await
+                    .is_err(),
+                "accepted invalid {column} value {invalid:?}"
+            );
+        }
     }
     let indexing: Vec<String> = sqlx::query_scalar(
         "SELECT group_concat(name, ',') FROM (
