@@ -7,9 +7,8 @@ import {
 import { CodexAccountCard } from "../../components/settings/CodexAccountCard";
 import { AssessmentSettingsCard } from "../../components/settings/AssessmentSettingsCard";
 import { MemcanStatusLine } from "../../components/section/MemcanStatusLine";
-import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { Link, useBlocker, useNavigate, useSearchParams } from "react-router";
+import { Link, useBlocker, useLocation, useSearchParams } from "react-router";
 import { LlmSelectionCard } from "../../components/settings/LlmSelectionCard";
 import { ApiError } from "../../api/client";
 import { routes } from "../../api/generated/routes";
@@ -27,7 +26,6 @@ import {
   useSetLanguage,
   useSettings,
   useSetLlm,
-  useSignOut,
 } from "../../api/queries";
 import { AccessTokensCard } from "../../components/dashboard/settings-access-tokens/AccessTokensCard";
 import { DashboardSettingsCard } from "../../components/dashboard/settings-dashboard/DashboardSettingsCard";
@@ -43,23 +41,17 @@ import { LlmStatusCard } from "../../components/settings/LlmStatusCard";
 import { SettingsCard } from "../../components/settings/Card";
 import { HelpTip } from "../../components/settings/HelpTip";
 import { Tooltip } from "../../components/tooltip/Tooltip";
-import { SETTINGS_HELP_PATH } from "../shell/paths";
+import { LLM_USAGE_SECTION, SETTINGS_HELP_PATH } from "../shell/paths";
 import { RepoList } from "../../components/settings/RepoList";
 import { RepoSettingsCard } from "../../components/settings/RepoSettingsCard";
 import { SignInCard } from "../../components/sign-in/SignInCard";
 import { StatusMessage } from "../../components/status/StatusMessage";
-import { clearCommentDrafts } from "../tour/drafts";
+import { useShellSlots } from "../shell/ShellRoute";
 import { useNotifySetting } from "../../app/workNotifications";
 import { NotificationChannels } from "./NotificationChannels";
 
 const errorText = (error: unknown) =>
   error instanceof ApiError ? error.message : "Something went wrong. Reload the page.";
-
-/** Why a sign-out failed; Sign out everywhere on an ended session revoked nothing and says how to retry. */
-const signOutError = (error: unknown, everywhere: boolean) =>
-  everywhere && error instanceof ApiError && error.status === 401
-    ? "your session had already ended, so nothing was revoked. Other sessions and personal access tokens still work; sign in and choose Sign out everywhere again."
-    : errorText(error);
 
 /** Dashboard settings (plan §F.6) and access tokens (ADR-019), each in its own card. */
 function DashboardSection({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => void }) {
@@ -201,6 +193,12 @@ function SettingsContent({
   const setJudgeEffort = useSetJudgeEffort();
   const setAskEffort = useSetAskEffort();
   const settings = useSettings();
+  const { hash } = useLocation();
+  const llmUsage = useRef<HTMLDivElement>(null);
+  const loaded = Boolean(settings.data);
+  useEffect(() => {
+    if (loaded && hash === `#${LLM_USAGE_SECTION}`) llmUsage.current?.scrollIntoView?.();
+  }, [hash, loaded]);
   const setLanguage = useSetLanguage();
   const setControlledOwners = useSetControlledOwners();
   const notify = useNotifySetting();
@@ -239,18 +237,20 @@ function SettingsContent({
               />
             </LlmSelectionCard>
           )}
-          <CodexAccountCard
-            status={codex.status.data}
-            challenge={codex.challenge}
-            now={now}
-            busy={codex.link.isPending || codex.unlink.isPending}
-            error={codexError ? errorText(codexError) : undefined}
-            onLink={() => {
-              codex.unlink.reset();
-              codex.link.mutate();
-            }}
-            onUnlink={() => codex.unlink.mutate()}
-          />
+          <div id={LLM_USAGE_SECTION} ref={llmUsage} className="scroll-mt-14">
+            <CodexAccountCard
+              status={codex.status.data}
+              challenge={codex.challenge}
+              now={now}
+              busy={codex.link.isPending || codex.unlink.isPending}
+              error={codexError ? errorText(codexError) : undefined}
+              onLink={() => {
+                codex.unlink.reset();
+                codex.link.mutate();
+              }}
+              onUnlink={() => codex.unlink.mutate()}
+            />
+          </div>
           {assessment.data ? (
             <AssessmentSettingsCard
               key={assessmentSaveCount}
@@ -319,15 +319,12 @@ function SettingsContent({
 export function SettingsScreen() {
   const me = useMe();
   const user = me.data?.user ?? null;
-  const signOut = useSignOut();
-  const client = useQueryClient();
-  const navigate = useNavigate();
+  const { signOut } = useShellSlots();
   // Unsaved dashboard settings guard leaving Settings (another screen or unloading the page), not sign-out.
   const [dirty, setDirty] = useState(false);
-  const signingOut = useRef(false);
   const blocker = useBlocker(
     ({ currentLocation, nextLocation }) =>
-      dirty && !signingOut.current && currentLocation.pathname !== nextLocation.pathname,
+      dirty && !signOut.leaving.current && currentLocation.pathname !== nextLocation.pathname,
   );
   useEffect(() => {
     if (!dirty) return;
@@ -335,21 +332,6 @@ export function SettingsScreen() {
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
-  // Sign-out clears this login's local drafts and every cached answer, then shows the signed-out Home.
-  const signedOut = (login: string) => {
-    signingOut.current = true;
-    clearCommentDrafts(login);
-    client.clear();
-    void navigate("/", { replace: true });
-  };
-  const leave = (login: string, everywhere: boolean) =>
-    signOut.mutate(everywhere, {
-      onSuccess: () => signedOut(login),
-      // 401: the session had already ended. Sign out counts as done; Sign out everywhere revoked nothing.
-      onError: (error) => {
-        if (!everywhere && error instanceof ApiError && error.status === 401) signedOut(login);
-      },
-    });
   return (
     <div className="grid content-start gap-4">
       <div className="flex flex-wrap items-baseline gap-4">
@@ -376,10 +358,10 @@ export function SettingsScreen() {
         <div className="max-w-[900px]">
           <AccountCard
             login={user.login}
-            busy={signOut.isPending}
-            error={signOut.isError ? signOutError(signOut.error, signOut.variables === true) : undefined}
-            onSignOut={() => leave(user.login, false)}
-            onSignOutEverywhere={() => leave(user.login, true)}
+            busy={signOut.pending}
+            error={signOut.error}
+            onSignOut={() => signOut.leave(false)}
+            onSignOutEverywhere={() => signOut.leave(true)}
           />
         </div>
       )}

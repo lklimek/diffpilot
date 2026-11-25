@@ -28,7 +28,7 @@ import { autoPassText, PrStatusStrip } from "../../components/comments/PrHeader"
 import { clockText } from "../../components/format/time";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { Tooltip } from "../../components/tooltip/Tooltip";
-import { TopBar } from "../../components/top-bar/TopBar";
+import { ReviewTopBar } from "../shell/ReviewTopBar";
 import { PrAskChatProvider } from "../review/askChat";
 import { commentsPath, prOfParams, prPath } from "../pr/paths";
 
@@ -154,7 +154,7 @@ export function CommentsRoute() {
 
   return (
     <div className="flex min-h-screen flex-col">
-      <TopBar
+      <ReviewTopBar
         pr={
           o
             ? { repo: pr.repo, number: pr.number, title: o.title, html_url: o.url, head_sha: o.head }

@@ -17,7 +17,7 @@ describe("TopBar view menu: Comments (review-workflow-plan §3)", () => {
     render(
       <TopBar
         pr={PR}
-        login="alice"
+
         view={{
           current: "flows",
           flowsHref: "/analyses/a",
@@ -40,7 +40,7 @@ describe("TopBar view menu: Comments (review-workflow-plan §3)", () => {
     render(
       <TopBar
         pr={PR}
-        login="alice"
+
         view={{
           current: "comments",
           flowsHref: null,

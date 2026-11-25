@@ -57,7 +57,7 @@ import { PendingReviewBlock } from "../../components/quiet/PendingReviewBlock";
 import { UnexplainedBlock } from "../../components/quiet/UnexplainedBlock";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { StepBlock } from "../../components/step/StepBlock";
-import { TopBar } from "../../components/top-bar/TopBar";
+import { ReviewTopBar } from "../shell/ReviewTopBar";
 import { Tooltip } from "../../components/tooltip/Tooltip";
 import { busyTip } from "../../components/button/button";
 import {
@@ -943,7 +943,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
       >
         Skip to content
       </a>
-      <TopBar
+      <ReviewTopBar
         pr={tour.analysis.pr}
         ci={tour.pr_context.facts.ci}
         checksHref={checksHref(tour.analysis.pr)}
@@ -1053,7 +1053,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
 function Shell({ login, children }: { login: string | null; children: ReactNode }) {
   return (
     <div className="flex min-h-screen flex-col">
-      <TopBar login={login} />
+      <ReviewTopBar login={login} />
       <main id="main" className="grid gap-3 px-8 py-5">
         {children}
       </main>

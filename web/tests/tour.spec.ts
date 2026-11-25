@@ -342,10 +342,12 @@ test("every top-bar control explains itself in a tooltip", async ({ page }) => {
   await expect(banner.getByRole("button", { name: /^Pending review/ })).toHaveAccessibleDescription(
     /pending review/,
   );
-  await expect(banner.getByRole("button", { name: /^Help/ })).toHaveAccessibleDescription(/Keyboard/);
-  await expect(banner.getByRole("link", { name: /^Settings, signed in/ })).toHaveAccessibleDescription(
-    /Settings/,
-  );
+  const user = banner.getByRole("button", { name: "alice", exact: true });
+  await expect(user).toHaveAccessibleDescription("Signed in as alice (GitHub)");
+  await user.click();
+  await expect(banner.getByRole("link", { name: "Settings" })).toHaveAttribute("href", "/settings");
+  await banner.getByRole("button", { name: "Keyboard shortcuts" }).click();
+  await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeVisible();
 });
 
 test("widths stored on a 21:9 screen leave the centre usable at 1440 px and after a window resize", async ({

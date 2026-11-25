@@ -13,7 +13,7 @@ import { ProcessCommentsCard } from "../../components/comments/ProcessCommentsCa
 import { OpenExternal } from "../../components/dashboard/common/OpenExternal";
 import { clockText } from "../../components/format/time";
 import { StatusMessage } from "../../components/status/StatusMessage";
-import { TopBar } from "../../components/top-bar/TopBar";
+import { ReviewTopBar } from "../shell/ReviewTopBar";
 import { MY_WORK_PATH, REVIEW_START_PATH } from "../shell/paths";
 import { LiveReview } from "./LiveReview";
 import { commentsPath, prOfParams } from "./paths";
@@ -36,7 +36,7 @@ export function PrScreen() {
   const key = (section: string) => `${login ?? "anonymous"}:pr-page:${section}`;
   return (
     <div className="flex min-h-screen flex-col">
-      <TopBar
+      <ReviewTopBar
         pr={
           data
             ? { repo: pr.repo, number: pr.number, title: data.title, html_url: data.url, head_sha: data.head }

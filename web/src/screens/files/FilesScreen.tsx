@@ -65,7 +65,7 @@ import { HelpDialog } from "../../components/help/HelpDialog";
 import { FILES_SHORTCUTS, shortcutAction } from "../../components/help/shortcuts";
 import { useSectionState } from "../../components/inspector/sectionState";
 import { StatusMessage } from "../../components/status/StatusMessage";
-import { TopBar } from "../../components/top-bar/TopBar";
+import { ReviewTopBar } from "../shell/ReviewTopBar";
 import { DiffCode, errorText, MAX_RANGE_LINES, useHideContextChanges, type CodeContext } from "../tour/code";
 import { flagComment } from "../../components/comment/prefill";
 import { useCommentDrafts, useUnresolvedPosts } from "../tour/drafts";
@@ -137,7 +137,7 @@ export function FilesScreen() {
 function Shell({ login, children }: { login: string | null; children: ReactNode }) {
   return (
     <div className="flex min-h-screen flex-col">
-      <TopBar login={login} />
+      <ReviewTopBar login={login} />
       <main id="main" className="grid gap-3 px-8 py-5">
         {children}
       </main>
@@ -934,7 +934,7 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
       >
         Skip to content
       </a>
-      <TopBar
+      <ReviewTopBar
         pr={tour.analysis.pr}
         ci={tour.pr_context.facts.ci}
         checksHref={checksHref(tour.analysis.pr)}

@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { useNavigate } from "react-router";
 import { AppNav, type AppSection } from "../../components/app-shell/AppNav";
 import { ShellTopBar } from "../../components/app-shell/ShellTopBar";
+import type { UserMenuProps } from "../../components/app-shell/UserMenu";
 import { MY_WORK_PATH, REVIEW_START_PATH, SETTINGS_PATH } from "./paths";
 import { WATCHING_PATH } from "../pr/paths";
 
@@ -17,12 +18,10 @@ interface ShellLayoutProps {
   current: AppSection;
   /** Page name after the brand. */
   crumb: string;
-  /** Signed-in GitHub login; null when signed out. */
-  login: string | null;
+  /** Account menu of the signed-in reader. */
+  userMenu?: UserMenuProps;
   /** Unhidden human mentions; no count when null. */
   myWorkCount: number | null;
-  /** Opens the page's keyboard help. */
-  onHelp?: () => void;
   /** Page actions in the top bar (the refresh control). */
   actions?: ReactNode;
   children: ReactNode;
@@ -32,28 +31,12 @@ interface ShellLayoutProps {
  * The navigation shell (plan §F.2): slim top bar, left navigation and the main region of `/`, `/review` and
  * `/settings` (`ShellRoute`).
  */
-export function ShellLayout({
-  current,
-  crumb,
-  login,
-  myWorkCount,
-  onHelp,
-  actions,
-  children,
-}: ShellLayoutProps) {
+export function ShellLayout({ current, crumb, userMenu, myWorkCount, actions, children }: ShellLayoutProps) {
   const navigate = useNavigate();
   const go = (href: string) => void navigate(href);
   return (
     <div className="flex min-h-screen flex-col">
-      <ShellTopBar
-        crumb={crumb}
-        homeHref={MY_WORK_PATH}
-        settingsHref={SETTINGS_PATH}
-        login={login}
-        onHelp={onHelp}
-        onNavigate={go}
-        mainId="main"
-      >
+      <ShellTopBar crumb={crumb} homeHref={MY_WORK_PATH} userMenu={userMenu} onNavigate={go} mainId="main">
         {actions}
       </ShellTopBar>
       <div className="flex flex-1">

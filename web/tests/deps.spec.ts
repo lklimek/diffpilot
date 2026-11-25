@@ -43,7 +43,7 @@ async function seriousViolations(page: Page, width: number) {
     .analyze();
   // Below 1000 px the shared top bar crowds its controls in every review view (Files too): not this view's.
   const sharedBar = (id: string, html: string) =>
-    width < 1000 && id === "target-size" && /aria-label="(Settings, signed in|View: )/.test(html);
+    width < 1000 && id === "target-size" && /aria-label="(View: )/.test(html);
   // The heading outline (best practice, any impact): no skipped level.
   const headings = await new AxeBuilder({ page }).withRules(["heading-order"]).analyze();
   return [
