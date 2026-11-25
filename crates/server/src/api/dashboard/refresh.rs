@@ -229,6 +229,15 @@ async fn current_view(
         &state.plugins.overlay(state.dashboard.now()),
         Some(&record),
     );
+    if record.state == contracts::api::dashboard::RefreshState::Ranking
+        && let Some(targets) =
+            state
+                .dashboard
+                .readers()
+                .rejudge_targets(scope, record.id, record.ranking_attempt)
+    {
+        view.apply_rejudge_targets(&record, &targets);
+    }
     let live = installations::live(state, &scope.tenant_id).await?;
     view.apply_installations(&live);
     Ok(Some((

@@ -70,6 +70,32 @@ impl View {
         );
     }
 
+    /// Shows only the items covered by a single-item ranking as queued or judging.
+    pub(crate) fn apply_rejudge_targets(
+        &mut self,
+        record: &RefreshRecord,
+        targets: &HashSet<ItemKey>,
+    ) {
+        let capped: HashSet<_> = record.progress.left_provisional_keys.iter().collect();
+        for entry in &mut self.items {
+            if let Some(judgement) = &mut entry.item.judgement {
+                match judgement.state {
+                    JudgementState::Judging if !targets.contains(&entry.item.key) => {
+                        judgement.state = JudgementState::Outdated;
+                    }
+                    JudgementState::Queued => {
+                        judgement.state = if capped.contains(&entry.item.key) {
+                            JudgementState::Capped
+                        } else {
+                            JudgementState::NotJudged
+                        };
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
     /// Summary counts across the ranked items, before item filters and pagination.
     pub(crate) fn status_counts(&self) -> StatusCounts {
         let mut counts = StatusCounts {
@@ -145,6 +171,10 @@ pub fn build(
     let capped: HashSet<_> = record
         .into_iter()
         .flat_map(|record| &record.progress.left_provisional_keys)
+        .collect();
+    let bulk: HashSet<_> = record
+        .into_iter()
+        .flat_map(|record| &record.progress.bulk_rejudge_keys)
         .collect();
     let rules = ScoreRules::new(&snapshot.own_login, &snapshot.settings);
     let at = snapshot.scanned_at;
@@ -224,8 +254,14 @@ pub fn build(
         count(&mut counts, &item);
         let judged = judgements.get(&item.key);
         let text = judged.and_then(|judged| judged.text.clone());
-        let judgement = (item.asks_eligibility || !item.asks.is_empty())
-            .then(|| judgement_for(judged, ranking_live, capped.contains(&item.key)));
+        let judgement = (item.asks_eligibility || !item.asks.is_empty()).then(|| {
+            judgement_for(
+                judged,
+                ranking_live,
+                capped.contains(&item.key),
+                bulk.contains(&item.key),
+            )
+        });
         let mut view_item = work_item(&rules, &look_back, item, source, text, memcan_ui);
         view_item.item.judgement = judgement;
         if let Source::Pr(pr) = source {
@@ -261,6 +297,7 @@ fn judgement_for(
     stored: Option<&ItemJudgement>,
     ranking_live: bool,
     capped: bool,
+    bulk_requested: bool,
 ) -> JudgementView {
     let Some(stored) = stored else {
         return JudgementView {
@@ -279,7 +316,7 @@ fn judgement_for(
     JudgementView {
         state: if !stale {
             JudgementState::Current
-        } else if ranking_live && stored.rejudge_requested {
+        } else if ranking_live && (stored.rejudge_requested || bulk_requested) {
             JudgementState::Judging
         } else {
             JudgementState::Outdated
@@ -923,7 +960,7 @@ mod tests {
             (Some(&bumped), false, false, Outdated, Some(PromptChanged)),
             (Some(&bumped), true, false, Judging, Some(PromptChanged)),
         ] {
-            let rendered = judgement_for(stored, live, capped);
+            let rendered = judgement_for(stored, live, capped, false);
             assert_eq!(rendered.state, state);
             assert_eq!(rendered.outdated_because, reason);
             assert_eq!(rendered.judged_at, stored.map(|_| at()));

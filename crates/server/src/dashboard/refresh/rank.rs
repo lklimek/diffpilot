@@ -38,6 +38,8 @@ pub enum RankMode {
     ScanWithRejudge,
     /// Judging pending items on an existing snapshot without a scan.
     Pending,
+    /// A ranking without a scan limited to accepted single-item requests.
+    Rejudge,
 }
 
 /// A stored judgement applicable to an item now, with its LLM text.

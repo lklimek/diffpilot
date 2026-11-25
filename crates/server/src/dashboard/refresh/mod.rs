@@ -197,6 +197,7 @@ pub async fn cancel(
         match ended {
             Ok(true) => {
                 state.dashboard.abort(id);
+                state.dashboard.readers().cancel_rejudges(scope);
                 tracing::info!(user_id = %scope.user_id, refresh = %id, was = ?record.state, "dashboard refresh cancelled");
                 let record = dashboard
                     .refresh(&scope.tenant_id, &scope.user_id, id)
@@ -240,8 +241,10 @@ pub(crate) async fn rejudge(
     key: &ItemKey,
 ) -> Result<(), judge::RejudgeError> {
     let _writer = state.dashboard.readers().writer(scope).await;
-    judge::request_rejudge(state, scope, key).await?;
-    rank_pending_locked(state, scope).await?;
+    if judge::request_rejudge(state, scope, key).await? {
+        state.dashboard.readers().queue_rejudge(scope, key.clone());
+        rank_pending_locked(state, scope, RankMode::Rejudge).await?;
+    }
     Ok(())
 }
 
@@ -249,10 +252,30 @@ pub(crate) async fn rejudge(
 /// Snapshot writers call this after releasing their writer guard.
 pub async fn rank_pending(state: &AppState, scope: &Scope) -> Result<(), DbError> {
     let _writer = state.dashboard.readers().writer(scope).await;
-    rank_pending_locked(state, scope).await
+    rank_pending_locked(state, scope, RankMode::Pending).await
 }
 
-async fn rank_pending_locked(state: &AppState, scope: &Scope) -> Result<(), DbError> {
+/// Hands unserved clicks to a new ranking after the previous attempt ended. The caller holds the writer.
+pub(super) async fn continue_rejudges(
+    state: &AppState,
+    scope: &Scope,
+    id: RefreshId,
+    attempt: u32,
+) {
+    let readers = state.dashboard.readers();
+    readers.end_rejudge_attempt(scope, id, attempt);
+    if readers.has_waiting_rejudges(scope)
+        && let Err(error) = rank_pending_locked(state, scope, RankMode::Rejudge).await
+    {
+        tracing::warn!(%error, %id, "accepted dashboard re-judgements could not start a follow-up ranking");
+    }
+}
+
+async fn rank_pending_locked(
+    state: &AppState,
+    scope: &Scope,
+    mode: RankMode,
+) -> Result<(), DbError> {
     let dashboard = state.db.dashboard();
     let Some((record, _)) = dashboard
         .latest_snapshot::<IgnoredAny>(&scope.tenant_id, &scope.user_id)
@@ -265,7 +288,14 @@ async fn rank_pending_locked(state: &AppState, scope: &Scope) -> Result<(), DbEr
             .restart_pending_ranking(&scope.tenant_id, &scope.user_id, record.id)
             .await?
     {
-        spawn_ranking(state, scope, &record, RankMode::Pending);
+        if mode == RankMode::Rejudge {
+            state.dashboard.readers().start_rejudge_attempt(
+                scope,
+                record.id,
+                record.ranking_attempt,
+            );
+        }
+        spawn_ranking(state, scope, &record, mode);
     }
     Ok(())
 }
@@ -516,6 +546,8 @@ async fn run(
             tracing::info!(user_id = %scope.user_id, refresh = %id, code = ?failure.code,
                 "dashboard refresh failed; the previous snapshot stays");
             end_failed_scan(&state, &scope, id, failure).await;
+            let _writer = state.dashboard.readers().writer(&scope).await;
+            continue_rejudges(&state, &scope, id, 0).await;
         }
     }
 }

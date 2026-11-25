@@ -192,6 +192,7 @@ async fn rank(state: AppState, run: RankRun) {
         zone: TimeZone::UTC,
         language: LlmLanguage::En,
         left_provisional_keys: Vec::new(),
+        bulk_rejudge_keys: Vec::new(),
         unclaimed_since: None,
         provisional: None,
     };
@@ -213,11 +214,13 @@ async fn rank(state: AppState, run: RankRun) {
     };
     cancel_jobs(&state, run.refresh_id, Some(run.attempt)).await;
     guard.armed = false;
+    let _writer = state.dashboard.readers().writer(&run.scope).await;
     match end {
         Some(end) => ranking.finish(end).await,
         None => tracing::debug!(refresh = %run.refresh_id, attempt = run.attempt,
             "dashboard ranking no longer current; its late results are dropped"),
     }
+    refresh::continue_rejudges(&state, &run.scope, run.refresh_id, run.attempt).await;
 }
 
 /// One ranking attempt in progress.
@@ -231,6 +234,7 @@ struct Ranking<'a> {
     language: LlmLanguage,
     /// Never-judged items left behind by the caps.
     left_provisional_keys: Vec<ItemKey>,
+    bulk_rejudge_keys: Vec<ItemKey>,
     /// Since when the followed job waits for a runner (queued, credential usable, no analysis job running).
     unclaimed_since: Option<tokio::time::Instant>,
     /// Which cap left items provisional, as the ranking step's detail shows it while no other detail is given.
@@ -251,14 +255,21 @@ impl<'a> Ranking<'a> {
             return Err(RankError::Stale);
         }
         self.counts.judged = record.counts.judged;
+        if self.run.mode == RankMode::Rejudge {
+            self.counts.left_provisional = record.counts.left_provisional;
+            self.left_provisional_keys = record.progress.left_provisional_keys;
+        }
         self.zone = ranking_zone(self.state, tenant, user).await?;
         self.language = self.state.db.users().get(user).await?.language;
         let mut first = true;
         let mut batch = 0;
         let mut capped = HashSet::new();
+        let per_refresh = matches!(self.run.mode, RankMode::Scan | RankMode::ScanWithRejudge)
+            .then_some(REFRESH_CAP);
+        let readers = self.state.dashboard.readers();
         loop {
             // Hold the same guard as a re-judge request until we commit the end of an empty drain.
-            let writer = self.state.dashboard.readers().writer(&self.run.scope).await;
+            let writer = readers.writer(&self.run.scope).await;
             let (holder, snapshot) = snapshot::load(self.state, tenant, user)
                 .await?
                 .ok_or(RankError::NoSnapshot)?;
@@ -281,15 +292,11 @@ impl<'a> Ranking<'a> {
             let bulk = first && self.run.mode == RankMode::ScanWithRejudge;
             let (mut queue, reused) = self.queue(&snapshot, &candidates, &stored, bulk);
             self.counts.reused = reused;
-            if bulk {
-                let outdated: Vec<_> = queue
-                    .iter()
-                    .filter(|q| !q.new && !q.requested)
-                    .map(|q| q.item.key.clone())
-                    .collect();
-                dashboard
-                    .request_rejudgements(tenant, user, &outdated, now)
-                    .await?;
+            if self.run.mode == RankMode::Rejudge {
+                let targets = readers
+                    .rejudge_targets(&self.run.scope, holder.id, holder.ranking_attempt)
+                    .unwrap_or_default();
+                queue.retain(|q| targets.contains(&q.item.key));
             }
             if !first {
                 queue.retain(|q| !capped.contains(&q.item.key));
@@ -299,30 +306,20 @@ impl<'a> Ranking<'a> {
                         message: None,
                     })
                     .await;
+                    refresh::continue_rejudges(
+                        self.state,
+                        &self.run.scope,
+                        holder.id,
+                        holder.ranking_attempt,
+                    )
+                    .await;
                     return Ok(None);
                 }
             }
             drop(writer);
 
-            if first && self.run.mode != RankMode::Pending {
-                // Existing explicit requests and newly bulk-requested work have different caps.
-                let (requests, scan): (Vec<_>, _) = queue.into_iter().partition(|q| q.requested);
-                if !requests.is_empty()
-                    && let Some(end) = self
-                        .rank_queue(&requests, None, &mut batch, &mut capped)
-                        .await?
-                {
-                    return Ok(Some(end));
-                }
-                if (!scan.is_empty() || requests.is_empty())
-                    && let Some(end) = self
-                        .rank_queue(&scan, Some(REFRESH_CAP), &mut batch, &mut capped)
-                        .await?
-                {
-                    return Ok(Some(end));
-                }
-            } else if let Some(end) = self
-                .rank_queue(&queue, None, &mut batch, &mut capped)
+            if let Some(end) = self
+                .rank_queue(queue, per_refresh, &mut batch, &mut capped)
                 .await?
             {
                 return Ok(Some(end));
@@ -333,7 +330,7 @@ impl<'a> Ranking<'a> {
 
     async fn rank_queue(
         &mut self,
-        queue: &[Queued],
+        mut queue: Vec<Queued>,
         per_refresh_cap: Option<u32>,
         batch: &mut u32,
         capped: &mut HashSet<ItemKey>,
@@ -351,9 +348,25 @@ impl<'a> Ranking<'a> {
         let per_refresh = per_refresh_cap.map_or(u32::MAX, |cap| cap.saturating_sub(sent.refresh));
         let per_day = DAILY_CAP.saturating_sub(sent.day);
         let room = usize::try_from(per_refresh.min(per_day)).unwrap_or(usize::MAX);
+        // Reserve room for explicit clicks and new items before selecting any bulk requests.
+        let required = queue.iter().filter(|q| q.requested || q.new).count();
+        let mut bulk_room = room.saturating_sub(required);
+        queue.retain(|q| {
+            if q.requested || q.new {
+                return true;
+            }
+            if bulk_room == 0 {
+                return false;
+            }
+            bulk_room -= 1;
+            self.bulk_rejudge_keys.push(q.item.key.clone());
+            true
+        });
         let take = queue.len().min(room);
         let left = queue.len() - take;
-        self.counts.left_provisional += count(left);
+        if self.run.mode != RankMode::Rejudge {
+            self.counts.left_provisional += count(left);
+        }
         capped.extend(queue[take..].iter().map(|q| q.item.key.clone()));
         self.left_provisional_keys.extend(
             queue[take..]
@@ -494,8 +507,9 @@ impl<'a> Ranking<'a> {
             });
         }
         queue.sort_by(|a, b| {
-            a.new
-                .cmp(&b.new)
+            b.requested
+                .cmp(&a.requested)
+                .then_with(|| a.new.cmp(&b.new))
                 .then_with(|| b.points.total_cmp(&a.points))
                 .then_with(|| a.item.key.cmp(&b.item.key))
         });
@@ -517,7 +531,7 @@ impl<'a> Ranking<'a> {
                 items: pending.iter().map(|q| q.item.clone()).collect(),
             };
             let job = JobId::new_random();
-            if let Some(limit) = self.reserve(job, count(pending.len()), per_refresh).await? {
+            if let Some(limit) = self.reserve(job, &pending, per_refresh).await? {
                 tracing::info!(refresh = %self.run.refresh_id, batch, generation, items = pending.len(), %limit,
                     "dashboard judge batch not sent: the ranking cap is reached");
                 self.left_provisional_keys
@@ -548,7 +562,7 @@ impl<'a> Ranking<'a> {
     async fn reserve(
         &self,
         job_id: JobId,
-        items: u32,
+        items: &[&Queued],
         per_refresh: Option<u32>,
     ) -> Result<Option<String>, RankError> {
         let (tenant, user) = self.scope();
@@ -565,7 +579,7 @@ impl<'a> Ranking<'a> {
                 self.run.attempt,
                 JudgeSend {
                     job_id,
-                    items,
+                    items: count(items.len()),
                     sent_at,
                     day_start: day_start(sent_at, &self.zone),
                 },
@@ -576,7 +590,15 @@ impl<'a> Ranking<'a> {
             )
             .await?;
         match reserved {
-            SendReservation::Reserved => Ok(None),
+            SendReservation::Reserved => {
+                self.state.dashboard.readers().rejudges_dispatched(
+                    &self.run.scope,
+                    self.run.refresh_id,
+                    self.run.attempt,
+                    items.iter().map(|q| &q.item.key),
+                );
+                Ok(None)
+            }
             SendReservation::OverRefreshCap => Ok(Some(limit(0, 1))),
             SendReservation::OverDailyCap => Ok(Some(limit(1, 0))),
             SendReservation::Stale => Err(RankError::Stale),
@@ -812,8 +834,34 @@ impl<'a> Ranking<'a> {
         counts.judged += count(judgements.len());
         // Counts and judgements in one transaction fenced by the attempt: a late answer is never stored.
         let writer = self.state.dashboard.readers().writer(&self.run.scope).await;
-        self.write(RankingState::Running, counts, &judgements, None)
-            .await?;
+        let before = self.bulk_rejudge_keys.len();
+        self.bulk_rejudge_keys
+            .retain(|key| !judgements.iter().any(|j| &j.item_key == key));
+        let progress = if self.bulk_rejudge_keys.len() < before {
+            let (tenant, user) = self.scope();
+            let mut record = self
+                .state
+                .db
+                .dashboard()
+                .refresh(tenant, user, self.run.refresh_id)
+                .await?;
+            record
+                .progress
+                .bulk_rejudge_keys
+                .clone_from(&self.bulk_rejudge_keys);
+            Some((record.progress, record.log))
+        } else {
+            None
+        };
+        self.write(
+            RankingState::Running,
+            counts,
+            &judgements,
+            progress
+                .as_ref()
+                .map(|(progress, log)| (progress, log.as_slice())),
+        )
+        .await?;
         drop(writer);
         self.counts = counts;
         self.live = RankingState::Running;
@@ -869,6 +917,9 @@ impl<'a> Ranking<'a> {
         progress
             .left_provisional_keys
             .clone_from(&self.left_provisional_keys);
+        progress
+            .bulk_rejudge_keys
+            .clone_from(&self.bulk_rejudge_keys);
         if !progress.steps.iter().any(|s| s.key == ScanStepKey::Ranking) {
             progress.steps.push(ScanStep {
                 key: ScanStepKey::Ranking,
@@ -1018,12 +1069,12 @@ pub(crate) enum RejudgeError {
     Db(#[from] DbError),
 }
 
-/// Persists one request under the user's snapshot writer guard.
+/// Persists one click under the user's writer guard, or returns false for an already scheduled item.
 pub(super) async fn request_rejudge(
     state: &AppState,
     scope: &Scope,
     key: &ItemKey,
-) -> Result<(), RejudgeError> {
+) -> Result<bool, RejudgeError> {
     let (tenant, user) = (&scope.tenant_id, &scope.user_id);
     let (holder, snapshot) = snapshot::load(state, tenant, user)
         .await?
@@ -1052,17 +1103,24 @@ pub(super) async fn request_rejudge(
         .ok_or(RejudgeError::NotOutdated)?;
     let dashboard = state.db.dashboard();
     let keys = std::slice::from_ref(key);
-    let outdated = dashboard
+    let record = dashboard
         .judgements(tenant, user, keys)
         .await?
-        .iter()
-        .any(|record| {
-            !fresh(record, &candidate.fingerprint)
-                && !(record.rejudge_requested_at.is_some() && holder.state == RefreshState::Ranking)
-                && body_of(record).is_some()
-        });
-    if !outdated {
-        return Err(RejudgeError::NotOutdated);
+        .into_iter()
+        .find(|record| !fresh(record, &candidate.fingerprint) && body_of(record).is_some())
+        .ok_or(RejudgeError::NotOutdated)?;
+    if holder.state == RefreshState::Ranking {
+        let targets =
+            state
+                .dashboard
+                .readers()
+                .rejudge_targets(scope, holder.id, holder.ranking_attempt);
+        if holder.progress.bulk_rejudge_keys.contains(key)
+            || (record.rejudge_requested_at.is_some()
+                && targets.is_none_or(|targets| targets.contains(key)))
+        {
+            return Ok(false);
+        }
     }
     let zone = ranking_zone(state, tenant, user).await?;
     let now = state.dashboard.now();
@@ -1076,7 +1134,7 @@ pub(super) async fn request_rejudge(
     dashboard
         .request_rejudgements(tenant, user, keys, now)
         .await?;
-    Ok(())
+    Ok(true)
 }
 
 /// The judgement was made with other versions of the prompt or the judged inputs.

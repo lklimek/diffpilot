@@ -973,7 +973,7 @@ once any required session, token or CSRF checks pass.
 | Method | Path | Auth | Request | Response |
 |---|---|---|---|---|
 | POST | `/webhooks/github` | github_signature | GitHub delivery | 202 when accepted, 200 for ping or a duplicate |
-| POST | `/api/v1/dashboard/items/{key}/rejudge` | session_csrf | – | 202, 404 outside the current snapshot, 409 `conflict` unless outdated or when the daily cap is reached |
+| POST | `/api/v1/dashboard/items/{key}/rejudge` | session_csrf | – | 202 for an accepted click or an item already judging, 404 outside the current snapshot, 409 `conflict` for an item that is not outdated or when the daily cap is reached |
 | GET | `/api/v1/settings/repository-installations` | read | – | `RepositoryInstallations` |
 | GET | `/api/v1/settings/github-webhook` | read | – | `GithubWebhook` |
 | GET | `/api/v1/llm/activity` | read | – | `LlmActivity` |
@@ -985,7 +985,10 @@ once any required session, token or CSRF checks pass.
   judgement can name changed facts or a changed prompt. `DashboardSummary.status_counts` counts outdated
   (including judging), never judged (including queued and capped), not live and excluded items. The legacy
   `ItemText.inherited` and `older_prompt_judgements` fields remain readable. The optional R2 request defaults
-  `rejudge_outdated` to false. B1 accepts the request with its existing refresh behaviour.
+  `rejudge_outdated` to false. With it enabled, the scan reserves room for pending single-item requests and
+  never-judged items under both caps, then requests replacements for outdated items in the remaining room.
+  C2 requests one item. When idle it restarts ranking on the current snapshot for that request under the daily
+  cap. An active scan can take the request within both scan ranking caps.
 - `WorkItem.live` and the summary's repository counts and `last_event_at` describe live webhook coverage.
   The counts deduplicate repositories of visible ranked items. `SnapshotMeta` omits `facts_checked_at`.
   Repository installations come from the database and cover repositories

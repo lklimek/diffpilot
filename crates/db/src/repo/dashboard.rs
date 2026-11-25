@@ -195,6 +195,9 @@ pub struct RefreshProgress {
     /// Never-judged items left behind by a ranking cap.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub left_provisional_keys: Vec<ItemKey>,
+    /// Outdated items selected for the current scan's ranking attempt.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bulk_rejudge_keys: Vec<ItemKey>,
 }
 
 /// Judgement counts of a refresh (plan §B.4).
@@ -1109,7 +1112,7 @@ impl Dashboard<'_> {
         }
         sqlx::query(
             "UPDATE dashboard_refreshes SET state = 'ranking', ranking_state = 'running', finished_at = NULL,
-                 ranking_attempt = ranking_attempt + 1
+                 ranking_attempt = ranking_attempt + 1, progress = json_remove(progress, '$.bulk_rejudge_keys')
              WHERE id = ?",
         )
         .bind(id.to_string())
@@ -2995,6 +2998,7 @@ mod tests {
         let id = start(&db, "u1", 0).await;
         let progress = RefreshProgress {
             left_provisional_keys: Vec::new(),
+            bulk_rejudge_keys: Vec::new(),
             steps: vec![ScanStep {
                 key: ScanStepKey::PrDetails,
                 state: StepState::Running,
@@ -4605,6 +4609,7 @@ mod tests {
         let id = ranking(&db, "u1", 1).await;
         let progress = RefreshProgress {
             left_provisional_keys: Vec::new(),
+            bulk_rejudge_keys: Vec::new(),
             steps: Vec::new(),
             percent: 100,
         };

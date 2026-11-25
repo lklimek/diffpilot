@@ -115,6 +115,7 @@ impl Progress {
             steps: self.steps.clone(),
             percent: self.percent(),
             left_provisional_keys: Vec::new(),
+            bulk_rejudge_keys: Vec::new(),
         };
         let written = self
             .state
