@@ -89,6 +89,25 @@ describe("V1 Questions (US3, US4, US11)", () => {
     expect(visited).toHaveBeenCalledTimes(1);
   });
 
+  it("tries the Comments entry again after a transient failure and then reads the overview", async () => {
+    let tries = 0;
+    const readOverview = vi.fn();
+    server.use(
+      http.post("/api/v1/prs/acme/node-client/482/comments/visit", () => {
+        tries += 1;
+        return new HttpResponse(null, { status: tries === 1 ? 503 : 204 });
+      }),
+      http.get("/api/v1/prs/acme/node-client/482/comments", () => {
+        readOverview();
+        return HttpResponse.json(overview());
+      }),
+    );
+    renderRoute(PR);
+    await userEvent.click(await screen.findByRole("link", { name: "Open Comments →" }));
+    await waitFor(() => expect(readOverview).toHaveBeenCalledOnce());
+    expect(tries).toBe(2);
+  });
+
   it.each([200, 502])("reads items after the overview settles with HTTP %i", async (status) => {
     let finishOverview!: () => void;
     const pending = new Promise<void>((resolve) => {

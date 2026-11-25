@@ -187,6 +187,9 @@ export function useVisitComments(pr: PrRef) {
   const client = useQueryClient();
   return useMutation({
     mutationFn: () => api.visitComments(pr),
+    // The overview waits for the visit; recording it again is harmless, so transient failures are retried.
+    retry: (count, error) => count < 2 && transientFailure(error),
+    retryDelay: 200,
     onSuccess: () => client.resetQueries({ queryKey: overviewKey(pr), exact: true }),
   });
 }
