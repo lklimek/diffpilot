@@ -400,6 +400,7 @@ mod tests {
             },
             private: false,
             head_sha: "abc123".into(),
+            head_repository: None,
             base_sha: Some("b45e00".into()),
             created_at: at,
             ci_red: vec![],

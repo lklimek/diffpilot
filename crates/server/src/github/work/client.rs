@@ -15,6 +15,7 @@ use tokio::sync::{Mutex, Semaphore};
 use tokio::time::{Instant, sleep, sleep_until};
 use url::Url;
 
+use super::EventBudget;
 use crate::auth::{UserTokenError, user_access_token, user_token_rejected};
 use crate::github::oauth::endpoint;
 use crate::secrets::secrets_equal;
@@ -92,6 +93,9 @@ pub enum WorkError {
     /// Only queries are sent (T18).
     #[error("the scan sends GraphQL queries only")]
     NotAQuery,
+    /// This read would exceed the allowance for webhook-driven GitHub reads.
+    #[error("GitHub webhook read budget reached")]
+    EventBudget,
     /// The scan's call limiter was closed.
     #[error("the GitHub scan was interrupted")]
     Interrupted,
@@ -106,6 +110,7 @@ impl WorkError {
                 | Self::Unauthorized
                 | Self::PrimaryRateLimit { .. }
                 | Self::SecondaryRateLimit { .. }
+                | Self::EventBudget
                 | Self::Interrupted
         )
     }
@@ -162,6 +167,7 @@ pub struct WorkClient<T> {
     /// Start of the last search attempt; held for a whole search, so searches run one at a time.
     last_search: Mutex<Option<Instant>>,
     calls: Semaphore,
+    event_budget: Option<(EventBudget, Instant)>,
     pub(crate) page_size: u32,
     /// Page cap per repository of Q16 ([`super::AUTHORED_PAGES`]).
     pub(crate) authored_pages: usize,
@@ -269,10 +275,17 @@ impl<T: TokenSource> WorkClient<T> {
             token: Mutex::new(None),
             last_search: Mutex::new(None),
             calls: Semaphore::new(MAX_CONCURRENT_CALLS),
+            event_budget: None,
             page_size: PAGE_SIZE,
             authored_pages: super::AUTHORED_PAGES,
             search_interval: SEARCH_INTERVAL,
         })
+    }
+
+    /// Limits event queries by the user's shared allowance. Serialises their cost checks.
+    pub(crate) fn with_event_budget(mut self, budget: EventBudget, now: Instant) -> Self {
+        self.event_budget = Some((budget, now));
+        self
     }
 
     async fn current_token(&self) -> Result<SecretString, WorkError> {
@@ -357,6 +370,9 @@ impl<T: TokenSource> WorkClient<T> {
             match limited {
                 Limit::Primary(reset) => return Err(WorkError::PrimaryRateLimit { reset }),
                 Limit::Secondary(retry_after) => {
+                    if self.event_budget.is_some() {
+                        return Err(WorkError::SecondaryRateLimit { retry_after });
+                    }
                     let Some(ladder) = SECONDARY_RETRY_WAITS.get(secondary_hits) else {
                         return Err(WorkError::SecondaryRateLimit { retry_after });
                     };
@@ -508,9 +524,27 @@ impl<T: TokenSource> WorkClient<T> {
     /// Runs a GraphQL query; returns `data` (an unresolved lookup is `null`). Errors next to data are dropped
     /// (their lookups are `null`); errors without data fail, `RATE_LIMITED` as the primary limit.
     pub(crate) async fn graphql(&self, document: &str) -> Result<Map<String, Value>, WorkError> {
+        self.graphql_costed(document, 1).await
+    }
+
+    pub(super) async fn graphql_costed(
+        &self,
+        document: &str,
+        estimate: u64,
+    ) -> Result<Map<String, Value>, WorkError> {
         if !document.trim_start().starts_with("query") {
             return Err(WorkError::NotAQuery);
         }
+        let wall = Timestamp::now();
+        let mut spend = if let Some((budget, now)) = &self.event_budget {
+            let mut spend = budget.0.lock().await;
+            if !spend.permits(*now, wall, estimate) {
+                return Err(WorkError::EventBudget);
+            }
+            Some((spend, *now))
+        } else {
+            None
+        };
         let url = endpoint(&self.api_url, "graphql");
         let body = json!({ "query": document });
         let response = self
@@ -519,18 +553,25 @@ impl<T: TokenSource> WorkClient<T> {
                     .header(ACCEPT, "application/json")
                     .json(&body)
             })
-            .await?;
-        let status = response.status();
-        if !status.is_success() {
-            return Err(if status.is_server_error() {
-                WorkError::ServerError(status)
-            } else {
-                WorkError::Status(status)
-            });
+            .await;
+        let (envelope, remaining, reset) = match response {
+            Ok(response) => {
+                let reset = reset_at(response.headers());
+                let remaining = header(response.headers(), "x-ratelimit-remaining")
+                    .and_then(|value| value.trim().parse::<u64>().ok());
+                (graphql_envelope(response).await, remaining, reset)
+            }
+            Err(error) => (Err(error), None, None),
+        };
+        if let Some((spend, now)) = spend.as_mut() {
+            let rate = envelope
+                .as_ref()
+                .ok()
+                .and_then(|answer| answer.data.as_ref())
+                .and_then(|data| data.get("rateLimit"));
+            spend.record(*now, wall, estimate, rate, remaining, reset);
         }
-        let reset = reset_at(response.headers());
-        let bytes = response.bytes().await.map_err(WorkError::Http)?;
-        let envelope: Envelope = serde_json::from_slice(&bytes).map_err(WorkError::NotJson)?;
+        let envelope = envelope?;
         let kinds: Vec<String> = envelope
             .errors
             .iter()
@@ -557,4 +598,17 @@ impl<T: TokenSource> WorkClient<T> {
             Some(_) | None => Err(WorkError::Refused(kinds)),
         }
     }
+}
+
+async fn graphql_envelope(response: Response) -> Result<Envelope, WorkError> {
+    let status = response.status();
+    if !status.is_success() {
+        return Err(if status.is_server_error() {
+            WorkError::ServerError(status)
+        } else {
+            WorkError::Status(status)
+        });
+    }
+    let bytes = response.bytes().await.map_err(WorkError::Http)?;
+    serde_json::from_slice(&bytes).map_err(WorkError::NotJson)
 }

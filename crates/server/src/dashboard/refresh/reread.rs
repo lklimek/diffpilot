@@ -96,29 +96,9 @@ async fn read_locked(
 ) -> Result<Reread, RereadError> {
     let dashboard = state.db.dashboard();
     let now = state.dashboard.now();
-    if let Some(latest) = dashboard
-        .latest_refresh(&scope.tenant_id, &scope.user_id)
-        .await?
-    {
-        if latest.state == RefreshState::Scanning {
-            return Ok(Reread::Skipped("a scan runs"));
-        }
-        let limited = latest.failure.as_ref().is_some_and(|failure| {
-            failure.code == RefreshFailureCode::GithubRateLimited
-                && failure.retry_at.is_some_and(|at| at > now)
-        });
-        if limited {
-            return Ok(Reread::Skipped("GitHub rate limit"));
-        }
-    }
-    let Some((record, document)) = dashboard
-        .latest_snapshot::<Value>(&scope.tenant_id, &scope.user_id)
-        .await?
-    else {
-        return Ok(Reread::Skipped("no snapshot"));
-    };
-    let Some(mut stored) = snapshot::readable(document) else {
-        return Ok(Reread::Skipped("unreadable snapshot"));
+    let (record, mut stored) = match read_current(state, scope).await? {
+        Ok(snapshot) => snapshot,
+        Err(reason) => return Ok(Reread::Skipped(reason)),
     };
     let item = |pr: &StoredPr| ItemRef {
         repo: pr.facts.repo.clone(),
@@ -161,10 +141,45 @@ async fn read_locked(
     }
 }
 
+/// Reads the current snapshot only when a scan or GitHub backoff does not take precedence.
+pub(super) async fn read_current(
+    state: &AppState,
+    scope: &Scope,
+) -> Result<Result<(db::repo::dashboard::RefreshRecord, snapshot::Snapshot), &'static str>, DbError>
+{
+    let dashboard = state.db.dashboard();
+    let now = state.dashboard.now();
+    if let Some(latest) = dashboard
+        .latest_refresh(&scope.tenant_id, &scope.user_id)
+        .await?
+    {
+        if latest.state == RefreshState::Scanning {
+            return Ok(Err("a scan runs"));
+        }
+        let limited = latest.failure.as_ref().is_some_and(|failure| {
+            failure.code == RefreshFailureCode::GithubRateLimited
+                && failure.retry_at.is_some_and(|at| at > now)
+        });
+        if limited {
+            return Ok(Err("GitHub rate limit"));
+        }
+    }
+    let Some((record, document)) = dashboard
+        .latest_snapshot::<Value>(&scope.tenant_id, &scope.user_id)
+        .await?
+    else {
+        return Ok(Err("no snapshot"));
+    };
+    let Some(stored) = snapshot::readable(document) else {
+        return Ok(Err("unreadable snapshot"));
+    };
+    Ok(Ok((record, stored)))
+}
+
 /// Replaces the pull requests read again with their new facts, keeping what only the scan's other reads know
 /// (relations, stack relations, ownership verdict, milestone catalogue); drops those no longer open. A pull request
 /// GitHub did not answer for keeps its facts. Returns (updated, closed).
-fn apply(
+pub(super) fn apply(
     rules: &ScoreRules,
     pulls: &mut Vec<StoredPr>,
     found: &BTreeMap<ItemRef, PullDetail>,

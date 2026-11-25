@@ -4,11 +4,19 @@ use std::time::Duration;
 
 use contracts::time::Timestamp;
 use db::error::DbError;
-use db::repo::github::{DeliveryError, WebhookChange};
+use db::repo::Db;
+#[cfg(test)]
+use db::repo::github::WebhookChange;
+use db::repo::github::{DeliveryError, PendingDelivery};
 use jiff::SignedDuration;
-use tokio::sync::watch;
+use tokio::{sync::watch, time::Instant};
 
-use super::{Webhooks, stop};
+use super::{
+    Webhooks,
+    dispatch::{Dispatcher, MAX_HELD},
+    stop,
+};
+use crate::state::AppState;
 
 const BACKOFF: [SignedDuration; 3] = [
     SignedDuration::from_secs(10),
@@ -16,18 +24,20 @@ const BACKOFF: [SignedDuration; 3] = [
     SignedDuration::from_mins(10),
 ];
 
-pub(super) async fn run(hooks: Webhooks, mut stopped: watch::Receiver<bool>) {
+pub(super) async fn run(hooks: Webhooks, state: AppState, mut stopped: watch::Receiver<bool>) {
     tokio::select! {
         _ = stop(&mut stopped) => {}
-        _ = work(&hooks) => {}
+        _ = work(&hooks, &state) => {}
     }
 }
 
-async fn work(hooks: &Webhooks) {
+async fn work(hooks: &Webhooks, state: &AppState) {
     let db = hooks.db.github();
     resume_with_retry(|| db.resume(Timestamp::now())).await;
+    let mut dispatch = Dispatcher::default();
     loop {
-        match step(hooks, Timestamp::now, dispatch).await {
+        match work_step(state, &mut dispatch).await {
+            Ok(Some(delay)) if delay.is_zero() => tokio::task::yield_now().await,
             Ok(Some(delay)) => {
                 tokio::select! {
                     _ = hooks.wake.notified() => {}
@@ -44,6 +54,33 @@ async fn work(hooks: &Webhooks) {
             }
         }
     }
+}
+
+async fn work_step(
+    state: &AppState,
+    dispatch: &mut Dispatcher,
+) -> Result<Option<Duration>, DbError> {
+    dispatch
+        .flush(state, Instant::now(), Timestamp::now())
+        .await?;
+    let now = Timestamp::now();
+    let db = state.db.github();
+    let held = dispatch.in_flight();
+    let mut retry = None;
+    if held.len() < MAX_HELD {
+        if let Some(delivery) = db.next_pending_excluding(now, &held).await? {
+            dispatch.enqueue(state, delivery, Instant::now()).await?;
+            return Ok(Some(Duration::ZERO));
+        }
+        retry = db
+            .next_retry(now)
+            .await?
+            .map(|at| (at - now).try_into().unwrap_or_default());
+    }
+    let window = dispatch
+        .next_due()
+        .map(|due| due.saturating_duration_since(Instant::now()));
+    Ok(retry.into_iter().chain(window).min())
 }
 
 async fn resume_with_retry<F, Attempt>(mut resume: F)
@@ -64,6 +101,7 @@ where
     }
 }
 
+#[cfg(test)]
 pub(super) async fn step<F, Dispatch>(
     hooks: &Webhooks,
     clock: impl Fn() -> Timestamp,
@@ -81,21 +119,27 @@ where
             .await?
             .map(|next| (next - now).try_into().unwrap_or_default()));
     };
-    match dispatch(std::mem::take(&mut delivery.changes)).await {
-        Ok(()) => db.finish(&delivery, clock()).await?,
+    let outcome = dispatch(std::mem::take(&mut delivery.changes)).await;
+    complete(&hooks.db, &delivery, outcome, clock()).await?;
+    Ok(Some(Duration::ZERO))
+}
+
+pub(super) async fn complete(
+    db: &Db,
+    delivery: &PendingDelivery,
+    outcome: Result<(), DeliveryError>,
+    now: Timestamp,
+) -> Result<(), DbError> {
+    let github = db.github();
+    match outcome {
+        Ok(()) => github.finish(delivery, now).await?,
         Err(code) => {
-            let now = clock();
             let retry = retry_at(delivery.attempts, now);
-            if db.fail(&delivery, code, retry, now).await? && retry.is_none() {
+            if github.fail(delivery, code, retry, now).await? && retry.is_none() {
                 tracing::warn!(delivery_id = %delivery.id, %code, "GitHub webhook delivery exhausted its retries");
             }
         }
     }
-    Ok(Some(Duration::ZERO))
-}
-
-async fn dispatch(_changes: Vec<WebhookChange>) -> Result<(), DeliveryError> {
-    // B3 supplies the targeted GitHub reads for these durable hints.
     Ok(())
 }
 

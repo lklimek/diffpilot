@@ -3,6 +3,7 @@
 //! change is written first, then published as a `refresh` event. A failed or cancelled scan never replaces the
 //! previous snapshot (the database keeps it current).
 
+pub(crate) mod event;
 mod facts;
 mod history;
 pub(crate) mod mentions;
@@ -46,7 +47,7 @@ const END_ATTEMPTS: u32 = 3;
 const END_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// The user a refresh belongs to.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Scope {
     /// Tenant.
     pub tenant_id: String,
@@ -266,10 +267,23 @@ pub(super) async fn continue_rejudges(
 ) {
     let readers = state.dashboard.readers();
     readers.end_rejudge_attempt(scope, id, attempt);
-    if readers.has_waiting_rejudges(scope)
-        && let Err(error) = rank_pending_locked(state, scope, RankMode::Rejudge).await
-    {
-        tracing::warn!(%error, %id, "accepted dashboard re-judgements could not start a follow-up ranking");
+    let pending = async {
+        let mode = if readers.has_waiting_rejudges(scope) {
+            RankMode::Rejudge
+        } else if state
+            .db
+            .dashboard()
+            .event_ranking_pending(&scope.tenant_id, &scope.user_id)
+            .await?
+        {
+            RankMode::Pending
+        } else {
+            return Ok(());
+        };
+        rank_pending_locked(state, scope, mode).await
+    };
+    if let Err(error) = pending.await {
+        tracing::warn!(%error, %id, "pending dashboard items could not start a follow-up ranking");
     }
 }
 
@@ -285,6 +299,18 @@ async fn rank_pending_locked(
     else {
         return Ok(());
     };
+    let readers = state.dashboard.readers();
+    if mode == RankMode::Pending && record.state == RefreshState::Ranking {
+        if readers
+            .rejudge_targets(scope, record.id, record.ranking_attempt)
+            .is_none()
+        {
+            dashboard
+                .clear_event_ranking(&scope.tenant_id, &scope.user_id, record.id)
+                .await?;
+        }
+        return Ok(());
+    }
     if record.state == RefreshState::Finished
         && let RestartOutcome::Restarted(record) = dashboard
             .restart_pending_ranking(&scope.tenant_id, &scope.user_id, record.id)
@@ -298,6 +324,11 @@ async fn rank_pending_locked(
             );
         }
         spawn_ranking(state, scope, &record, mode);
+        if mode == RankMode::Pending {
+            dashboard
+                .clear_event_ranking(&scope.tenant_id, &scope.user_id, record.id)
+                .await?;
+        }
     }
     Ok(())
 }

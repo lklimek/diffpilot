@@ -71,6 +71,9 @@ pub enum WatchError {
     /// GitHub could not be probed.
     #[error("the watched pull requests could not be probed on GitHub")]
     Github(#[from] WorkError),
+    /// A live watch needs a later attempt after an incomplete read.
+    #[error("GitHub did not complete a watched pull request probe")]
+    IncompleteProbe,
     /// The probe values could not be stored.
     #[error("the probe values could not be stored")]
     Json(#[from] serde_json::Error),
@@ -271,7 +274,7 @@ pub(crate) async fn tick_at(state: &AppState, now: Timestamp) -> Result<(), DbEr
         .collect();
     for (user, list) in by_user(&without_live_updates(state, &due).await?) {
         if !waits_for_limit(user, now) {
-            probe(state, user, &list, now).await;
+            probe(state, user, &list, now, ProbeTrigger::Poll).await;
         }
     }
     settle_all(state, None, now).await
@@ -319,7 +322,7 @@ pub async fn plugin_changed(state: &AppState, changed: &HashSet<PrKey>) {
         Ok(watches) => {
             for (user, list) in by_user(&watches) {
                 if !waits_for_limit(user, now) {
-                    probe(state, user, &list, now).await;
+                    probe(state, user, &list, now, ProbeTrigger::Poll).await;
                 }
             }
         }
@@ -333,8 +336,77 @@ pub async fn plugin_changed(state: &AppState, changed: &HashSet<PrKey>) {
     }
 }
 
+const EVENT_PROBE_INTERVAL: SignedDuration = SignedDuration::from_secs(60);
+
+/// Probes a signalled live PR once using a watcher, or returns the remaining spacing.
+pub(crate) async fn event_probe(
+    state: &AppState,
+    pr: i64,
+    now: Timestamp,
+    review: bool,
+) -> Result<Option<std::time::Duration>, WatchError> {
+    let rl = state.db.review_loop();
+    let watches = rl.watches_of(pr).await?;
+    let Some(first) = watches.first() else {
+        return Ok(None);
+    };
+    if !installations::live(state, &first.tenant_id)
+        .await?
+        .contains(&installations::key(&first.pr.repo))
+    {
+        return Ok(None);
+    }
+    if let Some(due) = watches
+        .iter()
+        .filter_map(|watch| watch.last_probe_at)
+        .max()
+        .map(|at| at + EVENT_PROBE_INTERVAL)
+        .filter(|due| *due > now)
+    {
+        return Ok(Some((due - now).try_into().unwrap_or_default()));
+    }
+    let selected = watches
+        .iter()
+        .filter(|watch| !waits_for_limit(&watch.user_id, now))
+        .min_by_key(|watch| watch.state == WatchState::Paused);
+    if let Some(watch) = selected {
+        // Failed attempts still consume this PR's interval.
+        let previous = watch.probe.as_ref().unwrap_or(&Value::Null);
+        match rl.record_probe(&watch.user_id, pr, previous, now).await {
+            Ok(()) => (),
+            Err(DbError::NotFound) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        }
+        if !probe(
+            state,
+            &watch.user_id,
+            &[watch],
+            now,
+            ProbeTrigger::Webhook { review },
+        )
+        .await
+        {
+            return Err(WatchError::IncompleteProbe);
+        }
+        settle_all(state, Some(&HashSet::from([pr])), now).await?;
+    }
+    Ok(None)
+}
+
+#[derive(Clone, Copy)]
+enum ProbeTrigger {
+    Poll,
+    Webhook { review: bool },
+}
+
 /// Probes `watches` of `user` and handles each answer; a user without a usable token pair is paused.
-async fn probe(state: &AppState, user: &str, watches: &[&WatchRecord], now: Timestamp) {
+async fn probe(
+    state: &AppState,
+    user: &str,
+    watches: &[&WatchRecord],
+    now: Timestamp,
+    trigger: ProbeTrigger,
+) -> bool {
     let client = match WorkClient::new(
         state.config.github.api_url.clone(),
         UserTokens {
@@ -345,7 +417,7 @@ async fn probe(state: &AppState, user: &str, watches: &[&WatchRecord], now: Time
         Ok(client) => client,
         Err(error) => {
             tracing::warn!(%error, "the GitHub client for the watch probe could not be created");
-            return;
+            return false;
         }
     };
     let answers = match client
@@ -355,23 +427,23 @@ async fn probe(state: &AppState, user: &str, watches: &[&WatchRecord], now: Time
         Ok(answers) => answers,
         Err(WorkError::Token(UserTokenError::SignInRequired) | WorkError::Unauthorized) => {
             pause(state, watches, now).await;
-            return;
+            return true;
         }
         Err(WorkError::PrimaryRateLimit { reset }) => {
             rate_limited(user, reset.unwrap_or(now + RATE_LIMIT_BACKOFF), now);
-            return;
+            return true;
         }
         Err(WorkError::SecondaryRateLimit { retry_after }) => {
             let wait = retry_after
                 .and_then(|wait| SignedDuration::try_from(wait).ok())
                 .unwrap_or(RATE_LIMIT_BACKOFF);
             rate_limited(user, now + wait, now);
-            return;
+            return true;
         }
         Err(error) => {
             tracing::warn!(user, %error, error_chain = ?error,
-                "watched pull requests could not be probed; the next tick tries again");
-            return;
+                "watched pull requests could not be probed; another probe can retry");
+            return false;
         }
     };
     if RATE_LIMITED
@@ -386,15 +458,18 @@ async fn probe(state: &AppState, user: &str, watches: &[&WatchRecord], now: Time
         tracing::debug!(
             user,
             failed = answers.failed.len(),
-            "some watched pull requests were not probed; the next tick tries again"
+            "some watched pull requests were not probed; another probe can retry"
         );
     }
+    let mut complete = answers.failed.is_empty();
     for (watch, value) in answers.resolved {
-        if let Err(error) = observe(state, watch, value, now).await {
+        if let Err(error) = observe(state, watch, value, now, trigger).await {
+            complete = false;
             tracing::warn!(pr = watch.pull_request_id, user, %error, error_chain = ?error,
                 "a watched pull request's probe could not be handled");
         }
     }
+    complete
 }
 
 /// GitHub's rate limit stops `user`'s probes until `until`: logged at `warn` when it starts, quietly while it lasts.
@@ -444,6 +519,7 @@ async fn observe(
     watch: &WatchRecord,
     value: Value,
     now: Timestamp,
+    trigger: ProbeTrigger,
 ) -> Result<(), WatchError> {
     let rl = state.db.review_loop();
     let (user, pr) = (watch.user_id.as_str(), watch.pull_request_id);
@@ -459,7 +535,7 @@ async fn observe(
         return keep_probe(state, watch, now).await;
     };
     if let Some(closed) = pull.state.as_deref().filter(|state| *state != "OPEN") {
-        rl.set_watch_state(user, pr, WatchState::Ended, now).await?;
+        rl.end_pr_watches(pr, now).await?;
         tracing::info!(
             pr,
             user,
@@ -479,7 +555,9 @@ async fn observe(
         .probe
         .clone()
         .and_then(|value| serde_json::from_value(value).ok());
-    if stored.as_ref() != Some(&probe) {
+    let changed = stored.as_ref() != Some(&probe);
+    // Editing a review or resolving a thread may leave all probe values unchanged.
+    if changed || matches!(trigger, ProbeTrigger::Webhook { review: true }) {
         let read = match super::read_if_due(state, &watch.tenant_id, user, &watch.pr, true).await {
             Ok(read) => read.outcome,
             Err(LoopError::TooSoon) => {
@@ -487,7 +565,12 @@ async fn observe(
                     pr,
                     "a changed watched pull request was read moments ago; the next probe reads it"
                 );
-                return keep_probe(state, watch, now).await;
+                keep_probe(state, watch, now).await?;
+                return if matches!(trigger, ProbeTrigger::Webhook { .. }) {
+                    Err(WatchError::IncompleteProbe)
+                } else {
+                    Ok(())
+                };
             }
             Err(error) => return Err(error.into()),
         };
@@ -497,15 +580,22 @@ async fn observe(
                 ?failure,
                 "a changed watched pull request could not be read; the next probe tries again"
             );
-            return keep_probe(state, watch, now).await;
+            keep_probe(state, watch, now).await?;
+            return if matches!(trigger, ProbeTrigger::Webhook { .. }) {
+                Err(WatchError::IncompleteProbe)
+            } else {
+                Ok(())
+            };
         }
-        let _detection = DETECTION.lock().await;
-        rl.set_pass_due(user, pr, Some(now)).await?;
-        tracing::debug!(
-            pr,
-            user,
-            "watched pull request changed; an automatic assessment pass is due"
-        );
+        if changed || matches!(read, ReadOutcome::Read { new } if new > 0) {
+            let _detection = DETECTION.lock().await;
+            rl.set_pass_due(user, pr, Some(now)).await?;
+            tracing::debug!(
+                pr,
+                user,
+                "watched pull request changed; an automatic assessment pass is due"
+            );
+        }
     }
     rl.record_probe(user, pr, &serde_json::to_value(&probe)?, now)
         .await?;

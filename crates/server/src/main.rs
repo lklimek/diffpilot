@@ -159,7 +159,7 @@ async fn run(dotenv: Result<PathBuf, dotenvy::Error>) -> Result<(), StartError> 
         let _ = stop.send(true);
     });
     let hooks = server::webhooks::Webhooks::from_app(&state);
-    let _webhook_worker = hooks.spawn(stopped.clone());
+    let _webhook_worker = hooks.spawn(state.clone(), stopped.clone());
     let public = axum::serve(
         public,
         api::router(state.clone()).into_make_service_with_connect_info::<SocketAddr>(),

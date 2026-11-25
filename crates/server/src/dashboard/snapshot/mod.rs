@@ -69,6 +69,12 @@ pub struct Snapshot {
     /// Latest GitHub webhook event applied to this dashboard.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_event_at: Option<Timestamp>,
+    /// Times of webhook additions within the current local day.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_additions: Vec<Timestamp>,
+    /// Newly added items still need to be handed to a ranking.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub event_ranking_pending: bool,
     /// TODO rows hidden because the current settings hide TODOs (read time only, never stored).
     #[serde(skip)]
     pub todos_hidden: bool,
@@ -86,6 +92,9 @@ pub struct StoredPr {
     pub private: bool,
     /// Head commit at scan time (review links compare it with the analysed head).
     pub head_sha: String,
+    /// Head repository for check/status events from forks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_repository: Option<contracts::common::RepoRef>,
     /// Base commit at scan time (the PR badge takes Ready to merge only at this base); none in a snapshot stored
     /// before it was kept.
     #[serde(default)]

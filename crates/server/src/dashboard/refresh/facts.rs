@@ -361,6 +361,10 @@ pub(super) fn pr(
             .as_ref()
             .is_some_and(|r| r.is_private),
         head_sha: name(&detail.head_ref_oid),
+        head_repository: detail
+            .head_repository
+            .as_ref()
+            .and_then(|repo| crate::github::work::parse_repo(&repo.name_with_owner)),
         base_sha: detail.base_ref_oid.as_deref().map(name),
         created_at: detail.created_at,
         ci_red: ci.red.iter().map(|c| name(c)).collect(),

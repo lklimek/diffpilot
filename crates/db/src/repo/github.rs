@@ -15,7 +15,10 @@ use super::{
 };
 use crate::error::DbError;
 
+mod dispatch;
 mod installations;
+
+pub use dispatch::DashboardTarget;
 mod tracking;
 
 const RETENTION: SignedDuration = SignedDuration::from_hours(14 * 24);
@@ -74,6 +77,12 @@ pub struct WebhookChange {
     pub action: Option<String>,
     /// GitHub App installation.
     pub installation_id: Option<i64>,
+    /// The base repository of an explicit PR in a check payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_repository: Option<Repository>,
+    /// Login named by an action that can introduce a candidate. Used only to route the re-read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_login: Option<String>,
 }
 
 /// A live-map change from an installation lifecycle event.
@@ -336,14 +345,25 @@ impl Github<'_> {
 
     /// Oldest eligible delivery. For a pending retry, processed_at stores its next eligible time.
     pub async fn next_pending(&self, now: Timestamp) -> Result<Option<PendingDelivery>, DbError> {
+        self.next_pending_excluding(now, &[]).await
+    }
+
+    /// Oldest eligible delivery not held by one of the worker's open coalescing windows.
+    pub async fn next_pending_excluding(
+        &self,
+        now: Timestamp,
+        held: &[Uuid],
+    ) -> Result<Option<PendingDelivery>, DbError> {
         // Coverage is applied at receipt. Removed repositories only fence in-flight REST lookups.
         let row: Option<(String, String, i64, String)> = sqlx::query_as(
             "SELECT delivery_id,
                     CASE WHEN event = 'installation_repositories' AND action = 'removed' THEN '[]' ELSE changes END,
                     attempts, received_at FROM github_deliveries
              WHERE state = 'pending' AND received_at >= ? AND (processed_at IS NULL OR processed_at <= ?)
+               AND delivery_id NOT IN (SELECT value FROM json_each(?))
              ORDER BY received_at, rowid LIMIT 1",
-        ).bind(ts(now - RESUME_WINDOW)).bind(ts(now)).fetch_optional(self.pool).await?;
+        ).bind(ts(now - RESUME_WINDOW)).bind(ts(now)).bind(serde_json::to_string(held)?)
+         .fetch_optional(self.pool).await?;
         row.map(|(id, changes, attempts, received_at)| {
             Ok(PendingDelivery {
                 id: Uuid::parse_str(&id).map_err(|_| DbError::Corrupt {
@@ -360,8 +380,13 @@ impl Github<'_> {
     /// When the next delayed retry becomes eligible.
     pub async fn next_retry(&self, now: Timestamp) -> Result<Option<Timestamp>, DbError> {
         let next: Option<String> = sqlx::query_scalar(
-            "SELECT MIN(processed_at) FROM github_deliveries WHERE state = 'pending' AND received_at >= ?",
-        ).bind(ts(now - RESUME_WINDOW)).fetch_one(self.pool).await?;
+            "SELECT MIN(processed_at) FROM github_deliveries
+             WHERE state = 'pending' AND received_at >= ? AND processed_at > ?",
+        )
+        .bind(ts(now - RESUME_WINDOW))
+        .bind(ts(now))
+        .fetch_one(self.pool)
+        .await?;
         next.as_deref()
             .map(|value| parse_ts(value, "processed_at"))
             .transpose()

@@ -823,16 +823,22 @@ impl Dashboard<'_> {
     ) -> Result<(), DbError> {
         let document = serde_json::to_string(snapshot)?;
         let mut tx = write_tx(self.pool).await?;
-        let updated = sqlx::query(
-            "UPDATE dashboard_refreshes SET state = 'ranking', ranking_state = 'running', snapshot = ?,
-                 scanned_at = ?
-             WHERE id = ? AND tenant_id = ? AND user_id = ? AND state = 'scanning'",
-        )
+        let updated = sqlx::query(concat!(
+            "WITH previous AS MATERIALIZED (
+                SELECT snapshot -> '$.event_additions' AS additions FROM dashboard_refreshes WHERE id IS (",
+                current_snapshot_id!(),
+            "))
+             UPDATE dashboard_refreshes SET state = 'ranking', ranking_state = 'running',
+               snapshot = CASE WHEN (SELECT additions FROM previous) IS NULL THEN ?3
+                          ELSE json_set(?3, '$.event_additions', json((SELECT additions FROM previous))) END,
+               scanned_at = ?4
+             WHERE tenant_id = ?1 AND user_id = ?2 AND id = ?5 AND state = 'scanning'"
+        ))
+        .bind(tenant_id)
+        .bind(user_id)
         .bind(document)
         .bind(ts(scanned_at))
         .bind(id.to_string())
-        .bind(tenant_id)
-        .bind(user_id)
         .execute(&mut *tx)
         .await?;
         changed(&mut tx, tenant_id, user_id, id, updated.rows_affected()).await?;
@@ -864,6 +870,40 @@ impl Dashboard<'_> {
         .await?;
         changed(&mut tx, tenant_id, user_id, id, updated.rows_affected()).await?;
         tx.commit().await?;
+        Ok(())
+    }
+
+    /// Whether event additions still need a ranking on the current snapshot.
+    pub async fn event_ranking_pending(&self, tenant: &str, user: &str) -> Result<bool, DbError> {
+        Ok(sqlx::query_scalar(concat!(
+            "SELECT COALESCE(snapshot ->> '$.event_ranking_pending', 0)
+             FROM dashboard_refreshes WHERE id IS (",
+            current_snapshot_id!(),
+            ")"
+        ))
+        .bind(tenant)
+        .bind(user)
+        .fetch_optional(self.pool)
+        .await?
+        .unwrap_or(false))
+    }
+
+    /// Marks event additions handed to a ranking of this snapshot.
+    pub async fn clear_event_ranking(
+        &self,
+        tenant: &str,
+        user: &str,
+        id: RefreshId,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE dashboard_refreshes SET snapshot = json_remove(snapshot, '$.event_ranking_pending')
+             WHERE id = ? AND tenant_id = ? AND user_id = ? AND snapshot ->> '$.event_ranking_pending' = 1",
+        )
+        .bind(id.to_string())
+        .bind(tenant)
+        .bind(user)
+        .execute(self.pool)
+        .await?;
         Ok(())
     }
 

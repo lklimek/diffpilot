@@ -1,6 +1,7 @@
 //! Dedicated GitHub App webhook ingress and its in-process delivery worker.
 
 mod changes;
+pub(crate) mod dispatch;
 mod drain;
 mod receive;
 mod worker;
@@ -190,14 +191,14 @@ impl Webhooks {
     }
 
     /// Starts the single delivery worker and reports whether webhook reception is configured.
-    pub fn spawn(&self, stopped: watch::Receiver<bool>) -> Option<JoinHandle<()>> {
+    pub fn spawn(&self, state: AppState, stopped: watch::Receiver<bool>) -> Option<JoinHandle<()>> {
         if self.config.github_webhook_secret.is_none() {
             tracing::warn!(
                 "GitHub webhook secret not set; repositories are not live, only Refresh and the nightly scan update My work"
             );
             return None;
         }
-        Some(tokio::spawn(worker::run(self.clone(), stopped)))
+        Some(tokio::spawn(worker::run(self.clone(), state, stopped)))
     }
 
     fn warning(&self, warning: Warning) -> Option<u64> {

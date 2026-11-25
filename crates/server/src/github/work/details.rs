@@ -23,7 +23,8 @@ const REACH_BATCH: usize = 50;
 const PULL_FRAGMENT: &str = " fragment Pull on PullRequest { number title url state isDraft \
 isCrossRepository body additions deletions createdAt updatedAt mergeable mergeStateStatus reviewDecision \
 baseRefName baseRefOid headRefName headRefOid milestone { title number state } \
-baseRepository { nameWithOwner isPrivate viewerPermission defaultBranchRef { name } } author { __typename login } \
+baseRepository { nameWithOwner isPrivate viewerPermission defaultBranchRef { name } } \
+headRepository { nameWithOwner } author { __typename login } \
 labels(first: 20) { nodes { name } } participants { totalCount } \
 closingIssuesReferences(first: 5) { nodes { number title labels(first: 10) { nodes { name } } } } \
 assignees(first: 10) { nodes { login } } \
@@ -287,6 +288,32 @@ fn workflow_name<'de, De: serde::Deserializer<'de>>(
         .map(str::to_owned))
 }
 
+/// A pull request's head repository.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeadRepository {
+    /// Repository owner and name.
+    pub name_with_owner: String,
+}
+
+/// Current facts of an issue.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct IssueDetail {
+    pub(crate) state: String,
+    pub(crate) title: String,
+    pub(crate) body: String,
+    pub(crate) author: Option<Actor>,
+    pub(crate) assignees: Nodes<Login>,
+    pub(crate) labels: Nodes<Name>,
+    pub(crate) milestone: Option<Milestone>,
+    pub(crate) created_at: Timestamp,
+    pub(crate) updated_at: Timestamp,
+    pub(crate) comments: Count,
+    #[serde(skip)]
+    pub(crate) private: Option<bool>,
+}
+
 /// Details of one open pull request (Q2).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -333,6 +360,9 @@ pub struct PullDetail {
     pub milestone: Option<Milestone>,
     /// Base repository.
     pub base_repository: Option<PullRepository>,
+    /// Head repository, absent if the fork was deleted.
+    #[serde(default)]
+    pub head_repository: Option<HeadRepository>,
     /// Author (null for a deleted account).
     pub author: Option<Actor>,
     /// Labels (first 20).
@@ -463,6 +493,47 @@ impl<T: TokenSource> WorkClient<T> {
                 Some((pr, state))
             })
             .collect())
+    }
+
+    /// Issue facts, with a null issue in a visible repository treated as absent.
+    pub(crate) async fn issues(
+        &self,
+        issues: &[ItemRef],
+    ) -> Result<Fetched<Option<IssueDetail>>, WorkError> {
+        let answers = self
+            .batched(issues, PR_BATCH, "", |issue| {
+                repository(
+                    &issue.repo,
+                    &format!(
+                        "isPrivate issue(number: {}) {{ state title body
+                 author {{ login }} labels(first: 20) {{ nodes {{ name }} }}
+                 assignees(first: 20) {{ nodes {{ login }} }} comments {{ totalCount }}
+                 milestone {{ title number state }} createdAt updatedAt }}",
+                        issue.number
+                    ),
+                )
+            })
+            .await?;
+        let mut fetched = Fetched::default();
+        for (issue, value) in answers.resolved {
+            match value
+                .get("issue")
+                .cloned()
+                .map(serde_json::from_value::<Option<IssueDetail>>)
+            {
+                Some(Ok(mut detail)) => {
+                    if let Some(detail) = &mut detail {
+                        detail.private = value["isPrivate"].as_bool();
+                    }
+                    fetched.found.insert(issue, detail);
+                }
+                _ => fetched.notes.push(left_out(&issue, "Details", true)),
+            }
+        }
+        for issue in answers.failed {
+            fetched.notes.push(left_out(&issue, "Details", true));
+        }
+        Ok(fetched)
     }
 
     /// Milestones of issues (Q9), fifty per query; `None` for an issue without one.
