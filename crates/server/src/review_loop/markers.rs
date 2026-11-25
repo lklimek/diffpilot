@@ -403,28 +403,41 @@ pub(super) fn decision_cue(kind: DecisionKind, quote: &str, withdrawal: bool) ->
         DecisionKind::FixHere => &["fix here", "fix in this pr", "will fix", "fixed in this pr"],
         DecisionKind::FollowUpPr => &["follow up pr", "follow up pull request", "separate pr"],
         DecisionKind::UpstreamIssue => &["upstream issue", "report upstream", "file upstream"],
-        DecisionKind::HandledInPr => {
-            return quote.split_once('#').is_some_and(|_| {
-                quote.match_indices('#').any(|(i, _)| {
-                    quote.as_bytes()[i + 1..]
-                        .first()
-                        .is_some_and(u8::is_ascii_digit)
-                })
-            });
-        }
+        DecisionKind::HandledInPr => &[],
         _ => return false,
     };
-    let words = quote
-        .to_ascii_lowercase()
-        .replace('’', "'")
-        .split(|c: char| !c.is_ascii_alphanumeric() && c != '\'')
-        .filter(|word| !word.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
-    let words = format!(" {words} ");
-    phrases
-        .iter()
-        .any(|phrase| words.contains(&format!(" {phrase} ")))
+    quote.split(['.', '!', '?']).any(|sentence| {
+        let normalized = sentence.to_ascii_lowercase().replace('’', "'");
+        let words: Vec<_> = normalized
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '\'')
+            .filter(|word| !word.is_empty())
+            .collect();
+        if kind == DecisionKind::HandledInPr {
+            return !words.iter().any(|word| negation(word))
+                && sentence.match_indices('#').any(|(i, _)| {
+                    sentence.as_bytes()[i + 1..]
+                        .first()
+                        .is_some_and(u8::is_ascii_digit)
+                });
+        }
+        phrases.iter().any(|phrase| {
+            let cue: Vec<_> = phrase.split_whitespace().collect();
+            words.windows(cue.len()).enumerate().any(|(at, window)| {
+                window == cue
+                    && !words[..at]
+                        .iter()
+                        .chain(&words[at + cue.len()..])
+                        .any(|word| negation(word))
+            })
+        })
+    })
+}
+
+fn negation(word: &str) -> bool {
+    matches!(
+        word,
+        "not" | "never" | "no" | "neither" | "nor" | "without" | "cannot"
+    ) || word.ends_with("n't")
 }
 
 #[cfg(test)]

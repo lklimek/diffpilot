@@ -95,6 +95,9 @@ pub enum LoopError {
     /// A gate item in a group or bulk batch, or a table batch leaving out a waiting gate item.
     #[error("gate items need their own decision")]
     GateRow(Vec<u32>),
+    /// A follower has a live agent claim.
+    #[error("an agent has claimed the effects of follower C{0}")]
+    FollowerClaimed(u32),
     /// The item action does not apply now (nothing to undo, an effect already claimed).
     #[error("the action does not apply to the item now")]
     NotApplicable,
@@ -758,7 +761,10 @@ async fn ask_again(
                 "a decided item whose carried decision no longer fits is asked again"
             );
         }
-        ActionOutcome::ItemChanged | ActionOutcome::NoDecision | ActionOutcome::EffectClaimed => {
+        ActionOutcome::ItemChanged
+        | ActionOutcome::NoDecision
+        | ActionOutcome::EffectClaimed
+        | ActionOutcome::FollowerClaimed(_) => {
             tracing::debug!(
                 item = record.no,
                 "item changed during the read; asking again is left for the next read"
@@ -870,7 +876,7 @@ async fn carry_over(
             };
             match rl.decide(tenant, &[new], Timestamp::now()).await? {
                 DecideOutcome::Stored(_) => state.feed.wake_sync(),
-                DecideOutcome::ItemChanged(_) => {
+                DecideOutcome::ItemChanged(_) | DecideOutcome::FollowerClaimed(_) => {
                     tracing::debug!(
                         item = record.no,
                         "item changed during the read; carry left for the next read"
@@ -1410,7 +1416,7 @@ pub async fn decide(
         .decide_planned(&session.tenant_id, pr, Timestamp::now(), |view| {
             let loaded = Loaded::from_view(handle, view).ok_or(LoopError::NotFound)?;
             let mut decisions = loaded.new_decisions(&session.user_id, rows, via)?;
-            loaded.append_propagated(&mut decisions);
+            loaded.append_propagated(&mut decisions, false);
             Ok::<_, LoopError>(decisions)
         })
         .await?;
@@ -1421,6 +1427,7 @@ pub async fn decide(
             Ok(stored.into_iter().take(rows.len()).collect())
         }
         DecideOutcome::ItemChanged(nos) => Err(LoopError::ItemChanged(nos)),
+        DecideOutcome::FollowerClaimed(no) => Err(LoopError::FollowerClaimed(no)),
     }
 }
 
@@ -1589,6 +1596,7 @@ pub async fn act(
         }
         ActionOutcome::ItemChanged => Err(LoopError::ItemChanged(vec![no])),
         ActionOutcome::NoDecision | ActionOutcome::EffectClaimed => Err(LoopError::NotApplicable),
+        ActionOutcome::FollowerClaimed(no) => Err(LoopError::FollowerClaimed(no)),
     }
 }
 

@@ -852,6 +852,7 @@ Fixtures: `fixtures/review-loop/` (spike S13-1).
 | RC5 | GET | `…/comments/items/{item}/context` | read | `ContextQuery` | `CodeContext` |
 | RC6 | POST | `…/comments/items/{item}/assess` | session_csrf | – | 202; 409 `conflict` while a pass is live; 429 `AssessmentAdmissionFailure::AssessmentDailyLimit { resets_at }` at 80 admitted UTC daily passes; 409 `credential_missing` without a usable linked plan |
 | C20 | POST | `…/comments/assess` | session_csrf | – | 202; requests a pass for the PR's comments under the same admission rules as RC6 |
+| C11 | POST | `…/comments/visit` | session_csrf | – | 204; advances the visit cursor once on Comments entry |
 | CA1 | GET | `/api/v1/settings/comment-assessment` | read | – | `AssessmentSettings`: primary/A-B configuration and remaining/reset quota |
 | CA2 | PUT | `/api/v1/settings/comment-assessment` | session_csrf | `AssessmentSettingsUpdate` | `AssessmentSettings`; stale revision → 409; never schedules assessment; at most 100 distinct `owner/repo#number` selections |
 | CA3 | GET | `…/comments/assessment-comparison` | read | optional `cutoff` (UTC timestamp) | Latest `AssessmentComparison` for this PR and payer, including exact-count summary, nullable verdict/proposal, owner revisions and method usage; 404 without a payer-owned pass; no GitHub fetch |
@@ -1008,8 +1009,9 @@ once any required session, token or CSRF checks pass.
   The PR badge and dashboard use this calculation. An open non-bot review item in the decision queue vetoes
   Ready to merge while awaiting assessment or included in a running pass. Status comments are listed and excluded
   from the queue, including `undecided`, and from `assessment.total`. Assess again on a status comment returns
-  409 `conflict`. Ask can still use it as context. The browser's Comments overview reports `imported_unseen`,
-  the number of current GitHub imports since that member last opened Comments for this PR.
+  409 `conflict`. Ask can still use it as context. The browser's Comments overview and `/comments/items?imported_unseen=true` use
+  the entry preceding the current visit as their baseline. The notice survives refetches and decisions during
+  the visit. My work reports `WorkItem.imported_unseen` per PR since the reader's latest Comments entry.
 - The Tour's optional `StepFacts.leading_context` is the deterministic line range of doc comments and attributes
   immediately above the step's first item. The generic technology plugin leaves it absent.
 - PR history merges the reader's requested analyses, watches including ended ones, and PR page visits. It returns

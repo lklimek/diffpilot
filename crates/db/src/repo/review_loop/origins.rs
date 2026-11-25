@@ -1,6 +1,8 @@
 //! Provenance of imported decisions and decisions following a primary.
 
-use contracts::api::review_loop::{DecisionKind, DecisionTarget, ImportedDecision, ItemState};
+use contracts::api::review_loop::{
+    DecisionKind, DecisionTarget, EffectKind, ImportedDecision, ItemState,
+};
 use contracts::ids::{CommentItemId, DecisionId};
 use contracts::time::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -48,6 +50,14 @@ pub(super) async fn store(
 ) -> Result<(), DbError> {
     match origin {
         NewOrigin::Follows(primary) => {
+            if new.effects.iter().any(|e| {
+                !matches!(
+                    e.kind,
+                    EffectKind::Reply | EffectKind::PrComment | EffectKind::Resolve
+                )
+            }) {
+                return Err(DbError::Conflict);
+            }
             let primary = super::actions::standing(tx, *primary)
                 .await?
                 .ok_or(DbError::Conflict)?;
@@ -79,7 +89,8 @@ pub(super) async fn store(
                 .and_then(|id| i64::try_from(id).ok())
                 .filter(|id| *id > 0)
                 .ok_or(DbError::Conflict)?;
-            if !import.binding
+            if import.evidence.relay.is_some()
+                || !import.binding
                 || new.kind != import.kind
                 || new.user_id != import.user_id
                 || !new.effects.is_empty()
@@ -102,6 +113,72 @@ pub(super) async fn store(
             .bind(import.author_withdrawal)
             .execute(&mut **tx)
             .await?;
+        }
+    }
+    Ok(())
+}
+
+pub(super) async fn follower_artefact(
+    tx: &mut Transaction<'static, Sqlite>,
+    follower: DecisionId,
+    item_no: u32,
+) -> Result<Option<String>, DbError> {
+    let artefact: Option<String> = sqlx::query_scalar(
+        "SELECT e.id FROM comment_decision_origins o JOIN comment_effects e
+            ON e.decision_id = o.primary_decision_id
+         WHERE o.decision_id = ? AND e.kind IN ('fix', 'follow_up_pr', 'upstream_issue', 'todo')
+         ORDER BY e.seq LIMIT 1",
+    )
+    .bind(follower.to_string())
+    .fetch_optional(&mut **tx)
+    .await?;
+    if let Some(id) = &artefact {
+        sqlx::query(
+            "UPDATE comment_effects
+             SET params = json_set(params, '$.item_nos', json_insert(json_extract(params, '$.item_nos'), '$[#]', ?1),
+                     '$.text', 'Review points: ' || (
+                         SELECT group_concat('C' || value, ', ') FROM
+                         json_each(json_insert(json_extract(params, '$.item_nos'), '$[#]', ?1))))
+             WHERE id = ?2 AND state IN ('waiting', 'open')
+                 AND NOT EXISTS (SELECT 1 FROM json_each(params, '$.item_nos') WHERE value = ?1)",
+        ).bind(item_no).bind(id).execute(&mut **tx).await?;
+    }
+    Ok(artefact)
+}
+
+pub(super) async fn claimed_follower(
+    tx: &mut Transaction<'static, Sqlite>,
+    primary: &str,
+    now: Timestamp,
+) -> Result<Option<u32>, DbError> {
+    for (decision, item) in followers(tx, primary).await? {
+        let claimed: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM comment_effects
+                WHERE decision_id = ? AND state = 'claimed' AND lease_until >= ?)",
+        )
+        .bind(decision)
+        .bind(ts(now))
+        .fetch_one(&mut **tx)
+        .await?;
+        if claimed {
+            return Ok(Some(item_in(tx, item).await?.no));
+        }
+    }
+    Ok(None)
+}
+
+pub(crate) async fn reopen_with_followers(
+    tx: &mut Transaction<'static, Sqlite>,
+    decision: &str,
+    item: CommentItemId,
+    now: Timestamp,
+) -> Result<(), DbError> {
+    let mut affected = followers(tx, decision).await?;
+    affected.push((decision.to_owned(), item));
+    for (decision, item) in affected {
+        super::actions::cancel_unclaimed(tx, &decision, now).await?;
+        if item_in(tx, item).await?.state != ItemState::Outside {
+            set_state_in(tx, item, ItemState::Reopened, now).await?;
         }
     }
     Ok(())
@@ -181,50 +258,82 @@ pub(super) async fn undo(
 }
 
 impl ReviewLoop<'_> {
-    /// Counts current imports committed since this reader's last Comments overview and advances its cursor.
-    pub async fn visit_comments(&self, tenant: &str, user: &str, pr: i64) -> Result<u32, DbError> {
+    /// Records one Comments entry and keeps the previous entry as the visit's notice baseline.
+    pub async fn visit_comments(&self, tenant: &str, user: &str, pr: i64) -> Result<(), DbError> {
         let mut tx = write_tx(self.pool).await?;
-        let now = Timestamp::now();
-        let previous = sqlx::query(
-            "SELECT visited_at FROM comment_visits WHERE tenant_id = ? AND user_id = ? AND pull_request_id = ?",
-        )
-        .bind(tenant)
-        .bind(user)
-        .bind(pr)
-        .fetch_optional(&mut *tx)
-        .await?
-        .map(|row| super::ts_col(&row, "visited_at"))
-        .transpose()?;
-        let imports = sqlx::query(
-            "SELECT d.decided_at FROM comment_decisions d
-             JOIN comment_items i ON i.id = d.item_id
-             JOIN comment_decision_origins o ON o.decision_id = d.id
-             WHERE i.tenant_id = ? AND i.pull_request_id = ? AND o.origin = 'imported_github'
-               AND NOT EXISTS (SELECT 1 FROM comment_decisions n WHERE n.supersedes = d.id)
-               AND NOT EXISTS (SELECT 1 FROM comment_decision_undos u WHERE u.decision_id = d.id)",
-        )
-        .bind(tenant)
-        .bind(pr)
-        .fetch_all(&mut *tx)
-        .await?;
-        let mut unseen = 0_u32;
-        for row in &imports {
-            let at = super::ts_col(row, "decided_at")?;
-            if previous.is_none_or(|previous| at > previous) {
-                unseen = unseen.saturating_add(1);
-            }
-        }
         sqlx::query(
             "INSERT INTO comment_visits (tenant_id, user_id, pull_request_id, visited_at) VALUES (?, ?, ?, ?)
-             ON CONFLICT (tenant_id, user_id, pull_request_id) DO UPDATE SET visited_at = excluded.visited_at",
+             ON CONFLICT (tenant_id, user_id, pull_request_id) DO UPDATE SET
+                 previous_visited_at = comment_visits.visited_at, visited_at = excluded.visited_at",
+        )
+        .bind(tenant).bind(user).bind(pr).bind(ts(Timestamp::now()))
+        .execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Item ids of imports since the entry preceding this visit, including their decision history.
+    pub async fn unseen_comment_imports(
+        &self,
+        tenant: &str,
+        user: &str,
+        pr: i64,
+    ) -> Result<Vec<CommentItemId>, DbError> {
+        sqlx::query(
+            "SELECT d.item_id FROM comment_decision_origins o
+             JOIN comment_decisions d ON d.id = o.decision_id
+             JOIN comment_items i ON i.id = d.item_id
+             LEFT JOIN comment_visits v ON v.tenant_id = i.tenant_id
+                AND v.pull_request_id = i.pull_request_id AND v.user_id = ?
+             WHERE i.tenant_id = ? AND i.pull_request_id = ? AND o.origin = 'imported_github'
+                AND (v.previous_visited_at IS NULL
+                     OR rtrim(d.decided_at, 'Z') > rtrim(v.previous_visited_at, 'Z'))",
+        )
+        .bind(user)
+        .bind(tenant)
+        .bind(pr)
+        .fetch_all(self.pool)
+        .await?
+        .iter()
+        .map(|row| wire_col(row, "item_id"))
+        .collect()
+    }
+
+    /// Accepts a linked account's first observed id, with a settings check in the pin transaction.
+    pub async fn pin_linked_account(
+        &self,
+        tenant: &str,
+        user: &str,
+        login: &str,
+        github_id: u64,
+    ) -> Result<bool, DbError> {
+        let Ok(github_id) = i64::try_from(github_id) else {
+            return Ok(false);
+        };
+        if github_id <= 0 {
+            return Ok(false);
+        }
+        let mut tx = write_tx(self.pool).await?;
+        sqlx::query(
+            "INSERT INTO comment_linked_account_pins (tenant_id, user_id, login, github_id)
+             SELECT ?1, ?2, lower(?3), ?4 WHERE EXISTS (
+                 SELECT 1 FROM dashboard_settings s JOIN memberships m
+                     ON m.tenant_id = s.tenant_id AND m.user_id = s.user_id
+                 JOIN json_each(s.linked_logins) l
+                 WHERE s.tenant_id = ?1 AND s.user_id = ?2 AND lower(l.value) = lower(?3))
+             ON CONFLICT DO NOTHING",
         )
         .bind(tenant)
         .bind(user)
-        .bind(pr)
-        .bind(ts(now))
+        .bind(login)
+        .bind(github_id)
         .execute(&mut *tx)
         .await?;
+        let pinned: Option<i64> = sqlx::query_scalar(
+            "SELECT github_id FROM comment_linked_account_pins WHERE tenant_id = ? AND user_id = ? AND login = ?",
+        )
+        .bind(tenant).bind(user).bind(login).fetch_optional(&mut *tx).await?;
         tx.commit().await?;
-        Ok(unseen)
+        Ok(pinned == Some(github_id))
     }
 }

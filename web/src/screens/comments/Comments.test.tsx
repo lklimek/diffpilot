@@ -56,6 +56,23 @@ describe("V0 PR page (US1, US19)", () => {
 });
 
 describe("V1 Questions (US3, US4, US11)", () => {
+  it("records one Comments entry when opening the view and keeps it across tabs", async () => {
+    const visited = vi.fn();
+    server.use(
+      http.post("/api/v1/prs/acme/node-client/482/comments/visit", ({ request }) => {
+        visited(request.headers.get("X-CSRF-Token"));
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    renderRoute(PR);
+    expect(visited).not.toHaveBeenCalled();
+    await userEvent.click(await screen.findByRole("link", { name: "Open Comments →" }));
+    await waitFor(() => expect(visited).toHaveBeenCalledTimes(1));
+    expect(visited.mock.calls[0]?.[0]).toBeTruthy();
+    await userEvent.click(await screen.findByRole("link", { name: "Table" }));
+    expect(visited).toHaveBeenCalledTimes(1);
+  });
+
   it.each([200, 502])("reads items after the overview settles with HTTP %i", async (status) => {
     let finishOverview!: () => void;
     const pending = new Promise<void>((resolve) => {

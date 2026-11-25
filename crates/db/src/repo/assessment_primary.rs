@@ -166,17 +166,12 @@ pub(super) async fn apply(
                     .bind(contracts::ids::CarryEventId::new_random().to_string()).bind(tenant).bind(pass.input.pull_request_id).bind(id.to_string()).bind(carry.decision.to_string())
                     .bind(if carry.reason.is_some(){"asked_again"}else{"carried"}).bind(carry.reason.map(super::jobs::wire_name).transpose()?).bind(serde_json::to_string(&carry.evidence)?).bind(super::jobs::ts(pass.admitted_at)).execute(&mut **tx).await?;
                 if carry.reason.is_some() {
-                    review_loop::cancel_unclaimed_in(
+                    review_loop::reopen_with_followers(
                         tx,
                         &carry.decision.to_string(),
+                        id,
                         pass.admitted_at,
                     )
-                    .await?;
-                    sqlx::query(
-                        "UPDATE comment_items SET state='reopened',revision=revision+1 WHERE id=?",
-                    )
-                    .bind(id.to_string())
-                    .execute(&mut **tx)
                     .await?;
                 }
             }

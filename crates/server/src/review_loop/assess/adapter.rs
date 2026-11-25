@@ -40,7 +40,16 @@ fn host_rows(
         .as_ref()
         .map(|r| serde_json::to_value(r).unwrap_or(Value::Null))
         .unwrap_or(output);
-    let report = host::decode(&frozen.data, raw_report.clone())?;
+    let mut report = host::decode(&frozen.data, raw_report.clone())?;
+    for row in &mut report.rows {
+        if row
+            .recorded_decision
+            .as_ref()
+            .is_some_and(|d| frozen.own_reply(&d.comment_url))
+        {
+            row.recorded_decision = None;
+        }
+    }
     if report.dropped > 0 {
         tracing::warn!(pass=%pass.id, dropped=report.dropped,"ungrounded or malformed assessment rows dropped");
     }
@@ -910,6 +919,18 @@ fn dedup_keys(rows: &mut Vec<AssessmentComparisonItem>, writes: &mut Vec<Primary
     writes.retain(|w| seen.insert(w.key.clone()));
 }
 
+fn contradicts(
+    standing: &super::frozen::FrozenDecision,
+    evidence: &db::repo::review_loop::ImportCandidate,
+) -> bool {
+    evidence.binding
+        && (evidence.kind != standing.kind
+            || evidence
+                .target
+                .as_ref()
+                .is_some_and(|target| Some(target) != standing.target.as_ref()))
+}
+
 fn carry(
     frozen: &Frozen,
     item: &ItemRecord,
@@ -917,8 +938,7 @@ fn carry(
     import: Option<&db::repo::review_loop::ImportCandidate>,
 ) -> Option<PrimaryCarry> {
     let standing = frozen.standing.get(&item.id.to_string())?;
-    let contradicted = import
-        .is_some_and(|d| d.binding && (d.kind != standing.kind || d.target != standing.target));
+    let contradicted = import.is_some_and(|d| contradicts(standing, d));
     Some(PrimaryCarry {
         decision: standing.id,
         reason: if standing.changed {
@@ -988,6 +1008,52 @@ pub(super) fn local_pr(proposal: &ProposedDecision, repo: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn agreeing_todo_and_follow_up_preserve_standing_titles() {
+        for (kind, target) in [
+            (
+                DecisionKind::Todo,
+                DecisionTarget::Todo {
+                    title: "retry".into(),
+                },
+            ),
+            (
+                DecisionKind::FollowUpPr,
+                DecisionTarget::FollowUpPr {
+                    title: Some("retry".into()),
+                },
+            ),
+        ] {
+            let standing = super::super::frozen::FrozenDecision {
+                id: contracts::ids::DecisionId::new_random(),
+                kind,
+                target: Some(target),
+                changed: false,
+            };
+            let mut evidence = db::repo::review_loop::ImportCandidate {
+                evidence: ImportedDecision {
+                    by: "owner".into(),
+                    by_id: Some(1),
+                    at: Timestamp::now(),
+                    evidence_url: "https://github.com/acme/r/pull/12#discussion_r22".into(),
+                    quote: "We should do this later.".into(),
+                    relay: None,
+                },
+                user_id: "owner".into(),
+                kind,
+                target: None,
+                binding: true,
+                author_withdrawal: false,
+                version: "test".into(),
+            };
+            assert!(!contradicts(&standing, &evidence));
+            evidence.kind = DecisionKind::Reject;
+            assert!(contradicts(&standing, &evidence));
+            evidence.binding = false;
+            assert!(!contradicts(&standing, &evidence));
+        }
+    }
+
     #[test]
     fn host_external_targets_are_preserved_without_retargeting_the_local_pr() {
         let proposal = ProposedDecision {

@@ -535,6 +535,7 @@ impl Dashboard<'_> {
         settings: &DashboardSettings,
         now: Timestamp,
     ) -> Result<(), DbError> {
+        let mut tx = write_tx(self.pool).await?;
         let saved = sqlx::query(
             "INSERT INTO dashboard_settings (user_id, tenant_id, linked_logins, enumerate_owners, repositories,
                  lookback_days, ready_label, skip_authors, known_bots, include_todos, memcan_extra_projects,
@@ -567,10 +568,22 @@ impl Dashboard<'_> {
         .bind(&settings.time_zone)
         .bind(serde_json::to_string(&settings.slack_names)?)
         .bind(ts(now))
-        .execute(self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(missing_owner)?;
-        found(saved.rows_affected())
+        found(saved.rows_affected())?;
+        sqlx::query(
+            "DELETE FROM comment_linked_account_pins
+                     WHERE tenant_id = ? AND user_id = ? AND login NOT IN (
+                         SELECT lower(value) FROM json_each(?))",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(serde_json::to_string(&settings.linked_logins)?)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Stores the browser's time zone unless the user's row already holds one (R6b, first dashboard visit),

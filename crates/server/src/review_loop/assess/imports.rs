@@ -19,28 +19,34 @@ use crate::github::{rest, threads::github_web_url};
 use crate::review_loop::{handin, markers};
 use crate::state::AppState;
 
-type Resolution = (Instant, u64);
+type Resolution = (Instant, Option<u64>);
 
-/// Positive resolutions expire after 24 hours. A failed lookup carries no authority.
+/// Successful lookups last 24 hours and failures back off for ten minutes.
 #[derive(Clone, Debug, Default)]
 pub struct RelayIds(Arc<Mutex<HashMap<String, Resolution>>>);
 
 impl RelayIds {
     async fn resolve(&self, state: &AppState, token: &SecretString, login: &str) -> Option<u64> {
-        let ttl = Duration::from_secs(24 * 60 * 60);
         {
             let mut cache = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-            cache.retain(|_, (at, _)| at.elapsed() < ttl);
+            cache.retain(|_, (at, id)| {
+                at.elapsed()
+                    < if id.is_some() {
+                        Duration::from_hours(24)
+                    } else {
+                        Duration::from_mins(10)
+                    }
+            });
             if let Some((_, id)) = cache.get(login) {
-                return Some(*id);
+                return *id;
             }
         }
-        let id = rest::user_id(&state.config.github, token, login).await?;
+        let id = rest::user_id(&state.config.github, token, login).await;
         self.0
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(login.to_owned(), (Instant::now(), id));
-        Some(id)
+        id
     }
 }
 
@@ -108,26 +114,51 @@ impl Authorities {
         if linked.is_empty() {
             return Ok(authorities);
         }
-        if let Ok(token) = crate::auth::user_access_token(state, payer).await {
-            let mut resolved = Vec::new();
-            for (login, owners) in linked {
-                if let Some(id) = state.relay_ids.resolve(state, &token, &login).await {
-                    for owner in owners {
-                        authorities.add_relay(id, owner);
-                    }
-                    resolved.push((id, login));
+        let token = match crate::auth::user_access_token(state, payer).await {
+            Ok(token) => token,
+            Err(error) => {
+                tracing::debug!(error = %error, "linked GitHub accounts could not be resolved without the assessment payer's token");
+                return Ok(authorities);
+            }
+        };
+        let mut resolved = Vec::new();
+        let mut unavailable = 0;
+        let mut mismatches = 0;
+        for (login, owners) in linked {
+            let Some(id) = state.relay_ids.resolve(state, &token, &login).await else {
+                unavailable += 1;
+                continue;
+            };
+            for owner in owners {
+                if state
+                    .db
+                    .review_loop()
+                    .pin_linked_account(tenant, &owner.user, &login, id)
+                    .await?
+                {
+                    authorities.add_relay(id, owner);
+                    resolved.push((id, login.clone()));
+                } else {
+                    mismatches += 1;
                 }
             }
-            manifest
-                .delegates
-                .extend(resolved.into_iter().filter_map(|(id, login)| {
-                    authorities
-                        .relays
-                        .get(&id)
-                        .is_some_and(Option::is_some)
-                        .then_some(login)
-                }));
         }
+        if unavailable != 0 || mismatches != 0 {
+            tracing::warn!(
+                unavailable,
+                mismatches,
+                "some linked GitHub accounts could not be verified for this assessment"
+            );
+        }
+        manifest
+            .delegates
+            .extend(resolved.into_iter().filter_map(|(id, login)| {
+                authorities
+                    .relays
+                    .get(&id)
+                    .is_some_and(Option::is_some)
+                    .then_some(login)
+            }));
         Ok(authorities)
     }
 }
@@ -196,7 +227,38 @@ fn source<'a>(data: &'a PrData, url: &str) -> Option<&'a Value> {
 }
 
 fn evidence_version(point: &Value, evidence: &Value) -> String {
-    handin::hash(format!("{point}\n{evidence}"))
+    let identity = |comment: &Value| {
+        serde_json::json!([
+            host::url(comment),
+            host::author(comment),
+            author_id(comment),
+            at(comment),
+            comment["lastEditedAt"],
+            host::body(comment),
+            comment["relayMarker"]
+        ])
+    };
+    handin::hash(format!("{}\n{}", identity(point), identity(evidence)))
+}
+
+fn whole_sentence(body: &str, quote: &str) -> bool {
+    let Some((before, after)) = body.split_once(quote) else {
+        return false;
+    };
+    let starts = before.trim_end().is_empty()
+        || (before.trim_end().ends_with(['.', '!', '?']) && before.ends_with(char::is_whitespace))
+        || before.ends_with("\n\n");
+    let ends = after.trim_start().is_empty()
+        || (quote.trim_end().ends_with(['.', '!', '?']) && after.starts_with(char::is_whitespace))
+        || after.starts_with("\n\n");
+    starts
+        && ends
+        && !quote.lines().any(|line| {
+            line.starts_with(['\t', '>'])
+                || line.starts_with("    ")
+                || line.trim_start().starts_with("```")
+                || line.trim_start().starts_with("~~~")
+        })
 }
 
 pub(crate) fn version(data: &PrData, point: &str, evidence: &str) -> Option<String> {
@@ -219,7 +281,14 @@ pub(super) fn candidate(
     let named = d.on_behalf_of.as_deref();
     let id = author_id(evidence)?;
     let kind = kind_of(d)?;
-    if written <= point.written_at.or_else(|| at(original))? || !host::grounded(evidence, d) {
+    let body = host::body(evidence);
+    if written <= point.written_at.or_else(|| at(original))?
+        || !host::grounded(evidence, d)
+        || (authorities.members.contains_key(&id)
+            && body
+                .lines()
+                .any(|line| line.trim_start().starts_with("Per maintainer decision,")))
+    {
         return None;
     }
     let same_topic = if let Some(thread) = point.thread {
@@ -284,7 +353,10 @@ pub(super) fn candidate(
         user_id: user.into(),
         kind,
         target: target_of(data, d, kind),
-        binding: relay.is_some() || markers::decision_cue(kind, &d.quote, withdrawal),
+        binding: relay.is_none()
+            && authorities.members.contains_key(&id)
+            && whole_sentence(body, &d.quote)
+            && markers::decision_cue(kind, &d.quote, withdrawal),
         author_withdrawal: withdrawal,
         version: evidence_version(original, evidence),
         evidence: ImportedDecision {

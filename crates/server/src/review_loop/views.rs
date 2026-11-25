@@ -292,9 +292,23 @@ pub async fn items(
         .await?
         .is_some_and(|watch| watch.state == WatchState::LimitReached);
     let standing = loaded.standing();
+    let unseen = if query.imported_unseen == Some(true) {
+        Some(
+            state
+                .db
+                .review_loop()
+                .unseen_comment_imports(&session.tenant_id, &session.user_id, loaded.handle.id)
+                .await?
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>(),
+        )
+    } else {
+        None
+    };
     Ok(loaded
         .items
         .iter()
+        .filter(|record| unseen.as_ref().is_none_or(|ids| ids.contains(&record.id)))
         .filter(|record| query.state.is_none_or(|wanted| record.state == wanted))
         .filter(|record| query.kind.is_none_or(|wanted| record.kind == wanted))
         .map(|record| {
@@ -697,10 +711,11 @@ pub async fn overview(
         .map(|summary| summary.id);
     let mut counts = counts(&loaded, waiting, needs_you);
     if !session.is_access_token() {
-        counts.imported_unseen = Some(
-            rl.visit_comments(&session.tenant_id, &session.user_id, loaded.handle.id)
-                .await?,
-        );
+        counts.imported_unseen = Some(count(
+            rl.unseen_comment_imports(&session.tenant_id, &session.user_id, loaded.handle.id)
+                .await?
+                .len(),
+        ));
     }
     Ok(CommentsOverview {
         watch: watch.map(|watch| super::watch::view(watch, badge.clone())),

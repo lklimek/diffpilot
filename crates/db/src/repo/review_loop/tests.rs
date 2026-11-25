@@ -158,6 +158,7 @@ async fn decide_one(
     {
         DecideOutcome::Stored(mut stored) => stored.pop().expect("one"),
         DecideOutcome::ItemChanged(nos) => panic!("item changed: {nos:?}"),
+        DecideOutcome::FollowerClaimed(no) => panic!("follower C{no} claimed"),
     }
 }
 
@@ -967,12 +968,14 @@ async fn comment_tallies_count_current_comments_per_read_pull_request_and_name_w
         tallies,
         [
             PrCommentTally {
+                imported_unseen: 0,
                 index: 1,
                 pull_request_id: PR,
                 total: Some(2),
                 watched: false,
             },
             PrCommentTally {
+                imported_unseen: 0,
                 index: 3,
                 pull_request_id: 2,
                 total: None,

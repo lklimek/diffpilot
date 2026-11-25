@@ -22,6 +22,8 @@ pub enum ActionOutcome {
     NoDecision,
     /// An effect of the decision is claimed or reported already (Undo only).
     EffectClaimed,
+    /// An effect of this follower has a live agent claim.
+    FollowerClaimed(u32),
 }
 
 /// The standing (not superseded, not undone) decision of an item.
@@ -75,23 +77,23 @@ impl ReviewLoop<'_> {
         let Some(decision) = standing(&mut tx, item).await? else {
             return Ok(ActionOutcome::NoDecision);
         };
-        let mut decisions = super::origins::followers(&mut tx, &decision).await?;
-        decisions.push((decision, item));
-        for (decision, _) in &decisions {
-            let touched: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM comment_effects WHERE decision_id = ?
-                     AND state IN ('claimed', 'done', 'failed'))",
-            )
-            .bind(decision)
-            .fetch_one(&mut *tx)
-            .await?;
-            if touched {
-                return Ok(ActionOutcome::EffectClaimed);
-            }
+        if let Some(no) = super::origins::claimed_follower(&mut tx, &decision, now).await? {
+            return Ok(ActionOutcome::FollowerClaimed(no));
         }
-        for (decision, item) in decisions {
-            super::origins::undo(&mut tx, tenant_id, user_id, &decision, item, now).await?;
+        let touched: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM comment_effects WHERE decision_id = ?
+                AND state IN ('claimed', 'done', 'failed'))",
+        )
+        .bind(&decision)
+        .fetch_one(&mut *tx)
+        .await?;
+        if touched {
+            return Ok(ActionOutcome::EffectClaimed);
         }
+        for (follower, item) in super::origins::followers(&mut tx, &decision).await? {
+            super::origins::undo(&mut tx, tenant_id, user_id, &follower, item, now).await?;
+        }
+        super::origins::undo(&mut tx, tenant_id, user_id, &decision, item, now).await?;
         if item_in(&mut tx, item).await?.state != ItemState::Undecided {
             set_state_in(&mut tx, item, ItemState::Undecided, now).await?;
         }
@@ -119,8 +121,7 @@ impl ReviewLoop<'_> {
         if record.state == ItemState::Outside {
             return Ok(ActionOutcome::NoDecision);
         }
-        cancel_unclaimed(&mut tx, &decision, now).await?;
-        set_state_in(&mut tx, item, ItemState::Reopened, now).await?;
+        super::origins::reopen_with_followers(&mut tx, &decision, item, now).await?;
         let record = item_in(&mut tx, item).await?;
         tx.commit().await?;
         Ok(ActionOutcome::Done(Box::new(record)))
@@ -161,8 +162,7 @@ impl ReviewLoop<'_> {
             tx.commit().await?;
             return Ok(outcome);
         };
-        cancel_unclaimed(&mut tx, &decision, now).await?;
-        set_state_in(&mut tx, id, ItemState::Reopened, now).await?;
+        super::origins::reopen_with_followers(&mut tx, &decision, id, now).await?;
         let record = item_in(&mut tx, id).await?;
         tx.commit().await?;
         Ok(UpsertOutcome::Changed(record))

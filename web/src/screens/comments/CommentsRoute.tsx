@@ -5,7 +5,7 @@ import {
 } from "../../api/assessment-settings";
 import { AssessmentControls } from "../../components/comments/AssessmentControls";
 import { AssessmentComparisonPanel } from "../../components/comments/AssessmentComparisonReport";
-import { useCallback, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Outlet, useLocation, useNavigate, useOutletContext, useParams } from "react-router";
 import { ApiError } from "../../api/client";
 import type { CommentItem, PrPage, PrRef } from "../../api/generated/types";
@@ -17,6 +17,7 @@ import {
   usePrPage,
   usePrQuestions,
   useReadComments,
+  useVisitComments,
   useWatchPr,
 } from "../../api/review-loop";
 import { useNow } from "../../app/now";
@@ -100,7 +101,16 @@ export function CommentsRoute() {
   const me = useMe();
   const login = me.data?.user?.login ?? "anonymous";
   const overview = useCommentsOverview(pr);
-  // The overview queues assessment. Load items after the request settles so they include any new pass.
+  const { mutate: recordVisit } = useVisitComments(pr);
+  const visitKey = `${pr.repo.owner}/${pr.repo.name}#${pr.number}`;
+  const entered = useRef<string | null>(null);
+  const canRecordVisit = overview.isFetchedAfterMount && overview.data !== undefined;
+  useEffect(() => {
+    if (!canRecordVisit || entered.current === visitKey) return;
+    entered.current = visitKey;
+    recordVisit();
+  }, [canRecordVisit, recordVisit, visitKey]);
+  // Load items after the initial overview identifies the stored PR.
   const items = useCommentItems(pr, overview.isFetchedAfterMount);
   const page = usePrPage(pr);
   const read = useReadComments(pr);

@@ -476,6 +476,7 @@ async fn comment_tallies(
             continue;
         };
         items[row].watched = tally.watched;
+        items[row].imported_unseen = tally.total.map(|_| tally.imported_unseen);
         items[row].comments = if let Some(total) = tally.total {
             needs_you
                 .entry(tally.pull_request_id)

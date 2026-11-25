@@ -89,6 +89,10 @@ export const reviewLoopHandlers = [
     forPr(() => HttpResponse.json(overview())),
   ),
   route(
+    "visitComments",
+    forPr(() => new HttpResponse(null, { status: 204 })),
+  ),
+  route(
     "readComments",
     forPr(() => new HttpResponse(null, { status: 202 })),
   ),

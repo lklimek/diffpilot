@@ -84,6 +84,8 @@ pub enum DecideOutcome {
     Stored(Vec<Decision>),
     /// Nothing stored: these items (`C<no>`) changed since the revisions named.
     ItemChanged(Vec<u32>),
+    /// A follower still has a live agent claim.
+    FollowerClaimed(u32),
 }
 
 /// A decision with the item facts the carry-over rules compare.
@@ -370,9 +372,11 @@ async fn current_id(
 }
 
 /// The state an unclaimed effect returns to: `waiting` while the effect it waits for is not done.
-const RETURN_STATE: &str = "CASE WHEN e.after_seq IS NOT NULL AND NOT EXISTS (
+const RETURN_STATE: &str = "CASE WHEN (e.after_primary_effect IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM comment_effects p WHERE p.id = e.after_primary_effect AND p.state = 'done'))
+        OR (e.after_seq IS NOT NULL AND NOT EXISTS (
         SELECT 1 FROM comment_effects p WHERE p.decision_id = e.decision_id AND p.seq = e.after_seq
-          AND p.state = 'done') THEN 'waiting' ELSE 'open' END";
+          AND p.state = 'done')) THEN 'waiting' ELSE 'open' END";
 
 /// Cancels the unclaimed effects of `decision` that wait on a failed or cancelled effect, along their chain: what
 /// comes after a failed effect never runs (plan §2.3 D7). A claimed one is cancelled once released or its lease
@@ -386,7 +390,8 @@ async fn cancel_dependents(
         let cancelled = sqlx::query(
             "UPDATE comment_effects AS e SET state = 'cancelled', updated_at = ?
              WHERE e.decision_id = ? AND e.state IN ('waiting', 'open') AND EXISTS (
-                 SELECT 1 FROM comment_effects p WHERE p.decision_id = e.decision_id AND p.seq = e.after_seq
+                 SELECT 1 FROM comment_effects p
+                 WHERE (p.id = e.after_primary_effect OR (p.decision_id = e.decision_id AND p.seq = e.after_seq))
                    AND p.state IN ('failed', 'cancelled'))",
         )
         .bind(ts(now))
@@ -417,6 +422,17 @@ async fn settle(
     by_decision: bool,
     now: Timestamp,
 ) -> Result<(), DbError> {
+    sqlx::query(
+        "UPDATE comment_effects AS e SET params = json_set(e.params, '$.text',
+                json_extract(e.params, '$.text') || char(10) || 'Primary outcome: ' || p.reference)
+         FROM comment_effects p
+         WHERE e.decision_id = ? AND e.state = 'waiting' AND e.after_seq IS NULL
+            AND e.kind IN ('reply','pr_comment') AND p.id = e.after_primary_effect AND p.state = 'done'
+            AND ((p.kind IN ('follow_up_pr', 'upstream_issue') AND p.reference LIKE 'https://github.com/%'
+                  AND substr(p.reference, 20) NOT GLOB '*[^a-zA-Z0-9_./#-]*')
+              OR (p.kind = 'fix' AND length(p.reference) BETWEEN 7 AND 64
+                  AND p.reference NOT GLOB '*[^a-fA-F0-9]*'))",
+    ).bind(decision).execute(&mut **tx).await?;
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "UPDATE comment_effects AS e SET state = {RETURN_STATE}, updated_at = ?
          WHERE e.decision_id = ? AND e.state = 'waiting'"
@@ -569,6 +585,9 @@ impl ReviewLoop<'_> {
              JOIN pull_requests p ON p.id = i.pull_request_id JOIN repos r ON r.id = p.repo_id
              WHERE d.tenant_id = ?1 AND e.executor = 'agent'
                AND (e.state IN ('waiting', 'open') OR (e.state = 'claimed' AND e.lease_until < ?2))
+               AND (e.after_primary_effect IS NULL OR EXISTS (
+                       SELECT 1 FROM comment_effects p_effect
+                       WHERE p_effect.id = e.after_primary_effect AND p_effect.state = 'done'))
                AND NOT EXISTS (SELECT 1 FROM comment_decisions n WHERE n.supersedes = d.id)
                AND NOT EXISTS (SELECT 1 FROM comment_decision_undos u WHERE u.decision_id = d.id)
                AND NOT EXISTS (SELECT 1 FROM comment_effects c WHERE c.decision_id = d.id
@@ -767,6 +786,11 @@ impl ReviewLoop<'_> {
             }
         }
         settle(&mut tx, &decision, false, now).await?;
+        if matches!(report.outcome, ReportOutcome::Done | ReportOutcome::Failed) {
+            for (follower, _) in super::origins::followers(&mut tx, &decision).await? {
+                settle(&mut tx, &follower, false, now).await?;
+            }
+        }
         tx.commit().await?;
         Ok(ReportOutcomeRecord::Recorded)
     }
@@ -798,6 +822,9 @@ impl ReviewLoop<'_> {
              JOIN comment_items i ON i.id = d.item_id
              JOIN pull_requests p ON p.id = i.pull_request_id JOIN repos r ON r.id = p.repo_id
              WHERE e.executor = 'agent' AND e.state IN ('waiting', 'open', 'claimed')
+               AND (e.after_primary_effect IS NULL OR EXISTS (
+                       SELECT 1 FROM comment_effects p_effect
+                       WHERE p_effect.id = e.after_primary_effect AND p_effect.state = 'done'))
                AND NOT EXISTS (SELECT 1 FROM comment_decisions n WHERE n.supersedes = d.id)
                AND NOT EXISTS (SELECT 1 FROM comment_decision_undos u WHERE u.decision_id = d.id)
                AND NOT EXISTS (SELECT 1 FROM comment_effects c WHERE c.decision_id = d.id
@@ -939,8 +966,11 @@ async fn claim_refusal(
     .fetch_one(&mut **tx)
     .await?;
     let rows = sqlx::query(
-        "SELECT kind, state, claim_token_id, lease_until FROM comment_effects
-         WHERE decision_id = ? AND executor = 'agent' AND state IN ('waiting', 'open', 'claimed')",
+        "SELECT kind, state, claim_token_id, lease_until FROM comment_effects e
+         WHERE decision_id = ? AND executor = 'agent' AND state IN ('waiting', 'open', 'claimed')
+           AND (e.after_primary_effect IS NULL OR EXISTS (
+                       SELECT 1 FROM comment_effects p_effect
+                       WHERE p_effect.id = e.after_primary_effect AND p_effect.state = 'done'))",
     )
     .bind(decision.to_string())
     .fetch_all(&mut **tx)
@@ -996,6 +1026,13 @@ async fn store(
     if !changed.is_empty() {
         return Ok(DecideOutcome::ItemChanged(changed));
     }
+    for new in decisions {
+        if let Some(previous) = current_id(tx, new.item).await?
+            && let Some(no) = super::origins::claimed_follower(tx, &previous, now).await?
+        {
+            return Ok(DecideOutcome::FollowerClaimed(no));
+        }
+    }
     let mut ids = Vec::new();
     let mut superseded = Vec::new();
     for (new, item) in decisions.iter().zip(items) {
@@ -1039,11 +1076,16 @@ async fn store(
         if let Some(origin) = &new.origin {
             super::origins::store(tx, id, origin, new).await?;
         }
+        let artefact = if matches!(new.origin, Some(super::NewOrigin::Follows(_))) {
+            super::origins::follower_artefact(tx, id, item.no).await?
+        } else {
+            None
+        };
         for effect in &new.effects {
             sqlx::query(
                 "INSERT INTO comment_effects (id, tenant_id, decision_id, seq, after_seq, kind, executor, params,
-                     state, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     state, updated_at, after_primary_effect)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(EffectId::new_random().to_string())
             .bind(tenant_id)
@@ -1053,12 +1095,13 @@ async fn store(
             .bind(wire(effect.kind)?)
             .bind(wire(effect.executor)?)
             .bind(json(&effect.params)?)
-            .bind(if effect.after.is_some() {
+            .bind(if effect.after.is_some() || artefact.is_some() {
                 "waiting"
             } else {
                 "open"
             })
             .bind(ts(now))
+            .bind(&artefact)
             .execute(&mut **tx)
             .await?;
         }

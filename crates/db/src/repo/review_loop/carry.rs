@@ -120,15 +120,12 @@ impl ReviewLoop<'_> {
                 .execute(&mut *tx)
                 .await?;
         }
-        let state = match event.kind {
-            CarryKind::Carried => ItemState::Repeat,
+        match event.kind {
+            CarryKind::Carried => set_state_in(&mut tx, event.item, ItemState::Repeat, now).await?,
             CarryKind::AskedAgain => {
-                super::actions::cancel_unclaimed(&mut tx, &event.source_decision.to_string(), now)
-                    .await?;
-                ItemState::Reopened
+                super::origins::reopen_with_followers(&mut tx, &source, event.item, now).await?;
             }
-        };
-        set_state_in(&mut tx, event.item, state, now).await?;
+        }
         tx.commit().await?;
         Ok(id)
     }

@@ -576,6 +576,8 @@ async fn host_gone_and_status_items_are_not_offered_for_reuse() {
     let (f, items) = host_fixture(2).await;
     let mut frozen = frozen::Frozen {
         authorities: Default::default(),
+        own_reply_urls: Default::default(),
+        own_reply_texts: Default::default(),
         written: Default::default(),
         data: serde_json::from_value(
             f.state

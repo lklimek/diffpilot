@@ -14,7 +14,7 @@ use super::jobs::{parse_ts, parse_wire, wire_name};
 use crate::error::DbError;
 
 mod actions;
-pub(crate) use actions::cancel_unclaimed as cancel_unclaimed_in;
+pub(crate) use origins::reopen_with_followers;
 mod carry;
 mod decisions;
 mod items;

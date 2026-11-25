@@ -582,6 +582,14 @@ pub const START_COMMENT_ASSESSMENT: Route = route(
     "/api/v1/prs/{owner}/{name}/{number}/comments/assess",
     SessionCsrf,
 );
+/// Records the browser's entry to Comments.
+pub const VISIT_COMMENTS: Route = route(
+    "visitComments",
+    Post,
+    "/api/v1/prs/{owner}/{name}/{number}/comments/visit",
+    SessionCsrf,
+);
+
 /// RC4: the PR's items with assessments, decisions and effects (`ItemsQuery`).
 pub const LIST_COMMENT_ITEMS: Route = route(
     "listCommentItems",
@@ -855,6 +863,7 @@ pub const ROUTES: &[Route] = &[
     GET_COMMENTS,
     READ_COMMENTS,
     START_COMMENT_ASSESSMENT,
+    VISIT_COMMENTS,
     LIST_COMMENT_ITEMS,
     GET_COMMENT_CONTEXT,
     ASSESS_COMMENT,

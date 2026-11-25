@@ -114,7 +114,7 @@ pub(super) fn build(
     let mut nodes = Vec::new();
     for thread in &read.threads {
         let comments: Vec<Value> = thread.comments.nodes.iter().filter(|c| c.state.as_deref() != Some("PENDING"))
-            .map(|c| json!({"databaseId":c.database_id,"author":author_value(c.author.as_ref()),"relayMarker":clean::relay_marker(&c.body),"body":cleaned(c.author.as_ref(), &c.body),"url":c.url,"path":thread.path,"line":thread.line,"createdAt":c.created_at})).collect();
+            .map(|c| json!({"databaseId":c.database_id,"author":author_value(c.author.as_ref()),"relayMarker":clean::relay_marker(&c.body),"body":cleaned(c.author.as_ref(), &c.body),"url":c.url,"path":thread.path,"line":thread.line,"createdAt":c.created_at,"lastEditedAt":c.last_edited_at})).collect();
         if comments.is_empty() {
             continue;
         }
@@ -126,7 +126,7 @@ pub(super) fn build(
                 .pull_request_review
                 .as_ref()
                 .and_then(|r| read.reviews.iter().find(|review| review.id == r.id));
-            data.review_comments.push(json!({"id":c.database_id,"user":author_value(c.author.as_ref()),"relayMarker":clean::relay_marker(&c.body),"body":cleaned(c.author.as_ref(), &c.body),"html_url":c.url,"path":thread.path,"line":thread.line,"created_at":c.created_at,"commit_id":c.commit.as_ref().or(c.original_commit.as_ref()).map(|c|&c.oid),"pull_request_review_id":review.and_then(|r|r.database_id),"in_reply_to_id":thread.comments.nodes.first().filter(|first|first.database_id!=c.database_id).and_then(|first|first.database_id)}));
+            data.review_comments.push(json!({"id":c.database_id,"user":author_value(c.author.as_ref()),"relayMarker":clean::relay_marker(&c.body),"body":cleaned(c.author.as_ref(), &c.body),"html_url":c.url,"path":thread.path,"line":thread.line,"created_at":c.created_at,"lastEditedAt":c.last_edited_at,"commit_id":c.commit.as_ref().or(c.original_commit.as_ref()).map(|c|&c.oid),"pull_request_review_id":review.and_then(|r|r.database_id),"in_reply_to_id":thread.comments.nodes.first().filter(|first|first.database_id!=c.database_id).and_then(|first|first.database_id)}));
         }
         nodes.push(json!({"id":thread.id,"isResolved":thread.is_resolved,"isOutdated":thread.is_outdated,"path":thread.path,"line":thread.line,"startLine":thread.start_line,"comments":{"nodes":comments}}));
         if !thread.is_resolved {
@@ -166,7 +166,7 @@ pub(super) fn build(
         if source_role == SourceRole::Ignored {
             continue;
         }
-        let value = json!({"id":review.database_id.map_or_else(|| json!(review.id), |id| json!(id)),"node_id":review.id,"user":author_value(review.author.as_ref()),"relayMarker":clean::relay_marker(&review.body),"body":body,"state":review.state,"html_url":review.url,"commit_id":review.commit.as_ref().map(|c|&c.oid),"submitted_at":review.submitted_at});
+        let value = json!({"id":review.database_id.map_or_else(|| json!(review.id), |id| json!(id)),"node_id":review.id,"user":author_value(review.author.as_ref()),"relayMarker":clean::relay_marker(&review.body),"body":body,"state":review.state,"html_url":review.url,"commit_id":review.commit.as_ref().map(|c|&c.oid),"submitted_at":review.submitted_at,"lastEditedAt":review.last_edited_at});
         if source_role == SourceRole::Source {
             data.scope.sources.push(review.url.clone());
         }
@@ -196,7 +196,7 @@ pub(super) fn build(
         if source_role == SourceRole::Ignored {
             continue;
         }
-        data.comments.push(json!({"id":comment.database_id,"node_id":comment.id,"author":author_value(comment.author.as_ref()),"relayMarker":clean::relay_marker(&comment.body),"body":body,"url":comment.url,"createdAt":comment.created_at}));
+        data.comments.push(json!({"id":comment.database_id,"node_id":comment.id,"author":author_value(comment.author.as_ref()),"relayMarker":clean::relay_marker(&comment.body),"body":body,"url":comment.url,"createdAt":comment.created_at,"lastEditedAt":comment.last_edited_at}));
         if source_role == SourceRole::Source {
             data.scope.sources.push(comment.url.clone());
         }

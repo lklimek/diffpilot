@@ -93,6 +93,8 @@ pub(super) async fn admit(
     let mut frozen = Frozen {
         data,
         authorities,
+        own_reply_urls: Default::default(),
+        own_reply_texts: Default::default(),
         written: snapshot.map(|s| s.written.clone()).unwrap_or_default(),
         items: items.to_vec(),
         sent: review.sent.clone(),

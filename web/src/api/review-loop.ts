@@ -182,6 +182,12 @@ function useInvalidatePr(pr: PrRef) {
     );
 }
 
+/** Records one entry so the import notice stays stable on later reads. */
+export function useVisitComments(pr: PrRef) {
+  const invalidate = useInvalidatePr(pr);
+  return useMutation({ mutationFn: () => api.visitComments(pr), onSuccess: invalidate });
+}
+
 /** Read GitHub again (RC3), then everything of the PR. */
 export function useReadComments(pr: PrRef) {
   const invalidate = useInvalidatePr(pr);

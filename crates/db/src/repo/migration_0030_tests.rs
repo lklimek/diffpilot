@@ -59,6 +59,7 @@ const NEW: &[&str] = &[
     "app_repositories",
     "comment_decision_origins",
     "comment_visits",
+    "comment_linked_account_pins",
     "dashboard_ranking_resets",
     "dashboard_sends",
     "github_deliveries",

@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use contracts::api::review_loop::{
-    CommentItemKind, DecideRequest, DecisionKind, DecisionTarget, DecisionVia,
+    CommentItemKind, DecideRequest, DecisionKind, DecisionTarget, DecisionVia, EffectKind,
     ImportedGithubDecision, ItemState,
 };
 use contracts::common::PrRef;
@@ -32,7 +32,7 @@ pub(crate) async fn propagate(state: &AppState, tenant: &str, pr: i64) -> Result
         .decide_planned(tenant, pr, Timestamp::now(), |view| {
             let loaded = Loaded::from_view(handle, view).ok_or(LoopError::NotFound)?;
             let mut rows = Vec::new();
-            loaded.append_propagated(&mut rows);
+            loaded.append_propagated(&mut rows, true);
             Ok::<_, LoopError>(rows)
         })
         .await?;
@@ -82,7 +82,15 @@ impl Primary<'_> {
                     imported,
                 })
             }
-            Self::Existing(row) if !row.author_withdrawal && row.primary_decision.is_none() => {
+            Self::Existing(row)
+                if !row.author_withdrawal
+                    && row.primary_decision.is_none()
+                    && !row
+                        .decision
+                        .imported
+                        .as_ref()
+                        .is_some_and(|e| e.relay.is_some()) =>
+            {
                 let d = &row.decision;
                 Some(Choice {
                     user: &row.user_id,
@@ -113,7 +121,7 @@ impl Loaded {
 
     pub(super) fn import_proposal(&self, record: &ItemRecord) -> Option<ImportedGithubDecision> {
         let import = self.current_import(record)?;
-        (!import.binding).then(|| ImportedGithubDecision {
+        (!import.binding || import.evidence.relay.is_some()).then(|| ImportedGithubDecision {
             kind: import.kind,
             by: import.evidence.by.clone(),
             at: import.evidence.at,
@@ -132,25 +140,34 @@ impl Loaded {
         })
     }
 
-    pub(super) fn append_propagated(&self, rows: &mut Vec<NewDecision>) {
+    pub(super) fn append_propagated(&self, rows: &mut Vec<NewDecision>, from_assessment: bool) {
         let Ok(snapshot) = self.snapshot() else {
             return;
         };
         let standing = self.standing();
         let explicit: std::collections::HashSet<_> = rows.iter().map(|r| r.item).collect();
         rows.extend(self.items.iter().filter_map(|item| {
-            if explicit.contains(&item.id) || standing.contains_key(&item.id.to_string()) {
+            if !from_assessment
+                || explicit.contains(&item.id)
+                || standing.contains_key(&item.id.to_string())
+            {
                 return None;
             }
-            let import = self.current_import(item).filter(|import| import.binding)?;
+            let import = self
+                .current_import(item)
+                .filter(|import| import.binding && import.evidence.relay.is_none())?;
             // An undo must not automatically re-import the same GitHub statement.
             if self.decisions.iter().any(|old| {
                 old.item == item.id
-                    && old
+                    && (old
                         .decision
-                        .imported
-                        .as_ref()
-                        .is_some_and(|e| e.evidence_url == import.evidence.evidence_url)
+                        .undone_at
+                        .is_some_and(|at| import.evidence.at <= at)
+                        || old
+                            .decision
+                            .imported
+                            .as_ref()
+                            .is_some_and(|e| e.evidence_url == import.evidence.evidence_url))
             }) {
                 return None;
             }
@@ -235,8 +252,37 @@ impl Loaded {
                     item_revision: item.revision,
                     plan_digest: None,
                 };
-                let planned =
+                let mut planned =
                     effects::plan(&self.effect_item(item).ok()?, &request, &scope).ok()?;
+                if let Some(artefact) = planned
+                    .effects
+                    .iter()
+                    .find(|effect| is_artefact(effect.kind))
+                {
+                    let artefact_seq = artefact.seq;
+                    let source = self.items.iter().find(|i| i.id == primary_id)?;
+                    let link = source
+                        .url
+                        .as_deref()
+                        .and_then(crate::github::threads::github_web_url)
+                        .unwrap_or_else(|| snapshot.url.clone());
+                    let text = format!(
+                        "Duplicate of C{}. The outcome is tracked at {link}",
+                        source.no
+                    );
+                    planned.reply_text = Some(text.clone());
+                    planned.effects.retain(|effect| !is_artefact(effect.kind));
+                    for effect in &mut planned.effects {
+                        if matches!(effect.kind, EffectKind::Reply | EffectKind::PrComment) {
+                            effect.params.text = Some(text.clone());
+                        }
+                        effect.seq -= u32::from(effect.seq > artefact_seq);
+                        effect.after = effect
+                            .after
+                            .filter(|seq| *seq != artefact_seq)
+                            .map(|seq| seq - u32::from(seq > artefact_seq));
+                    }
+                }
                 Some(NewDecision {
                     origin: Some(NewOrigin::Follows(primary_id)),
                     item: item.id,
@@ -266,4 +312,11 @@ impl Loaded {
             .collect();
         rows.extend(followers);
     }
+}
+
+fn is_artefact(kind: EffectKind) -> bool {
+    matches!(
+        kind,
+        EffectKind::Fix | EffectKind::FollowUpPr | EffectKind::UpstreamIssue | EffectKind::Todo
+    )
 }
