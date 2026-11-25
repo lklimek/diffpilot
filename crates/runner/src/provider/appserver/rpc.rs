@@ -280,25 +280,62 @@ impl Rpc {
         &mut self,
         thread: &str,
         has_history: bool,
+        warm_resume: Option<Value>,
     ) -> Result<(), ProviderError> {
         if !has_history {
             self.totals.entry(thread.into()).or_default();
             return Ok(());
         }
-        tokio::time::timeout(std::time::Duration::from_secs(15), async {
-            while !self.totals.contains_key(thread) {
-                self.next_notification().await?;
+        // Codex 0.171 skips usage replay on cold resume of a paginated fork.
+        // A second resume on the same connection replays the loaded thread's actual totals.
+        if let Some(params) = warm_resume
+            && !self
+                .wait_for_usage(thread, Duration::from_millis(250))
+                .await?
+        {
+            tracing::debug!("requesting restored usage from the loaded fork");
+            let result =
+                self.request("thread/resume", params)
+                    .await
+                    .map_err(|error| match error {
+                        ProviderError::SessionUnavailable => fault(
+                            JobFailureKind::WorkerLost,
+                            "thread/resume",
+                            "loaded fork unavailable",
+                        ),
+                        error => error,
+                    })?;
+            if result["thread"]["id"].as_str() != Some(thread) {
+                return Err(fault(
+                    JobFailureKind::WorkerLost,
+                    "thread/resume",
+                    "loaded fork id mismatch",
+                ));
             }
-            Ok(())
-        })
-        .await
-        .map_err(|_| {
-            fault(
+        }
+        if !self.wait_for_usage(thread, Duration::from_secs(15)).await? {
+            return Err(fault(
                 JobFailureKind::WorkerLost,
                 "thread/tokenUsage/updated",
                 "15 second restored usage timeout",
-            )
-        })?
+            ));
+        }
+        Ok(())
+    }
+
+    async fn wait_for_usage(
+        &mut self,
+        thread: &str,
+        wait: Duration,
+    ) -> Result<bool, ProviderError> {
+        tokio::time::timeout(wait, async {
+            while !self.totals.contains_key(thread) {
+                self.next_notification().await?;
+            }
+            Ok(true)
+        })
+        .await
+        .unwrap_or(Ok(false))
     }
 
     pub async fn secret(&mut self, path: &str, bytes: &[u8]) -> Result<(), ProviderError> {

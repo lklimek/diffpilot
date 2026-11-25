@@ -138,6 +138,7 @@ enum Mode {
     Tool,
     CompletionTool,
     LostWorking,
+    ColdForkResume,
     Hang,
     BadMeter,
     Symlink,
@@ -272,6 +273,9 @@ impl Harness {
                                     },
                                     "thread/start" | "thread/resume" | "thread/fork" => {
                                         let parent = p["threadId"].as_str().unwrap_or("");
+                                        let cold_fork_resume = mode == Mode::ColdForkResume
+                                            && method == "thread/resume" && parent == "working"
+                                            && !inherited.contains_key(parent);
                                         if (mode == Mode::LostWorking && parent == "lost")
                                             || (matches!(method, "thread/resume" | "thread/fork")
                                                 && (ephemeral.contains(parent) || !materialized.contains(parent))) {
@@ -287,7 +291,10 @@ impl Harness {
                                         let total = inherited[&thread];
                                         let history = total.input_tokens != 0;
                                         result = json!({"thread":{"id":thread,"turns":if history { json!([{"id":"old","status":"completed","items":[]}]) } else { json!([]) }}});
-                                        if history { notifications.push(token_notification(&thread, "old", total, last[&thread])); }
+                                        if mode == Mode::ColdForkResume && thread == "working" {
+                                            result["thread"]["forkedFromId"] = json!("parent");
+                                        }
+                                        if history && !cold_fork_resume { notifications.push(token_notification(&thread, "old", total, last[&thread])); }
                                         if mode == Mode::MissingThread { result = json!({"thread":{}}); }
                                     },
                                     "turn/start" | "thread/compact/start" => {
@@ -471,6 +478,38 @@ async fn ask_fork_resumes_parent_and_compacts_once_without_billing_inheritance()
         assert_eq!(r["params"]["cwd"], "/work");
         assert!(r["params"].get("config").is_some());
     }
+}
+
+#[tokio::test]
+async fn ask_recovers_usage_on_cold_resume_of_an_existing_fork() {
+    let harness = Harness::new(Mode::ColdForkResume).await;
+    let mut spec = secret_job(JobKind::Ask);
+    let working = spec.working_session.as_mut().unwrap();
+    working.thread_id = Some("working".into());
+    working.kind = Some(ThreadKind::Ask);
+    working.preflight = Some(AskPreflight {
+        seed: SessionSeed::Fork,
+        generation: working.analytic_generation,
+        state: PreflightState::Done,
+    });
+    let (tx, _rx) = mpsc::channel(64);
+    let outcome = harness.provider.execute_job(&spec, tx).await.unwrap();
+    assert_eq!(outcome.usage.input_tokens, 100);
+    assert_eq!(outcome.usage.cached_input_tokens, 40);
+    assert_eq!(outcome.usage.output_tokens, 10);
+    assert_eq!(outcome.usage.requests, Some(1));
+    let session = outcome.runtime_session.unwrap();
+    assert_eq!(session.thread_id, "working");
+    assert_eq!(session.preflight.unwrap().state, PreflightState::Done);
+    let seen = harness.finish().await;
+    let resumes: Vec<_> = seen
+        .iter()
+        .filter(|r| r["method"] == "thread/resume")
+        .map(|r| &r["params"])
+        .collect();
+    assert_eq!(resumes.len(), 2);
+    assert_eq!(resumes[0], resumes[1]);
+    assert!(!seen.iter().any(|r| r["method"] == "thread/compact/start"));
 }
 
 #[tokio::test]
