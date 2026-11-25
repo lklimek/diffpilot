@@ -83,7 +83,9 @@ export function AssessmentComparisonPanel({
 }) {
   return (
     <details onToggle={(e) => onOpenChange(e.currentTarget.open)}>
-      <summary className="cursor-pointer text-sm text-accent">Assessment comparison (read-only)</summary>
+      <summary className="min-h-6 cursor-pointer content-center text-sm text-accent">
+        Assessment comparison (read-only)
+      </summary>
       {expanded &&
         (error ? (
           <StatusMessage kind="error">{error}</StatusMessage>

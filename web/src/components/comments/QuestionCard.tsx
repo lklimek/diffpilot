@@ -1,3 +1,4 @@
+import { focusQuestionHeading } from "./cardKeys";
 import { ProposalText } from "./ProposalText";
 import { Tooltip } from "../tooltip/Tooltip";
 import { Fragment, useEffect, useRef, type ReactNode } from "react";
@@ -9,7 +10,6 @@ import type {
   DecisionBatchRow,
   FlowStepRef,
   Gate,
-  NotAssessedReason,
 } from "../../api/generated/types";
 import { busyTip, buttonClass } from "../button/button";
 import { OpenExternal } from "../dashboard/common/OpenExternal";
@@ -20,7 +20,8 @@ import { CollapsibleSection } from "../collapsible/CollapsibleSection";
 import { CHOICE_LABEL, decisionLabel, type EffectsPreviewState } from "./decisions";
 import type { ReviewComment } from "../../api/provisional/comments";
 import { BotHeading, CommentTitle } from "./CommentTitle";
-import { DuplicateLinks } from "./DuplicateLinks";
+import { DuplicateLinks, DuplicateOfLink } from "./DuplicateLinks";
+import { NOT_ASSESSED } from "./queueStatus";
 import { DecisionForm } from "./DecisionForm";
 import { GateMenu } from "./GateMenu";
 import { GithubCommentText } from "./GithubCommentText";
@@ -35,16 +36,10 @@ export type ContextState =
   | { state: "none" }
   | { state: "ready"; value: CodeContext };
 
-const NOT_ASSESSED: Record<NotAssessedReason, string> = {
-  daily_limit: "daily limit",
-  failed: "the assessment failed",
-  missing: "left out of the pass",
-  not_run: "no assessment has run for it yet",
-};
-
 interface QuestionCardProps {
   item: ReviewComment;
-  duplicates?: CommentItem[];
+  duplicates?: ReviewComment[];
+  primaryHref?: string;
   /** The carry-over event that asked this repeat again (US9), when it is one. */
   reask?: CarryEvent;
   /** "Question 2 of 9". */
@@ -289,7 +284,7 @@ function Reask({ event, now, storageKey }: { event: CarryEvent; now: Date; stora
 export function QuestionCard(props: QuestionCardProps) {
   const { item, context, now, storageKey } = props;
   const heading = useRef<HTMLHeadingElement>(null);
-  useEffect(() => heading.current?.focus(), [item.id]);
+  useEffect(() => focusQuestionHeading(heading.current), [item.id]);
   const ctx = context.state === "ready" ? context.value : null;
   const assessedAt = item.assessment ? clockText(item.assessment.assessed_at, now) : null;
   const rec = item.assessment?.recommendation;
@@ -419,9 +414,9 @@ export function QuestionCard(props: QuestionCardProps) {
           </>
         )}
         <DuplicateLinks primary={item} duplicates={props.duplicates ?? []} />
-        {item.duplicate_of !== null && item.duplicate_of !== undefined && (
+        {item.duplicate_of != null && (
           <p>
-            Same problem as C{item.duplicate_of} <ProvenanceTag source="llm" />
+            <DuplicateOfLink item={item} href={props.primaryHref} onNavigate={props.onNavigate} />
           </p>
         )}
         <blockquote

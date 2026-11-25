@@ -2,11 +2,18 @@ import { Tooltip } from "../../components/tooltip/Tooltip";
 import { Link, useNavigate, useParams } from "react-router";
 import { ApiError } from "../../api/client";
 import { useMe } from "../../api/queries";
-import { usePrPage, useReadComments, useWatchPr } from "../../api/review-loop";
+import {
+  useCommentItems,
+  useCommentsOverview,
+  usePrPage,
+  useReadComments,
+  useWatchPr,
+} from "../../api/review-loop";
 import { useNow } from "../../app/now";
 import { useUserEventNotifications } from "../../app/userEvents";
 import { buttonClass } from "../../components/button/button";
 import { CollapsibleSection } from "../../components/collapsible/CollapsibleSection";
+import { commentsByNo, needsYouCount } from "../../components/comments/queueStatus";
 import { ProcessCommentsCard } from "../../components/comments/ProcessCommentsCard";
 import { OpenExternal } from "../../components/dashboard/common/OpenExternal";
 import { StatusPopover } from "../../components/status/StatusPopover";
@@ -23,6 +30,8 @@ const errorText = (error: unknown) =>
 export function PrScreen() {
   const pr = prOfParams(useParams());
   const page = usePrPage(pr);
+  const overview = useCommentsOverview(pr, Boolean(page.data));
+  const items = useCommentItems(pr, Boolean(page.data));
   const me = useMe();
   const login = me.data?.user?.login ?? null;
   const watch = useWatchPr(pr);
@@ -114,6 +123,11 @@ export function PrScreen() {
               </div>
               <ProcessCommentsCard
                 summary={data.comments}
+                needsYou={needsYouCount(
+                  data.comments.counts.undecided,
+                  overview.data?.queue,
+                  commentsByNo(items.data),
+                )}
                 watch={data.watch}
                 watchBusy={watch.isPending}
                 onWatchChange={(on) => watch.mutate(on)}

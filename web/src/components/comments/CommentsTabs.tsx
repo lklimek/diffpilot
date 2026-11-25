@@ -1,3 +1,4 @@
+import type { RefObject } from "react";
 import { navigateOnClick, type Navigate } from "../dashboard/common/navigate";
 
 /** A page of the Comments view. */
@@ -17,16 +18,18 @@ interface CommentsTabsProps {
   /** Undecided questions (on Questions). */
   questions: number;
   onNavigate: Navigate;
+  activeTabRef?: RefObject<HTMLAnchorElement | null>;
 }
 
 /** The pages of Comments (V1–V5) as links; the current one is marked. */
-export function CommentsTabs({ current, hrefs, questions, onNavigate }: CommentsTabsProps) {
+export function CommentsTabs({ current, hrefs, questions, onNavigate, activeTabRef }: CommentsTabsProps) {
   return (
     <nav aria-label="Comments pages" className="mb-3 flex flex-wrap gap-1 border-b border-border">
       {(Object.keys(NAMES) as CommentsPage[]).map((page) => (
         <a
           key={page}
           href={hrefs[page]}
+          ref={page === current ? activeTabRef : undefined}
           aria-current={page === current ? "page" : undefined}
           aria-label={
             page === "questions"

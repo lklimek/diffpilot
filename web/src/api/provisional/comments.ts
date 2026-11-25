@@ -9,14 +9,16 @@ import type {
   PrRef,
 } from "../generated/types";
 import type { CommentAssessmentProgress, CommentAssessmentState } from "./commentAssessment";
+import type { CommentDuplicateFields } from "./commentDuplicates";
 import type { CommentsWatchFields } from "./commentsWatch";
 import type { CommentTitleFields } from "./commentTitle";
 import type { ImportedGithubDecision } from "./importedDecision";
 
-type CommentFields = CommentTitleFields & {
-  status_comment?: boolean;
-  imported_decision?: ImportedGithubDecision | null;
-};
+type CommentFields = CommentTitleFields &
+  CommentDuplicateFields & {
+    status_comment?: boolean;
+    imported_decision?: ImportedGithubDecision | null;
+  };
 
 export type CommentItemResponse = Omit<CommentItem, "assessment_state"> &
   CommentFields & {
@@ -33,7 +35,7 @@ export type ReviewCommentsOverview = Omit<CommentsOverview, "assessment"> &
   };
 export type ReviewPrPage = Omit<PrPage, "comments"> & { comments: ReviewCommentsSummary };
 
-/** Counts include PR-level questions and exclude unassessed, duplicate, status and imported items. */
+/** Server tally used before the review queue is read. */
 export type ReviewCommentTally = CommentTally;
 
 export const fetchReviewPrPage = (pr: PrRef): Promise<ReviewPrPage> => api.getPrPage(pr);

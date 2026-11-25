@@ -1,3 +1,4 @@
+import { focusQuestionHeading } from "./cardKeys";
 import { useEffect, useRef } from "react";
 import type { ReviewComment } from "../../api/provisional/comments";
 import { OpenExternal } from "../dashboard/common/OpenExternal";
@@ -23,7 +24,7 @@ export function CommentOverviewCard({
   now: Date;
 }) {
   const heading = useRef<HTMLHeadingElement>(null);
-  useEffect(() => heading.current?.focus(), [item.id]);
+  useEffect(() => focusQuestionHeading(heading.current), [item.id]);
   const last = item.decisions.at(-1);
   const imported = item.imported_decision || item.state === "outside";
   const status = commentStatusText(item, since, now);

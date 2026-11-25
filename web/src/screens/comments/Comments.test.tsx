@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeEventSource } from "../../__tests__/fake-event-source";
 import { renderRoute, startMockServer } from "../../__tests__/screen";
 import { expectTrustWording } from "../../__tests__/wording";
-import { listItems, overview } from "../../mocks/review-loop";
+import { commentItemsResponse, listItems, overview, prPage } from "../../mocks/review-loop";
 import { setScenario } from "../../mocks/scenarios";
 
 const server = startMockServer();
@@ -301,15 +301,32 @@ describe("V4–V6 and Settings → Notifications", () => {
 describe("v1.4 review status", () => {
   it("reports the same Needs you count in the PR card, Questions tab and queue", async () => {
     setScenario("comments-v14");
+    server.use(
+      http.get("/api/v1/prs/acme/node-client/482", () => {
+        const page = prPage();
+        return HttpResponse.json({
+          ...page,
+          comments: { ...page.comments, counts: { ...page.comments.counts, undecided: 99 } },
+        });
+      }),
+      http.get("/api/v1/prs/acme/node-client/482/comments", () => {
+        const data = overview();
+        return HttpResponse.json({ ...data, counts: { ...data.counts, undecided: 98 } });
+      }),
+    );
     renderRoute(PR);
     const panel = await screen.findByRole("region", { name: "Process PR comments" });
-    expect(within(panel).getByText("Needs you").nextElementSibling).toHaveTextContent("11");
+    await waitFor(() =>
+      expect(within(panel).getByText("Needs you").nextElementSibling).toHaveTextContent(/^11/),
+    );
     await userEvent.click(within(panel).getByRole("link", { name: "Open Comments →" }));
     const queue = within(await screen.findByRole("navigation", { name: "Queue" }));
     expect(queue.getByRole("button", { name: /^Status: Needs you · 11/ })).toBeVisible();
     expect(screen.getByRole("link", { name: "Questions, 11 need you" })).toBeVisible();
-    expect(queue.getByRole("button", { name: /^C30/ }).closest("details")).not.toHaveAttribute("open");
-    expect(queue.queryByRole("button", { name: /^C32/ })).not.toBeInTheDocument();
+    expect(
+      within(screen.getByRole("complementary", { name: "PR panel" })).getByText("Needs you")
+        .nextElementSibling,
+    ).toHaveTextContent(/^11$/);
   });
 
   it("opens the PR status details and restores focus on Escape", async () => {
@@ -349,5 +366,77 @@ describe("v1.4 review status", () => {
           .find((item) => item.no === no)
           ?.decisions.at(-1)?.undone_at,
       ).toBeTruthy();
+  });
+});
+
+describe("reviewing duplicates and deferred questions", () => {
+  it("keeps legacy and gated duplicates individually decidable in Questions and Table", async () => {
+    setScenario("comments-v14");
+    const c30 = listItems().find((item) => item.no === 30)!;
+    const c31 = listItems().find((item) => item.no === 31)!;
+    Object.assign(c30, { decision_follows_primary: undefined });
+    Object.assign(c31, {
+      decision_follows_primary: true,
+      gates: [{ gate: "G-FUNDS", source: "owner" }],
+      state: "assessing",
+      assessment_state: { state: "running" },
+    });
+    renderRoute(`${PR}/comments?item=C14`);
+    const queue = within(await screen.findByRole("navigation", { name: "Queue" }));
+    expect(queue.getByRole("button", { name: "Status: Needs you · 13, 3 gates" })).toBeVisible();
+    expect(screen.queryByText(/Deciding C14 decides them too/)).toBeNull();
+    await userEvent.click(queue.getByRole("button", { name: /^C30/ }));
+    const question = await screen.findByRole("article", { name: /^C30 ·/ });
+    expect(within(question).getByRole("button", { name: "Decide" })).toBeVisible();
+    await userEvent.click(within(question).getByRole("link", { name: "Same point as C14" }));
+    expect(await screen.findByRole("heading", { name: /^C14 ·/ })).toHaveFocus();
+    await userEvent.click(screen.getByRole("link", { name: "Table" }));
+    expect(await screen.findByRole("combobox", { name: /^Decision for C30/ })).toBeVisible();
+    expect(screen.getByRole("combobox", { name: /^Decision for C31.*gate item/ })).toBeVisible();
+  });
+
+  it("shows counts and routes to pending views when nothing needs you now", async () => {
+    setScenario("comments-v14");
+    listItems().find((item) => item.no === 30)!.state = "assessing";
+    listItems().find((item) => item.no === 37)!.assessment_state = {
+      state: "not_assessed",
+      reason: "missing",
+    };
+    server.use(
+      http.get("/api/v1/prs/acme/node-client/482/comments", () =>
+        HttpResponse.json({ ...overview(), queue: [] }),
+      ),
+      http.get("/api/v1/prs/acme/node-client/482/comments/items", () =>
+        HttpResponse.json(
+          commentItemsResponse().filter((item) => [30, 31, 34, 35, 36, 37].includes(item.no)),
+        ),
+      ),
+    );
+    renderRoute(`${PR}/comments`);
+    const summary = await screen.findByRole("region", { name: "No questions need you now" });
+    expect(within(summary).getByRole("button", { name: "Assessing now · 1" })).toBeVisible();
+    expect(within(summary).getByRole("button", { name: "Waiting for assessment · 1" })).toBeVisible();
+    expect(within(summary).getByRole("button", { name: "Duplicates · 2" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "No undecided questions" })).toBeNull();
+    await userEvent.click(within(summary).getByRole("button", { name: "Not assessed · 2" }));
+    const queue = within(screen.getByRole("navigation", { name: "Queue" }));
+    expect(queue.getByRole("button", { name: /^C37/ })).toHaveTextContent(
+      "Not assessed: left out of the pass",
+    );
+  });
+
+  it.each([
+    ["table", "Table"],
+    ["log", "Decision log and agents"],
+    ["carry-overs", "Carry-overs"],
+  ])("hides assessment without leaving the %s tab", async (path, tab) => {
+    setScenario("comments-v14");
+    const router = renderRoute(`${PR}/comments/${path}`);
+    const note = path === "table" ? await screen.findByLabelText("Your comment on C22") : null;
+    if (note) await userEvent.type(note, "Keep this draft");
+    await userEvent.click(await screen.findByRole("button", { name: "Hide" }));
+    expect(router.state.location.pathname).toBe(`${PR}/comments/${path}`);
+    expect(screen.getByRole("link", { name: tab })).toHaveFocus();
+    if (note) expect(screen.getByLabelText("Your comment on C22")).toHaveValue("Keep this draft");
   });
 });

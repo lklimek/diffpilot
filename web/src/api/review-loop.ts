@@ -7,9 +7,16 @@ import {
   useMutation,
   useQuery,
   useQueryClient,
+  type QueryClient,
 } from "@tanstack/react-query";
 import { api, ApiError } from "./client";
-import { fetchReviewCommentItems, fetchReviewComments, fetchReviewPrPage } from "./provisional/comments";
+import {
+  fetchReviewCommentItems,
+  fetchReviewComments,
+  fetchReviewPrPage,
+  type ReviewComment,
+  type ReviewCommentsOverview,
+} from "./provisional/comments";
 import { withoutRetried } from "./queries";
 import type {
   AnalysisId,
@@ -32,6 +39,16 @@ export const COMMENTS_POLL_MS = 60_000;
 
 const prKey = (pr: PrRef) => [pr.repo.owner, pr.repo.name, pr.number] as const;
 
+const overviewKey = (pr: PrRef) => ["comments", ...prKey(pr)] as const;
+const itemsKey = (pr: PrRef | null) => ["comment-items", ...(pr ? prKey(pr) : [])] as const;
+
+export function cachedCommentsReview(client: QueryClient, pr: PrRef) {
+  return {
+    overview: client.getQueryData<ReviewCommentsOverview>(overviewKey(pr)),
+    items: client.getQueryData<ReviewComment[]>(itemsKey(pr)),
+  };
+}
+
 /** One read of an analysis (the old progress URL finds its PR with it). */
 export const useAnalysisOnce = (id: AnalysisId) =>
   useQuery({ queryKey: ["analysis-once", id], queryFn: () => api.getAnalysis(id) });
@@ -41,17 +58,18 @@ export const usePrPage = (pr: PrRef) =>
   useQuery({ queryKey: ["pr-page", ...prKey(pr)], queryFn: () => fetchReviewPrPage(pr) });
 
 /** Comments overview: header, counts, rounds, queue (RC2); read again every minute. */
-export const useCommentsOverview = (pr: PrRef) =>
+export const useCommentsOverview = (pr: PrRef, enabled = true) =>
   useQuery({
-    queryKey: ["comments", ...prKey(pr)],
+    queryKey: overviewKey(pr),
     queryFn: () => fetchReviewComments(pr),
+    enabled,
     refetchInterval: COMMENTS_POLL_MS,
   });
 
 /** Every item with its assessment, decisions and effects (RC4); none without a PR or while not `enabled`. */
 export const useCommentItems = (pr: PrRef | null, enabled = true) =>
   useQuery({
-    queryKey: ["comment-items", ...(pr ? prKey(pr) : [])],
+    queryKey: itemsKey(pr),
     queryFn: () => fetchReviewCommentItems(pr!),
     refetchInterval: COMMENTS_POLL_MS,
     enabled: pr !== null && enabled,

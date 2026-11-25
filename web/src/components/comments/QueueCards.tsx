@@ -1,3 +1,5 @@
+import type { ReviewComment } from "../../api/provisional/comments";
+import { QUEUE_STATUS, type QueueStatus } from "./queueStatus";
 // The other question kinds of V1 (plan §2.4, §2.6): group, "Decide the rest", PR-level questions, assessment
 // running and the empty queue.
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
@@ -19,7 +21,7 @@ import { CodeText } from "../section/CodeText";
 import { ProvenanceTag } from "../section/ProvenanceTag";
 import { Tooltip } from "../tooltip/Tooltip";
 import { CollapsibleSection } from "../collapsible/CollapsibleSection";
-import { useCardKeys } from "./cardKeys";
+import { focusQuestionHeading, useCardKeys } from "./cardKeys";
 import { DuplicateLinks } from "./DuplicateLinks";
 import { GithubCommentText } from "./GithubCommentText";
 import { COMMENT_HINT } from "./DecisionForm";
@@ -62,7 +64,7 @@ const OpenItem = ({ item }: { item: CommentItem }) => (
 
 const Heading = ({ id, text }: { id: string; text: ReactNode }) => {
   const ref = useRef<HTMLHeadingElement>(null);
-  useEffect(() => ref.current?.focus(), [id]);
+  useEffect(() => focusQuestionHeading(ref.current), [id]);
   return (
     <h2 id={id} ref={ref} tabIndex={-1} className="mt-1 mb-2 text-lg font-semibold">
       {text}
@@ -73,7 +75,7 @@ const Heading = ({ id, text }: { id: string; text: ReactNode }) => {
 interface GroupCardProps {
   /** Two or more non-gate items with the same recommendation. */
   items: CommentItem[];
-  duplicates?: ReadonlyMap<number, CommentItem[]>;
+  duplicates?: ReadonlyMap<number, ReviewComment[]>;
   position: { index: number; total: number };
   onDecide: (rows: DecisionBatchRow[]) => void;
   /** Takes the item out of the group: it is asked on its own. */
@@ -728,24 +730,37 @@ export function EmptyQueueCard({
   head,
   now,
   children,
+  deferred,
+  onStatus,
 }: {
   read: GithubRead;
   assessed: number;
   head: string;
   now: Date;
   children?: ReactNode;
+  deferred?: ReadonlyMap<QueueStatus, number>;
+  onStatus?: (status: QueueStatus) => void;
 }) {
+  const heading = deferred?.size ? "No questions need you now" : "No undecided questions";
   return (
-    <section
-      aria-label="No undecided questions"
-      className="rounded-lg border border-border bg-surface px-4 py-3.5"
-    >
-      <h2 className="mt-0 mb-1.5 text-lg font-semibold">No undecided questions</h2>
+    <section aria-label={heading} className="rounded-lg border border-border bg-surface px-4 py-3.5">
+      <h2 className="mt-0 mb-1.5 text-lg font-semibold">{heading}</h2>
       <p>
         In what was read{read.read_at ? ` at ${clockText(read.read_at, now)}` : ""}: {read.threads} threads (
         {read.complete ? "all pages read" : "not every page read"}), {read.reviews} reviews and{" "}
         {read.comments} PR comments; {assessed} comments assessed at <code>{head.slice(0, 7)}</code>.
       </p>
+      {deferred && deferred.size > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {[...deferred].map(([status, count]) => (
+            <Tooltip key={status} tip={`Shows ${QUEUE_STATUS[status].toLowerCase()} in the queue.`}>
+              <button type="button" className={buttonClass("plain", true)} onClick={() => onStatus?.(status)}>
+                {QUEUE_STATUS[status]} · {count}
+              </button>
+            </Tooltip>
+          ))}
+        </div>
+      )}
       <p className="text-xs text-muted">
         An empty queue says nothing about defects the reviewers did not raise.
       </p>

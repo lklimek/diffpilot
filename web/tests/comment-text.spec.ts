@@ -31,7 +31,11 @@ for (const newline of ["\n", "\r\n"]) {
         "Keep the evidence.",
       ].join("\n");
     }, newline);
-    await page.getByRole("button", { name: "Read GitHub again" }).click();
+    await page.getByRole("button", { name: "Questions waiting" }).click();
+    await page
+      .getByRole("dialog", { name: "Pull request status" })
+      .getByRole("button", { name: "Read GitHub again" })
+      .click();
     await expect(quote).toContainText("Minor · Functional Correctness");
     await expect(quote).toContainText("docs (https://github.com/acme/node-client)");
     await expect(quote.locator("code").first()).toHaveText("nonce");

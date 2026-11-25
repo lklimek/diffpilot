@@ -39,7 +39,11 @@ export function PlannedEffects({
   children,
 }: PlannedEffectsProps) {
   const planned = nos.map((no) => previewFor(preview, no));
-  const effects = planned.every((p) => p !== null) ? planned.flat() : null;
+  const related =
+    preview?.state === "ready" ? preview.items.filter((item) => !nos.includes(item.item_no)) : [];
+  const effects = planned.every((p) => p !== null)
+    ? [...planned.flat(), ...related.flatMap((item) => item.effects)]
+    : null;
   const status =
     preview?.state === "error"
       ? preview.message
@@ -57,7 +61,7 @@ export function PlannedEffects({
         className="m-0 grid gap-1 pl-5 text-[13px]"
       >
         {effects !== null &&
-          effectLines(effects, several).map((line, i) => (
+          effectLines(effects, several || related.length > 0).map((line, i) => (
             <li key={i}>
               <span className="mr-1.5 rounded bg-accent-bg px-1 text-[11px] font-bold text-accent">
                 {executorName(line.executor)}

@@ -92,6 +92,20 @@ describe("QuestionCard (plan §3.2)", () => {
     expectTrustWording(document.body.textContent ?? "");
   });
 
+  it("keeps keyboard focus in Queue Status when the current question changes", () => {
+    const { rerender } = show(byNo(14));
+    render(
+      <div data-queue-status>
+        <button type="button">Queue status</button>
+      </div>,
+    );
+    const status = screen.getByRole("button", { name: "Queue status" });
+    status.focus();
+    rerender(byNo(15));
+    expect(screen.getByRole("heading", { name: /C15 ·/ })).toBeVisible();
+    expect(status).toHaveFocus();
+  });
+
   it("names a round only for a comment its round's review raised; any other where GitHub says it was written", () => {
     const header = () => screen.getByText(/^C22 · 2 of 9/);
     const c22 = byNo(22);
