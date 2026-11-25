@@ -99,7 +99,7 @@ export function UserMenu({
           >
             {login.slice(0, 1)}
           </span>
-          <span aria-hidden className="hidden max-w-32 truncate sm:inline">
+          <span aria-hidden className="user-menu-login hidden max-w-32 truncate sm:inline">
             {login}
           </span>
           {attention && (

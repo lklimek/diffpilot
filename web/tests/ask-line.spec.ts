@@ -17,12 +17,18 @@ test("Ask about this line opens the chat about the line from the code view and t
     if (r.method() === "POST" && r.url().includes("/questions")) posts.push(r.url());
   });
 
-  // Keyboard: Tab from a line's comment action reaches its Ask action, which shows on focus.
+  // Keyboard: the line's GitHub link precedes the Ask action, which shows on focus.
   await main.getByRole("button", { name: "Comment on line 89" }).focus();
+  await page.keyboard.press("Tab");
+  await expect(
+    main.getByRole("link", { name: "Open line 89 of src/rpc/client.rs on GitHub, new tab" }),
+  ).toBeFocused();
   await page.keyboard.press("Tab");
   const action = main.getByRole("button", { name: "Ask the LLM about line 89" });
   await expect(action).toBeFocused();
   await expect(action).toHaveCSS("opacity", "1");
+  await expect(action).toHaveCSS("width", "24px");
+  await expect(action).toHaveCSS("height", "24px");
   await page.keyboard.press("Enter");
   await main.getByRole("button", { name: "Ask about this line" }).click();
   await expect(field).toBeFocused();

@@ -100,7 +100,8 @@ export function CommentsRoute() {
   const me = useMe();
   const login = me.data?.user?.login ?? "anonymous";
   const overview = useCommentsOverview(pr);
-  const items = useCommentItems(pr);
+  // The overview queues assessment. Load items after the request settles so they include any new pass.
+  const items = useCommentItems(pr, overview.isFetchedAfterMount);
   const page = usePrPage(pr);
   const read = useReadComments(pr);
   const watch = useWatchPr(pr);

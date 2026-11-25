@@ -21,6 +21,8 @@ test("the fake container runtime returns accepted results for both frozen assess
   });
   expect(response.ok(), await response.text()).toBeTruthy();
   await page.goto(PR_PAGE_PATH);
+  const comments = page.getByRole("region", { name: "Process PR comments" });
+  await comments.getByRole("link", { name: "Open Comments →" }).click();
   await expect
     .poll(
       () =>

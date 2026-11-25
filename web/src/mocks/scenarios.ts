@@ -373,6 +373,15 @@ const SCENARIOS = {
   "show-less": { showLess: true },
   // Owner screenshot: one remark over a replaced line, unchanged lines and added comment lines that fold.
   "code-view-v14": { tour: codeViewTour, lines: codeViewLines },
+  "code-view-v14-long-title": {
+    tour: (seed) => {
+      const tour = codeViewTour(seed);
+      tour.analysis.pr.title =
+        "feat(rpc): retry timed-out requests with exponential backoff while preserving the existing caller deadlines and reporting the last transport failure when the retry budget is exhausted";
+      return tour;
+    },
+    lines: codeViewLines,
+  },
   "remark-layout": { tour: remarkLayoutTour, lines: remarkLayoutLines },
   // Rating and remark pills: a rated step without remarks (f1.3) and an unrated one with remarks (f2.2).
   "remark-pills": {

@@ -25,6 +25,17 @@ pub struct RankRun {
     pub refresh_id: RefreshId,
     /// Its ranking attempt: pass it to `set_ranking`/`finish_ranking`, which answer `Stale` once superseded.
     pub attempt: u32,
+    /// Whether this attempt is subject to the scan ranking cap.
+    pub mode: RankMode,
+}
+
+/// Determines which caps apply during ranking.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RankMode {
+    /// Ranking as part of a scan, including Retry ranking.
+    Scan,
+    /// Judging pending items on an existing snapshot without a scan.
+    Pending,
 }
 
 /// A stored judgement applicable to an item now, with its LLM text.

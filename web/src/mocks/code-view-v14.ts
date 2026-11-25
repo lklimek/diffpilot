@@ -3,6 +3,7 @@ import type { StepFactsWithLeadingContext } from "../api/provisional/stepFacts";
 
 export function codeViewTour(seed: Tour): Tour {
   const tour = structuredClone(seed);
+  tour.analysis.pr.repo.name = "rust-dashcore-platform-integration";
   const step = tour.flows.flatMap((f) => f.steps).find((s) => s.id === "f1.2");
   if (!step) return tour;
   const facts: StepFactsWithLeadingContext = {

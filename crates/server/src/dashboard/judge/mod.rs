@@ -26,13 +26,13 @@ use contracts::job::state::JobState;
 use db::error::DbError;
 use db::repo::Db;
 use db::repo::dashboard::{
-    JUDGEMENT_RETENTION_DAYS, JudgeCounts, RankingUpdate, RankingWrite, RefreshProgress,
+    JUDGEMENT_RETENTION_DAYS, JudgeCounts, JudgeSend, RankingUpdate, RankingWrite, RefreshProgress,
     RefreshRecord, SendCaps, SendReservation, StoredJudgement,
 };
 use db::repo::jobs::{JobStage, MAX_REPAIR_RUNS};
 use futures::StreamExt;
 use futures::future::BoxFuture;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
@@ -40,13 +40,12 @@ use tokio::time::MissedTickBehavior;
 
 use contracts::time::Timestamp;
 use jiff::SignedDuration;
-use jiff::civil::Time;
 use jiff::tz::TimeZone;
 
 use self::input::Candidate;
 pub use self::input::JUDGE_INPUT_VERSION;
 use self::store::Body;
-use super::refresh::rank::{ItemJudgement, RankRun, Ranker};
+use super::refresh::rank::{ItemJudgement, RankMode, RankRun, Ranker};
 use super::refresh::{self, Scope};
 use super::score::{Freshness, ScoreRules};
 use super::snapshot::{self, Snapshot};
@@ -60,11 +59,6 @@ pub const JUDGE_PROMPT_VERSION: u32 = 7;
 pub const REFRESH_CAP: u32 = 48;
 /// Items sent to the judge per user and local day at most, retries included (plan §B.4).
 pub const DAILY_CAP: u32 = 120;
-/// Both caps.
-const CAPS: SendCaps = SendCaps {
-    per_refresh: REFRESH_CAP,
-    per_day: DAILY_CAP,
-};
 /// Further runs of a batch whose job failed or whose answer was rejected (as the pipeline's repair runs).
 const RETRIES: u32 = MAX_REPAIR_RUNS;
 /// How often a waiting judge job is looked at: credential pause, a running analysis job, the claim.
@@ -194,7 +188,7 @@ async fn rank(state: AppState, run: RankRun) {
         live: RankingState::Running,
         zone: TimeZone::UTC,
         language: LlmLanguage::En,
-        day: Timestamp::UNIX_EPOCH,
+        left_provisional_keys: Vec::new(),
         unclaimed_since: None,
         provisional: None,
     };
@@ -233,8 +227,8 @@ struct Ranking<'a> {
     zone: TimeZone,
     /// The user's LLM text language, read when the ranking starts.
     language: LlmLanguage,
-    /// Start of the user's local day the ranking began in (the daily cap counts from it).
-    day: Timestamp,
+    /// Never-judged items left behind by the caps.
+    left_provisional_keys: Vec<ItemKey>,
     /// Since when the followed job waits for a runner (queued, credential usable, no analysis job running).
     unclaimed_since: Option<tokio::time::Instant>,
     /// Which cap left items provisional, as the ranking step's detail shows it while no other detail is given.
@@ -244,6 +238,13 @@ struct Ranking<'a> {
 impl<'a> Ranking<'a> {
     fn scope(&self) -> (&'a str, &'a str) {
         (&self.run.scope.tenant_id, &self.run.scope.user_id)
+    }
+
+    fn caps(&self) -> SendCaps {
+        SendCaps {
+            per_refresh: (self.run.mode == RankMode::Scan).then_some(REFRESH_CAP),
+            per_day: DAILY_CAP,
+        }
     }
 
     async fn run(&mut self) -> Result<End, RankError> {
@@ -262,7 +263,7 @@ impl<'a> Ranking<'a> {
         if holder.id != self.run.refresh_id {
             return Err(RankError::Stale);
         }
-        self.zone = zone(&snapshot);
+        self.zone = ranking_zone(self.state, tenant, user).await?;
         self.language = self.state.db.users().get(user).await?.language;
         let candidates = input::candidates(&snapshot, self.language);
         let keys: Vec<ItemKey> = candidates.iter().map(|c| c.item.key.clone()).collect();
@@ -274,17 +275,30 @@ impl<'a> Ranking<'a> {
             .collect();
         dashboard.mark_seen(tenant, user, &keys, now).await?;
         let (queue, reused) = self.queue(&snapshot, &candidates, &stored);
-        self.day = day_start(now, &self.zone);
         let sent = dashboard
-            .sent_totals(tenant, user, self.run.refresh_id, self.day)
+            .sent_totals(
+                tenant,
+                user,
+                self.run.refresh_id,
+                day_start(self.state.dashboard.now(), &self.zone),
+            )
             .await?;
-        let per_refresh = REFRESH_CAP.saturating_sub(sent.refresh);
+        let per_refresh = self
+            .caps()
+            .per_refresh
+            .map_or(u32::MAX, |cap| cap.saturating_sub(sent.refresh));
         let per_day = DAILY_CAP.saturating_sub(sent.day);
         let room = usize::try_from(per_refresh.min(per_day)).unwrap_or(usize::MAX);
         let take = queue.len().min(room);
         let left = queue.len() - take;
         self.counts.reused = reused;
         self.counts.left_provisional = count(left);
+        self.left_provisional_keys.extend(
+            queue[take..]
+                .iter()
+                .filter(|q| q.new)
+                .map(|q| q.item.key.clone()),
+        );
         let mut lines = vec![format!(
             "ranking: {take} items to judge, {reused} judgements reused"
         )];
@@ -315,6 +329,13 @@ impl<'a> Ranking<'a> {
                 }
                 BatchEnd::Capped(ids, limit) => {
                     not_ranked = ids;
+                    self.left_provisional_keys.extend(
+                        batches[index + 1..]
+                            .iter()
+                            .flat_map(|b| b.iter())
+                            .filter(|q| q.new)
+                            .map(|q| q.item.key.clone()),
+                    );
                     limit
                 }
             };
@@ -424,12 +445,19 @@ impl<'a> Ranking<'a> {
             let input = JudgeWorkInput {
                 items: pending.iter().map(|q| q.item.clone()).collect(),
             };
-            if let Some(limit) = self.reserve(count(pending.len())).await? {
+            let job = JobId::new_random();
+            if let Some(limit) = self.reserve(job, count(pending.len())).await? {
                 tracing::info!(refresh = %self.run.refresh_id, batch, generation, items = pending.len(), %limit,
                     "dashboard judge batch not sent: the ranking cap is reached");
+                self.left_provisional_keys
+                    .extend(pending.iter().filter(|q| q.new).map(|q| q.item.key.clone()));
                 return Ok(BatchEnd::Capped(ids(&pending), limit));
             }
-            let handle = self.submit(batch, generation, &input).await?;
+            let submitted = self.submit(job, batch, generation, &input).await;
+            if !matches!(&submitted, Ok(handle) if handle.job_id == job) {
+                self.release(job).await?;
+            }
+            let handle = submitted?;
             let result = self.follow(&handle).await?;
             pending = self.apply(handle.job_id, &input, pending, result).await?;
             if pending.is_empty() {
@@ -446,8 +474,9 @@ impl<'a> Ranking<'a> {
     }
 
     /// Counts `items` as sent against both caps; the limit reached when they do not fit (nothing counted).
-    async fn reserve(&self, items: u32) -> Result<Option<String>, RankError> {
+    async fn reserve(&self, job_id: JobId, items: u32) -> Result<Option<String>, RankError> {
         let (tenant, user) = self.scope();
+        let sent_at = self.state.dashboard.now();
         let reserved = self
             .state
             .db
@@ -457,9 +486,13 @@ impl<'a> Ranking<'a> {
                 user,
                 self.run.refresh_id,
                 self.run.attempt,
-                items,
-                CAPS,
-                self.day,
+                JudgeSend {
+                    job_id,
+                    items,
+                    sent_at,
+                    day_start: day_start(sent_at, &self.zone),
+                },
+                self.caps(),
             )
             .await?;
         match reserved {
@@ -470,8 +503,24 @@ impl<'a> Ranking<'a> {
         }
     }
 
+    async fn release(&self, job: JobId) -> Result<(), RankError> {
+        let (tenant, user) = self.scope();
+        if self
+            .state
+            .db
+            .dashboard()
+            .release_send(tenant, user, job, self.state.dashboard.now())
+            .await?
+        {
+            tracing::info!(user_id = %user, refresh = %self.run.refresh_id, %job,
+                "unused dashboard judge reservation released after submission");
+        }
+        Ok(())
+    }
+
     async fn submit(
         &self,
+        job_id: JobId,
         batch: u32,
         generation: u32,
         input: &JudgeWorkInput,
@@ -484,7 +533,7 @@ impl<'a> Ranking<'a> {
             })?;
         let saved = self.state.db.settings().llm_selection().await?;
         let spec = JobSpec {
-            job_id: JobId::new_random(),
+            job_id,
             attempt: 0,
             kind: JobKind::JudgeWork,
             target: JobTarget::Dashboard {
@@ -734,6 +783,9 @@ impl<'a> Ranking<'a> {
         let dashboard = self.state.db.dashboard();
         let record = dashboard.refresh(tenant, user, self.run.refresh_id).await?;
         let mut progress = record.progress;
+        progress
+            .left_provisional_keys
+            .clone_from(&self.left_provisional_keys);
         if !progress.steps.iter().any(|s| s.key == ScanStepKey::Ranking) {
             progress.steps.push(ScanStep {
                 key: ScanStepKey::Ranking,
@@ -894,23 +946,55 @@ fn count(n: usize) -> u32 {
     u32::try_from(n).unwrap_or(u32::MAX)
 }
 
-/// The user's time zone from the snapshot's settings; UTC while none is stored.
-fn zone(snapshot: &Snapshot) -> TimeZone {
-    snapshot
-        .settings
+/// The user's configured ranking time zone, or UTC.
+pub(crate) async fn ranking_zone(
+    state: &AppState,
+    tenant: &str,
+    user: &str,
+) -> Result<TimeZone, DbError> {
+    let settings = super::settings::effective(&state.db, tenant, user).await?;
+    Ok(settings
         .time_zone
         .as_deref()
         .and_then(super::zone::parse)
-        .unwrap_or(TimeZone::UTC)
+        .unwrap_or(TimeZone::UTC))
 }
 
 /// Start of the local day of `now` (the daily cap counts from it).
-fn day_start(now: Timestamp, zone: &TimeZone) -> Timestamp {
-    let midnight = now
-        .to_zoned(zone.clone())
-        .date()
-        .to_datetime(Time::midnight());
-    super::zone::earliest(midnight, zone).unwrap_or(now - SignedDuration::from_hours(24))
+pub(crate) fn day_start(now: Timestamp, zone: &TimeZone) -> Timestamp {
+    now.to_zoned(zone.clone())
+        .start_of_day()
+        .map(|day| Timestamp::from(day.timestamp()))
+        .unwrap_or(now - SignedDuration::from_hours(24))
+}
+
+/// Counts the never-judged items still in the current snapshot that hit a ranking cap.
+pub(crate) async fn capped_count(
+    state: &AppState,
+    tenant: &str,
+    user: &str,
+) -> Result<u32, DbError> {
+    let Some((holder, snapshot)) = snapshot::load(state, tenant, user).await? else {
+        return Ok(0);
+    };
+    if holder.state == RefreshState::Ranking || holder.progress.left_provisional_keys.is_empty() {
+        return Ok(0);
+    }
+    let capped: HashSet<_> = holder.progress.left_provisional_keys.iter().collect();
+    let keys: Vec<_> = input::candidates(&snapshot, LlmLanguage::En)
+        .into_iter()
+        .filter(|candidate| candidate.asked() && capped.contains(&candidate.item.key))
+        .map(|candidate| candidate.item.key)
+        .collect();
+    let judged = state.db.dashboard().judgements(tenant, user, &keys).await?;
+    Ok(count(
+        keys.len().saturating_sub(
+            judged
+                .iter()
+                .filter(|record| body_of(record).is_some())
+                .count(),
+        ),
+    ))
 }
 
 /// Deletes judgements not seen for [`JUDGEMENT_RETENTION_DAYS`]; a failure only delays it to the next ranking.
@@ -962,7 +1046,7 @@ pub async fn cancel_jobs(state: &AppState, refresh: RefreshId, attempt: Option<u
         Err(error) => {
             tracing::warn!(%error, %refresh,
                 "judge jobs of an ended dashboard ranking could not be listed; they are never claimed");
-            return;
+            Vec::new()
         }
     };
     for job in live
@@ -974,6 +1058,20 @@ pub async fn cancel_jobs(state: &AppState, refresh: RefreshId, attempt: Option<u
                 "judge job of an ended dashboard ranking cancelled"),
             Err(error) => tracing::warn!(%error, %refresh, job = %job.id,
                 "judge job of an ended dashboard ranking could not be cancelled"),
+        }
+    }
+    match state
+        .db
+        .dashboard()
+        .release_unsubmitted_sends(refresh, attempt, state.dashboard.now())
+        .await
+    {
+        Ok(0) => {}
+        Ok(released) => {
+            tracing::info!(%refresh, released, "unsubmitted dashboard sends refunded after ranking ended")
+        }
+        Err(error) => {
+            tracing::warn!(%error, %refresh, "unsubmitted dashboard sends could not be refunded after ranking ended")
         }
     }
 }

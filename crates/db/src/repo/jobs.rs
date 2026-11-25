@@ -7,7 +7,7 @@ use contracts::agent::JobKind;
 use contracts::ids::{AnalysisId, FlowId, JobId, PassId, QuestionId, RefreshId};
 use contracts::job::access::AgentAccess;
 use contracts::job::event::JobEvent;
-use contracts::job::result::{JobFailureKind, JobOutcome, JobResult, LlmCallStatus};
+use contracts::job::result::{JobFailureKind, JobOutcome, JobResult, LlmCallStatus, Usage};
 use contracts::job::spec::{JobPriority, JobSpec, JobTarget};
 use contracts::job::state::{JobState, JobTransition};
 use contracts::time::Timestamp;
@@ -16,8 +16,9 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use sqlx::sqlite::SqliteRow;
-use sqlx::{QueryBuilder, Row, Sqlite, SqliteConnection, SqlitePool};
+use sqlx::{QueryBuilder, Row, Sqlite, SqliteConnection, SqlitePool, Transaction};
 
+use super::dashboard::{log_refund, refund_finished_send};
 use crate::error::DbError;
 use crate::repo::settings::CallFailure;
 
@@ -339,8 +340,39 @@ pub(crate) fn server_result(job: JobId, attempt: u32, outcome: JobOutcome) -> Jo
 macro_rules! job_columns {
     () => {
         "id, analysis_id, refresh_id, pass_id, kind, priority, state, attempt, max_attempts, spec, cancel_requested, lease_expires_at,
-         resumes_at, ready_output, result, stage, generation, round, github_access_granted, created_at, finished_at"
+         resumes_at, ready_output,
+         CASE WHEN kind = 'judge_work' AND state IN ('claimed', 'running') THEN NULL ELSE result END AS result,
+         stage, generation, round, github_access_granted, created_at, finished_at"
     };
+}
+
+fn carry_judge_usage(row: &SqliteRow, result: &mut JobResult) -> Result<(), DbError> {
+    let spent = |usage: Usage| usage.input_tokens != 0 || usage.output_tokens != 0;
+    if !result.usage.is_some_and(spent) {
+        result.usage = optional_json::<Usage>(row, "judge_usage")?
+            .filter(|usage| spent(*usage))
+            .or(result.usage);
+    }
+    Ok(())
+}
+
+async fn commit_job_transition(
+    mut tx: Transaction<'static, Sqlite>,
+    job: JobId,
+    judge: bool,
+    state: JobState,
+    now: Timestamp,
+) -> Result<(), DbError> {
+    let refund = if judge && matches!(state, JobState::Failed | JobState::Cancelled) {
+        refund_finished_send(&mut tx, job, now).await?
+    } else {
+        None
+    };
+    tx.commit().await?;
+    if let Some(owner) = refund {
+        log_refund(job, owner);
+    }
+    Ok(())
 }
 
 fn optional_ts(row: &SqliteRow, column: &'static str) -> Result<Option<Timestamp>, DbError> {
@@ -581,7 +613,8 @@ struct Current {
 async fn current(tx: &mut SqliteConnection, job: JobId) -> Result<(Current, SqliteRow), DbError> {
     let row = sqlx::query(
         "SELECT kind, tenant_id, state, attempt, cancel_requested, max_attempts, ready_output, ready_output_attempt, payer_id, spec, pull_request_id,
-             json_extract(result, '$.attempt') AS result_attempt
+             json_extract(result, '$.attempt') AS result_attempt,
+             CASE WHEN kind = 'judge_work' THEN json_extract(result, '$.usage') END AS judge_usage
          FROM jobs WHERE id = ?",
     )
     .bind(job.to_string())
@@ -767,7 +800,8 @@ impl Jobs<'_> {
         let mut tx = super::write_tx(self.pool).await?;
         let mut query = QueryBuilder::<Sqlite>::new(
             "UPDATE jobs SET state = 'claimed', attempt = attempt + 1, spec = json_set(spec, '$.attempt', attempt + 1),
-                 ready_output = NULL, ready_output_attempt = NULL, result = NULL, lease_expires_at = ",
+                 ready_output = NULL, ready_output_attempt = NULL,
+                 result = CASE WHEN kind = 'judge_work' THEN result END, lease_expires_at = ",
         );
         query.push_bind(ts(params.lease_until));
         query.push(", job_token_hash = ");
@@ -929,13 +963,18 @@ impl Jobs<'_> {
         let mut tx = super::write_tx(self.pool).await?;
         let (current, row) = current(&mut tx, result.job_id).await?;
         let recorded_attempt: Option<u32> = row.try_get("result_attempt")?;
-        if recorded_attempt == Some(result.attempt) {
+        if recorded_attempt == Some(result.attempt) && current.attempt == result.attempt {
             return Ok(Completion::AlreadyRecorded);
         }
         current.accepts(result.attempt)?;
         let credential: String = row.try_get("payer_id")?;
         let mut stored = result.clone();
         let kind: String = row.try_get("kind")?;
+        let judge = kind == JobKind::JudgeWork.as_str();
+        if judge {
+            // The daily cap also counts tokens reported before a pause and re-claim of this job.
+            carry_judge_usage(&row, &mut stored)?;
+        }
         let compaction_unconfirmed = kind == "ask"
             && !current.cancel_requested
             && matches!(stored.outcome, JobOutcome::Succeeded { .. })
@@ -988,8 +1027,8 @@ impl Jobs<'_> {
         apply_credential_effects(&mut tx, &credential, result, now).await?;
         let tenant: String = row.try_get("tenant_id")?;
         // A dashboard or `verify_comments` job has no session: nothing it reports touches one (ADR-018, ADR-023).
-        if kind == JobKind::JudgeWork.as_str() || kind == JobKind::VerifyComments.as_str() {
-            tx.commit().await?;
+        if judge || kind == JobKind::VerifyComments.as_str() {
+            commit_job_transition(tx, result.job_id, judge, state, now).await?;
             self.changes.publish(&tenant);
             return Ok(Completion::Applied { state });
         }
@@ -1052,7 +1091,11 @@ impl Jobs<'_> {
         let (current, row) = current(&mut tx, job).await?;
         match current.state {
             JobState::Queued | JobState::Paused => {
-                let result = server_result(job, current.attempt, JobOutcome::Cancelled);
+                let judge = row.try_get::<&str, _>("kind")? == JobKind::JudgeWork.as_str();
+                let mut result = server_result(job, current.attempt, JobOutcome::Cancelled);
+                if judge {
+                    carry_judge_usage(&row, &mut result)?;
+                }
                 sqlx::query(
                     "UPDATE jobs SET state = 'cancelled', cancel_requested = 1, result = ?, finished_at = ?,
                          resumes_at = NULL, ready_output = NULL, ready_output_attempt = NULL
@@ -1064,7 +1107,7 @@ impl Jobs<'_> {
                 .execute(&mut *tx)
                 .await?;
                 let tenant: String = row.try_get("tenant_id")?;
-                tx.commit().await?;
+                commit_job_transition(tx, job, judge, JobState::Cancelled, now).await?;
                 self.changes.publish(&tenant);
                 Ok(JobState::Cancelled)
             }
@@ -1087,7 +1130,9 @@ impl Jobs<'_> {
     pub async fn expire_leases(&self, now: Timestamp) -> Result<Vec<ExpiredLease>, DbError> {
         let mut tx = super::write_tx(self.pool).await?;
         let rows = sqlx::query(
-            "SELECT id, tenant_id, state, attempt, max_attempts, cancel_requested FROM jobs
+            "SELECT id, tenant_id, kind, state, attempt, max_attempts, cancel_requested,
+                CASE WHEN kind = 'judge_work' THEN json_extract(result, '$.usage') END AS judge_usage
+             FROM jobs
              WHERE state IN ('claimed', 'running') AND lease_expires_at < ?
              ORDER BY lease_expires_at, rowid",
         )
@@ -1096,6 +1141,7 @@ impl Jobs<'_> {
         .await?;
         let mut expired = Vec::with_capacity(rows.len());
         let mut tenants = HashSet::new();
+        let mut refunds = Vec::new();
         for row in &rows {
             tenants.insert(row.try_get::<String, _>("tenant_id")?);
             let id: String = row.try_get("id")?;
@@ -1110,7 +1156,8 @@ impl Jobs<'_> {
                     cancel_requested: row.try_get("cancel_requested")?,
                 })
                 .map_err(|_| DbError::Conflict)?;
-            let result = match next {
+            let judge = row.try_get::<&str, _>("kind")? == JobKind::JudgeWork.as_str();
+            let mut result = match next {
                 JobState::Cancelled => Some(server_result(job, attempt, JobOutcome::Cancelled)),
                 JobState::Failed => Some(server_result(
                     job,
@@ -1122,10 +1169,14 @@ impl Jobs<'_> {
                 )),
                 _ => None,
             };
+            if judge && let Some(result) = &mut result {
+                carry_judge_usage(row, result)?;
+            }
             sqlx::query(
-                "UPDATE jobs SET state = ?, result = ?, finished_at = ?, lease_expires_at = NULL,
+                "UPDATE jobs SET state = ?1, result = CASE WHEN ?2 IS NULL AND kind = 'judge_work' THEN result ELSE ?2 END,
+                     finished_at = ?3, lease_expires_at = NULL,
                      job_token_hash = NULL, ready_output = NULL, ready_output_attempt = NULL
-                 WHERE id = ?",
+                 WHERE id = ?4",
             )
             .bind(wire_name(next)?)
             .bind(result.as_ref().map(serde_json::to_string).transpose()?)
@@ -1133,9 +1184,18 @@ impl Jobs<'_> {
             .bind(&id)
             .execute(&mut *tx)
             .await?;
+            if judge
+                && next.is_terminal()
+                && let Some(owner) = refund_finished_send(&mut tx, job, now).await?
+            {
+                refunds.push((job, owner));
+            }
             expired.push(ExpiredLease { job, state: next });
         }
         tx.commit().await?;
+        for (job, owner) in refunds {
+            log_refund(job, owner);
+        }
         for tenant in tenants {
             self.changes.publish(&tenant);
         }
@@ -1200,7 +1260,8 @@ impl Jobs<'_> {
                 cancel_requested: current.cancel_requested,
             })
             .map_err(|_| DbError::Conflict)?;
-        let result = match next {
+        let judge = row.try_get::<&str, _>("kind")? == JobKind::JudgeWork.as_str();
+        let mut result = match next {
             JobState::Cancelled => Some(server_result(job, attempt, JobOutcome::Cancelled)),
             JobState::Failed => Some(server_result(
                 job,
@@ -1212,9 +1273,13 @@ impl Jobs<'_> {
             )),
             _ => None,
         };
+        if judge && let Some(result) = &mut result {
+            carry_judge_usage(&row, result)?;
+        }
         sqlx::query(
-            "UPDATE jobs SET state = ?, result = ?, finished_at = ?, lease_expires_at = NULL, job_token_hash = NULL
-             WHERE id = ?",
+            "UPDATE jobs SET state = ?1, result = CASE WHEN ?2 IS NULL AND kind = 'judge_work' THEN result ELSE ?2 END,
+                 finished_at = ?3, lease_expires_at = NULL, job_token_hash = NULL
+             WHERE id = ?4",
         )
         .bind(wire_name(next)?)
         .bind(result.as_ref().map(serde_json::to_string).transpose()?)
@@ -1223,7 +1288,7 @@ impl Jobs<'_> {
         .execute(&mut *tx)
         .await?;
         let tenant: String = row.try_get("tenant_id")?;
-        tx.commit().await?;
+        commit_job_transition(tx, job, judge, next, now).await?;
         self.changes.publish(&tenant);
         Ok(Some(next))
     }
@@ -2814,6 +2879,74 @@ mod tests {
             stage: JobStage::Judge { refresh, batch },
             generation: 0,
         }
+    }
+
+    #[tokio::test]
+    async fn judge_cancellation_refunds_before_publishing_activity() {
+        use crate::repo::DEFAULT_TENANT;
+        use crate::repo::dashboard::{JudgeSend, SendCaps, SendReservation};
+
+        let db = db().await;
+        let refresh = seed_ranking_refresh(&db).await.unwrap();
+        let pending = judge_job(refresh, 1);
+        let job = pending.spec.job_id;
+        let dash = db.dashboard();
+        assert_eq!(
+            dash.reserve_sends(
+                DEFAULT_TENANT,
+                CREDENTIAL,
+                refresh,
+                0,
+                JudgeSend {
+                    job_id: job,
+                    items: 1,
+                    sent_at: at(0),
+                    day_start: at(0),
+                },
+                SendCaps {
+                    per_refresh: None,
+                    per_day: 120,
+                },
+            )
+            .await
+            .unwrap(),
+            SendReservation::Reserved,
+        );
+        enqueue_new(&db, pending, 0).await;
+        let activity = db.jobs().subscribe_activity(DEFAULT_TENANT);
+
+        sqlx::query(
+            "CREATE TRIGGER reject_refund BEFORE UPDATE OF released_at ON dashboard_sends
+             BEGIN SELECT RAISE(ABORT, 'refund unavailable'); END",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        assert!(db.jobs().request_cancel(job, at(1)).await.is_err());
+        assert_eq!(db.jobs().get(job).await.unwrap().state, JobState::Queued);
+        assert_eq!(
+            dash.sent_today(DEFAULT_TENANT, CREDENTIAL, at(0))
+                .await
+                .unwrap(),
+            1,
+        );
+        assert!(!activity.has_changed().unwrap());
+
+        sqlx::query("DROP TRIGGER reject_refund")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            db.jobs().request_cancel(job, at(2)).await.unwrap(),
+            JobState::Cancelled,
+        );
+        assert_eq!(
+            dash.sent_today(DEFAULT_TENANT, CREDENTIAL, at(0))
+                .await
+                .unwrap(),
+            0,
+        );
+        assert!(activity.has_changed().unwrap());
     }
 
     #[tokio::test]

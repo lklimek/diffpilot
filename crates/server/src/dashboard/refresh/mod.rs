@@ -29,7 +29,7 @@ use jiff::SignedDuration;
 use jiff::tz::TimeZone;
 
 use self::progress::Progress;
-use self::rank::RankRun;
+use self::rank::{RankMode, RankRun};
 use self::scan::ScanInput;
 use super::score::ScoreRules;
 use super::{settings, snapshot, snooze};
@@ -226,6 +226,7 @@ pub async fn rank_again(
         scope: scope.clone(),
         refresh_id: id,
         attempt: record.ranking_attempt,
+        mode: RankMode::Scan,
     };
     let status = status_of(&record);
     state.dashboard.publish(status.clone());
@@ -237,7 +238,7 @@ pub async fn rank_again(
 }
 
 /// Startup recovery (plan §A.4): no task survived the restart, so every live refresh ends (`scanning` → `failed`
-/// interrupted, `ranking` → ranking `interrupted`, Retry ranking offered).
+/// interrupted, `ranking` → ranking `interrupted`, Retry ranking offered) and abandoned judge sends are refunded.
 pub async fn recover(state: &AppState) -> Result<(), DbError> {
     let interrupted = state
         .db
@@ -248,6 +249,17 @@ pub async fn recover(state: &AppState) -> Result<(), DbError> {
         tracing::info!(user_id = %refresh.user_id, refresh = %refresh.id, was = ?refresh.was,
             "dashboard refresh interrupted by the server restart");
         super::judge::cancel_jobs(state, refresh.id, None).await;
+    }
+    let released = state
+        .db
+        .dashboard()
+        .reconcile_sends(state.dashboard.now())
+        .await?;
+    if released > 0 {
+        tracing::info!(
+            released,
+            "dashboard judge reservations reconciled after restart"
+        );
     }
     Ok(())
 }
@@ -419,6 +431,7 @@ async fn run(state: AppState, scope: Scope, id: RefreshId, trigger: RefreshTrigg
                 scope: scope.clone(),
                 refresh_id: id,
                 attempt: 0,
+                mode: RankMode::Scan,
             };
             state.dashboard.ranker().rank(state.clone(), run).await;
         }

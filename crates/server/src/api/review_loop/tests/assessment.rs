@@ -480,9 +480,9 @@ async fn comments_reads_omit_uncomputed_assessment_progress_and_counts() {
     let w = world().await;
     let page = w.get(PR).await;
     let overview = w.get(&format!("{PR}/comments")).await;
-    for comments in [&page["comments"], &overview] {
+    for (comments, running) in [(&page["comments"], false), (&overview, true)] {
         let progress = &comments["assessment"];
-        assert_eq!(progress["running"], true);
+        assert_eq!(progress["running"], running);
         assert!(progress.get("in_pass").is_none());
         assert!(progress.get("waiting").is_none());
         for key in ["needs_you", "needs_you_gates", "imported_unseen"] {
@@ -495,6 +495,16 @@ async fn comments_reads_omit_uncomputed_assessment_progress_and_counts() {
 async fn fixture_status_sources_are_omitted_and_new_prose_sources_explain_review_counts() {
     let w = world().await;
     let page = w.get(PR).await;
+    assert!(
+        w.state
+            .db
+            .review_loop()
+            .live_passes()
+            .await
+            .unwrap()
+            .is_empty(),
+        "opening the PR page only reads GitHub"
+    );
     let sources = w.get(&format!("{PR}/comments/sources")).await;
     for source in sources.as_array().unwrap() {
         assert!(
@@ -511,8 +521,9 @@ async fn fixture_status_sources_are_omitted_and_new_prose_sources_explain_review
         "8 threads, legacy body findings, three newly eligible prose sources and merge question"
     );
     assert_eq!(page["comments"]["counts"]["undecided"], 13);
-    let pending = w.state.db.review_loop().live_passes().await.unwrap();
     assert_eq!(page["comments"]["assessment"]["total"], 12);
+    w.get(&format!("{PR}/comments")).await;
+    let pending = w.state.db.review_loop().live_passes().await.unwrap();
     assert_eq!(
         pending[0].sent.len(),
         crate::review_loop::assess::MAX_ITEMS_PER_PASS,

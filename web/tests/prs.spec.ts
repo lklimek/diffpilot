@@ -46,14 +46,19 @@ test("the review breadcrumb shortens the label and always returns to the PR main
   const pr = crumbs.getByRole("link", { name: "acme/node-client #482" });
   await expect(crumbs.getByRole("link", { name: "Pull requests" })).toHaveAttribute("href", "/prs");
   await expect(pr).toHaveAttribute("href", "/pr/acme/node-client/482");
-  await expect(pr.locator("span[aria-hidden]").first()).toHaveText("acme/node-client", {
-    useInnerText: true,
-  });
+  const repo = pr.locator(".review-repo");
+  const owner = repo.locator(".review-owner");
+  const name = repo.locator(".review-repo-name");
+  await expect(repo).toHaveText("acme/node-client");
+  await expect(owner).toBeVisible();
+  await expect(name).toBeVisible();
   await page.setViewportSize({ width: 1200, height: 900 });
-  await expect(pr.locator("span[aria-hidden]").first()).toHaveText("node-client", { useInnerText: true });
+  await expect(owner).toBeHidden();
+  await expect(name).toHaveText("node-client");
+  await expect(name).toBeVisible();
   await expect(pr).toHaveAccessibleDescription("acme/node-client #482");
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(pr.locator("span[aria-hidden]").first()).toBeHidden();
+  await expect(repo).toBeHidden();
   await expect(pr.locator("span[aria-hidden]").last()).toHaveText("#482");
   await pr.click();
   await expect(page).toHaveURL("/pr/acme/node-client/482");
