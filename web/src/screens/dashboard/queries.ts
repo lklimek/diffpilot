@@ -1,11 +1,19 @@
 import { useMutationState } from "@tanstack/react-query";
 // Data of the dashboard screen (plan §E, docs/contracts/http-api.md "Dashboard", sse-events.md): the summary (R1),
 // every item of its revision (R1b, cursor paging, ETag), live refresh events (R5), Refresh (R2), Cancel (R3),
-// Rank again (R4) and the browser's time zone on the first visit (R6b).
+// re-judgement (v1.4 C2) and the browser's time zone on the first visit (R6b).
 import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { ApiError, api } from "../../api/client";
-import type { DashboardSummary, PrRef, RefreshId, RefreshStatus, WorkItem } from "../../api/generated/types";
+import {
+  fetchMyWork,
+  fetchMyWorkItems,
+  refreshAndRejudgeOutdated,
+  rejudgeDashboardItem,
+  type DashboardItem,
+  type MyWorkSummary,
+} from "../../api/provisional/dashboard";
+import type { DashboardSummary, PrRef, RefreshId, RefreshStatus } from "../../api/generated/types";
 
 /** Query key of the summary (R1). */
 export const SUMMARY_KEY = ["dashboard"] as const;
@@ -37,7 +45,7 @@ const progress = (status: RefreshStatus) => [
 /**
  * Whether `next` is older than `kept`, a status of the same live refresh: the wire carries no sequence, so the
  * progress orders them (a read started before a stream event can land after it). After an ended refresh any status
- * is newer, since Rank again (R4) restarts its ranking.
+ * can be newer if ranking restarted.
  */
 export function isOlderStatus(next: RefreshStatus, kept: RefreshStatus | null | undefined): boolean {
   if (!kept || next.id !== kept.id || !isLive(kept)) return false;
@@ -87,7 +95,7 @@ export function useDashboardSummary(enabled: boolean) {
   return useQuery({
     queryKey: SUMMARY_KEY,
     queryFn: async () => {
-      const summary = await api.getDashboard();
+      const summary = await fetchMyWork();
       notCurrentReads.current = pluginNotCurrent(summary) ? notCurrentReads.current + 1 : 0;
       const kept = client.getQueryData<DashboardSummary>(SUMMARY_KEY)?.latest_refresh;
       return summary.latest_refresh && isOlderStatus(summary.latest_refresh, kept)
@@ -100,16 +108,12 @@ export function useDashboardSummary(enabled: boolean) {
 }
 
 /**
- * The refresh holding the snapshot when it is not the latest one and its ranking did not finish (a newer scan
- * failed, was cancelled or runs): its ranking state decides the banner and "Rank again".
+ * The refresh holding the shown snapshot when a newer refresh exists; provides the scan's counts.
  */
 export function useSnapshotRefresh(summary: DashboardSummary | undefined) {
   const client = useQueryClient();
   const snapshot = summary?.snapshot;
-  const id =
-    snapshot && snapshot.ranked_at === null && summary.latest_refresh?.id !== snapshot.refresh_id
-      ? snapshot.refresh_id
-      : null;
+  const id = snapshot && summary.latest_refresh?.id !== snapshot.refresh_id ? snapshot.refresh_id : null;
   return useQuery({
     queryKey: refreshKey(id),
     queryFn: async () => {
@@ -124,7 +128,7 @@ export function useSnapshotRefresh(summary: DashboardSummary | undefined) {
 /** Every item of one revision with the first page's ETag. */
 export interface LoadedItems {
   revision: string;
-  items: WorkItem[];
+  items: DashboardItem[];
   etag: string | null;
 }
 
@@ -136,14 +140,14 @@ export interface LoadedItems {
 export async function loadAllItems(previous: LoadedItems | undefined): Promise<LoadedItems> {
   for (let attempt = 0; ; attempt += 1) {
     try {
-      const first = await api.listDashboardItems({ limit: ITEM_PAGE_LIMIT }, previous?.etag ?? null);
+      const first = await fetchMyWorkItems({ limit: ITEM_PAGE_LIMIT }, previous?.etag ?? null);
       if (first.unchanged) {
         if (previous) return previous;
         throw new ApiError(304, "internal", "The server gave an unexpected answer. Retry later.");
       }
       const items = [...first.body.items];
       for (let cursor = first.body.next_cursor; cursor !== null;) {
-        const page = await api.listDashboardItems({ limit: ITEM_PAGE_LIMIT, cursor });
+        const page = await fetchMyWorkItems({ limit: ITEM_PAGE_LIMIT, cursor });
         if (page.unchanged) throw new ApiError(304, "internal", "The server gave an unexpected answer.");
         items.push(...page.body.items);
         cursor = page.body.next_cursor;
@@ -164,6 +168,8 @@ export function useDashboardItems(revision: string | undefined, hasSnapshot: boo
     queryFn: ({ queryKey }) => loadAllItems(client.getQueryData<LoadedItems>(queryKey)),
     enabled: revision !== undefined && hasSnapshot,
     placeholderData: (previous) => previous,
+    refetchInterval: (query) =>
+      query.state.data?.items.some(({ judgement }) => judgement?.state === "judging") ? 5_000 : false,
   });
 }
 
@@ -250,9 +256,10 @@ export function useRefreshEvents(refresh: RefreshStatus | null | undefined): voi
 export function useStartRefresh() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: api.startDashboardRefresh,
+    mutationFn: (rejudgeOutdated: boolean) =>
+      rejudgeOutdated ? refreshAndRejudgeOutdated() : api.startDashboardRefresh(),
     onSuccess: (status) =>
-      client.setQueryData<DashboardSummary>(SUMMARY_KEY, (s) => s && { ...s, latest_refresh: status }),
+      client.setQueryData<MyWorkSummary>(SUMMARY_KEY, (s) => s && { ...s, latest_refresh: status }),
     onSettled: () => client.invalidateQueries({ queryKey: SUMMARY_KEY }),
   });
 }
@@ -267,18 +274,24 @@ export function useCancelRefresh() {
   });
 }
 
-/** Ranks a stored snapshot again (R4) after its ranking failed, was interrupted or cancelled. */
-export function useRankAgain() {
+/** Requests a fresh LLM judgement; subsequent item pages carry the state and new judgement. */
+export function useRejudgeItem() {
   const client = useQueryClient();
-  return useMutation({
-    mutationFn: api.rankDashboardRefresh,
-    onSuccess: (status) => {
-      applyRefreshStatus(client, status);
-      // The ranked refresh may not be the latest one: its own status opens its event stream.
-      client.setQueryData(refreshKey(status.id), status);
+  const [error, setError] = useState<Error | null>(null);
+  const pendingKeys = usePendingKeys("rejudge-item");
+  const mutation = useMutation({
+    mutationKey: ["rejudge-item"],
+    mutationFn: ({ key }: { key: string }) => rejudgeDashboardItem(key),
+    onError: setError,
+    onSuccess: () => {
+      setError(null);
+      return Promise.all([
+        client.invalidateQueries({ queryKey: SUMMARY_KEY }),
+        client.invalidateQueries({ queryKey: ["dashboard-items"] }),
+      ]);
     },
-    onSettled: () => client.invalidateQueries({ queryKey: SUMMARY_KEY }),
   });
+  return { ...mutation, pendingKeys, error, dismissError: () => setError(null) };
 }
 
 /** The browser's IANA time zone, or null when it does not tell. */
@@ -377,36 +390,27 @@ function usePendingKeys(key: string): string[] {
   });
 }
 
-/**
- * Watch of a pull request row without comment counts (RW1, owner 2026-11-23): the server reads its comments first,
- * so the items are read again for the counts. `watchedKeys` keeps the rows watched in this visit.
- */
+/** Update Watch from a dashboard row, then read its comment counts and saved Watch state. */
 export function useWatchItem() {
   const client = useQueryClient();
-  const [error, setError] = useState<Error | null>(null);
-  const [watchedKeys, setWatchedKeys] = useState<string[]>([]);
+  const [failure, setFailure] = useState<{ key: string; error: Error; watching: boolean } | null>(null);
   const pendingKeys = usePendingKeys("watch-item");
   const mutation = useMutation({
     mutationKey: ["watch-item"],
-    mutationFn: ({ pr }: { key: string; pr: PrRef }) => api.watchPr(pr),
-    onError: setError,
+    mutationFn: async ({ pr, watching }: { key: string; pr: PrRef; watching: boolean }) => {
+      if (watching) await api.watchPr(pr);
+      else await api.unwatchPr(pr);
+    },
+    onError: (error, { key, watching }) => setFailure({ key, error, watching }),
     onSuccess: (_, { key }) => {
-      setError(null);
-      setWatchedKeys((keys) => (keys.includes(key) ? keys : [...keys, key]));
+      setFailure((current) => (current?.key === key ? null : current));
       return Promise.all([
         client.invalidateQueries({ queryKey: ["dashboard-items"] }),
         client.invalidateQueries({ queryKey: ["watches"] }),
       ]);
     },
   });
-  return {
-    ...mutation,
-    pendingKeys,
-    watchedKeys,
-    error,
-    isError: error !== null,
-    dismissError: () => setError(null),
-  };
+  return { ...mutation, pendingKeys, failure, dismissError: () => setFailure(null) };
 }
 
 /** Snooze of a ranked item (R12, owner SN1): persists server-side; the summary is read again. */

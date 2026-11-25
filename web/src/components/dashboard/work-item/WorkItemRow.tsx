@@ -1,22 +1,28 @@
 import type { Ref } from "react";
 import type { TodosState, WorkItem } from "../../../api/generated/types";
+import type { DashboardItem } from "../../../api/provisional/dashboard";
 import { clockText } from "../../format/time";
 import { Tooltip } from "../../tooltip/Tooltip";
-import { dayText, scoreText } from "../common/format";
+import { scoreText } from "../common/format";
 import { KIND_LABEL, KindIcon } from "../common/icons";
 import { LlmLine } from "../common/LlmLine";
 import { PluginNotes } from "../plugin-notes/PluginNotes";
-import { OpenExternal, openLabel } from "../common/OpenExternal";
+import { OpenExternal, rowOpenLabel } from "../common/OpenExternal";
 import type { Navigate } from "../common/navigate";
-import { FactTags, ProvisionalPill, SizePill } from "../common/Tags";
+import { SizePill } from "../common/Tags";
 import { ScoreBreakdown } from "../score-breakdown/ScoreBreakdown";
 import { ScoreTip } from "../score-breakdown/ScoreTip";
-import { CommentsInfo, type WatchState } from "./CommentsInfo";
-import { SnoozeMenu } from "../snooze-menu/SnoozeMenu";
+import { CommentsInfo } from "./CommentsInfo";
+import { RowMenu, type RowActions } from "./RowMenu";
+import { WorkFacts, WorkTitle } from "./WorkFacts";
+import { WorkJudgement, judgementDate, type WorkJudgementProps } from "./WorkJudgement";
+import type { OnFilter } from "../filter-chips/FilterChips";
 import { ItemAction } from "./ItemAction";
 
-interface WorkItemRowProps {
-  item: WorkItem;
+interface WorkItemRowProps extends RowActions, WorkJudgementProps {
+  item: DashboardItem;
+  onFilter?: OnFilter;
+  snapshotAt?: string | null;
   /** Score breakdown and facts shown. */
   expanded: boolean;
   onToggle: () => void;
@@ -31,37 +37,7 @@ interface WorkItemRowProps {
   todos?: TodosState;
   /** In-app href of a pull request's Comments (owner 2026-11-23); built by the screen. */
   commentsHref?: string;
-  /** Watch chosen on a pull request diffpilot has no comment counts for (RW1); without it no Watch. */
-  onWatch?: () => void;
-  /** Watch of this pull request: being saved, or saved in this visit. */
-  watch?: WatchState;
-  /** Snooze chosen in the row's menu (days); without it no menu. */
-  onSnooze?: (days: number) => void;
-  /** A snooze of this item is being saved. */
-  snoozing?: boolean;
   now: Date;
-}
-
-/** `owner/name#n`, or `MemCan` for a TODO (its project is a tag). */
-export const itemPlace = (item: WorkItem): string =>
-  item.repo ? `${item.repo.owner}/${item.repo.name}#${item.number ?? ""}` : "MemCan";
-
-/** The provisional marker of a row, or null when its score is final. */
-export function provisionalPill(item: WorkItem) {
-  if (item.score.state === "unjudged") {
-    return (
-      <ProvisionalPill
-        text="not judged yet"
-        tip="New since the last ranking; scored from computed parts and fixed estimates until the LLM judges it."
-      />
-    );
-  }
-  if (item.score.state === "provisional") {
-    return (
-      <ProvisionalPill text="provisional" tip="Changed since the last ranking; the score is not final." />
-    );
-  }
-  return null;
 }
 
 /** The mark of a TODO row MemCan could not refresh in this scan, or null. */
@@ -70,10 +46,11 @@ function notRefreshedPill(item: WorkItem, todos: TodosState | undefined, now: Da
   const at = todos.failed_at ? ` at ${clockText(todos.failed_at, now)}` : "";
   const read = todos.read_at ? `, read at ${clockText(todos.read_at, now)}` : "";
   return (
-    <ProvisionalPill
-      text={`not refreshed (MemCan unreachable${at})`}
-      tip={`MemCan could not be reached in this scan; this TODO is from an earlier scan${read}.`}
-    />
+    <Tooltip tip={`MemCan could not be reached in this scan; this TODO is from an earlier scan${read}.`}>
+      <span tabIndex={0} className="cursor-help rounded border border-border px-1.5">
+        ◷ not refreshed (MemCan unreachable{at})
+      </span>
+    </Tooltip>
   );
 }
 
@@ -89,27 +66,35 @@ export function WorkItemRow({
   todos,
   commentsHref,
   onWatch,
-  watch,
+  watched,
+  watching,
+  onFilter,
+  snapshotAt,
+  onRejudge,
+  rejudging,
+  usageHref,
   onSnooze,
   snoozing = false,
   now,
 }: WorkItemRowProps) {
   const detailId = `detail-${item.key}`;
   const llm = item.llm;
-  const inherited =
-    llm?.inherited === true ? (
-      <ProvisionalPill
-        text={dayText(llm.judged_at)}
-        tip={`This item changed after the ${dayText(llm.judged_at)} judgement. The text and LLM parts are from then until the LLM judges it again.`}
-      />
-    ) : null;
+  const marker = (
+    <WorkJudgement
+      item={item}
+      onRejudge={onRejudge}
+      rejudging={rejudging}
+      usageHref={usageHref}
+      onNavigate={onNavigate}
+    />
+  );
   return (
     <li
       data-item={item.key}
       data-current={current || undefined}
       className={`border-t border-border first:border-t-0 ${current ? "shadow-[inset_4px_0_0_var(--color-accent)]" : ""}`}
     >
-      <div className="grid grid-cols-[28px_108px_minmax(0,1fr)_auto] items-start gap-x-3 gap-y-1 py-2.5 pr-3 pl-2 @min-[1600px]:grid-cols-[28px_108px_minmax(380px,1.15fr)_minmax(300px,1fr)_minmax(260px,0.8fr)_auto]">
+      <div className="grid grid-cols-[28px_minmax(0,1fr)] sm:grid-cols-[28px_108px_minmax(0,1fr)_auto] items-start gap-x-3 gap-y-1 py-2.5 pr-3 pl-2 @min-[1600px]:grid-cols-[28px_108px_minmax(380px,1.15fr)_minmax(300px,1fr)_minmax(260px,0.8fr)_auto]">
         <Tooltip tip="Show the score breakdown and facts">
           <button
             ref={expanderRef}
@@ -128,33 +113,23 @@ export function WorkItemRow({
             <KindIcon kind={item.kind} />
             {KIND_LABEL[item.kind] ?? item.kind}
             <span className="font-sans tracking-normal normal-case">
-              <SizePill mark={item.change_size} />
+              <SizePill mark={item.change_size} onFilter={onFilter} />
             </span>
           </span>
           <span className="flex items-start gap-1.5">
             <span className="min-w-0 break-all">{item.id}</span>
-            <OpenExternal href={item.url} label={openLabel(item)} />
+            <OpenExternal href={item.url} label={rowOpenLabel(item)} />
           </span>
         </div>
-        <div className="min-w-0">
-          <div className="text-sm font-semibold [overflow-wrap:anywhere]">{item.title}</div>
+        <div className="col-start-2 min-w-0 sm:col-start-3">
+          <div className="text-sm font-semibold [overflow-wrap:anywhere]">
+            <WorkTitle item={item} />
+          </div>
           <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-muted">
-            <span>{itemPlace(item)}</span>
-            {item.author && <span>· @{item.author}</span>}
-            {item.private && (
-              <FactTags tags={[{ text: "private", tip: "From a private repository; shown only to you." }]} />
-            )}
-            <FactTags tags={item.tags} />
-            {provisionalPill(item)}
+            <WorkFacts item={item} onFilter={onFilter} snapshotAt={snapshotAt} now={now} />
             {notRefreshedPill(item, todos, now)}
             {item.kind === "pr" && (
-              <CommentsInfo
-                item={item}
-                href={commentsHref}
-                onNavigate={onNavigate}
-                onWatch={onWatch}
-                watch={watch}
-              />
+              <CommentsInfo item={item} href={commentsHref} onNavigate={onNavigate} watched={watched} />
             )}
           </div>
           <PluginNotes notes={item.plugin_notes} itemId={item.id} full={expanded} now={now} />
@@ -163,21 +138,23 @@ export function WorkItemRow({
           <>
             <LlmLine
               text={llm.why}
-              marker={inherited}
-              className="col-span-2 col-start-3 @min-[1600px]:col-span-1 @min-[1600px]:col-start-4 @min-[1600px]:row-start-1"
+              marker={marker}
+              judgementDate={judgementDate(item)}
+              className="col-start-2 sm:col-span-2 sm:col-start-3 @min-[1600px]:col-span-1 @min-[1600px]:col-start-4 @min-[1600px]:row-start-1"
             />
             <LlmLine
               text={llm.next}
               label="Next"
-              className="col-span-2 col-start-3 @min-[1600px]:col-span-1 @min-[1600px]:col-start-5 @min-[1600px]:row-start-1"
+              judgementDate={judgementDate(item)}
+              className="col-start-2 sm:col-span-2 sm:col-start-3 @min-[1600px]:col-span-1 @min-[1600px]:col-start-5 @min-[1600px]:row-start-1"
             />
           </>
         ) : (
-          <p className="col-span-2 col-start-3 m-0 text-[12.5px] text-muted italic @min-[1600px]:col-span-2 @min-[1600px]:col-start-4 @min-[1600px]:row-start-1">
-            Not judged yet: scored from computed parts and fixed estimates.
+          <p className="col-start-2 sm:col-span-2 sm:col-start-3 m-0 text-[12.5px] text-muted italic @min-[1600px]:col-span-2 @min-[1600px]:col-start-4 @min-[1600px]:row-start-1">
+            {marker}
           </p>
         )}
-        <div className="col-start-4 row-start-1 flex items-center justify-end gap-2 pt-px @min-[1600px]:col-start-6">
+        <div className="col-start-2 flex flex-wrap items-center justify-end gap-2 pt-px sm:col-start-4 sm:row-start-1 @min-[1600px]:col-start-6">
           <ScoreButton item={item} expanded={expanded} onToggle={onToggle} controls={detailId} />
           <ItemAction
             item={item}
@@ -185,7 +162,14 @@ export function WorkItemRow({
             commentsHref={commentsHref}
             onNavigate={onNavigate}
           />
-          {onSnooze && <SnoozeMenu itemId={item.id} onSnooze={onSnooze} pending={snoozing} />}
+          <RowMenu
+            item={item}
+            onWatch={onWatch}
+            watched={watched}
+            watching={watching}
+            onSnooze={onSnooze}
+            snoozing={snoozing}
+          />
         </div>
       </div>
       <div

@@ -1,8 +1,8 @@
-import type { ChangeSizeMark, ItemKind, SizeMark } from "../../../api/generated/types";
+import type { ChangeSizeMark, SizeMark } from "../../../api/generated/types";
 
 /**
  * The size marks in order with the lowest changed-line count of each (server `score::SIZE_MARKS`, set by the owner,
- * 2026-11-18). The one list every size label, rule text and filter toggle is built from.
+ * 2026-11-18). The list supplies the size rule text.
  */
 export const SIZE_CLASSES: readonly { size: SizeMark; from: number }[] = [
   { size: "tiny", from: 0 },
@@ -31,15 +31,3 @@ export const SIZE_RULE = `${SIZE_CLASSES.map((c, i) => `${c.size} ${sizeRange(i)
 
 /** Changed lines of a mark. */
 export const changedLines = (mark: ChangeSizeMark) => mark.additions + mark.deletions;
-
-/**
- * Whether the size filter shows an item: it governs pull requests with a known class only; issues, TODOs, PRs
- * without a mark and classes unknown to this page always pass.
- */
-export function sizeShown(
-  item: { kind: ItemKind; change_size?: ChangeSizeMark },
-  shown: SizeMark[],
-): boolean {
-  const size = item.change_size?.size;
-  return item.kind !== "pr" || size === undefined || !ALL_SIZES.includes(size) || shown.includes(size);
-}

@@ -28,10 +28,12 @@ export function ProvenanceTag({
   source,
   focusable = true,
   tip: withTip = true,
+  detail,
 }: {
   source: ProvenanceSource;
   focusable?: boolean;
   tip?: boolean;
+  detail?: string;
 }) {
   const { text, tip, look } = TAG[source];
   const tag = (
@@ -43,5 +45,5 @@ export function ProvenanceTag({
       {text}
     </span>
   );
-  return withTip ? <Tooltip tip={tip}>{tag}</Tooltip> : tag;
+  return withTip ? <Tooltip tip={detail ? `${tip} ${detail}` : tip}>{tag}</Tooltip> : tag;
 }

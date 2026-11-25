@@ -1,26 +1,29 @@
 import type { Ref } from "react";
-import type { WorkItem } from "../../../api/generated/types";
+import type { DashboardItem } from "../../../api/provisional/dashboard";
 import { Tooltip } from "../../tooltip/Tooltip";
 import { LlmLine } from "../common/LlmLine";
-import { OpenExternal, openLabel } from "../common/OpenExternal";
+import { OpenExternal, rowOpenLabel } from "../common/OpenExternal";
 import type { Navigate } from "../common/navigate";
-import { FactTags, SizePill } from "../common/Tags";
+import { SizePill } from "../common/Tags";
 import { ScoreBreakdown } from "../score-breakdown/ScoreBreakdown";
 import { ItemAction } from "../work-item/ItemAction";
-import { CommentsInfo, type WatchState } from "../work-item/CommentsInfo";
-import { itemPlace, provisionalPill, ScoreButton } from "../work-item/WorkItemRow";
+import { CommentsInfo } from "../work-item/CommentsInfo";
+import { ScoreButton } from "../work-item/WorkItemRow";
 
-interface AlarmRowProps {
+import { RowMenu, type RowActions } from "../work-item/RowMenu";
+import { WorkFacts, WorkTitle } from "../work-item/WorkFacts";
+import { WorkJudgement, judgementDate, type WorkJudgementProps } from "../work-item/WorkJudgement";
+import type { OnFilter } from "../filter-chips/FilterChips";
+
+interface AlarmRowProps extends Pick<RowActions, "onWatch" | "watched" | "watching">, WorkJudgementProps {
   /** A P0 item. */
-  item: WorkItem;
+  item: DashboardItem;
+  onFilter?: OnFilter;
+  snapshotAt?: string | null;
   /** In-app href of a pull request's review (plan §F.1). */
   reviewHref?: string;
   /** In-app href of a pull request's Comments (owner 2026-11-23), as on ranked rows. */
   commentsHref?: string;
-  /** Watch chosen on a pull request diffpilot has no comment counts for (RW1); without it no Watch. */
-  onWatch?: () => void;
-  /** Watch of this pull request: being saved, or saved in this visit. */
-  watch?: WatchState;
   onNavigate?: Navigate;
   /** The keyboard cursor is on this alarm. */
   current?: boolean;
@@ -41,7 +44,13 @@ export function AlarmRow({
   reviewHref,
   commentsHref,
   onWatch,
-  watch,
+  watched,
+  watching,
+  onFilter,
+  snapshotAt,
+  onRejudge,
+  rejudging,
+  usageHref,
   onNavigate,
   current = false,
   focusRef,
@@ -59,48 +68,68 @@ export function AlarmRow({
       aria-label={`P0 alarm ${item.id}`}
       data-alarm={item.key}
       data-current={current || undefined}
-      className={`grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-x-3.5 gap-y-1.5 rounded-lg border-2 border-high-bd bg-high-bg px-3.5 py-3 ${current ? "shadow-[inset_4px_0_0_var(--color-accent)]" : ""}`}
+      className={`grid grid-cols-[minmax(0,1fr)] sm:grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-x-3.5 gap-y-1.5 rounded-lg border-2 border-high-bd bg-high-bg px-3.5 py-3 ${current ? "shadow-[inset_4px_0_0_var(--color-accent)]" : ""}`}
     >
       <Tooltip
         tip={`P0 alarm: judged by the LLM as needing your attention now. Independent of the score (${points}).`}
       >
         <span
           tabIndex={0}
-          className="cursor-help rounded-md border border-high-bd bg-surface px-2 py-1 text-[13px] font-extrabold whitespace-nowrap text-high"
+          className="inline-block cursor-help rounded-md border border-high-bd bg-surface px-2 py-1 text-[13px] font-extrabold whitespace-nowrap text-high"
         >
           ▲ P0 alarm
         </span>
       </Tooltip>
       <div className="grid min-w-0 gap-1">
-        <div className="text-[15px] font-bold [overflow-wrap:anywhere]">{item.title}</div>
+        <div className="text-[15px] font-bold [overflow-wrap:anywhere]">
+          <WorkTitle item={item} />
+        </div>
         <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted">
           <span className="font-mono">{item.id}</span>
-          <OpenExternal href={item.url} label={openLabel(item)} />
-          <span>
-            {itemPlace(item)}
-            {item.author ? ` · @${item.author}` : ""}
-          </span>
-          <SizePill mark={item.change_size} />
-          <FactTags tags={item.tags} />
-          {provisionalPill(item)}
+          <OpenExternal href={item.url} label={rowOpenLabel(item)} />
+          <WorkFacts item={item} onFilter={onFilter} snapshotAt={snapshotAt} now={now} />
+          <SizePill mark={item.change_size} onFilter={onFilter} />
           {item.kind === "pr" && (
-            <CommentsInfo
-              item={item}
-              href={commentsHref}
-              onNavigate={onNavigate}
-              onWatch={onWatch}
-              watch={watch}
-            />
+            <CommentsInfo item={item} href={commentsHref} onNavigate={onNavigate} watched={watched} />
           )}
         </div>
-        {item.llm?.alarm && <LlmLine text={item.llm.alarm} />}
-        {item.llm && <LlmLine text={item.llm.next} label="Next" />}
+        {item.llm ? (
+          <>
+            <LlmLine
+              text={item.llm.alarm ?? item.llm.why}
+              judgementDate={judgementDate(item)}
+              marker={
+                <WorkJudgement
+                  item={item}
+                  onRejudge={onRejudge}
+                  rejudging={rejudging}
+                  usageHref={usageHref}
+                  onNavigate={onNavigate}
+                />
+              }
+            />
+            <LlmLine text={item.llm.next} label="Next" judgementDate={judgementDate(item)} />
+          </>
+        ) : (
+          <WorkJudgement
+            item={item}
+            onRejudge={onRejudge}
+            rejudging={rejudging}
+            usageHref={usageHref}
+            onNavigate={onNavigate}
+          />
+        )}
       </div>
-      <div className="flex items-center justify-end gap-2">
+      <div className="flex flex-wrap items-center justify-end gap-2">
         <ScoreButton item={item} expanded={expanded} onToggle={onToggle} controls={detailId} />
         <ItemAction item={item} reviewHref={reviewHref} commentsHref={commentsHref} onNavigate={onNavigate} />
+        <RowMenu item={item} onWatch={onWatch} watched={watched} watching={watching} />
       </div>
-      <div id={detailId} hidden={!expanded} className="col-span-3 border-t border-dashed border-high-bd pt-1">
+      <div
+        id={detailId}
+        hidden={!expanded}
+        className="col-span-full border-t border-dashed border-high-bd pt-1"
+      >
         {expanded && <ScoreBreakdown item={item} now={now} />}
       </div>
     </div>

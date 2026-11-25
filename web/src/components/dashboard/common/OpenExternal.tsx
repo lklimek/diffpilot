@@ -18,28 +18,48 @@ export function httpUrl(url: string | null | undefined): string | null {
 export const openLabel = (item: { kind?: string; id: string }): string =>
   item.kind === "todo" ? "Open TODO in MemCan" : `Open ${item.id} on GitHub`;
 
+export function rowOpenLabel(item: {
+  kind: string;
+  id: string;
+  repo: { owner: string; name: string } | null;
+  number: number | null;
+}) {
+  return item.repo && item.number !== null
+    ? `Open ${item.repo.owner}/${item.repo.name}#${item.number} on GitHub, new tab`
+    : openLabel(item);
+}
+
 /**
  * An always visible icon link to `href` in a new tab, named and tipped `label (new tab)`: the GitHub mark for
  * GitHub, else ↗; nothing unless http(s).
  */
-export function OpenExternal({ href, label }: { href: string | null | undefined; label: string }) {
+export function OpenExternal({
+  href,
+  label,
+  duplicate = false,
+}: {
+  href: string | null | undefined;
+  label: string;
+  duplicate?: boolean;
+}) {
   const url = httpUrl(href);
   if (!url) return null;
-  const name = `${label} (new tab)`;
-  return (
-    <Tooltip tip={name}>
-      <a
-        href={url}
-        target="_blank"
-        rel="noopener noreferrer"
-        aria-label={name}
-        // The row's own handlers stay out of it.
-        onClick={(event) => event.stopPropagation()}
-        // The visible mark is glyph height; the 24 px target stays (WCAG 2.5.8) without growing the line.
-        className="-my-1 inline-flex min-h-6 min-w-6 shrink-0 items-center justify-center rounded text-accent hover:bg-accent-bg"
-      >
-        {isGithubUrl(url) ? <GithubIcon className="h-[0.8em] w-[0.8em]" /> : <ExternalIcon />}
-      </a>
-    </Tooltip>
+  const name = label.endsWith(", new tab") ? label : `${label} (new tab)`;
+  const link = (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      aria-label={duplicate ? undefined : name}
+      aria-hidden={duplicate || undefined}
+      tabIndex={duplicate ? -1 : undefined}
+      // The row's own handlers stay out of it.
+      onClick={(event) => event.stopPropagation()}
+      // The visible mark is glyph height; the 24 px target stays (WCAG 2.5.8) without growing the line.
+      className="-my-1 inline-flex min-h-6 min-w-6 shrink-0 items-center justify-center rounded text-accent hover:bg-accent-bg"
+    >
+      {isGithubUrl(url) ? <GithubIcon className="h-[0.8em] w-[0.8em]" /> : <ExternalIcon />}
+    </a>
   );
+  return duplicate ? link : <Tooltip tip={name}>{link}</Tooltip>;
 }

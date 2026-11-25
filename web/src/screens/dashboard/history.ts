@@ -34,18 +34,6 @@ export interface NetCount {
 /** A period of the headline with its name in the tile (`Mon–Wed`, `Tue 17 Nov`, `9–13 Nov`). */
 export type Period = NetCount & { label: string };
 
-/** Values of the headline card (the headline component's figures). */
-export interface Headline {
-  /** This week from Monday to now. */
-  week: Period;
-  /** The previous working day (with the weekend after it). */
-  yesterday: Period;
-  /** Last week, Monday to Friday (its weekend included). */
-  lastWeek: Period;
-  /** The last twenty working days, and the twenty before them. */
-  fourWeeks: { net: number; before: number };
-}
-
 /** The "Yesterday" side section: pull requests and reviews of the previous working day. */
 export interface YesterdaySummary {
   day: string;
@@ -63,7 +51,6 @@ export const CHART_WEEKS = 12;
 export const THROUGHPUT_WEEKS = 8;
 
 const DAY = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short" });
-const WEEKDAY = new Intl.DateTimeFormat("en-GB", { weekday: "short" });
 const WEEKDAY_DAY = new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", month: "short" });
 
 /** Local midnight of a `YYYY-MM-DD` date. */
@@ -183,33 +170,39 @@ export function weeklyCounts(
   });
 }
 
-/** Headline values: this week, yesterday, last week and the last four weeks against the four before. */
-export function headline(events: readonly HistoryEvent[], now: Date): Headline {
-  const weekStart = monday(now);
-  const today = workingDay(now);
-  const tomorrow = addDays(today, 1);
-  const yesterdayStart = previousWorkingDay(today);
-  const lastWeekStart = addDays(weekStart, -7);
-  const window = workingDays(now, 2 * CHART_DAYS);
-  const recentStart = window[CHART_DAYS]!;
-  const weekdays = [weekStart, today].map((d) => WEEKDAY.format(d));
+/** Calendar-day headline figures in the configured dashboard zone; chart buckets keep their working-day rules. */
+export function headline(events: readonly HistoryEvent[], now: Date, timeZone?: string | null) {
+  const calendar = new Intl.DateTimeFormat("en-GB", {
+    timeZone: timeZone ?? undefined,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const inZone = (date: Date) => {
+    const parts = calendar.formatToParts(date);
+    const part = (name: Intl.DateTimeFormatPartTypes) =>
+      Number(parts.find(({ type }) => type === name)?.value);
+    return new Date(part("year"), part("month") - 1, part("day"));
+  };
+  const today = inZone(now);
+  const yesterday = addDays(today, -1);
+  const weekStart = monday(today);
+  const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+  const dated = events.flatMap((event) => {
+    const at = Date.parse(event.at);
+    return Number.isFinite(at) && at <= now.getTime() ? [{ at: inZone(new Date(at)), kind: event.kind }] : [];
+  });
+  const period = (from: Date, to: Date, label: string): Period => {
+    const kinds = dated.filter(({ at }) => at >= from && at <= to).map(({ kind }) => kind);
+    const closed = kinds.filter((kind) => CLOSED.includes(kind)).length;
+    const opened = kinds.filter((kind) => OPENED.includes(kind)).length;
+    return { closed, opened, net: closed - opened, label };
+  };
   return {
-    week: {
-      label: weekdays[0] === weekdays[1] ? weekdays[0]! : weekdays.join("–"),
-      ...netBetween(events, weekStart, tomorrow),
-    },
-    yesterday: {
-      label: WEEKDAY_DAY.format(yesterdayStart),
-      ...netBetween(events, yesterdayStart, addDays(yesterdayStart, 1)),
-    },
-    lastWeek: {
-      label: rangeLabel(lastWeekStart, addDays(lastWeekStart, 4)),
-      ...netBetween(events, lastWeekStart, weekStart),
-    },
-    fourWeeks: {
-      net: netBetween(events, recentStart, tomorrow).net,
-      before: netBetween(events, window[0]!, recentStart).net,
-    },
+    today: period(today, today, WEEKDAY_DAY.format(today)),
+    yesterday: period(yesterday, yesterday, WEEKDAY_DAY.format(yesterday)),
+    week: period(weekStart, today, rangeLabel(weekStart, today)),
+    month: period(monthStart, today, rangeLabel(monthStart, today)),
   };
 }
 

@@ -1,4 +1,12 @@
-import { useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import {
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { buttonClass } from "../button/button";
 import { navigateOnClick, type Navigate } from "../dashboard/common/navigate";
 import { useOutsidePress } from "../popover/useOutsidePress";
@@ -13,6 +21,7 @@ interface MenuButtonProps {
   tip?: string;
   className?: string;
   children: ReactNode;
+  triggerRef?: RefObject<HTMLButtonElement | null>;
 }
 
 /** A menu of actions, single choices or toggles. Put MenuItems or separators directly inside. */
@@ -22,10 +31,12 @@ export function MenuButton({
   tip = label,
   className = buttonClass("plain", true),
   children,
+  triggerRef,
 }: MenuButtonProps) {
   const id = useId();
   const wrapper = useRef<HTMLDivElement>(null);
-  const button = useRef<HTMLButtonElement>(null);
+  const ownButton = useRef<HTMLButtonElement>(null);
+  const button = triggerRef ?? ownButton;
   const menu = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const initialFocus = useRef<"first" | "last">("first");
@@ -63,7 +74,7 @@ export function MenuButton({
       window.removeEventListener("resize", place);
       window.removeEventListener("scroll", place, true);
     };
-  }, [open]);
+  }, [button, open]);
 
   const onMenuKey = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Escape" || (event.key === "Tab" && event.shiftKey)) {
