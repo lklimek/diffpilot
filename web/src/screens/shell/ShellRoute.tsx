@@ -5,7 +5,7 @@ import { useMe } from "../../api/queries";
 import type { AppSection } from "../../components/app-shell/AppNav";
 import { useUserEventNotifications } from "../../app/userEvents";
 import { ALL_CARRY_OVERS_PATH, WATCHING_PATH } from "../pr/paths";
-import { MY_WORK_PATH, REVIEW_START_PATH, SETTINGS_HELP_PATH, SETTINGS_PATH } from "./paths";
+import { MY_WORK_PATH, REVIEW_START_PATH, SETTINGS_HELP_PATH, SETTINGS_PAGES, SETTINGS_PATH } from "./paths";
 import { ShellLayout } from "./ShellLayout";
 import { useSessionSignOut } from "./useSessionSignOut";
 import { ShellUserMenu } from "./ShellUserMenu";
@@ -36,7 +36,11 @@ export function ShellRoute() {
   const login = useMe().data?.user?.login ?? null;
   useUserEventNotifications();
   // The router matches `/review/` as `/review`.
-  const page = PAGES[pathname.replace(/(.)\/+$/, "$1")] ?? PAGES[MY_WORK_PATH]!;
+  const path = pathname.replace(/(.)\/+$/, "$1");
+  const settingsPage = SETTINGS_PAGES.find(({ href }) => href === path);
+  const page = settingsPage
+    ? { section: "settings" as const, crumb: settingsPage.label }
+    : (PAGES[path] ?? PAGES[MY_WORK_PATH]!);
   const [actions, setActions] = useState<HTMLElement | null>(null);
   const [count, setCount] = useState<number | null>(null);
   const [help, setHelp] = useState<{ open: () => void } | null>(null);
@@ -50,6 +54,12 @@ export function ShellRoute() {
     <ShellLayout
       current={page.section}
       crumb={page.crumb}
+      settingsPages={SETTINGS_PAGES.map(({ id, label, href }) => ({
+        icon: id,
+        label,
+        href,
+        active: id === settingsPage?.id,
+      }))}
       userMenu={login && <ShellUserMenu key={login} login={login} onHelp={help?.open} signOut={signOut} />}
       myWorkCount={count}
       actions={<span ref={setActions} className="contents" />}

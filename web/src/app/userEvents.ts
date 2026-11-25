@@ -1,3 +1,4 @@
+import { SETTINGS_NOTIFICATIONS_PATH } from "../screens/shell/paths";
 // Browser notifications of the review loop (plan docs/review-workflow-plan.md §5.5, US16, RQ18): "questions ready"
 // on a watched PR and "round executed", from the per-user event stream (RW3), under the existing per-browser
 // "Notify me when work finishes" opt-in.
@@ -14,7 +15,7 @@ export function userEventNotice(event: UserEvent): WorkEvent {
     key: `user-event:${event.id}`,
     title: "diffpilot",
     body: event.text,
-    path: event.pr ? commentsPath(event.pr) : "/settings#notifications",
+    path: event.pr ? commentsPath(event.pr) : SETTINGS_NOTIFICATIONS_PATH,
   };
 }
 

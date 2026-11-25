@@ -87,7 +87,7 @@ test("PR A/B opt-in preserves primary, quota and visible comments; report is rea
 });
 
 test("Settings keeps a draft after a concurrent primary and deadline update", async ({ page }) => {
-  await page.goto("/settings");
+  await page.goto("/settings/review-loop");
   const card = page.getByRole("region", { name: "Comment assessment" });
   await expect(card.getByLabel("Primary assessment method")).toHaveValue("claudius_host");
   await card.getByLabel("Primary assessment method").selectOption("prompt_v4");

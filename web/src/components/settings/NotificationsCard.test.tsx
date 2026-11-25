@@ -1,41 +1,37 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { expectTrustWording } from "../../__tests__/wording";
 import { NotificationsCard } from "./NotificationsCard";
 
-const BOX = "Notify me when work finishes";
-
 describe("NotificationsCard", () => {
-  it("offers the opt-in, says what it covers, and reports a change", async () => {
+  it.each([
+    ["default", false, "Enable browser notifications", /only in this browser/i, true],
+    ["granted", false, "Turn on", /Allowed by the browser, off for diffpilot/, true],
+    ["granted", true, "Turn off", /Allowed in this browser/, false],
+  ] as const)("%s, enabled %s: %s", async (support, enabled, name, state, next) => {
     const onChange = vi.fn();
-    render(<NotificationsCard support="default" enabled={false} onChange={onChange} />);
-    const region = screen.getByRole("region", { name: "Notifications" });
-    const box = screen.getByRole("checkbox", { name: BOX });
-    expect(box).not.toBeChecked();
-    expect(region).toHaveTextContent(/Ask answer/);
-    expect(region).toHaveTextContent(/only in this browser/i);
-    await userEvent.click(box);
-    expect(onChange).toHaveBeenCalledWith(true);
-    expectTrustWording(region.textContent ?? "");
+    render(<NotificationsCard support={support} enabled={enabled} onChange={onChange} />);
+    expect(screen.getByRole("region", { name: "Browser" })).toHaveTextContent(state);
+    await userEvent.click(screen.getByRole("button", { name }));
+    expect(onChange).toHaveBeenCalledWith(next);
   });
 
-  it("shows a stored choice as on and turns it off", async () => {
+  it("offers to recheck browser permission without asking for it", async () => {
+    const onCheck = vi.fn();
     const onChange = vi.fn();
-    render(<NotificationsCard support="granted" enabled onChange={onChange} />);
-    const box = screen.getByRole("checkbox", { name: BOX });
-    expect(box).toBeChecked();
-    await userEvent.click(box);
-    expect(onChange).toHaveBeenCalledWith(false);
+    render(<NotificationsCard support="denied" enabled={false} onChange={onChange} onCheck={onCheck} />);
+    expect(screen.getByText(/Blocked by the browser for this site/)).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Check again" }));
+    expect(onCheck).toHaveBeenCalledOnce();
+    expect(onChange).not.toHaveBeenCalled();
   });
 
   it.each([
     ["unsupported", /cannot show notifications/],
     ["insecure", /https/],
-    ["denied", /blocked/],
-  ] as const)("%s: no option, a plain reason why it cannot work", (support, reason) => {
+  ] as const)("%s: shows the reason", (support, reason) => {
     render(<NotificationsCard support={support} enabled={false} onChange={() => {}} />);
-    expect(screen.queryByRole("checkbox")).toBeNull();
-    expect(screen.getByRole("region", { name: "Notifications" })).toHaveTextContent(reason);
+    expect(screen.queryByRole("button", { name: /Enable|Turn on|Check again/ })).toBeNull();
+    expect(screen.getByRole("region", { name: "Browser" })).toHaveTextContent(reason);
   });
 });

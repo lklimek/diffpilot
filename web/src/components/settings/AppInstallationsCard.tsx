@@ -1,3 +1,6 @@
+import { useState } from "react";
+import { writeClipboard } from "../dashboard/common/copyList";
+import { GithubIcon } from "../github/GithubMark";
 import type { AppInstallation } from "../../api/generated/types";
 import { buttonClass } from "../button/button";
 import { GithubMark } from "../github/GithubMark";
@@ -9,18 +12,23 @@ import { HelpTip } from "./HelpTip";
 export function AppInstallationsCard({
   installations,
   signInHref,
+  webhookUrl,
+  webhookError,
 }: {
   installations: AppInstallation[] | null;
   /** The sign-in route, offered when the installations were not checked. */
   signInHref: string;
+  webhookUrl?: string | null;
+  webhookError?: string;
 }) {
+  const [copied, setCopied] = useState<boolean>();
   return (
     <SettingsCard title="GitHub App" help={<HelpTip topic="app_installations" />}>
       {installations === null ? (
         <p>
           GitHub App installations: not checked. Signing in again may help.{" "}
           <a href={signInHref} className={buttonClass("plain")}>
-            Sign in with GitHub
+            <GithubIcon /> Sign in with GitHub
           </a>
         </p>
       ) : installations.length === 0 ? (
@@ -51,6 +59,30 @@ export function AppInstallationsCard({
           </a>
         </Tooltip>
       </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <span>Webhook URL to set in the GitHub App:</span>
+        {webhookUrl ? (
+          <>
+            <code className="select-all [overflow-wrap:anywhere]">{webhookUrl}</code>
+            <Tooltip tip="Copies the GitHub App webhook URL.">
+              <button
+                type="button"
+                className={buttonClass("plain")}
+                onClick={async () => setCopied(await writeClipboard({ text: webhookUrl }))}
+              >
+                Copy
+              </button>
+            </Tooltip>
+            {copied !== undefined && (
+              <span role="status">{copied ? "Copied" : "Copy failed. Select the URL to copy it."}</span>
+            )}
+          </>
+        ) : webhookError ? (
+          <span role="alert">{webhookError}</span>
+        ) : (
+          <span role="status">{webhookUrl === null ? "Unavailable." : "Loading…"}</span>
+        )}
+      </div>
     </SettingsCard>
   );
 }

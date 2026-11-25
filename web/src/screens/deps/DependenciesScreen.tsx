@@ -13,7 +13,7 @@ import { githubLineUrl } from "../../components/github/links";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { Tooltip } from "../../components/tooltip/Tooltip";
 import { ReviewTopBar } from "../shell/ReviewTopBar";
-import { SETTINGS_PATH } from "../shell/paths";
+import { SETTINGS_PAGES } from "../shell/paths";
 import { errorText } from "../tour/code";
 import { checksHref } from "../tour/review";
 import { commentsPath } from "../pr/paths";
@@ -127,7 +127,7 @@ function DependenciesView({
             external: true,
           },
     flow: (id) => `${base}#${encodeURIComponent(id)}`,
-    settings: SETTINGS_PATH,
+    settings: SETTINGS_PAGES[2].href,
     onNavigate: (href) => void navigate(href),
   };
   let body: ReactNode;

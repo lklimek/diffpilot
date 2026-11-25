@@ -42,7 +42,7 @@ test("the disclosed job lists fit a phone in dark mode and can be expanded", asy
   expect(bounds!.x).toBeGreaterThanOrEqual(0);
   expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(360);
   await panel.click();
-  await expect(page).toHaveURL(/\/settings#llm-usage$/);
+  await expect(page).toHaveURL(/\/settings\/llm$/);
 });
 
 test("the trigger identifies a usage pause and a failed last call", async ({ page }) => {

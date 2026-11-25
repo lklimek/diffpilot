@@ -42,11 +42,17 @@ const STATES: [string, (page: Page) => Promise<unknown>][] = [
   ["progress-finished", (p) => p.goto(`${progress}?scenario=finished`)],
   ["progress-unknown", (p) => p.goto("/analyses/00000000-0000-0000-0000-000000000000/progress")],
   ["settings", (p) => p.goto("/settings")],
-  ["settings-llm-error", (p) => p.goto("/settings?scenario=llm-error")],
-  ["settings-llm-unknown", (p) => p.goto("/settings?scenario=llm-unknown")],
-  ["settings-no-app", (p) => p.goto("/settings?scenario=no-app")],
-  ["settings-installations-not-checked", (p) => p.goto("/settings?scenario=installations-not-checked")],
-  ["settings-repo-not-known", (p) => p.goto("/settings?scenario=repo-not-known")],
+  ["settings-llm-error", (p) => p.goto("/settings/llm?scenario=llm-error")],
+  ["settings-llm-unknown", (p) => p.goto("/settings/llm?scenario=llm-unknown")],
+  ["settings-no-app", (p) => p.goto("/settings/github-sync?scenario=no-app")],
+  [
+    "settings-installations-not-checked",
+    (p) => p.goto("/settings/github-sync?scenario=installations-not-checked"),
+  ],
+  [
+    "settings-repo-not-known",
+    (p) => p.goto("/settings/repositories?scenario=repo-not-known&repo=acme%2Fnode-client"),
+  ],
 ];
 
 for (const colorScheme of ["light", "dark"] as const) {

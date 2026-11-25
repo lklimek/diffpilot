@@ -1,326 +1,43 @@
-import { useNow } from "../../app/now";
-import {
-  useCodexAccount,
-  useAssessmentSettings,
-  useSetAssessmentSettings,
-} from "../../api/assessment-settings";
-import { CodexAccountCard } from "../../components/settings/CodexAccountCard";
-import { AssessmentSettingsCard } from "../../components/settings/AssessmentSettingsCard";
-import { MemcanStatusLine } from "../../components/section/MemcanStatusLine";
-import { useEffect, useRef, useState } from "react";
-import { Link, useBlocker, useLocation, useSearchParams } from "react-router";
-import { LlmSelectionCard } from "../../components/settings/LlmSelectionCard";
-import { ApiError } from "../../api/client";
-import { routes } from "../../api/generated/routes";
-import type { RepoRef } from "../../api/generated/types";
-import {
-  useAccessTokenActions,
-  useAccessTokens,
-  useDashboardSettings,
-  useMe,
-  useRepoSettings,
-  useSaveDashboardSettings,
-  useSetAskEffort,
-  useSetControlledOwners,
-  useSetJudgeEffort,
-  useSetLanguage,
-  useSettings,
-  useSetLlm,
-} from "../../api/queries";
-import { AccessTokensCard } from "../../components/dashboard/settings-access-tokens/AccessTokensCard";
-import { DashboardSettingsCard } from "../../components/dashboard/settings-dashboard/DashboardSettingsCard";
+import { useEffect, useState } from "react";
+import { Link, Navigate, useBlocker, useLocation } from "react-router";
+import { useMe } from "../../api/queries";
 import { UnsavedChangesPrompt } from "../../components/dashboard/settings-dashboard/UnsavedChangesPrompt";
-import { JudgeEffortSelect } from "../../components/dashboard/settings-judge-effort/JudgeEffortSelect";
-import { AskEffortSelect } from "../../components/settings/AskEffortSelect";
-import { AccountCard } from "../../components/settings/AccountCard";
-import { AppInstallationsCard } from "../../components/settings/AppInstallationsCard";
-import { ControlledOwnersCard } from "../../components/settings/ControlledOwnersCard";
-import { LanguageCard } from "../../components/settings/LanguageCard";
-import { NotificationsCard } from "../../components/settings/NotificationsCard";
-import { LlmStatusCard } from "../../components/settings/LlmStatusCard";
-import { SettingsCard } from "../../components/settings/Card";
-import { HelpTip } from "../../components/settings/HelpTip";
-import { Tooltip } from "../../components/tooltip/Tooltip";
-import { LLM_USAGE_SECTION, SETTINGS_HELP_PATH } from "../shell/paths";
-import { RepoList } from "../../components/settings/RepoList";
-import { RepoSettingsCard } from "../../components/settings/RepoSettingsCard";
+import { messageOf } from "../../components/inspector/action";
 import { SignInCard } from "../../components/sign-in/SignInCard";
 import { StatusMessage } from "../../components/status/StatusMessage";
+import { LLM_USAGE_PATH, SETTINGS_HELP_PATH, SETTINGS_PAGES, type SettingsPage } from "../shell/paths";
 import { useShellSlots } from "../shell/ShellRoute";
-import { useNotifySetting } from "../../app/workNotifications";
-import { NotificationChannels } from "./NotificationChannels";
+import { AccountPage, LlmPage, MemcanPage } from "./AccountAndLlm";
+import { GitHubSyncPage, RepositoriesPage } from "./GitHubSettings";
+import { ReviewLoopPage } from "./ReviewLoopPage";
 
-const errorText = (error: unknown) =>
-  error instanceof ApiError ? error.message : "Something went wrong. Reload the page.";
-
-/** Dashboard settings (plan §F.6) and access tokens (ADR-019), each in its own card. */
-function DashboardSection({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => void }) {
-  const settings = useDashboardSettings();
-  const save = useSaveDashboardSettings();
-  const tokens = useAccessTokens();
-  const tokenActions = useAccessTokenActions();
-  return (
-    <div className="grid w-full max-w-[1800px] items-start gap-4">
-      {settings.data ? (
-        <DashboardSettingsCard view={settings.data} onSave={save} onDirtyChange={onDirtyChange} />
-      ) : (
-        <SettingsCard title="Dashboard">
-          {settings.isPending && (
-            <StatusMessage kind="loading">Loading the dashboard settings…</StatusMessage>
-          )}
-          {settings.isError && <StatusMessage kind="error">{errorText(settings.error)}</StatusMessage>}
-        </SettingsCard>
-      )}
-      <div className="max-w-[1100px]">
-        {tokens.data ? (
-          <AccessTokensCard
-            tokens={tokens.data}
-            onCreate={tokenActions.create}
-            onRevoke={tokenActions.revoke}
-          />
-        ) : (
-          <SettingsCard title="Access tokens">
-            {tokens.isPending && <StatusMessage kind="loading">Loading your access tokens…</StatusMessage>}
-            {tokens.isError && <StatusMessage kind="error">{errorText(tokens.error)}</StatusMessage>}
-          </SettingsCard>
-        )}
-      </div>
-    </div>
-  );
+/** Preserves old deep links, mock scenario parameters and unrelated anchors. */
+export function SettingsRedirect() {
+  const { search, hash } = useLocation();
+  const pathname = new URLSearchParams(search).has("repo")
+    ? "/settings/repositories"
+    : hash === "#notifications"
+      ? "/settings/review-loop"
+      : hash === "#llm-usage"
+        ? LLM_USAGE_PATH
+        : "/settings/account";
+  return <Navigate to={{ pathname, search, hash }} replace />;
 }
 
-function RepoSection({ repos, userId }: { repos: RepoRef[]; userId: string }) {
-  const [params, setParams] = useSearchParams();
-  const key = `diffpilot:settings:repo:${userId}`;
-  let remembered: string | null = null;
-  try {
-    remembered = localStorage.getItem(key);
-  } catch {
-    /* Browser storage can be unavailable. */
-  }
-  const asked = params.get("repo");
-  const wanted = asked ?? remembered;
-  // An unknown repository named in the URL is said, never replaced by another one; a stale memory is.
-  const unknown = asked !== null && !repos.some((r) => `${r.owner}/${r.name}` === asked);
-  const selected = unknown ? undefined : (repos.find((r) => `${r.owner}/${r.name}` === wanted) ?? repos[0]);
-  const selectedName = selected && `${selected.owner}/${selected.name}`;
-  useEffect(() => {
-    if (!selectedName) return;
-    try {
-      localStorage.setItem(key, selectedName);
-    } catch {
-      /* URL still preserves the selection. */
-    }
-    if (params.get("repo") !== selectedName)
-      setParams(
-        (previous) => {
-          const next = new URLSearchParams(previous);
-          next.set("repo", selectedName);
-          return next;
-        },
-        { replace: true },
-      );
-  }, [key, selectedName, params, setParams]);
-  const setChosen = (repo: RepoRef) =>
-    setParams((previous) => {
-      const next = new URLSearchParams(previous);
-      next.set("repo", `${repo.owner}/${repo.name}`);
-      return next;
-    });
-  const settings = useRepoSettings(selected);
-  if (unknown && repos.length > 0) {
-    return (
-      <div className="grid content-start gap-2">
-        <RepoList key={asked} repos={repos} selected={null} onSelect={setChosen} />
-        <StatusMessage kind="empty">Repository {asked} not found in this installation.</StatusMessage>
-      </div>
-    );
-  }
-  if (!selected) {
-    return (
-      <StatusMessage kind="empty">
-        No pull request has been analysed yet, so no repository settings exist.
-      </StatusMessage>
-    );
-  }
-  return (
-    <div className="grid content-start gap-2">
-      {repos.length > 1 && (
-        <RepoList key={selectedName} repos={repos} selected={selected} onSelect={setChosen} />
-      )}
-      {settings.data ? (
-        <RepoSettingsCard settings={settings.data} />
-      ) : (
-        // Loading, not known yet and failures sit in the repository's card, where its facts would be.
-        <SettingsCard
-          help={<HelpTip topic="repository_settings" />}
-          title={
-            <>
-              Repository <code>{`${selected.owner}/${selected.name}`}</code>
-            </>
-          }
-        >
-          {settings.isPending && (
-            <StatusMessage kind="loading">Loading the repository settings…</StatusMessage>
-          )}
-          {settings.isError &&
-            (settings.error instanceof ApiError && settings.error.code === "analysis_not_finished" ? (
-              // Not known yet is an expected state before the first analysis, not a failure.
-              <StatusMessage kind="empty">{settings.error.message}</StatusMessage>
-            ) : (
-              <StatusMessage kind="error">{errorText(settings.error)}</StatusMessage>
-            ))}
-        </SettingsCard>
-      )}
-    </div>
-  );
-}
+const PAGES = {
+  account: AccountPage,
+  llm: LlmPage,
+  "github-sync": GitHubSyncPage,
+  repositories: RepositoriesPage,
+  "review-loop": ReviewLoopPage,
+  memcan: MemcanPage,
+} satisfies Record<SettingsPage, React.ComponentType<{ onDirtyChange: (dirty: boolean) => void }>>;
 
-function SettingsContent({
-  userId,
-  onDirtyChange,
-}: {
-  userId: string;
-  onDirtyChange: (dirty: boolean) => void;
-}) {
-  const now = new Date(useNow());
-  const codex = useCodexAccount(now.getTime());
-  const assessment = useAssessmentSettings();
-  const saveAssessment = useSetAssessmentSettings();
-  const [assessmentSaveCount, setAssessmentSaveCount] = useState(0);
-  const codexError = codex.link.error ?? codex.unlink.error ?? codex.status.error;
-  const setLlm = useSetLlm();
-  const setJudgeEffort = useSetJudgeEffort();
-  const setAskEffort = useSetAskEffort();
-  const settings = useSettings();
-  const { hash } = useLocation();
-  const llmUsage = useRef<HTMLDivElement>(null);
-  const loaded = Boolean(settings.data);
-  useEffect(() => {
-    if (loaded && hash === `#${LLM_USAGE_SECTION}`) llmUsage.current?.scrollIntoView?.();
-  }, [hash, loaded]);
-  const setLanguage = useSetLanguage();
-  const setControlledOwners = useSetControlledOwners();
-  const notify = useNotifySetting();
-  if (settings.isPending) return <StatusMessage kind="loading">Loading the settings…</StatusMessage>;
-  if (settings.isError) return <StatusMessage kind="error">{errorText(settings.error)}</StatusMessage>;
-  const { llm_status, language, app_installations, repos } = settings.data;
-  return (
-    <>
-      <div className="grid w-full max-w-[1800px] items-start gap-4 lg:grid-cols-2">
-        <div className="grid min-w-0 items-start gap-4 min-[1600px]:grid-cols-2">
-          {settings.data.llm_selection && (
-            <LlmSelectionCard
-              // The model choice only: saving the Ask or ranking effort must not reset an unsaved model edit.
-              key={`${settings.data.llm_selection.current.model}/${settings.data.llm_selection.current.reasoning_effort}`}
-              selection={settings.data.llm_selection}
-              busy={setLlm.isPending}
-              saved={setLlm.isSuccess}
-              error={setLlm.isError ? errorText(setLlm.error) : undefined}
-              onSave={(choice) => setLlm.mutate(choice)}
-            >
-              <AskEffortSelect
-                effort={settings.data.llm_selection.ask_effort}
-                efforts={settings.data.llm_selection.efforts}
-                busy={setAskEffort.isPending}
-                saved={setAskEffort.isSuccess}
-                error={setAskEffort.isError ? errorText(setAskEffort.error) : undefined}
-                onChange={(effort) => setAskEffort.mutate(effort)}
-              />
-              <JudgeEffortSelect
-                effort={settings.data.llm_selection.judge_effort}
-                efforts={settings.data.llm_selection.efforts}
-                busy={setJudgeEffort.isPending}
-                saved={setJudgeEffort.isSuccess}
-                error={setJudgeEffort.isError ? errorText(setJudgeEffort.error) : undefined}
-                onChange={(effort) => setJudgeEffort.mutate(effort)}
-              />
-            </LlmSelectionCard>
-          )}
-          <div id={LLM_USAGE_SECTION} ref={llmUsage} className="scroll-mt-14">
-            <CodexAccountCard
-              status={codex.status.data}
-              challenge={codex.challenge}
-              now={now}
-              busy={codex.link.isPending || codex.unlink.isPending}
-              error={codexError ? errorText(codexError) : undefined}
-              onLink={() => {
-                codex.unlink.reset();
-                codex.link.mutate();
-              }}
-              onUnlink={() => codex.unlink.mutate()}
-            />
-          </div>
-          {assessment.data ? (
-            <AssessmentSettingsCard
-              key={assessmentSaveCount}
-              settings={assessment.data}
-              now={now}
-              busy={saveAssessment.isPending}
-              saved={saveAssessment.isSuccess}
-              error={
-                saveAssessment.isError
-                  ? saveAssessment.error instanceof ApiError && saveAssessment.error.code === "conflict"
-                    ? "Settings changed elsewhere. Your edits are kept. Check the changed values and save again."
-                    : errorText(saveAssessment.error)
-                  : undefined
-              }
-              onSave={(config) =>
-                saveAssessment.mutate(
-                  { config, revision: assessment.data!.revision },
-                  { onSuccess: () => setAssessmentSaveCount((count) => count + 1) },
-                )
-              }
-            />
-          ) : (
-            <SettingsCard title="Comment assessment">
-              <StatusMessage kind={assessment.isError ? "error" : "loading"}>
-                {assessment.isError ? errorText(assessment.error) : "Loading assessment settings…"}
-              </StatusMessage>
-            </SettingsCard>
-          )}
-          <LlmStatusCard status={llm_status} usage={settings.data.llm_usage} />
-          <SettingsCard title="Memory" help={<HelpTip topic="memcan_status" />}>
-            <p>
-              <MemcanStatusLine status={settings.data.memcan_status} />
-            </p>
-          </SettingsCard>
-          <LanguageCard
-            language={language}
-            busy={setLanguage.isPending}
-            onChange={(l) => setLanguage.mutate(l)}
-          />
-          <div id="notifications" className="grid scroll-mt-16 gap-4">
-            <NotificationsCard {...notify} />
-            <NotificationChannels />
-          </div>
-          <AppInstallationsCard installations={app_installations} signInHref={routes.authLogin.path} />
-          {settings.data.controlled_owners && (
-            <ControlledOwnersCard
-              owners={settings.data.controlled_owners}
-              busy={setControlledOwners.isPending}
-              saved={setControlledOwners.isSuccess}
-              error={setControlledOwners.isError ? errorText(setControlledOwners.error) : undefined}
-              onSave={(owners) => setControlledOwners.mutate(owners)}
-            />
-          )}
-        </div>
-        <RepoSection repos={repos} userId={userId} />
-      </div>
-      <DashboardSection onDirtyChange={onDirtyChange} />
-      {setLanguage.isError && (
-        <StatusMessage kind="error">The language was not saved: {errorText(setLanguage.error)}</StatusMessage>
-      )}
-    </>
-  );
-}
-
-/** Settings (brief §4.4): LLM status of the last call, language, App installations, read-only repo settings. */
-export function SettingsScreen() {
+/** Settings page frame and the leave guard shared by editable sections. */
+export function SettingsScreen({ page }: { page: SettingsPage }) {
   const me = useMe();
-  const user = me.data?.user ?? null;
+  const user = me.data?.user;
   const { signOut } = useShellSlots();
-  // Unsaved dashboard settings guard leaving Settings (another screen or unloading the page), not sign-out.
   const [dirty, setDirty] = useState(false);
   const blocker = useBlocker(
     ({ currentLocation, nextLocation }) =>
@@ -332,40 +49,22 @@ export function SettingsScreen() {
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
+  const Page = PAGES[page];
   return (
-    <div className="grid content-start gap-4">
-      <div className="flex flex-wrap items-baseline gap-4">
-        <h1 className="text-[22px] font-bold">Settings</h1>
-        <Tooltip tip="Opens the guide to every option on this page: what it is, when it is used and an example.">
-          <Link to={SETTINGS_HELP_PATH} className="text-sm text-accent underline">
-            Settings help
-          </Link>
-        </Tooltip>
+    <div className="@container/settings grid w-full max-w-[1280px] content-start gap-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+        <h1 className="text-[22px] font-bold">{SETTINGS_PAGES.find(({ id }) => id === page)?.label}</h1>
+        <Link to={SETTINGS_HELP_PATH} className="text-sm text-accent underline">
+          Settings help
+        </Link>
       </div>
       {blocker.state === "blocked" && (
-        <div className="max-w-[900px]">
-          <UnsavedChangesPrompt onStay={blocker.reset} onLeave={blocker.proceed} />
-        </div>
+        <UnsavedChangesPrompt onStay={blocker.reset} onLeave={blocker.proceed} />
       )}
       {me.isPending && <StatusMessage kind="loading">Loading…</StatusMessage>}
-      {me.isError && <StatusMessage kind="error">{errorText(me.error)}</StatusMessage>}
-      {me.isSuccess && !user && (
-        <div className="max-w-[900px]">
-          <SignInCard loginHref="/auth/github/login" />
-        </div>
-      )}
-      {user && (
-        <div className="max-w-[900px]">
-          <AccountCard
-            login={user.login}
-            busy={signOut.pending}
-            error={signOut.error}
-            onSignOut={() => signOut.leave(false)}
-            onSignOutEverywhere={() => signOut.leave(true)}
-          />
-        </div>
-      )}
-      {user && <SettingsContent userId={user.login} onDirtyChange={setDirty} />}
+      {me.isError && <StatusMessage kind="error">{messageOf(me.error)}</StatusMessage>}
+      {me.isSuccess && !user && <SignInCard loginHref="/auth/github/login" />}
+      {user && <Page onDirtyChange={setDirty} />}
     </div>
   );
 }

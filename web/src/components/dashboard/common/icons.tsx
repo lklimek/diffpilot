@@ -70,7 +70,19 @@ export const RefreshIcon = () => svg(<path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7
 export const NavIcon = ({
   name,
 }: {
-  name: "my-work" | "review" | "watching" | "settings" | "collapse" | "expand";
+  name:
+    | "my-work"
+    | "review"
+    | "watching"
+    | "settings"
+    | "collapse"
+    | "expand"
+    | "account"
+    | "llm"
+    | "github-sync"
+    | "repositories"
+    | "review-loop"
+    | "memcan";
 }) =>
   svg(
     {
@@ -95,6 +107,12 @@ export const NavIcon = ({
           <path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1" />
         </>
       ),
+      account: <path d="M4 21v-2a5 5 0 0 1 5-5h6a5 5 0 0 1 5 5v2M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z" />,
+      llm: <path d="M13 2 4 14h7l-1 8 10-12h-7l1-8Z" />,
+      "github-sync": <path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7" />,
+      repositories: <path d="M3 6h7l2 2h9v12H3Z" />,
+      "review-loop": <path d="M21 4H3v13h5l4 4 4-4h5ZM7 9h10M7 13h6" />,
+      memcan: <path d="M4 6v12c0 4 16 4 16 0V6M4 6c0 4 16 4 16 0S4 2 4 6Zm0 6c0 4 16 4 16 0" />,
       collapse: <path d="M11 17l-5-5 5-5M18 17l-5-5 5-5" />,
       expand: <path d="M13 17l5-5-5-5M6 17l5-5-5-5" />,
     }[name],

@@ -10,6 +10,8 @@ import { reviewStates } from "../api/review-state";
 import { appRoutes } from "../app/routes";
 import { setFixtureState } from "../mocks/fixtures";
 import { handlers } from "../mocks/handlers";
+import { resetSettingsV14 } from "../mocks/handlers/settings-v14";
+import { resetSelection } from "../mocks/handlers/set-llm";
 import { resetSignOut } from "../mocks/handlers/get-me";
 import { setMockLanguage } from "../mocks/handlers/get-settings";
 import { resetLazyFlows } from "../mocks/lazy-flows";
@@ -25,6 +27,8 @@ export function startMockServer() {
   afterEach(() => {
     server.resetHandlers();
     resetAssessmentSettings();
+    resetSettingsV14();
+    resetSelection();
     setFixtureState("default");
     setScenario(null);
     setMockLanguage(null);

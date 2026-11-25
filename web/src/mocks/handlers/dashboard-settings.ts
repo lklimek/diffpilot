@@ -5,14 +5,12 @@ import type {
   CreatedAccessToken,
   DashboardSettings,
   DashboardSettingsView,
-  SetJudgeEffortRequest,
   SetTimeZoneRequest,
 } from "../../api/generated/types";
 import { validateSettings } from "../../components/dashboard/settings-dashboard/validation";
 import viewJson from "../../../../fixtures/dashboard/api/settings.json";
 import tokensJson from "../../../../fixtures/dashboard/api/access-tokens.json";
 import createdJson from "../../../../fixtures/dashboard/api/access-token-created.json";
-import { SETTINGS } from "../scenarios";
 import { apiError, route } from "./common";
 import { noteDashboardTimeZone } from "./dashboard";
 
@@ -114,17 +112,6 @@ export const setDashboardTimeZone = route("setDashboardTimeZone", async ({ reque
   }
   view = { ...view, settings: { ...view.settings, time_zone } };
   return new HttpResponse(null, { status: 204 });
-});
-
-/** `PUT /api/v1/settings/llm/judge-effort`. */
-export const setJudgeEffort = route("setJudgeEffort", async ({ request }) => {
-  const { reasoning_effort } = (await request.json()) as SetJudgeEffortRequest;
-  return HttpResponse.json({
-    ...SETTINGS.llm_selection,
-    judge_effort: reasoning_effort,
-    changed_by: "alice",
-    changed_at: new Date().toISOString(),
-  });
 });
 
 const live = (token: AccessToken) => new Date(token.expires_at) > new Date();

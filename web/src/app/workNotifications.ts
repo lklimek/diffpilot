@@ -45,7 +45,11 @@ const storage = (): Storage | null => {
 
 /** The opt-in is stored and the browser allows notifications. */
 export function notificationsOn(): boolean {
-  return notifySupport() === "granted" && storage()?.getItem(NOTIFY_KEY) === "on";
+  try {
+    return notifySupport() === "granted" && storage()?.getItem(NOTIFY_KEY) === "on";
+  } catch {
+    return false;
+  }
 }
 
 const listeners = new Set<() => void>();
@@ -62,8 +66,9 @@ const subscribe = (listener: () => void) => {
 /** Asks for permission (call from a user gesture) and stores the opt-in when granted. */
 export async function enableNotifications(): Promise<NotificationSupport> {
   const support = notifySupport();
-  const result = support === "default" ? await window.Notification.requestPermission() : support;
+  let result = support;
   try {
+    if (support === "default") result = await window.Notification.requestPermission();
     if (result === "granted") storage()?.setItem(NOTIFY_KEY, "on");
   } catch {
     // Blocked site data: the choice cannot be kept.
@@ -74,7 +79,11 @@ export async function enableNotifications(): Promise<NotificationSupport> {
 
 /** Removes the opt-in. */
 export function disableNotifications(): void {
-  storage()?.removeItem(NOTIFY_KEY);
+  try {
+    storage()?.removeItem(NOTIFY_KEY);
+  } catch {
+    // Blocked site data.
+  }
   changed();
 }
 
@@ -83,13 +92,26 @@ export function useNotifySetting(): {
   support: NotificationSupport;
   enabled: boolean;
   onChange: (enabled: boolean) => void;
+  onCheck: () => void;
 } {
   const state = useSyncExternalStore(subscribe, () => `${notifySupport()} ${notificationsOn()}`);
   const [support, enabled] = state.split(" ");
+  const requesting = useRef(false);
+  const onChange = async (on: boolean) => {
+    if (!on) return disableNotifications();
+    if (requesting.current) return;
+    requesting.current = true;
+    try {
+      await enableNotifications();
+    } finally {
+      requesting.current = false;
+    }
+  };
   return {
     support: support as NotificationSupport,
     enabled: enabled === "true",
-    onChange: (on) => (on ? void enableNotifications() : disableNotifications()),
+    onChange: (on) => void onChange(on),
+    onCheck: changed,
   };
 }
 

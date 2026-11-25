@@ -3,6 +3,7 @@ import type { AccessToken, CreateAccessToken, CreatedAccessToken } from "../../.
 import { busyTip, buttonClass } from "../../button/button";
 import { dateTimeText } from "../../format/time";
 import { useAction } from "../../inspector/action";
+import { GithubMark } from "../../github/GithubMark";
 import { SettingsCard } from "../../settings/Card";
 import { Tooltip } from "../../tooltip/Tooltip";
 import { CreateTokenDialog } from "./CreateTokenDialog";
@@ -60,17 +61,25 @@ export function AccessTokensCard({ tokens, onCreate, onRevoke, now = new Date() 
   return (
     <SettingsCard title="Access tokens" help={<HelpTip topic="access_tokens" />}>
       <p>
-        A personal access token lets your agents read over HTTP what you can read here: My work, reviews and
-        their questions. A <b>read</b> token is <b>read-only</b>: it cannot change anything, start a refresh
-        or an analysis, post comments, or list and create tokens. A token that also has{" "}
-        <b>review_loop_execute</b> may claim any current decision on PR comments in this diffpilot, yours and
-        other users&apos;, report its effects and set a push target that diffpilot sends requests to; no token
-        can decide.
+        Let your own agents and scripts, such as a Claude Code session, read diffpilot without a browser: your
+        My work ranking and everything you can read here, including analyses, reviews and the review loop. A{" "}
+        <code>read</code> token changes nothing. Add <code>review_loop_execute</code> only for an implementing
+        agent: it can claim decisions from the review loop&apos;s decision feed and report what it did. It
+        never decides.
       </p>
       <p className="text-xs text-muted">
-        Send it as <code className="font-mono">Authorization: Bearer srp_…</code>. The agent API is described
-        in <code className="font-mono">docs/contracts/agent-api.md</code> of diffpilot. Signing out everywhere
-        revokes every token.
+        Tokens are yours alone, expire after 30, 90 or 365 days, and your GitHub sign-in never leaves the
+        server.{" "}
+        <a
+          href="https://github.com/lklimek/diffpilot/blob/main/docs/contracts/agent-api.md"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-accent underline"
+        >
+          See the agent API guide
+          <GithubMark />
+        </a>
+        .
       </p>
       {tokens.length === 0 ? (
         <p className="text-muted">No tokens yet.</p>

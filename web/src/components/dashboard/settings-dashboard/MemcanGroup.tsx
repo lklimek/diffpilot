@@ -1,4 +1,5 @@
 import { useId } from "react";
+import { FormRow } from "../../settings/FormRow";
 import { HelpTip } from "../../settings/HelpTip";
 import { ListEditor } from "./ListEditor";
 import type { FieldErrors } from "./validation";
@@ -29,31 +30,34 @@ export function MemcanGroup({
   const id = useId();
   return (
     <div className="grid content-start gap-3">
-      <div className="grid gap-1">
-        <span className="flex items-center gap-2">
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={configured && includeTodos}
-              disabled={!configured}
-              aria-describedby={configured ? undefined : `${id}-off`}
-              className="size-4"
-              onChange={(e) => onChange({ include_todos: e.target.checked })}
-            />
-            Show my MemCan TODOs
-          </label>
-          <HelpTip topic="include_todos" />
-        </span>
-        {!configured && (
-          <p id={`${id}-off`} className="text-xs text-muted">
-            MemCan is not configured on this server, so there are no TODOs to show.
-          </p>
-        )}
-      </div>
-      <div className="grid gap-1.5">
-        <span id={`${id}-projects`} className="text-sm font-semibold">
-          MemCan projects
-        </span>
+      <FormRow
+        label="Show my MemCan TODOs"
+        htmlFor={`${id}-todos`}
+        help={
+          <>
+            <HelpTip topic="include_todos" />
+            {!configured && (
+              <span id={`${id}-off`}>
+                MemCan is not configured on this server, so there are no TODOs to show.
+              </span>
+            )}
+          </>
+        }
+      >
+        <input
+          id={`${id}-todos`}
+          type="checkbox"
+          checked={configured && includeTodos}
+          disabled={!configured}
+          aria-describedby={configured ? undefined : `${id}-off`}
+          className="size-6"
+          onChange={(e) => onChange({ include_todos: e.target.checked })}
+        />
+      </FormRow>
+      <FormRow
+        label={<span id={`${id}-projects`}>MemCan projects</span>}
+        help="The repository names are always read."
+      >
         {repoProjects.length > 0 ? (
           <ul aria-labelledby={`${id}-projects`} className="m-0 flex list-none flex-wrap gap-1.5 p-0">
             {repoProjects.map((project) => (
@@ -68,10 +72,7 @@ export function MemcanGroup({
         ) : (
           <p className="text-xs text-muted">No repository rows yet.</p>
         )}
-        <p className="text-xs text-muted">
-          The short names of your repositories are always read; add other project names below.
-        </p>
-      </div>
+      </FormRow>
       <ListEditor
         label="Extra MemCan projects"
         help={<HelpTip topic="memcan_extra_projects" />}

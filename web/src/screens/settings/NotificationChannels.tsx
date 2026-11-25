@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ApiError } from "../../api/client";
 import type { ChannelKind, ChannelTestResult } from "../../api/generated/types";
 import { useChannelActions, useNotificationSettings } from "../../api/review-loop";
@@ -10,7 +10,13 @@ const errorText = (error: unknown) =>
   error instanceof ApiError ? error.message : "Something went wrong. Try again.";
 
 /** Settings → Notifications push channels (V7, RN1–RN3): ntfy and a generic webhook. */
-export function NotificationChannels() {
+export function NotificationChannels({
+  onDirtyChange,
+}: {
+  onDirtyChange: (kind: ChannelKind, dirty: boolean) => void;
+}) {
+  const ntfyDirty = useCallback((dirty: boolean) => onDirtyChange("ntfy", dirty), [onDirtyChange]);
+  const webhookDirty = useCallback((dirty: boolean) => onDirtyChange("webhook", dirty), [onDirtyChange]);
   const settings = useNotificationSettings();
   const { save, remove, test } = useChannelActions();
   const [tested, setTested] = useState<{ kind: ChannelKind; result: ChannelTestResult } | null>(null);
@@ -38,6 +44,7 @@ export function NotificationChannels() {
           <NotificationChannelCard
             key={`${kind}:${channel?.url ?? ""}:${channel?.secret_last4 ?? ""}`}
             kind={kind}
+            onDirtyChange={kind === "ntfy" ? ntfyDirty : webhookDirty}
             channel={channel}
             busy={busy}
             error={error ? errorText(error) : null}
