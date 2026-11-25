@@ -17,7 +17,7 @@ use tokio::time::{Instant, timeout_at};
 pub(super) const MAX_BYTES: usize = 4 * 1024 * 1024;
 pub(super) const BODY_TIMEOUT: Duration = Duration::from_secs(8);
 
-pub(super) fn content_length(headers: &HeaderMap) -> Option<u64> {
+fn content_length(headers: &HeaderMap) -> Option<u64> {
     headers
         .get(header::CONTENT_LENGTH)?
         .to_str()

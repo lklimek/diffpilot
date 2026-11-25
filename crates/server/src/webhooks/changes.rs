@@ -109,7 +109,7 @@ fn repository_url(value: &Value) -> Option<contracts::common::RepoRef> {
     parse_repo(path)
 }
 
-fn event_repository(body: &Value) -> Option<Repository> {
+pub(super) fn event_repository(body: &Value) -> Option<Repository> {
     match body.get("repository") {
         Some(value) if !value.is_null() => repository(value),
         _ => {
@@ -252,9 +252,8 @@ fn lifecycle(
             .collect()
     };
     let update = match (event, action) {
-        ("installation", "created" | "new_permissions_accepted")
-            if body["repositories"].is_array() =>
-        {
+        ("installation", "created") => Lifecycle::Add(repos("repositories")?),
+        ("installation", "new_permissions_accepted") if body["repositories"].is_array() => {
             Lifecycle::Add(repos("repositories")?)
         }
         ("installation", "new_permissions_accepted") => return Ok(Changes::Ignore),

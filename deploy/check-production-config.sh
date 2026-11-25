@@ -7,7 +7,7 @@
 #   (no option)       the files, production rendered with .env.example, local rendered with it on localhost
 #   --env-file FILE   production rendered with FILE (for example the deployment's .env), and FILE's values
 #   --local           also render the local variant; check runtime files/settings, allow HTTP and host uid/gid
-#   --secret-files    secrets as files (compose.secrets.yaml): rendered with it; the four secret variables must be
+#   --secret-files    secrets as files (compose.secrets.yaml): rendered with it; the secret variables must be
 #                     empty and their files in SR_SECRETS_DIR present (run as root to read them)
 #   --no-render       no rendering (the files and FILE's values only)
 set -euo pipefail
@@ -34,10 +34,11 @@ scan() {
   return "$found"
 }
 
-secrets=(SR_SECRET_KEY SR_RUNNER_SECRET SR_GITHUB_CLIENT_SECRET SR_MEMCAN_TOKEN)
+secrets=(SR_SECRET_KEY SR_RUNNER_SECRET SR_GITHUB_CLIENT_SECRET SR_MEMCAN_TOKEN SR_GITHUB_WEBHOOK_SECRET)
 declare -A secret_file_names=(
   [SR_SECRET_KEY]=sr-secret-key [SR_RUNNER_SECRET]=sr-runner-secret
   [SR_GITHUB_CLIENT_SECRET]=sr-github-client-secret [SR_MEMCAN_TOKEN]=sr-memcan-token
+  [SR_GITHUB_WEBHOOK_SECRET]=github-webhook/current
 )
 # Values that must differ from .env.example's.
 own_values=(SR_PUBLIC_URL SR_GITHUB_APP_ID SR_GITHUB_CLIENT_ID SR_MEMCAN_URL
@@ -93,8 +94,8 @@ secret_file_value() {
   printf '%s' "${content%"${content##*[![:space:]]}"}"
 }
 
-# check_secret_file NAME PATH: a private, non-empty, non-placeholder service secret file; the runner
-# secret at least 32 characters. Optional uid/gid/mode describe the consumer. Prints problems by name; never the content.
+# check_secret_file NAME PATH: a private, non-empty, non-placeholder service secret file. Runner and
+# webhook secrets need at least 32 characters. Optional uid/gid/mode describe the consumer. Prints problems by name; never the content.
 check_secret_file() {
   local name="$1" path="$2" uid="${3:-10010}" gid="${4:-}" mode="${5:-400}" found=0 actual_uid actual_gid actual_mode content decoded_bytes canonical
   if [[ ! -f "$path" ]]; then
@@ -120,7 +121,7 @@ check_secret_file() {
   elif [[ "$content" == *REPLACE* ]]; then
     echo "check-production-config: $name: $path still holds a placeholder" >&2
     found=1
-  elif [[ "$name" == SR_RUNNER_SECRET ]] && ((${#content} < 32)); then
+  elif [[ "$name" == SR_RUNNER_SECRET || "$name" == SR_GITHUB_WEBHOOK_SECRET* ]] && ((${#content} < 32)); then
     echo "check-production-config: $name: $path holds fewer than 32 characters (openssl rand -hex 32)" >&2
     found=1
   fi
@@ -240,12 +241,20 @@ check_env() {
     done
   else
     for key in "${secrets[@]}"; do
+      if [[ "$key" == SR_GITHUB_WEBHOOK_SECRET && "$local_mode" == 1 ]]; then continue; fi
       if [[ -z "${values[$key]:-}" ]]; then say "$key is empty (or use --secret-files with compose.secrets.yaml)"; fi
     done
-    value="${values[SR_RUNNER_SECRET]:-}"
-    if [[ -n "$value" && "$value" != *REPLACE* ]] && ((${#value} < 32)); then
-      say "SR_RUNNER_SECRET is shorter than 32 characters (openssl rand -hex 32)"
-    fi
+    for key in SR_RUNNER_SECRET SR_GITHUB_WEBHOOK_SECRET; do
+      value="${values[$key]:-}"
+      if [[ "$key" == SR_GITHUB_WEBHOOK_SECRET ]]; then
+        value="${value#"${value%%[![:space:]]*}"}"
+        value="${value%"${value##*[![:space:]]}"}"
+        if [[ -z "$value" && -n "${values[$key]:-}" ]]; then say "$key is empty after trimming whitespace"; fi
+      fi
+      if [[ -n "$value" && "$value" != *REPLACE* ]] && ((${#value} < 32)); then
+        say "$key is shorter than 32 characters (openssl rand -hex 32)"
+      fi
+    done
   fi
   return "$found"
 }
@@ -354,6 +363,7 @@ if ((self_test)); then
     -e "s|^SR_GATEWAY_CREDENTIALS_TOKEN_PATH=.*|SR_GATEWAY_CREDENTIALS_TOKEN_PATH=$tmp/gateway-credentials-token|" \
     -e "s|^SR_GATEWAY_KEYS_TOKEN_PATH=.*|SR_GATEWAY_KEYS_TOKEN_PATH=$tmp/gateway-keys-token|" \
     -e "s|^SR_RUNNER_GATEWAY_KEYS_TOKEN_PATH=.*|SR_RUNNER_GATEWAY_KEYS_TOKEN_PATH=$tmp/runner-gateway-keys-token|" "$repo/.env.example" > "$tmp/good.env"
+  echo 'SR_GITHUB_WEBHOOK_SECRET=CANARY-webhook-secret-0123456789abcdef0123456789' >> "$tmp/good.env"
   # Synthetic ownership keeps self-tests unprivileged; file modes and contents use real temp files.
   declare -A fixture_uids=() fixture_gids=()
   stat() {
@@ -412,6 +422,10 @@ if ((self_test)); then
   env_case "no allowed login" fail 0 -e 's|^SR_ALLOWED_LOGINS=.*|SR_ALLOWED_LOGINS=|'
   env_case "allowed logins unset" fail 0 -e '/^SR_ALLOWED_LOGINS=/d'
   env_case "allowed logins placeholder" fail 0 -e 's|^SR_ALLOWED_LOGINS=.*|SR_ALLOWED_LOGINS=REPLACE_WITH_LOGINS|'
+  env_local=1 env_case "local webhook can be disabled" pass 0 -e '/^SR_GITHUB_WEBHOOK_SECRET=/d'
+  env_case "missing webhook secret" fail 0 -e '/^SR_GITHUB_WEBHOOK_SECRET=/d'
+  env_case "blank webhook secret" fail 0 -e 's/^SR_GITHUB_WEBHOOK_SECRET=.*/SR_GITHUB_WEBHOOK_SECRET="  "/'
+  env_case "short webhook secret" fail 0 -e 's/^SR_GITHUB_WEBHOOK_SECRET=.*/SR_GITHUB_WEBHOOK_SECRET=short/'
   env_case "short runner secret" fail 0 -e 's|^SR_RUNNER_SECRET=.*|SR_RUNNER_SECRET=short|'
   for key in SR_DOCKER_GID SR_WORKER_IMAGE SR_FETCH_IMAGE; do
     runtime_env_case "$key unset" fail 0 -e "/^$key=/d"
@@ -531,12 +545,14 @@ if ((self_test)); then
   fi
   # Secrets as files.
   mkdir -m 0700 "$tmp/secrets"
+  mkdir -m 0700 "$tmp/secrets/github-webhook"
   for name in sr-secret-key sr-github-client-secret sr-memcan-token; do echo "CANARY-$name" > "$tmp/secrets/$name"; done
   echo "CANARY-runner-secret-0123456789abcdef0123456789" > "$tmp/secrets/sr-runner-secret"
-  chmod 0400 "$tmp/secrets"/*
+  echo "CANARY-webhook-secret-0123456789abcdef0123456789" > "$tmp/secrets/github-webhook/current"
+  chmod 0400 "$tmp/secrets"/sr-* "$tmp/secrets/github-webhook/current"
   chmod 0440 "$tmp/secrets/sr-runner-secret"
   fixture_uids["$tmp/secrets/sr-runner-secret"]=10002
-  files_env=(-e 's/^\(SR_SECRET_KEY\|SR_RUNNER_SECRET\|SR_GITHUB_CLIENT_SECRET\|SR_MEMCAN_TOKEN\)=.*/\1=/'
+  files_env=(-e 's/^\(SR_SECRET_KEY\|SR_RUNNER_SECRET\|SR_GITHUB_CLIENT_SECRET\|SR_MEMCAN_TOKEN\|SR_GITHUB_WEBHOOK_SECRET\)=.*/\1=/'
     -e "\$a SR_SECRETS_DIR=$tmp/secrets")
   env_case "secrets as files" pass 1 "${files_env[@]}"
   for name in "${secret_file_names[@]}"; do
@@ -562,15 +578,27 @@ if ((self_test)); then
     sed "${files_env[@]}" "$tmp/good.env" > "$tmp/files.env"
     out="$(docker compose --env-file "$tmp/files.env" -f "$repo/deploy/compose.yaml" \
       -f "$repo/deploy/compose.secrets.yaml" config 2>&1)" || { echo "self-test: compose.secrets.yaml does not render: $out" >&2; exit 1; }
-    if grep -qE '^ +SR_(SECRET_KEY|RUNNER_SECRET|GITHUB_CLIENT_SECRET|MEMCAN_TOKEN):' <<< "$out" ||
-      [[ "$(grep -c '_FILE: /run/secrets/sr-' <<< "$out")" != 5 ]]; then
-      echo "self-test: compose.secrets.yaml does not replace the four secrets by files" >&2
+    if grep -qE '^ +SR_(SECRET_KEY|RUNNER_SECRET|GITHUB_CLIENT_SECRET|MEMCAN_TOKEN|GITHUB_WEBHOOK_SECRET):' <<< "$out" ||
+      [[ "$(grep -cE '_FILE: /run/secrets/(sr-|github-webhook/current)' <<< "$out")" != 6 ]]; then
+      echo "self-test: compose.secrets.yaml does not replace the secrets by files" >&2
       exit 1
     fi
     rendered "$repo" "$tmp/files.env" compose.secrets.yaml > /dev/null || { echo "self-test: secrets variant rejected" >&2; exit 1; }
     sed 's|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL=http://localhost:3000|' "$tmp/good.env" > "$tmp/local.env"
     rendered_local "$repo" "$tmp/local.env" > /dev/null 2>&1 || { echo "self-test: localhost local variant rejected" >&2; exit 1; }
     rendered "$repo" "$tmp/good.env" > /dev/null 2>&1 || { echo "self-test: production stack rejected" >&2; exit 1; }
+    sed -e '$a SR_GITHUB_WEBHOOK_SECRET_PREVIOUS=CANARY-previous-webhook-secret-0123456789' \
+      -e '$a SR_GITHUB_WEBHOOK_URL=https://webhooks.test.invalid/diffpilot' "$tmp/good.env" > "$tmp/webhook.env"
+    out="$(docker compose --env-file "$tmp/webhook.env" -f "$repo/deploy/compose.yaml" config --format json 2>&1)" || {
+      echo "self-test: webhook environment does not render" >&2; exit 1;
+    }
+    if ! jq -e '.services.server.environment |
+        (.SR_GITHUB_WEBHOOK_SECRET | startswith("CANARY-webhook-")) and
+        (.SR_GITHUB_WEBHOOK_SECRET_PREVIOUS | startswith("CANARY-previous-")) and
+        .SR_GITHUB_WEBHOOK_URL == "https://webhooks.test.invalid/diffpilot"' <<< "$out" >/dev/null; then
+      echo "self-test: compose.yaml does not forward the webhook environment" >&2
+      exit 1
+    fi
     # Nothing in RAM: a tmpfs scratch area (short or long syntax) is refused; the proxy's config dir is the exception.
     for ram in 'runner: {tmpfs: ["/scratch:size=1g"]}' 'server: {volumes: [{type: tmpfs, target: /scratch}]}'; do
       printf 'services:\n  %s\n' "$ram" > "$tmp/deploy/ram.yaml"

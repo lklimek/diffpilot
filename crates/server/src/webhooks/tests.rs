@@ -115,14 +115,24 @@ async fn unsigned_or_bad_signature_is_401_before_parse() {
         assert_eq!(send(&hooks, req).await.status(), 401);
     }
     assert_eq!(
+        hooks.db.github().status(Timestamp::now()).await.unwrap(),
+        (None, 0)
+    );
+    assert_eq!(
         send(&hooks, request(&hooks, "ping", id, "not json", SECRET))
             .await
             .status(),
         400
     );
-    assert_eq!(
-        hooks.db.github().status(Timestamp::now()).await.unwrap(),
-        (None, 0)
+    assert!(
+        hooks
+            .db
+            .github()
+            .status(Timestamp::now())
+            .await
+            .unwrap()
+            .0
+            .is_some()
     );
 }
 
@@ -204,8 +214,11 @@ async fn body_limit_4mib_route_level() {
         200
     );
     let mut req = request(&hooks, "ping", Uuid::new_v4(), &body, SECRET);
+    req.headers_mut().remove(header::CONTENT_LENGTH);
     *req.body_mut() = Body::from(body + " ");
-    assert_eq!(send(&hooks, req).await.status(), 413);
+    let response = send(&hooks, req).await;
+    assert_eq!(response.status(), 413);
+    assert_eq!(response.headers()[header::CONNECTION], "close");
 }
 
 #[tokio::test]
@@ -376,7 +389,20 @@ async fn delivery_for_untracked_repo_dropped_and_counted() {
             202
         );
     }
-    let (last, dropped) = hooks.db.github().status(Timestamp::now()).await.unwrap();
+    let (last, dropped) = hooks
+        .dropped
+        .status(&hooks.db, Timestamp::now())
+        .await
+        .unwrap();
+    assert_eq!(
+        hooks.db.github().status(Timestamp::now()).await.unwrap(),
+        (None, 0)
+    );
+    let future = Timestamp::now() + super::DROP_RETENTION + jiff::SignedDuration::from_hours(1);
+    assert_eq!(
+        hooks.dropped.status(&hooks.db, future).await.unwrap(),
+        (None, 0)
+    );
     assert!(last.is_some());
     assert_eq!(dropped, 2);
     assert!(
@@ -732,7 +758,7 @@ async fn webhook_status_reports_audit_to_signed_in_users() {
     seed_analysis(&db).await.unwrap();
     let state = crate::state::AppState::with_queue(config, db);
     let cookie = crate::test_support::session_cookie(&state, DEFAULT_TENANT).await;
-    let hooks = Webhooks::new(state.db.clone(), state.config.clone());
+    let hooks = Webhooks::from_app(&state);
     assert_eq!(
         send(
             &hooks,
@@ -844,4 +870,236 @@ async fn repository_name_fallback_requires_an_absent_repository_object() {
         .unwrap();
     assert_eq!(pending.changes[0].number, Some(17));
     assert_eq!(pending.changes[0].repository.id, None);
+}
+
+#[tokio::test]
+async fn webhook_chunked_delivery_is_accepted_without_content_length() {
+    let hooks = fixture(Some(SECRET)).await;
+    let body = ping();
+    let req = request(&hooks, "ping", Uuid::new_v4(), &body, SECRET);
+    let mut headers = String::new();
+    for (name, value) in req.headers() {
+        if name != header::CONTENT_LENGTH {
+            headers.push_str(&format!("{name}: {}\r\n", value.to_str().unwrap()));
+        }
+    }
+    let (addr, _stop, _server) = listen(webhook_router(hooks)).await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let (first, second) = body.split_at(body.len() / 2);
+    let message = format!(
+        "POST {PATH} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nTransfer-Encoding: chunked\r\n{headers}\r\n{:x}\r\n{first}\r\n{:x}\r\n{second}\r\n0\r\n\r\n",
+        first.len(),
+        second.len(),
+    );
+    client.write_all(message.as_bytes()).await.unwrap();
+    let mut response = String::new();
+    timeout(Duration::from_secs(2), client.read_to_string(&mut response))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(response.starts_with("HTTP/1.1 200 "), "{response}");
+}
+
+#[tokio::test]
+async fn webhook_rejects_missing_event_and_invalid_delivery_before_signature() {
+    let hooks = fixture(Some(SECRET)).await;
+    for (name, value) in [
+        ("x-github-event", None),
+        ("x-github-delivery", Some("not-a-uuid")),
+    ] {
+        let mut req = request(&hooks, "ping", Uuid::new_v4(), &ping(), SECRET);
+        req.headers_mut().remove("x-hub-signature-256");
+        req.headers_mut().remove(name);
+        if let Some(value) = value {
+            req.headers_mut().insert(name, value.parse().unwrap());
+        }
+        assert_eq!(send(&hooks, req).await.status(), 400);
+    }
+}
+
+#[tokio::test]
+async fn verified_webhook_payload_errors_are_audited_and_warn_rate_limited() {
+    let hooks = fixture(Some(SECRET)).await;
+    let (logs, _subscriber) = LogCapture::start_scoped();
+    for body in [
+        "raw-payload-must-stay-private",
+        "false-payload-must-stay-private",
+        "null",
+        "[]",
+        r#"{"action":"opened","number":1}"#,
+        "{}",
+    ] {
+        let response = send(
+            &hooks,
+            request(&hooks, "pull_request", Uuid::new_v4(), body, SECRET),
+        )
+        .await;
+        // An object with no action is ignored. A syntactically invalid body and a non-object are bad requests.
+        assert_eq!(response.status(), if body == "{}" { 202 } else { 400 });
+        if body != "{}" {
+            assert!(
+                hooks
+                    .db
+                    .github()
+                    .status(Timestamp::now())
+                    .await
+                    .unwrap()
+                    .0
+                    .is_some()
+            );
+        }
+    }
+    let logs = logs.text();
+    assert_eq!(logs.matches("code=invalid_json").count(), 1, "{logs}");
+    assert_eq!(logs.matches("code=invalid_payload").count(), 1, "{logs}");
+    assert!(!logs.contains("raw-payload-must-stay-private"));
+}
+
+#[tokio::test]
+async fn webhook_connection_limit_refuses_excess_tcp_connections() {
+    let hooks = fixture(Some(SECRET)).await;
+    let (addr, _stop, _server) = listen(webhook_router(hooks)).await;
+    let mut occupied = Vec::new();
+    for _ in 0..64 {
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        client.write_all(b"GET / HTTP/1.1\r\nHost: ").await.unwrap();
+        occupied.push(client);
+    }
+    let mut excess = TcpStream::connect(addr).await.unwrap();
+    let result = timeout(Duration::from_secs(1), excess.read(&mut [0u8]))
+        .await
+        .unwrap();
+    assert!(matches!(result, Ok(0)) || result.is_err(), "{result:?}");
+    drop(occupied);
+}
+
+#[tokio::test]
+async fn verified_wrong_hook_target_warns_once_and_remains_401() {
+    let hooks = fixture(Some(SECRET)).await;
+    let (logs, _subscriber) = LogCapture::start_scoped();
+    for _ in 0..2 {
+        let mut req = request(&hooks, "ping", Uuid::new_v4(), &ping(), SECRET);
+        req.headers_mut().insert(
+            "x-github-hook-installation-target-type",
+            "repository".parse().unwrap(),
+        );
+        req.headers_mut().insert(
+            "x-github-hook-installation-target-id",
+            "456".parse().unwrap(),
+        );
+        assert_eq!(send(&hooks, req).await.status(), 401);
+    }
+    let logs = logs.text();
+    assert_eq!(
+        logs.matches("Verified GitHub webhook targets a different hook")
+            .count(),
+        1,
+        "{logs}"
+    );
+    assert!(
+        logs.contains("target_type=Some(\"repository\")") && logs.contains("target_id=Some(456)"),
+        "{logs}"
+    );
+    assert_eq!(
+        hooks.db.github().status(Timestamp::now()).await.unwrap(),
+        (None, 0)
+    );
+}
+
+#[tokio::test]
+async fn webhook_duplicate_is_logged_at_info() {
+    let hooks = fixture(Some(SECRET)).await;
+    let (logs, _subscriber) = LogCapture::start_scoped();
+    let delivery = Uuid::new_v4();
+    for _ in 0..2 {
+        assert_eq!(
+            send(&hooks, request(&hooks, "ping", delivery, &ping(), SECRET))
+                .await
+                .status(),
+            200
+        );
+    }
+    assert!(
+        logs.text()
+            .lines()
+            .any(|line| line.contains("INFO") && line.contains("outcome=duplicate"))
+    );
+}
+
+#[tokio::test]
+async fn webhook_installation_cap_warns_once() {
+    let hooks = fixture(Some(SECRET)).await;
+    track(&hooks, "acme").await;
+    let (logs, _subscriber) = LogCapture::start_scoped();
+    let repositories: Vec<_> = (1..=501)
+        .map(|id| json!({"id":id, "full_name":format!("acme/repo-{id}")}))
+        .collect();
+    for id in [10, 20] {
+        let body = json!({"action":"created","installation":{"id":id},"repositories":repositories})
+            .to_string();
+        assert_eq!(
+            send(
+                &hooks,
+                request(&hooks, "installation", Uuid::new_v4(), &body, SECRET)
+            )
+            .await
+            .status(),
+            202
+        );
+    }
+    let logs = logs.text();
+    assert_eq!(logs.matches("code=installation_cap").count(), 1, "{logs}");
+    assert!(
+        hooks
+            .db
+            .github()
+            .next_pending(Timestamp::now())
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn webhook_worker_dispatch_failure_uses_backoff_and_warns_once() {
+    use db::repo::github::DeliveryError;
+    use jiff::SignedDuration;
+
+    let hooks = fixture(Some(SECRET)).await;
+    track(&hooks, "acme").await;
+    let id = Uuid::new_v4();
+    let req = request(&hooks, "pull_request", id, &signal("acme", 7), SECRET);
+    assert_eq!(send(&hooks, req).await.status(), 202);
+    let (logs, _subscriber) = LogCapture::start_scoped();
+    let mut now =
+        Timestamp::from(jiff::Timestamp::from_second(Timestamp::now().as_second() + 1).unwrap());
+    let github = hooks.db.github();
+    for (attempt, delay) in [10, 60, 600, 0].into_iter().enumerate() {
+        let current = github.next_pending(now).await.unwrap().unwrap();
+        assert_eq!((current.id, current.attempts), (id, attempt as i64));
+        super::worker::step(&hooks, || now, async |_| Err(DeliveryError::Dispatch))
+            .await
+            .unwrap();
+        assert!(github.next_pending(now).await.unwrap().is_none());
+        if delay != 0 {
+            let retry = now + SignedDuration::from_secs(delay);
+            assert_eq!(github.next_retry(now).await.unwrap(), Some(retry));
+            assert!(
+                github
+                    .next_pending(retry - SignedDuration::from_secs(1))
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(logs.text().matches("exhausted its retries").count(), 0);
+            now = retry;
+        }
+    }
+    assert!(github.next_retry(now).await.unwrap().is_none());
+    assert_eq!(
+        logs.text()
+            .matches("GitHub webhook delivery exhausted its retries")
+            .count(),
+        1
+    );
 }

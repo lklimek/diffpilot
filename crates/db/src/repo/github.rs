@@ -4,15 +4,18 @@ use contracts::common::RepoRef;
 use contracts::time::Timestamp;
 use jiff::SignedDuration;
 use serde::{Deserialize, Serialize};
-use sqlx::{SqliteConnection, SqlitePool};
+use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use super::{
     Db,
     jobs::{parse_ts, ts},
-    write_tx,
+    read_tx, write_tx,
 };
 use crate::error::DbError;
+
+mod installations;
+mod tracking;
 
 const RETENTION: SignedDuration = SignedDuration::from_hours(14 * 24);
 const RESUME_WINDOW: SignedDuration = SignedDuration::from_hours(3 * 24);
@@ -89,6 +92,10 @@ pub enum InstallationUpdate<'a> {
 pub enum Effect<'a> {
     /// Persist the delivery for audit only.
     Ignore,
+    /// Audit an unused action only if its repository is tracked.
+    IgnoreRepository(&'a Repository),
+    /// Record a verified delivery whose JSON or shape was invalid.
+    Reject(Option<&'a Repository>, DeliveryError),
     /// Queue hints if the event repository is tracked.
     Signal(&'a Repository, &'a [WebhookChange]),
     /// Update live coverage for tracked repositories.
@@ -122,6 +129,8 @@ pub enum Outcome {
     Ignored,
     /// No tenant tracks the repository.
     NotAllowed,
+    /// An installation update reached a repository limit.
+    InstallationCapped,
 }
 
 /// A pending delivery's dispatch inputs and retry state.
@@ -142,15 +151,71 @@ pub enum DeliveryError {
     /// Dispatch could not process the change.
     #[error("dispatch")]
     Dispatch,
+    /// The verified bytes are not JSON.
+    #[error("invalid_json")]
+    InvalidJson,
+    /// The verified JSON lacks required webhook fields.
+    #[error("invalid_payload")]
+    InvalidPayload,
+    /// The installation update reached a repository limit.
+    #[error("installation_cap")]
+    InstallationCap,
+}
+
+enum Admitted<'a> {
+    Signal(tracking::Tracked<'a>, &'a [WebhookChange]),
+    Installation(i64, installations::Prepared<'a>),
 }
 
 impl Github<'_> {
-    /// Deduplicates, applies the tracked-repository gate and records the result in one write transaction.
+    /// Checks tracking in a read transaction before deduplicating and writing tracked changes.
     pub async fn record(
         &self,
         delivery: &NewDelivery<'_>,
         now: Timestamp,
     ) -> Result<Outcome, DbError> {
+        let admitted = match &delivery.effect {
+            Effect::Ignore => {
+                if let Some(id) = delivery
+                    .installation_id
+                    .filter(|_| delivery.event != "ping")
+                {
+                    let mut reader = read_tx(self.pool).await?;
+                    let known = installations::known(&mut reader, id).await?;
+                    reader.commit().await?;
+                    if !known {
+                        return Ok(Outcome::NotAllowed);
+                    }
+                }
+                return self.audit(delivery, None, now).await;
+            }
+            Effect::IgnoreRepository(repo) => {
+                return self.scoped_audit(delivery, Some(repo), None, now).await;
+            }
+            Effect::Reject(repo, error) => {
+                return self.scoped_audit(delivery, *repo, Some(*error), now).await;
+            }
+            Effect::Signal(repo, changes) => {
+                let mut reader = read_tx(self.pool).await?;
+                let matched =
+                    tracking::resolve(&mut reader, std::slice::from_ref(*repo), 1).await?;
+                reader.commit().await?;
+                matched
+                    .into_iter()
+                    .next()
+                    .map(|tracked| Admitted::Signal(tracked, changes))
+            }
+            Effect::Installation(id, update) => {
+                let mut reader = read_tx(self.pool).await?;
+                let matched = installations::prepare(&mut reader, *id, *update).await?;
+                reader.commit().await?;
+                matched.map(|update| Admitted::Installation(*id, update))
+            }
+        };
+        let Some(admitted) = admitted else {
+            return Ok(Outcome::NotAllowed);
+        };
+
         let mut tx = write_tx(self.pool).await?;
         let id = delivery.id.to_string();
         let prior: Option<(String, String, String)> = sqlx::query_as(
@@ -177,37 +242,82 @@ impl Github<'_> {
             return Ok(Outcome::Duplicate);
         }
 
-        let (outcome, changes) = match &delivery.effect {
-            Effect::Ignore => (Outcome::Ignored, &[][..]),
-            Effect::Signal(repo, changes) if is_tracked(&mut tx, repo).await? => {
-                (Outcome::Queued, *changes)
+        let (changes, error) = match admitted {
+            Admitted::Signal(tracked, changes) => {
+                if !tracked.bind(&mut tx).await? {
+                    return Ok(Outcome::NotAllowed);
+                }
+                (changes, None)
             }
-            Effect::Installation(id, update)
-                if apply_installation(&mut tx, *id, *update, now).await? =>
-            {
-                (Outcome::Queued, &[][..])
+            Admitted::Installation(installation, update) => {
+                let Some(capped) = installations::apply(&mut tx, installation, update, now).await?
+                else {
+                    return Ok(Outcome::NotAllowed);
+                };
+                (&[][..], capped.then_some(DeliveryError::InstallationCap))
             }
-            _ => (Outcome::NotAllowed, &[][..]),
         };
-        let (state, processed_at) = match outcome {
-            Outcome::Queued => ("pending", None),
-            Outcome::Ignored => ("ignored", Some(ts(now))),
-            Outcome::NotAllowed => ("not_allowed", Some(ts(now))),
-            Outcome::Duplicate => unreachable!("duplicate deliveries return before recording"),
-        };
+        let state = if error.is_some() { "done" } else { "pending" };
         sqlx::query(
             "INSERT INTO github_deliveries (delivery_id, body_sha256, event, action, installation_id,
-                                            changes, state, received_at, processed_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                            changes, state, received_at, processed_at, error)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(delivery_id) DO UPDATE SET
                  changes = excluded.changes, state = excluded.state, processed_at = excluded.processed_at,
-                 received_at = excluded.received_at, attempts = 0, error = NULL",
+                 received_at = excluded.received_at, attempts = 0, error = excluded.error",
         )
         .bind(id).bind(delivery.hash).bind(delivery.event).bind(delivery.action).bind(delivery.installation_id)
-        .bind(serde_json::to_string(changes)?).bind(state).bind(ts(now)).bind(processed_at)
+        .bind(serde_json::to_string(changes)?).bind(state).bind(ts(now)).bind(error.map(|_| ts(now)))
+        .bind(error.map(|code| code.to_string()))
         .execute(&mut *tx).await?;
         tx.commit().await?;
-        Ok(outcome)
+        Ok(if error.is_some() {
+            Outcome::InstallationCapped
+        } else {
+            Outcome::Queued
+        })
+    }
+
+    async fn scoped_audit(
+        &self,
+        delivery: &NewDelivery<'_>,
+        repo: Option<&Repository>,
+        error: Option<DeliveryError>,
+        now: Timestamp,
+    ) -> Result<Outcome, DbError> {
+        if let Some(repo) = repo {
+            let mut reader = read_tx(self.pool).await?;
+            let matched = tracking::resolve(&mut reader, std::slice::from_ref(repo), 1).await?;
+            reader.commit().await?;
+            if matched.is_empty() {
+                return Ok(Outcome::NotAllowed);
+            }
+        }
+        self.audit(delivery, error, now).await
+    }
+
+    async fn audit(
+        &self,
+        delivery: &NewDelivery<'_>,
+        error: Option<DeliveryError>,
+        now: Timestamp,
+    ) -> Result<Outcome, DbError> {
+        let written = sqlx::query(
+            "INSERT INTO github_deliveries (delivery_id, body_sha256, event, action, installation_id,
+                                            changes, state, received_at, processed_at, error)
+             SELECT ?1, ?2, ?3, ?4, ?5, '[]', 'ignored', ?6, ?6, ?7 WHERE NOT EXISTS (
+                SELECT 1 FROM github_deliveries WHERE body_sha256 = ?2 AND received_at >= ?8
+             )
+             ON CONFLICT(delivery_id) DO NOTHING",
+        ).bind(delivery.id.to_string()).bind(delivery.hash).bind(delivery.event)
+            .bind(delivery.action).bind(delivery.installation_id).bind(ts(now))
+            .bind(error.map(|code| code.to_string())).bind(ts(now - RETENTION))
+            .execute(self.pool).await?;
+        Ok(if written.rows_affected() == 0 {
+            Outcome::Duplicate
+        } else {
+            Outcome::Ignored
+        })
     }
 
     /// Restarts recent interrupted deliveries. Older deliveries wait for manual redelivery.
@@ -289,7 +399,7 @@ impl Github<'_> {
         Ok(result.rows_affected() != 0)
     }
 
-    /// Last verified receipt and count of untracked deliveries in the last 14 days.
+    /// Last stored receipt and count of retained legacy untracked rows in the last 14 days.
     pub async fn status(&self, now: Timestamp) -> Result<(Option<Timestamp>, u32), DbError> {
         let (last, dropped): (Option<String>, i64) = sqlx::query_as(
             "SELECT (SELECT MAX(received_at) FROM github_deliveries), COUNT(*)
@@ -298,12 +408,11 @@ impl Github<'_> {
         .bind(ts(now - RETENTION))
         .fetch_one(self.pool)
         .await?;
-        Ok((
-            last.as_deref()
-                .map(|value| parse_ts(value, "received_at"))
-                .transpose()?,
-            u32::try_from(dropped).unwrap_or(u32::MAX),
-        ))
+        let last = last
+            .as_deref()
+            .map(|value| parse_ts(value, "received_at"))
+            .transpose()?;
+        Ok((last, u32::try_from(dropped).unwrap_or(u32::MAX)))
     }
 
     /// Deletes receipts past their retention window.
@@ -314,144 +423,6 @@ impl Github<'_> {
             .await?;
         Ok(())
     }
-}
-
-#[derive(sqlx::FromRow)]
-struct TrackingMatch {
-    tenant_id: Option<String>,
-    owner: Option<String>,
-    name: Option<String>,
-    github_id: Option<i64>,
-}
-
-async fn is_tracked(conn: &mut SqliteConnection, repository: &Repository) -> Result<bool, DbError> {
-    let matches: Vec<TrackingMatch> = sqlx::query_as(
-        "WITH named_tracking AS (
-           SELECT ds.tenant_id,
-                  rule.value ->> '$.repo.owner' AS owner, rule.value ->> '$.repo.name' AS name
-           FROM dashboard_settings ds JOIN memberships m USING (tenant_id, user_id),
-                json_each(ds.repositories) rule
-           UNION ALL
-           SELECT m.tenant_id, item.value ->> '$.facts.repo.owner', item.value ->> '$.facts.repo.name'
-           FROM memberships m JOIN dashboard_refreshes d ON d.id = (
-             SELECT id FROM dashboard_refreshes
-             WHERE tenant_id = m.tenant_id AND user_id = m.user_id AND state IN ('ranking', 'finished')
-             ORDER BY started_at DESC, rowid DESC LIMIT 1
-           ), json_each(json_array(d.snapshot -> '$.pull_requests', d.snapshot -> '$.issues')) items,
-              json_each(items.value) item
-         )
-         SELECT DISTINCT t.tenant_id, t.owner, t.name, r.github_id
-         FROM named_tracking t LEFT JOIN repos r
-           ON r.tenant_id = t.tenant_id AND r.owner = t.owner AND r.name = t.name
-         WHERE r.github_id = ?1
-            OR (t.owner = ?2 COLLATE NOCASE AND t.name = ?3 COLLATE NOCASE
-                AND (?1 IS NULL OR r.github_id IS NULL AND NOT EXISTS (
-                    SELECT 1 FROM app_repositories ar
-                    WHERE ar.owner = ?2 AND ar.name = ?3 AND ar.repository_id != ?1
-                )))
-         UNION ALL
-         SELECT NULL, NULL, NULL, NULL WHERE EXISTS (
-           SELECT 1 FROM dashboard_settings ds JOIN memberships m USING (tenant_id, user_id),
-                         json_each(ds.enumerate_owners) owner
-           WHERE owner.value = ?2 COLLATE NOCASE
-           UNION ALL
-           SELECT 1 FROM repos r JOIN pull_requests pr ON pr.repo_id = r.id
-           WHERE (r.github_id = ?1 OR (?1 IS NULL AND r.owner = ?2 AND r.name = ?3))
-             AND (EXISTS (SELECT 1 FROM pr_watches w JOIN memberships m USING (tenant_id, user_id)
-                          WHERE w.pull_request_id = pr.id AND w.tenant_id = r.tenant_id AND w.state != 'ended')
-               OR EXISTS (SELECT 1 FROM analyses a JOIN memberships m
-                          ON m.tenant_id = a.tenant_id AND m.user_id = a.created_by
-                          WHERE a.pull_request_id = pr.id AND a.tenant_id = r.tenant_id))
-         )",
-    )
-    .bind(repository.id)
-    .bind(&repository.name.owner)
-    .bind(&repository.name.name)
-    .fetch_all(&mut *conn)
-    .await?;
-
-    // Rules and snapshots initially have only names. Bind their first verified identity in
-    // the tenant's repository cache so a rename cannot make the old rule track a newcomer.
-    if let Some(id) = repository.id {
-        for matched in &matches {
-            if let (Some(tenant), Some(owner), Some(name), None) = (
-                &matched.tenant_id,
-                &matched.owner,
-                &matched.name,
-                matched.github_id,
-            ) {
-                sqlx::query(
-                    "INSERT INTO repos (tenant_id, owner, name, github_id) VALUES (?, ?, ?, ?)
-                     ON CONFLICT (tenant_id, owner, name) DO UPDATE SET github_id = excluded.github_id
-                     WHERE repos.github_id IS NULL",
-                )
-                .bind(tenant)
-                .bind(owner)
-                .bind(name)
-                .bind(id)
-                .execute(&mut *conn)
-                .await?;
-            }
-        }
-    }
-    Ok(!matches.is_empty())
-}
-
-async fn apply_installation(
-    conn: &mut SqliteConnection,
-    installation: i64,
-    update: InstallationUpdate<'_>,
-    now: Timestamp,
-) -> Result<bool, DbError> {
-    let mut tracked = false;
-    match update {
-        InstallationUpdate::Add(repos) => {
-            for repo in repos {
-                let Some(id) = repo.id else { continue };
-                if !is_tracked(conn, repo).await? {
-                    continue;
-                }
-                tracked = true;
-                sqlx::query("DELETE FROM app_repositories WHERE owner = ? AND name = ? AND repository_id != ?")
-                    .bind(&repo.name.owner).bind(&repo.name.name).bind(id).execute(&mut *conn).await?;
-                sqlx::query(
-                    "INSERT INTO app_repositories (owner, name, repository_id, installation_id, suspended, checked_at)
-                     SELECT ?1, ?2, ?3, ?4, 0, ?5 WHERE
-                         EXISTS (SELECT 1 FROM app_repositories WHERE repository_id = ?3)
-                         OR (SELECT COUNT(*) FROM app_repositories) < ?6
-                     ON CONFLICT(repository_id) DO UPDATE SET owner = excluded.owner, name = excluded.name,
-                     installation_id = excluded.installation_id, suspended = excluded.suspended, checked_at = excluded.checked_at",
-                ).bind(&repo.name.owner).bind(&repo.name.name).bind(id).bind(installation).bind(ts(now))
-                    .bind(INSTALLATION_CAP).execute(&mut *conn).await?;
-            }
-        }
-        InstallationUpdate::Remove(repos) => {
-            for repo in repos {
-                tracked |= sqlx::query(
-                    "DELETE FROM app_repositories WHERE installation_id = ? AND repository_id = ?",
-                )
-                .bind(installation)
-                .bind(repo.id)
-                .execute(&mut *conn)
-                .await?
-                .rows_affected()
-                    != 0;
-            }
-        }
-        InstallationUpdate::Delete => {
-            tracked = sqlx::query("DELETE FROM app_repositories WHERE installation_id = ?")
-                .bind(installation)
-                .execute(conn)
-                .await?
-                .rows_affected()
-                != 0;
-        }
-        InstallationUpdate::Suspend(suspended) => {
-            tracked = sqlx::query("UPDATE app_repositories SET suspended = ?, checked_at = ? WHERE installation_id = ?")
-                .bind(suspended).bind(ts(now)).bind(installation).execute(conn).await?.rows_affected() != 0;
-        }
-    }
-    Ok(tracked)
 }
 
 #[cfg(test)]

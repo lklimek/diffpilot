@@ -1,4 +1,5 @@
 use serde_json::json;
+use sqlx::SqliteConnection;
 
 use super::*;
 
@@ -25,6 +26,26 @@ async fn test_db() -> Db {
     .await
     .unwrap();
     db
+}
+
+async fn is_tracked(conn: &mut SqliteConnection, repo: &Repository) -> Result<bool, DbError> {
+    let resolved = tracking::resolve(conn, std::slice::from_ref(repo), 1).await?;
+    match resolved.first() {
+        Some(tracked) => tracked.bind(conn).await,
+        None => Ok(false),
+    }
+}
+
+async fn apply_installation(
+    conn: &mut SqliteConnection,
+    id: i64,
+    update: InstallationUpdate<'_>,
+    now: Timestamp,
+) -> Result<bool, DbError> {
+    match installations::prepare(conn, id, update).await? {
+        Some(update) => Ok(installations::apply(conn, id, update, now).await?.is_some()),
+        None => Ok(false),
+    }
 }
 
 #[tokio::test]
@@ -220,16 +241,29 @@ async fn app_repositories_capped() {
     .execute(&mut *tx)
     .await
     .unwrap();
-    assert!(
-        apply_installation(
-            &mut tx,
-            42,
-            InstallationUpdate::Add(&[repo(7, "acme", "node-client")]),
-            now
-        )
-        .await
-        .unwrap()
+    tx.commit().await.unwrap();
+    let repos = [repo(7, "acme", "node-client")];
+    let id = Uuid::new_v4();
+    let receipt = NewDelivery {
+        id,
+        hash: &"0".repeat(64),
+        event: "installation",
+        action: Some("created"),
+        installation_id: Some(42),
+        effect: Effect::Installation(42, InstallationUpdate::Add(&repos)),
+    };
+    assert_eq!(
+        db.github().record(&receipt, now).await.unwrap(),
+        Outcome::InstallationCapped
     );
+    let error: String =
+        sqlx::query_scalar("SELECT error FROM github_deliveries WHERE delivery_id = ?")
+            .bind(id.to_string())
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(error, "installation_cap");
+    let mut tx = read_tx(&db.pool).await.unwrap();
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM app_repositories")
             .fetch_one(&mut *tx)
@@ -398,4 +432,168 @@ async fn parallel_receipts_of_one_body_queue_exactly_once() {
                 .unwrap();
         assert_eq!(rows, 1);
     }
+}
+
+#[tokio::test]
+async fn untracked_burst_does_not_take_write_lock_or_store_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = crate::repo::testing::file_backed_with_busy_timeout(
+        dir.path(),
+        std::time::Duration::from_millis(100),
+    )
+    .await
+    .unwrap();
+    let writer = write_tx(&db.pool).await.unwrap();
+    let foreign = repo(99, "foreign", "repo");
+    let now = Timestamp::now();
+    for index in 0..100 {
+        let hash = format!("{index:064x}");
+        let delivery = NewDelivery {
+            id: Uuid::new_v4(),
+            hash: &hash,
+            event: "status",
+            action: None,
+            installation_id: Some(11),
+            effect: Effect::Signal(&foreign, &[]),
+        };
+        assert_eq!(
+            db.github().record(&delivery, now).await.unwrap(),
+            Outcome::NotAllowed
+        );
+    }
+    let mut listed: Vec<_> = (100..20_100)
+        .map(|id| repo(id, "foreign", &format!("repo-{id}")))
+        .collect();
+    let installation = NewDelivery {
+        id: Uuid::new_v4(),
+        hash: &"f".repeat(64),
+        event: "installation",
+        action: Some("created"),
+        installation_id: Some(11),
+        effect: Effect::Installation(11, InstallationUpdate::Add(&listed)),
+    };
+    assert_eq!(
+        db.github().record(&installation, now).await.unwrap(),
+        Outcome::NotAllowed
+    );
+    writer.commit().await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM github_deliveries")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(db.github().status(now).await.unwrap(), (None, 0));
+
+    super::super::analyses::testing::seed_analysis(&db)
+        .await
+        .unwrap();
+    sqlx::raw_sql(
+        "INSERT INTO memberships VALUES ('default','u1','member','2026-11-16T00:00:00Z');
+                   UPDATE repos SET github_id = 7;",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    listed.push(repo(7, "acme", "node-client"));
+    let installation = NewDelivery {
+        effect: Effect::Installation(11, InstallationUpdate::Add(&listed)),
+        id: Uuid::new_v4(),
+        hash: &"e".repeat(64),
+        event: "installation",
+        action: Some("created"),
+        installation_id: Some(11),
+    };
+    assert_eq!(
+        db.github().record(&installation, now).await.unwrap(),
+        Outcome::Queued
+    );
+    let stored: Vec<i64> = sqlx::query_scalar("SELECT repository_id FROM app_repositories")
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(stored, [7]);
+}
+
+#[tokio::test]
+async fn webhook_prune_keeps_the_exact_replay_boundary() {
+    let db = Db::in_memory().await.unwrap();
+    let now: Timestamp = "2026-11-25T12:00:00Z".parse().unwrap();
+    let boundary = now - RETENTION;
+    for at in [boundary - SignedDuration::from_secs(1), boundary, now] {
+        let id = Uuid::new_v4();
+        let hash = format!("{:064x}", id.as_u128());
+        let receipt = NewDelivery {
+            id,
+            hash: &hash,
+            event: "ping",
+            action: None,
+            installation_id: None,
+            effect: Effect::Ignore,
+        };
+        db.github().record(&receipt, at).await.unwrap();
+    }
+    db.github().prune_deliveries(now).await.unwrap();
+    let kept: Vec<String> =
+        sqlx::query_scalar("SELECT received_at FROM github_deliveries ORDER BY received_at")
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(kept, [ts(boundary), ts(now)]);
+}
+
+#[tokio::test]
+async fn webhook_audits_typed_payload_error_without_queuing() {
+    let db = Db::in_memory().await.unwrap();
+    let id = Uuid::new_v4();
+    let now = Timestamp::now();
+    let receipt = NewDelivery {
+        id,
+        hash: &"1".repeat(64),
+        event: "issues",
+        action: Some("opened"),
+        installation_id: None,
+        effect: Effect::Reject(None, DeliveryError::InvalidPayload),
+    };
+    assert_eq!(
+        db.github().record(&receipt, now).await.unwrap(),
+        Outcome::Ignored
+    );
+    let stored: (String, String, String) =
+        sqlx::query_as("SELECT state, error, changes FROM github_deliveries WHERE delivery_id = ?")
+            .bind(id.to_string())
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        stored,
+        (
+            "ignored".to_owned(),
+            "invalid_payload".to_owned(),
+            "[]".to_owned()
+        )
+    );
+    assert_eq!(
+        db.github().record(&receipt, now).await.unwrap(),
+        Outcome::Duplicate
+    );
+    let foreign = repo(99, "foreign", "repo");
+    let dropped = NewDelivery {
+        id: Uuid::new_v4(),
+        hash: &"2".repeat(64),
+        effect: Effect::IgnoreRepository(&foreign),
+        ..receipt
+    };
+    assert_eq!(
+        db.github().record(&dropped, now).await.unwrap(),
+        Outcome::NotAllowed
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM github_deliveries")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap(),
+        1
+    );
 }

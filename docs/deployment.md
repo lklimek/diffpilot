@@ -183,6 +183,9 @@ Required means compose or the service refuses to start without it. "Secret" valu
 | `SR_GITHUB_APP_ID` | yes | | App ID. |
 | `SR_GITHUB_CLIENT_ID` | yes | | App client ID. |
 | `SR_GITHUB_CLIENT_SECRET` | yes, secret | | App client secret. |
+| `SR_GITHUB_WEBHOOK_SECRET` | production check, secret | | GitHub App webhook secret, at least 32 characters. A server without it returns 503 on the webhook route. |
+| `SR_GITHUB_WEBHOOK_SECRET_PREVIOUS` | no, secret | | Previous webhook secret during rotation, at least 32 characters. |
+| `SR_GITHUB_WEBHOOK_URL` | no | | Public HTTPS webhook URL shown in Settings. |
 | `SR_GITHUB_APP_PRIVATE_KEY_PATH` | yes | | Host path of the App key (`.pem`, readable by uid 10010); mounted read-only. |
 | `SR_GITHUB_API_URL` | no | `https://api.github.com` | Change only for GitHub Enterprise Server. |
 | `SR_GITHUB_OAUTH_URL` | no | `https://github.com` | Same. |
@@ -232,15 +235,15 @@ The containers fix the rest themselves (data paths, listen ports, the runner's s
 or `SR_RUNNER_WORK_DIR`.
 
 A standalone server defaults its webhook listener to `127.0.0.1:3002`. Compose binds it to the server's
-`public` network address (`SR_SERVER_PUBLIC_ADDR`, default `172.29.73.2`) on port 3002. The host port will be
-published for Traefik in B16 after the receiver ships. Until then, Traefik continues to reach the webhook
+`public` network address (`SR_SERVER_PUBLIC_ADDR`, default `172.29.73.2`) on port 3002. The server image exposes 3002 as container metadata. Publishing the port to the host for Traefik
+is part of B16. Until then, Traefik continues to reach the webhook
 catch-all on the public HTTP listener. The dev stack assigns a separate loopback port per instance.
 
 ### Secrets as files (optional)
 
-With `deploy/compose.secrets.yaml` on top of `compose.yaml`, the four secrets (`SR_SECRET_KEY`, `SR_RUNNER_SECRET`,
-`SR_GITHUB_CLIENT_SECRET`, `SR_MEMCAN_TOKEN`) come from read-only files in `SR_SECRETS_DIR`, so they do not show in
-`docker inspect` or Portainer. Leave the four variables empty in `.env` and set `SR_SECRETS_DIR`. The runner
+With `deploy/compose.secrets.yaml` on top of `compose.yaml`, `SR_SECRET_KEY`, `SR_RUNNER_SECRET`,
+`SR_GITHUB_CLIENT_SECRET`, `SR_GITHUB_WEBHOOK_SECRET` and `SR_MEMCAN_TOKEN` come from read-only files in
+`SR_SECRETS_DIR`. Leave their environment values empty in `.env` and set `SR_SECRETS_DIR`. The runner
 secret is read by the server (uid 10010) and the runner (uid 10001), never by the agents (uid 10002; the runner
 refuses to start otherwise):
 
@@ -251,15 +254,22 @@ sh -c 'umask 077; cat > sr-github-client-secret'   # paste the value, Enter, Ctr
 sh -c 'umask 077; cat > sr-memcan-token'           # paste the value, Enter, Ctrl-D
 chown 10010:10010 sr-secret-key sr-github-client-secret sr-memcan-token
 chmod 0400 sr-secret-key sr-github-client-secret sr-memcan-token
+install -d -m 0700 -o 10010 -g 10010 github-webhook
+sh -c 'umask 077; cat > github-webhook/current'  # paste the webhook secret, Enter, Ctrl-D
+chown 10010:10010 github-webhook/current && chmod 0400 github-webhook/current
 chown 10001:10010 sr-runner-secret && chmod 0440 sr-runner-secret
-sed -i -E 's/^(SR_SECRET_KEY|SR_RUNNER_SECRET|SR_GITHUB_CLIENT_SECRET|SR_MEMCAN_TOKEN)=.*/\1=/' "$DP_DIR/.env"
+sed -i -E 's/^(SR_SECRET_KEY|SR_RUNNER_SECRET|SR_GITHUB_CLIENT_SECRET|SR_MEMCAN_TOKEN|SR_GITHUB_WEBHOOK_SECRET)=.*/\1=/' "$DP_DIR/.env"
 echo "SR_SECRETS_DIR=$DP_SECRETS" | tee -a "$DP_DIR/.env" > /dev/null
 ```
+
+For rotation with files, put the previous secret in `$SR_SECRETS_DIR/github-webhook/previous` with the same
+owner and mode as `current`. Set `SR_GITHUB_WEBHOOK_SECRET_PREVIOUS_FILE=/run/secrets/github-webhook/previous`
+with `SR_GITHUB_WEBHOOK_SECRET_PREVIOUS` empty. Clear the previous file variable after rotation.
 
 ### Checking the configuration
 
 Run the check from a clean shell (variables of the invoking shell override the file in compose); it never prints
-values. It refuses values left from `.env.example`, empty secrets, a runner secret under 32 characters, a public URL
+values. It refuses values left from `.env.example`, empty secrets, a runner or webhook secret under 32 characters, a public URL
 that is not `https://`, `$` interpolation and development switches; an unpinned skills ref and an empty
 `SR_TRUSTED_PROXIES` are warnings.
 

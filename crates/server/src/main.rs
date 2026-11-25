@@ -162,7 +162,7 @@ async fn run(dotenv: Result<PathBuf, dotenvy::Error>) -> Result<(), StartError> 
         // The listeners may already be gone; nothing to notify then.
         let _ = stop.send(true);
     });
-    let hooks = server::webhooks::Webhooks::new(state.db.clone(), state.config.clone());
+    let hooks = server::webhooks::Webhooks::from_app(&state);
     let _webhook_worker = hooks.spawn(stopped.clone());
     let public = axum::serve(
         public,

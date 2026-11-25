@@ -21,7 +21,10 @@ async fn read(
     State(state): State<AppState>,
     _: Session,
 ) -> Result<Json<GithubWebhook>, ApiFailure<DbError>> {
-    let (last_delivery_at, dropped_deliveries) = state.db.github().status(Timestamp::now()).await?;
+    let (last_delivery_at, dropped_deliveries) = state
+        .webhook_drops
+        .status(&state.db, Timestamp::now())
+        .await?;
     Ok(Json(GithubWebhook {
         configured: state.config.github_webhook_secret.is_some(),
         webhook_url: state

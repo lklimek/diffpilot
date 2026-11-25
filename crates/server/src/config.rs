@@ -26,6 +26,10 @@ pub const WEBHOOK_LISTEN_ADDR: &str = "SR_WEBHOOK_LISTEN_ADDR";
 pub const GITHUB_WEBHOOK_SECRET: &str = "SR_GITHUB_WEBHOOK_SECRET";
 /// Previous webhook secret, accepted while rotating the current secret.
 pub const GITHUB_WEBHOOK_SECRET_PREVIOUS: &str = "SR_GITHUB_WEBHOOK_SECRET_PREVIOUS";
+/// Path of the file holding the current webhook secret.
+pub const GITHUB_WEBHOOK_SECRET_FILE: &str = "SR_GITHUB_WEBHOOK_SECRET_FILE";
+/// Path of the file holding the previous webhook secret during rotation.
+pub const GITHUB_WEBHOOK_SECRET_PREVIOUS_FILE: &str = "SR_GITHUB_WEBHOOK_SECRET_PREVIOUS_FILE";
 /// Public webhook endpoint, displayed in Settings.
 pub const GITHUB_WEBHOOK_URL: &str = "SR_GITHUB_WEBHOOK_URL";
 /// Comma-separated IP addresses or networks of reverse proxies whose forwarding headers are trusted.
@@ -345,7 +349,7 @@ impl Config {
         })
     }
 
-    /// Reads configuration through `lookup`. Webhook secrets are validated and kept byte-for-byte.
+    /// Reads configuration through `lookup`. Environment values are trimmed, with empty values treated as unset.
     pub fn from_lookup<F>(lookup: F) -> Result<Self, ConfigError>
     where
         F: Fn(&'static str) -> Result<Option<String>, ConfigError>,
@@ -355,24 +359,27 @@ impl Config {
                 .map(|value| value.trim().to_owned())
                 .filter(|value| !value.is_empty()))
         };
-        let webhook_secret = |key| {
-            lookup(key)?
+        let optional_secret = |key, file_key| -> Result<Option<String>, ConfigError> {
+            match (get(key)?, get(file_key)?) {
+                (Some(_), Some(_)) => Err(ConfigError::BothSet { key, file_key }),
+                (Some(value), None) => Ok(Some(value)),
+                (None, Some(path)) => read_secret_file(file_key, Path::new(&path)).map(Some),
+                (None, None) => Ok(None),
+            }
+        };
+        let require = |key| get(key)?.ok_or(ConfigError::Missing { key });
+        let secret =
+            |key, file_key| optional_secret(key, file_key)?.ok_or(ConfigError::Missing { key });
+        let webhook_secret = |key, file_key| {
+            optional_secret(key, file_key)?
                 .map(|value| {
+                    let value = value.trim();
                     if value.chars().take(32).count() < 32 {
                         return Err(ConfigError::WebhookSecretLength { key });
                     }
-                    Ok(SecretString::from(value))
+                    Ok(SecretString::from(value.to_owned()))
                 })
                 .transpose()
-        };
-        let require = |key| get(key)?.ok_or(ConfigError::Missing { key });
-        let secret = |key, file_key| -> Result<String, ConfigError> {
-            match (get(key)?, get(file_key)?) {
-                (Some(_), Some(_)) => Err(ConfigError::BothSet { key, file_key }),
-                (Some(value), None) => Ok(value),
-                (None, Some(path)) => read_secret_file(file_key, Path::new(&path)),
-                (None, None) => Err(ConfigError::Missing { key }),
-            }
         };
         let or_default = |key, default: &'static str| -> Result<String, ConfigError> {
             Ok(get(key)?.unwrap_or_else(|| default.to_owned()))
@@ -432,8 +439,14 @@ impl Config {
             listen_addr,
             runner_listen_addr,
             webhook_listen_addr,
-            github_webhook_secret: webhook_secret(GITHUB_WEBHOOK_SECRET)?,
-            github_webhook_secret_previous: webhook_secret(GITHUB_WEBHOOK_SECRET_PREVIOUS)?,
+            github_webhook_secret: webhook_secret(
+                GITHUB_WEBHOOK_SECRET,
+                GITHUB_WEBHOOK_SECRET_FILE,
+            )?,
+            github_webhook_secret_previous: webhook_secret(
+                GITHUB_WEBHOOK_SECRET_PREVIOUS,
+                GITHUB_WEBHOOK_SECRET_PREVIOUS_FILE,
+            )?,
             github_webhook_url: get(GITHUB_WEBHOOK_URL)?
                 .map(|value| {
                     let url = parse_http_url(GITHUB_WEBHOOK_URL, &value)?;
@@ -707,13 +720,20 @@ pub(crate) mod tests {
         assert!(bare.github_webhook_secret.is_none());
         assert!(bare.github_webhook_url.is_none());
         for key in [GITHUB_WEBHOOK_SECRET, GITHUB_WEBHOOK_SECRET_PREVIOUS] {
-            for short in [String::new(), "x".repeat(31)] {
-                env.insert(key, short);
-                assert!(
-                    matches!(parse(&env), Err(ConfigError::WebhookSecretLength { key: actual }) if key == actual)
-                );
+            for empty in ["", " \t\r\n"] {
+                env.insert(key, empty.to_owned());
+                let config = parse(&env).unwrap();
+                assert!(if key == GITHUB_WEBHOOK_SECRET {
+                    config.github_webhook_secret.is_none()
+                } else {
+                    config.github_webhook_secret_previous.is_none()
+                });
             }
-            env.insert(key, "s".repeat(32));
+            env.insert(key, "x".repeat(31));
+            assert!(
+                matches!(parse(&env), Err(ConfigError::WebhookSecretLength { key: actual }) if key == actual)
+            );
+            env.insert(key, format!(" \t{}\r\n", "s".repeat(32)));
         }
         env.insert(GITHUB_WEBHOOK_URL, "http://example.test/hook".to_owned());
         assert!(matches!(parse(&env), Err(ConfigError::WebhookUrlScheme)));
@@ -734,6 +754,46 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn webhook_secret_files_support_rotation_and_reject_conflicting_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut env = required_env();
+        for (key, file, letter) in [
+            (GITHUB_WEBHOOK_SECRET, GITHUB_WEBHOOK_SECRET_FILE, "c"),
+            (
+                GITHUB_WEBHOOK_SECRET_PREVIOUS,
+                GITHUB_WEBHOOK_SECRET_PREVIOUS_FILE,
+                "p",
+            ),
+        ] {
+            env.insert(key, "  ".to_owned());
+            env.insert(
+                file,
+                secret_file(dir.path(), letter, &format!(" {}\r\n", letter.repeat(32))),
+            );
+        }
+        let config = parse(&env).unwrap();
+        assert_eq!(
+            config.github_webhook_secret.unwrap().expose_secret(),
+            "c".repeat(32)
+        );
+        assert_eq!(
+            config
+                .github_webhook_secret_previous
+                .unwrap()
+                .expose_secret(),
+            "p".repeat(32)
+        );
+        env.insert(GITHUB_WEBHOOK_SECRET_PREVIOUS, "x".repeat(32));
+        assert!(matches!(
+            parse(&env),
+            Err(ConfigError::BothSet {
+                key: GITHUB_WEBHOOK_SECRET_PREVIOUS,
+                file_key: GITHUB_WEBHOOK_SECRET_PREVIOUS_FILE,
+            })
+        ));
+    }
+
+    #[test]
     fn no_tenant_policy_env_vars() {
         let env = required_env();
         let webhook_keys = std::cell::RefCell::new(Vec::new());
@@ -749,7 +809,9 @@ pub(crate) mod tests {
             [
                 WEBHOOK_LISTEN_ADDR,
                 GITHUB_WEBHOOK_SECRET,
+                GITHUB_WEBHOOK_SECRET_FILE,
                 GITHUB_WEBHOOK_SECRET_PREVIOUS,
+                GITHUB_WEBHOOK_SECRET_PREVIOUS_FILE,
                 GITHUB_WEBHOOK_URL,
             ]
         );
