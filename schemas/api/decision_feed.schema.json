@@ -397,7 +397,7 @@
           "type": "string"
         },
         "relay": {
-          "description": "GitHub login of the configured relay when one spoke on the author's behalf.",
+          "description": "GitHub login of the linked account that relayed the member's decision.",
           "type": [
             "string",
             "null"

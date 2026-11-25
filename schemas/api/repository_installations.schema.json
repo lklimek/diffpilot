@@ -1,11 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "RepositoryInstallations",
-  "description": "Live webhook coverage of repositories in the reader's rules or dashboard snapshot.",
+  "description": "Live webhook coverage of repositories tracked by the reader's tenant.",
   "type": "object",
   "properties": {
     "repositories": {
-      "description": "Repositories visible through those rules or snapshot.",
+      "description": "Repositories tracked through owners to list, repository rules, watches, analyses or current snapshots.",
       "type": "array",
       "items": {
         "$ref": "#/$defs/RepositoryInstallation"
@@ -17,7 +17,7 @@
   ],
   "$defs": {
     "RepositoryInstallation": {
-      "description": "Whether an allowed GitHub App installation updates this repository.",
+      "description": "Whether the GitHub App updates this tracked repository.",
       "type": "object",
       "properties": {
         "repo": {

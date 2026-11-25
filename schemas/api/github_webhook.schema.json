@@ -23,15 +23,8 @@
       ],
       "format": "date-time"
     },
-    "allowed": {
-      "description": "Accounts configured to send deliveries.",
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/AllowedInstallation"
-      }
-    },
-    "refused_deliveries": {
-      "description": "Verified deliveries from disallowed installations over the last 14 days.",
+    "dropped_deliveries": {
+      "description": "Verified deliveries dropped for untracked repositories over the last 14 days, installation-wide.",
       "type": "integer",
       "format": "uint32",
       "minimum": 0
@@ -39,57 +32,6 @@
   },
   "required": [
     "configured",
-    "allowed",
-    "refused_deliveries"
-  ],
-  "$defs": {
-    "AllowedInstallation": {
-      "description": "An account allowed to send GitHub App webhook deliveries.",
-      "type": "object",
-      "properties": {
-        "account": {
-          "description": "GitHub account login.",
-          "type": "string"
-        },
-        "installation_id": {
-          "description": "GitHub installation id, null while unresolved.",
-          "type": [
-            "integer",
-            "null"
-          ],
-          "format": "uint64",
-          "minimum": 0
-        },
-        "repository_selection": {
-          "description": "Repository selection, null while unresolved.",
-          "anyOf": [
-            {
-              "$ref": "#/$defs/RepositorySelection"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        }
-      },
-      "required": [
-        "account"
-      ]
-    },
-    "RepositorySelection": {
-      "description": "Whether a GitHub App installation covers all or selected repositories.",
-      "oneOf": [
-        {
-          "description": "All repositories of the account.",
-          "type": "string",
-          "const": "all"
-        },
-        {
-          "description": "Selected repositories only.",
-          "type": "string",
-          "const": "selected"
-        }
-      ]
-    }
-  }
+    "dropped_deliveries"
+  ]
 }

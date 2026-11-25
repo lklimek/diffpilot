@@ -75,23 +75,6 @@ pr: string,
 fetch: string, };
 
 /**
- * An account allowed to send GitHub App webhook deliveries.
- */
-export type AllowedInstallation = {
-/**
- * GitHub account login.
- */
-account: string,
-/**
- * GitHub installation id, null while unresolved.
- */
-installation_id: number | null,
-/**
- * Repository selection, null while unresolved.
- */
-repository_selection: RepositorySelection | null, };
-
-/**
  * A bounded estimate, not a deadline or a guarantee.
  */
 export type AnalysisEstimate = {
@@ -1706,7 +1689,7 @@ imported_decision?: ImportedGithubDecision,
  */
 import_proposal?: ImportedGithubDecision,
 /**
- * First sentence of the primary assessment description, at most 90 characters.
+ * First sentence of the primary assessment description, cut at a word within 90 characters.
  */
 llm_title?: string,
 /**
@@ -4181,13 +4164,9 @@ webhook_url: string | null,
  */
 last_delivery_at: string | null,
 /**
- * Accounts configured to send deliveries.
+ * Verified deliveries dropped for untracked repositories over the last 14 days, installation-wide.
  */
-allowed: Array<AllowedInstallation>,
-/**
- * Verified deliveries from disallowed installations over the last 14 days.
- */
-refused_deliveries: number, };
+dropped_deliveries: number, };
 
 /**
  * A graph edge.
@@ -4361,7 +4340,7 @@ evidence_url: string,
  */
 quote: string,
 /**
- * GitHub login of the configured relay when one spoke on the author's behalf.
+ * GitHub login of the linked account that relayed the member's decision.
  */
 relay: string | null, };
 
@@ -7076,7 +7055,7 @@ merged_thread_ids: Array<string>,
 merged_urls: Array<string>, };
 
 /**
- * Whether an allowed GitHub App installation updates this repository.
+ * Whether the GitHub App updates this tracked repository.
  */
 export type RepositoryInstallation = {
 /**
@@ -7089,11 +7068,11 @@ repo: RepoRef,
 live: boolean, };
 
 /**
- * Live webhook coverage of repositories in the reader's rules or dashboard snapshot.
+ * Live webhook coverage of repositories tracked by the reader's tenant.
  */
 export type RepositoryInstallations = {
 /**
- * Repositories visible through those rules or snapshot.
+ * Repositories tracked through owners to list, repository rules, watches, analyses or current snapshots.
  */
 repositories: Array<RepositoryInstallation>, };
 
@@ -7131,11 +7110,6 @@ branch_patterns: Array<string>,
  * the built-ins.
  */
 ignored_checks: Array<string>, };
-
-/**
- * Whether a GitHub App installation covers all or selected repositories.
- */
-export type RepositorySelection = "all" | "selected";
 
 /**
  * Body of `POST /api/v1/pr/resolve`.
