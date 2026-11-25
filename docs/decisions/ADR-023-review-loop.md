@@ -188,8 +188,9 @@ read with tokens (ADR-019).
 ## Amendment (2026-11-25, proposed; v1.4 phase B, `docs/v1.4-phase-b-plan.md` §2, §6, §7)
 - **Webhooks no longer rejected.** The alternative "GitHub webhooks for watched PRs" (Alternatives considered) is
   reversed by [ADR-026](ADR-026-github-webhooks.md): the public endpoint now exists (Cloudflare WAF, atlas tunnel,
-  HMAC-verified `POST /webhooks/github`). A webhook event on a watched PR runs the watch probe at once; the 5-minute
-  probe remains for watched PRs in repositories without the App (and, if the owner keeps it, for all; OQ3).
+  HMAC-verified `POST /webhooks/github`). A webhook event on a watched PR runs the watch probe (at most once a minute);
+  watched PRs in repositories with the App get no periodic probe, those without it are probed once an hour instead of
+  every 5 minutes (owner OQ3, 2026-11-25).
 - **Status comments.** A bot's PR comment without finding markers is stored as a status comment: listed, never
   queued, assessed or counted (owner TODO `07b69073` F1/F2).
 - **Needs you** has one server definition (plan §6 N1–N2), shared with the web through a checked-in fixture.
