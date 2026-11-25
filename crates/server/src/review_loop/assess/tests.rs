@@ -2359,8 +2359,9 @@ fn verify_comments_prompt_explains_translated_technical_terms() {
             "{language:?}"
         );
         assert_eq!(
-            instructions
-                .contains("Skip English terms banned by rule 4 or equivalent wording rules."),
+            instructions.contains(
+                "Never add English terms that dismiss risk, imply confirmation, quantify certainty, or otherwise violate the wording rules."
+            ),
             language != LlmLanguage::En,
             "{language:?}"
         );
