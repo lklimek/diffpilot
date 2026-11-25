@@ -66,8 +66,8 @@ pub const MAX_ITEMS_PER_PASS: usize = agent::verify_comments::MAX_ITEMS;
 pub const PASS_SPACING: SignedDuration = SignedDuration::from_mins(10);
 /// Logical passes per payer per UTC day; manual and automatic passes share the cap, and an A/B pair counts once.
 pub const DAILY_PASSES_PER_USER: u32 = 80;
-/// Version of `prompts/verify_comments.md` with the output schema, stored with every assessment.
-pub const VERIFY_PROMPT_VERSION: u32 = 4;
+/// Version of the native comment assessment prompt and output schema.
+pub const VERIFY_PROMPT_VERSION: u32 = 5;
 /// Legacy history window used to read the previous pass end for automatic spacing.
 const DAY: SignedDuration = SignedDuration::from_hours(24);
 

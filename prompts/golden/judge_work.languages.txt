@@ -1,6 +1,6 @@
 @@ Pl
 - `previous` is the judgement made before the item changed: keep its points unless the changed facts move them; write every text anew in Polish (polski) (its texts may be empty).
-- Write `why`, `next`, `alarm`, every `basis` and every `reason` in Polish (polski); keys, component names and enum values stay as they are. At the first use of each translated technical term in each text, put the original English term in parentheses immediately after it.
+- Write `why`, `next`, `alarm`, every `basis` and every `reason` in Polish (polski); keys, component names and enum values stay as they are. At the first use of each translated technical term in each text, put the original English term in parentheses immediately after it. Skip English terms banned by rule 4 or equivalent wording rules.
 @@ Ru
 - `previous` is the judgement made before the item changed: keep its points unless the changed facts move them; write every text anew in Russian (русский) (its texts may be empty).
-- Write `why`, `next`, `alarm`, every `basis` and every `reason` in Russian (русский); keys, component names and enum values stay as they are. At the first use of each translated technical term in each text, put the original English term in parentheses immediately after it.
+- Write `why`, `next`, `alarm`, every `basis` and every `reason` in Russian (русский); keys, component names and enum values stay as they are. At the first use of each translated technical term in each text, put the original English term in parentheses immediately after it. Skip English terms banned by rule 4 or equivalent wording rules.

@@ -737,6 +737,12 @@ fn judge_prompt_explains_translated_technical_terms() {
             language != LlmLanguage::En,
             "{language:?}"
         );
+        assert_eq!(
+            instructions
+                .contains("Skip English terms banned by rule 4 or equivalent wording rules."),
+            language != LlmLanguage::En,
+            "{language:?}"
+        );
     }
 }
 
@@ -771,11 +777,14 @@ fn golden_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../prompts/golden")
 }
 
-/// SHA-256 hex of the template and the output schema: what [`JUDGE_PROMPT_VERSION`] pins.
+/// SHA-256 hex of the template, shared PL/RU wording rule and output schema.
 fn prompt_hash(template: &str) -> String {
     let schema = contracts::agent::output_schema(JobKind::JudgeWork).expect("schema");
     let mut hash = Sha256::new();
     hash.update(template);
+    hash.update(
+        crate::prompts::translated_technical_terms(LlmLanguage::Pl).expect("language rule"),
+    );
     hash.update(schema.to_string());
     hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -811,7 +820,7 @@ fn golden_input() -> JudgeWorkInput {
 /// Message of a prompt or schema edit without a version decision.
 fn undecided(version: u32, hash: &str) -> String {
     format!(
-        "the judge prompt template or output schema changed (hash {hash}) and is not recorded under \
+        "the judge prompt or output schema changed (hash {hash}) and is not recorded under \
          JUDGE_PROMPT_VERSION {version} in prompts/golden/judge_work.versions. Decide: (a) a semantic change \
          (stored judgements should be re-judged): bump JUDGE_PROMPT_VERSION, then run with RECORD_PROMPT_HASH=1 to \
          record the hash under the new version; (b) a non-semantic edit (wording that cannot change an answer): run \
@@ -836,7 +845,7 @@ fn version_decision(
     }
 }
 
-/// The template with the output schema is recorded under the current `JUDGE_PROMPT_VERSION` (checked first:
+/// The prompt hash is recorded under the current `JUDGE_PROMPT_VERSION` (checked first:
 /// `RECORD_PROMPT_HASH=1` records it), and the rendered prompt is pinned (`UPDATE_GOLDEN=1` rewrites it).
 #[test]
 fn golden_judge_work_prompt() {

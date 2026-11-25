@@ -975,6 +975,12 @@ fn localized_prompts_explain_translated_technical_terms() {
         let (instructions, _) = split(&prompt);
         let localized = name.ends_with(".pl") || name.ends_with(".ru");
         assert_eq!(instructions.contains(rule), localized, "{name}");
+        assert_eq!(
+            instructions
+                .contains("Skip English terms banned by rule 4 or equivalent wording rules."),
+            localized,
+            "{name}"
+        );
     }
 }
 
