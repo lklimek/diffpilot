@@ -4,17 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Comments and PR page v1.4 - diffpilot mockup</title>
-<!-- docs/v1.4-ui-plan.md U20-U28 win on behaviour. Fictional data. -->
+<!-- docs/v1.4-ui-plan.md U20-U28, U43-U45 (accepted) win on behaviour. Fictional data. -->
 <link rel="stylesheet" href="mockup.css">
 <link rel="stylesheet" href="mockup-v14.css">
 </head>
 <body data-page="comments14">
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><symbol id="gh" viewBox="0 0 16 16"><path d="M6.766 11.328c-2.063-.25-3.516-1.734-3.516-3.656 0-.781.281-1.625.75-2.188-.203-.515-.172-1.609.063-2.062.625-.078 1.468.25 1.968.703.594-.187 1.219-.281 1.985-.281.765 0 1.39.094 1.953.265.484-.437 1.344-.765 1.969-.687.218.422.25 1.515.046 2.047.5.593.766 1.39.766 2.203 0 1.922-1.453 3.375-3.547 3.64.531.344.89 1.094.89 1.954v1.625c0 .468.391.734.86.547C13.781 14.359 16 11.53 16 8.03 16 3.61 12.406 0 7.984 0 3.563 0 0 3.61 0 8.031a7.88 7.88 0 0 0 5.172 7.422c.422.156.828-.125.828-.547v-1.25c-.219.094-.5.156-.75.156-1.031 0-1.64-.562-2.078-1.609-.172-.422-.36-.672-.719-.719-.187-.015-.25-.093-.25-.187 0-.188.313-.328.625-.328.453 0 .844.281 1.25.86.313.452.64.655 1.031.655s.641-.14 1-.5c.266-.265.47-.5.657-.656"/></symbol></svg>
 <a class="skip" href="#main">Skip to content</a>
 <noscript><p style="padding:8px">This mockup needs JavaScript for its menus.</p></noscript>
 <header class="topbar">
  <a class="brand" href="index.html">diff<span>pilot</span></a><span class="crumb">/ acme/node-client #482 &middot; <span data-for="pr-page" hidden>PR page</span><span data-for="needs-you status-menu assessing decided not-watched status-popover">Comments</span></span><span class="sp"></span>
- <a class="llmind" href="13-shell-llm-activity.html?s=popover" aria-label="LLM activity: 2 running, 3 queued" style="text-decoration:none"><span aria-hidden="true">&#9684;</span> LLM 2 <span class="q">&middot; 3 queued</span></a>
- <button class="usermenu" type="button" aria-label="alice: user menu"><span class="avatar" aria-hidden="true">a</span>alice <span class="car" aria-hidden="true">&#9662;</span></button>
+ <a class="usermenu" href="13-shell-llm-activity.html?s=running-open" aria-label="alice: account and LLM activity (see mockup 13)" style="text-decoration:none"><span class="avatar" aria-hidden="true">a</span>alice <span class="car" aria-hidden="true">&#9662;</span></a>
 </header>
 <div class="states" role="group" aria-label="Mockup states"><b>mockup states:</b>
  <button type="button" data-s="needs-you" aria-pressed="true">Needs you</button>
@@ -22,39 +22,39 @@
  <button type="button" data-s="assessing" aria-pressed="false">Assessing now</button>
  <button type="button" data-s="decided" aria-pressed="false">Decided (imported)</button>
  <button type="button" data-s="not-watched" aria-pressed="false">not watched</button>
- <button type="button" data-s="status-popover" aria-pressed="false">PR status popover (U22)</button>
+ <button type="button" data-s="status-popover" aria-pressed="false">PR status popover</button>
  <button type="button" data-s="pr-page" aria-pressed="false">PR page panel</button>
 </div>
 <main class="page" id="main">
  <div class="prstrip" role="group" aria-label="Pull request">
   <strong>#482</strong><span class="muted">feat(rpc): retry with backoff on timeout</span>
+  <a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" aria-label="Open acme/node-client#482 on GitHub, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a>
   <div class="mb"><button class="st b2" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="p-status" data-open-on="status-popover"><span aria-hidden="true">?</span>Questions waiting <span aria-hidden="true">&#9662;</span></button>
    <div class="pop left" id="p-status" role="dialog" aria-label="Pull request status" hidden>
     <h3>diffpilot state</h3><p class="small" style="margin:0"><b>Questions waiting</b>: 5 questions need you &middot; 3 decisions wait for agents &middot; CI: 2 passed, 1 pending</p>
-    <h3>PR Hygiene <span class="ghtag" style="text-transform:none">external</span></h3><p class="small" style="margin:0">Waiting on author &mdash; 2 blockers &middot; data of 10:39 <a href="https://github.com/" target="_blank" rel="noopener noreferrer">&#8599;</a></p>
+    <h3>PR Hygiene <span class="ghtag" style="text-transform:none">external</span></h3><p class="small" style="margin:0">Waiting on author &mdash; 2 blockers &middot; data of 10:39 <a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" aria-label="PR Hygiene data on GitHub, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a></p>
     <h3>thepastaclaw <span class="ghtag" style="text-transform:none">external</span></h3><p class="small" style="margin:0">reviewing (verify, 3/5) since 10:12 &middot; data of 10:21; can trail by about 20 minutes</p>
     <h3>GitHub</h3><p class="small" style="margin:0">Bot rounds: 4 &middot; read 10:41 &middot; next read 10:52 <button class="btn sm" type="button" data-toast="Reading GitHub again (mock)">Read GitHub again</button></p>
    </div></div>
-  <span class="small muted" data-tip="U22 (optional): one status control. Today the strip lists the state badge, bot rounds, PR Hygiene and thepastaclaw side by side.">PR Hygiene: waiting on author &middot; bot round 4</span>
   <span class="sp"></span>
-  <span data-for="needs-you status-menu assessing decided status-popover"><button class="watch14" type="button" aria-pressed="true" data-watch data-off="Watch this PR" data-tip="Watching: new comments are read and assessed automatically and you are notified. Uses GitHub requests and LLM tokens. Click to stop."><span class="eye" aria-hidden="true">&#9673;</span><span class="wt">Watching</span></button> <span class="small muted">assessed automatically 10:52</span></span>
-  <span data-for="not-watched" hidden><button class="watch14" type="button" aria-pressed="false" data-watch data-off="Watch this PR"><span class="eye" aria-hidden="true">&#9675;</span><span class="wt">Watch this PR</span></button> <span class="small muted">New comments would be read and assessed automatically; uses LLM tokens.</span></span>
+  <span data-for="needs-you status-menu assessing decided status-popover" class="row" style="gap:10px"><span class="small muted">assessed automatically 10:52</span><button class="watch14" type="button" aria-pressed="true" data-watch data-off="Watch this PR" data-tip="Watching: new comments are read and assessed automatically and you are notified. Uses GitHub requests and LLM tokens. Click to stop."><span class="eye" aria-hidden="true">&#9673;</span><span class="wt">Watching</span></button></span>
+  <span data-for="not-watched" hidden class="row" style="gap:10px"><span class="small muted">New comments would be read and assessed automatically; uses LLM tokens.</span><button class="watch14" type="button" aria-pressed="false" data-watch data-off="Watch this PR"><span class="eye" aria-hidden="true">&#9675;</span><span class="wt">Watch this PR</span></button></span>
  </div>
- <p class="annot" data-for="needs-you status-menu assessing decided not-watched status-popover"><b>U23</b> Watch state or offer in the header &middot; <b>U22</b> optional: the state badge opens one status popover &middot; <b>U20</b> one Needs-you number everywhere (5).</p>
+ <p class="annot" data-for="needs-you status-menu assessing decided not-watched status-popover"><b>U22</b> the state badge opens one status popover &middot; <b>U43</b> Watch is the right-most element, its state text before it &middot; <b>U20</b> one Needs-you number everywhere (5).</p>
 
  <!-- ============ COMMENTS ============ -->
  <div data-for="needs-you status-menu assessing decided not-watched status-popover">
   <nav class="tabs14" aria-label="Comments pages"><a href="#" aria-current="page">Questions <span class="cnt">5</span></a><a href="#">Table</a><a href="#">Rounds</a><a href="#">Carry-overs</a><a href="#">Decision log and agents</a></nav>
-  <p class="assess" role="status"><span aria-hidden="true">&#9684;</span> <b>Assessing 7 comments now</b> (since 10:42) &middot; 13 wait for the next pass &middot; 2 not assessed: daily limit <span class="small muted">&middot; head 9f3c2e1</span></p>
-  <p class="annot"><b>U27</b> counts and times only; waiting items are never shown as running.</p>
+  <div class="assess" role="status" data-banner><span aria-hidden="true">&#9684;</span><span><b>Assessing 7 comments now</b> (since 10:42) &middot; 13 wait for the next pass &middot; 2 not assessed: daily limit <span class="small muted">&middot; head 9f3c2e1</span></span><span class="sp"></span><button class="x" type="button" aria-label="Hide" data-hide="q-trigger" data-tip="Hide until the assessment state changes">&times;</button></div>
+  <p class="annot"><b>U27</b> counts and times only; waiting items are never shown as running. <b>U44</b> full width; &times; hides it until the state changes.</p>
   <div class="ccols">
    <nav class="queue" aria-label="Queue">
     <div class="mb" style="width:100%">
-     <button class="mbtn attn" type="button" style="width:100%;justify-content:space-between" aria-haspopup="menu" aria-expanded="false" aria-controls="m-q" data-open-on="status-menu" aria-label="Queue shows: Needs you, 5">
-      <span><span class="val" data-for="needs-you status-menu not-watched status-popover">Needs you</span><span data-for="assessing" hidden>Assessing now</span><span data-for="decided" hidden>Decided</span> <span class="attn-t" data-for="needs-you status-menu not-watched status-popover">&middot; 5</span><span data-for="assessing" hidden>&middot; 7</span><span data-for="decided" hidden>&middot; 16</span></span><span class="car" aria-hidden="true">&#9662;</span></button>
+     <button class="mbtn" id="q-trigger" type="button" style="width:100%;justify-content:space-between" aria-haspopup="menu" aria-expanded="false" aria-controls="m-q" data-open-on="status-menu" aria-label="Queue shows: Needs you, 5, of them 2 gate items">
+      <span><span class="val" data-for="needs-you status-menu not-watched status-popover">Needs you</span><span data-for="assessing" hidden>Assessing now</span><span data-for="decided" hidden>Decided</span> <span data-for="needs-you status-menu not-watched status-popover">&middot; 5 <span class="gates" aria-hidden="true">&middot; &#9650; 2 gates</span></span><span data-for="assessing" hidden>&middot; 7</span><span data-for="decided" hidden>&middot; 16</span></span><span class="car" aria-hidden="true">&#9662;</span></button>
      <div class="menu left" id="m-q" role="menu" aria-label="Show in the queue" hidden style="width:100%">
-      <button role="menuitemradio" aria-checked="true" type="button" data-label="Needs you"><span class="ck">&#10003;</span><span class="k"><span style="color:var(--med);font-weight:700">?</span> Needs you<small>Undecided questions, PR-level last. Duplicates, status comments and items decided on GitHub are not counted.</small></span><span class="n">5</span></button>
-      <button role="menuitemradio" aria-checked="false" type="button" data-label="Assessing now"><span class="ck"></span><span class="k"><span style="color:var(--low)">&#9684;</span> Assessing now<small>In the running pass since 10:42.</small></span><span class="n">7</span></button>
+      <button role="menuitemradio" aria-checked="true" type="button" data-label="Needs you"><span class="ck">&#10003;</span><span class="k">Needs you<small>Undecided questions, PR-level last; 2 are gate items. Duplicates, status comments and items decided on GitHub are not counted.</small></span><span class="n">5</span></button>
+      <button role="menuitemradio" aria-checked="false" type="button" data-label="Assessing now"><span class="ck"></span><span class="k">&#9684; Assessing now<small>In the running pass since 10:42.</small></span><span class="n">7</span></button>
       <button role="menuitemradio" aria-checked="false" type="button" data-label="Waiting for assessment"><span class="ck"></span><span class="k">&#9676; Waiting for assessment<small>Read from GitHub; sent with the next pass.</small></span><span class="n">13</span></button>
       <button role="menuitemradio" aria-checked="false" type="button" data-label="Not assessed"><span class="ck"></span><span class="k">Not assessed<small>2 at the daily limit (Settings &rsaquo; LLM &amp; usage).</small></span><span class="n">2</span></button>
       <hr>
@@ -63,12 +63,13 @@
       <button role="menuitemradio" aria-checked="false" type="button" data-label="Status comments"><span class="ck"></span><span class="k">Status comments<small>Bot status and summaries; no decision needed. Listed so nothing is hidden.</small></span><span class="n">6</span></button>
       <button role="menuitemradio" aria-checked="false" type="button" data-label="All"><span class="ck"></span><span class="k">All</span><span class="n">52</span></button>
      </div></div>
+    <p class="annot" style="margin:8px 0 0"><b>U45</b> the trigger is neutral; only the gate count is red.</p>
 
     <div data-for="needs-you status-menu not-watched status-popover">
      <ol>
       <li><button class="qrow" type="button"><span class="no">C21</span><span>Retry cap is checked after the sleep<span class="marks"><span class="mk rec" style="border-radius:10px">asked again</span></span></span></button></li>
       <li><button class="qrow" type="button" aria-current="true"><span class="no">C14</span><span>Retry may resend a signed request<span class="marks"><span class="mk gate">Gate G-FUNDS <span class="llmtag">LLM</span></span><span class="mk rec"><span class="llmtag">LLM</span> recommends Fix here</span><span class="mk dup" data-tip="The same point was raised in 2 more comments; deciding C14 decides them too.">&#10697; +2 same point</span></span></span></button>
-       <ul class="dups"><li>C18 &middot; coderabbit <a href="https://github.com/" target="_blank" rel="noopener noreferrer" aria-label="Open C18 on GitHub">&#8599;</a></li><li>C19 &middot; thepastaclaw <a href="https://github.com/" target="_blank" rel="noopener noreferrer" aria-label="Open C19 on GitHub">&#8599;</a></li></ul></li>
+       <ul class="dups"><li>C18 &middot; coderabbit <a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" aria-label="Open C18 on GitHub, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a></li><li>C19 &middot; thepastaclaw <a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" aria-label="Open C19 on GitHub, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a></li></ul></li>
       <li><button class="qrow" type="button"><span class="no">C15</span><span>Log prints the endpoint token<span class="marks"><span class="mk gate">Gate G-SECRET</span><span class="mk" style="border-color:var(--high-bd);color:var(--high)"><span class="ghtag">GitHub</span> Blocking</span></span></span></button></li>
       <li><button class="qrow" type="button"><span class="no">C11</span><span>Backoff cap is not configurable<span class="marks"><span class="mk rec" style="border-color:var(--low-bd);background:var(--low-bg);color:var(--low)"><span class="llmtag">LLM</span> recommends Follow-up PR</span></span></span></button></li>
       <li><button class="qrow" type="button"><span class="no">PR</span><span>Merge now, remaining items as follow-ups?</span></button></li>
@@ -90,7 +91,7 @@
      <ol>
       <li><button class="qrow" type="button"><span class="no">C3</span><span>Retry on 429 responses<span class="marks"><span class="mk">Rejected &middot; here, 22 Nov</span></span></span></button></li>
       <li><button class="qrow" type="button"><span class="no">C16</span><span>Repeat of C3<span class="marks"><span class="mk">Rejected &middot; carried from C3</span></span></span></button></li>
-      <li style="display:flex;align-items:flex-start;gap:4px"><button class="qrow" type="button"><span class="no">C9</span><span>Use a seeded RNG for the jitter<span class="marks"><span class="mk"><span class="ghtag">GitHub</span> Rejected by @lklimek, 24 Nov &middot; imported</span></span></span></button><a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" aria-label="Evidence for C9: the reply on GitHub, new tab" style="padding-top:6px">&#8599;</a></li>
+      <li style="display:flex;align-items:flex-start;gap:4px"><button class="qrow" type="button"><span class="no">C9</span><span>Use a seeded RNG for the jitter<span class="marks"><span class="mk"><span class="ghtag">GitHub</span> Rejected by @lklimek, 24 Nov &middot; imported</span></span></span></button><a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" aria-label="Evidence for C9: the reply on GitHub, new tab" style="padding-top:6px"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a></li>
       <li><button class="qrow" type="button"><span class="no">C10</span><span>Typo in the retry doc comment<span class="marks"><span class="mk"><span class="ghtag">GitHub</span> resolved by octo-dev, no reason given</span></span></span></button></li>
      </ol>
      <p class="annot" style="margin-top:8px"><b>U26</b> imported decisions carry who, when and the evidence link; &ldquo;Outside diffpilot&rdquo; merges here.</p>
@@ -98,11 +99,11 @@
    </nav>
 
    <article class="card qcard" aria-labelledby="q-h">
-    <p class="small muted" style="margin:0">C14 &middot; inline thread &middot; <code>src/rpc/client.rs:99</code> &middot; @thepastaclaw &middot; round 3 <a href="https://github.com/" target="_blank" rel="noopener noreferrer" aria-label="Open C14 on GitHub">&#8599;</a></p>
-    <h2 id="q-h">Retry may resend a signed request <span class="llmtag" data-tip="Title written by the LLM because the bot heading was generic (&ldquo;Medium severity finding&rdquo;). U28, optional.">LLM</span></h2>
+    <p class="small muted" style="margin:0">C14 &middot; inline thread &middot; <code>src/rpc/client.rs:99</code> &middot; @thepastaclaw &middot; round 3 <a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" aria-label="Open C14 on GitHub, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a></p>
+    <h2 id="q-h">Retry may resend a signed request <span class="llmtag" data-tip="Title written by the LLM because the bot heading was generic (&ldquo;Medium severity finding&rdquo;). U28.">LLM</span></h2>
     <p class="small muted" style="margin:0">Bot heading: &ldquo;Medium severity finding&rdquo;</p>
     <div class="quote">should_retry() only sees the attempt number, so broadcast_tx can be sent twice when the reply arrives late.</div>
-    <p class="small"><span class="mk dup">&#10697; same point</span> Also raised as <a href="https://github.com/" target="_blank" rel="noopener noreferrer">C18 (coderabbit)</a> and <a href="https://github.com/" target="_blank" rel="noopener noreferrer">C19 (thepastaclaw)</a>. Deciding C14 decides them too.</p>
+    <p class="small"><span class="mk dup">&#10697; same point</span> Also raised as <a class="ghl" href="https://github.com/" target="_blank" rel="noopener noreferrer">C18 (coderabbit) <svg class="ghi" aria-hidden="true"><use href="#gh"/></svg><span class="vh">(opens on GitHub in a new tab)</span></a> and <a class="ghl" href="https://github.com/" target="_blank" rel="noopener noreferrer">C19 (thepastaclaw) <svg class="ghi" aria-hidden="true"><use href="#gh"/></svg><span class="vh">(opens on GitHub in a new tab)</span></a>. Deciding C14 decides them too.</p>
     <div class="llmbox"><span class="llmtag">LLM</span> Still applies at 9f3c2e1: <code>should_retry</code> receives no method or idempotency input. Gate G-FUNDS: a repeated value-moving request. Recommends <b>Fix here</b>: skip retry for <code>broadcast_tx</code>.</div>
     <div class="row"><button class="btn pri" type="button">Fix here</button><button class="btn" type="button">Follow-up PR&hellip;</button><button class="btn" type="button">Reject&hellip;</button><button class="btn" type="button">Skip for now</button></div>
    </article>
@@ -115,7 +116,7 @@
    <article class="card" aria-labelledby="ra-h"><h2 id="ra-h">Review a PR</h2><p class="small">Analysis at <code>9f3c2e1</code> &middot; 12 of 20 flows analysed</p><div class="row"><a class="btn pri" href="#">Open &rarr;</a></div></article>
    <article class="card" aria-labelledby="pc-h"><h2 id="pc-h">Process PR comments</h2>
     <dl class="kv"><dt>Unresolved threads on GitHub</dt><dd>9 <span class="b b-det">read 10:41</span></dd>
-     <dt>Needs you</dt><dd><b>5</b> (1 asked again) &middot; 3 duplicates folded &middot; 6 status comments</dd>
+     <dt>Needs you</dt><dd><b>5</b> (1 asked again, 2 gate items) &middot; 3 duplicates folded &middot; 6 status comments</dd>
      <dt>Waiting for agents</dt><dd>3 decisions</dd>
      <dt>LLM assessment</dt><dd>Assessing 7 now (since 10:42) &middot; 13 waiting &middot; 2 not assessed: daily limit</dd>
      <dt>Round</dt><dd>4 (thepastaclaw)</dd></dl>

@@ -87,6 +87,10 @@
     if (j) { j.outerHTML = '<span class="jm run" data-tip="The LLM is judging this item again; the old text stays until it is done.">◔ judging…</span>'; toast('Re-judging ' + j.dataset.rejudge + ' (mock): 1 of today’s 120 items.'); return; }
     var w = e.target.closest('[data-watch]');
     if (w) { var on = w.getAttribute('aria-pressed') !== 'true'; w.setAttribute('aria-pressed', on); w.querySelector('.eye').textContent = on ? '◉' : '○'; w.querySelector('.wt').textContent = on ? 'Watching' : (w.dataset.off || 'Watch'); return; }
+    var nc = e.target.closest('[data-navc]');
+    if (nc) { var on2 = document.querySelector('.shell').classList.toggle('navc'); nc.setAttribute('aria-pressed', on2); return; }
+    var x = e.target.closest('[data-hide]');
+    if (x) { var bn = x.closest('[data-banner]'); bn.hidden = true; var nf = document.getElementById(x.dataset.hide); if (nf) nf.focus(); toast('Hidden until the assessment state changes (mock).'); return; }
     var tb = e.target.closest('[data-toast]');
     if (tb && !tb.closest('.menu')) { toast(tb.dataset.toast); return; }
     var s = e.target.closest('[data-tab]');
@@ -97,8 +101,9 @@
   var states = document.querySelector('.states');
   if (states) states.addEventListener('click', function () {
     var cur = document.body.dataset.state;
-    $$('.subnav a').forEach(function (a) { if (a.dataset.tab === cur) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
+    $$('nav.app .sub a[data-tab]').forEach(function (a) { if (a.dataset.tab === cur.split('-')[0]) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
     if (sel) sel.value = cur;
+    $$('[data-banner]').forEach(function (b) { b.hidden = false; });
     if (bar && bar.dataset.seedOn === cur) seed();
     $$('[data-open-on]').forEach(function (t) { if (t.dataset.openOn.split(' ').indexOf(cur) >= 0) setTimeout(function () { show(t, false); }, 0); else if (open === t) close(false); });
   });

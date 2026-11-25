@@ -127,13 +127,7 @@ button.jm:hover{background:var(--med-bg)}
 .chart text{fill:var(--muted);font:11px system-ui}
 
 /* settings */
-.set14{display:grid;grid-template-columns:200px minmax(0,1fr);gap:24px;max-width:1480px;align-items:start}
-@media (min-width:2000px){.set14{margin-inline:auto}}
-.subnav{position:sticky;top:64px;display:flex;flex-direction:column;gap:2px}
-.subnav a{display:block;padding:7px 10px;border-radius:6px;color:var(--text);text-decoration:none;font-size:13.5px;border-left:3px solid transparent}
-.subnav a[aria-current]{background:var(--accent-bg);border-left-color:var(--accent);font-weight:600}
-.subnav a .attn-t{color:var(--med);font-weight:700;font-size:12px}
-.subsel{display:none}
+.set14{max-width:1280px}
 .sec14{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 18px;margin-bottom:16px}
 .sec14>h2{font-size:16px;margin:0 0 2px;display:flex;align-items:center;gap:8px}
 .sec14>p.lead{color:var(--muted);font-size:12.5px;margin:0 0 10px}
@@ -194,13 +188,48 @@ button.jm:hover{background:var(--med-bg)}
 dl.kv{display:grid;grid-template-columns:max-content 1fr;gap:3px 14px;margin:0;font-size:13px}
 dl.kv dt{color:var(--muted)}dl.kv dd{margin:0}
 
+/* v1.4 round 2: GitHub icon, nav tree, user menu dot and panel, dismissible banner, neutral queue trigger */
+.ghi{width:.95em;height:.95em;vertical-align:-.12em;fill:currentColor;color:var(--muted);flex:none}
+a:hover .ghi{color:var(--accent)}
+.ghl{display:inline-flex;align-items:center;gap:4px;text-decoration:none}
+nav.app .ni{width:18px;text-align:center;color:var(--muted);flex:none}
+nav.app a{justify-content:flex-start;gap:8px}
+nav.app a .count{margin-left:auto}
+nav.app a.open{font-weight:600;border-left:4px solid var(--accent);padding-left:6px}
+nav.app .sub{display:flex;flex-direction:column;gap:1px;margin:2px 0 4px 18px;padding-left:8px;border-left:1px solid var(--border);list-style:none}
+nav.app .sub a{font-size:13px;min-height:26px;padding:4px 8px}
+nav.app .sep{height:1px;background:var(--border);margin:6px 4px}
+.usermenu{position:relative}
+.udot{position:absolute;top:2px;left:20px;width:10px;height:10px;border-radius:50%;border:2px solid var(--surface)}
+.udot.warn{background:var(--med-bd)}.udot.err{background:var(--high-bd)}
+.upanel{width:360px;padding:6px 8px}
+.upanel .uh{font-size:12px;color:var(--muted);padding:4px 6px 6px;border-bottom:1px solid var(--border)}
+.upanel .usec{padding:8px 6px;border-bottom:1px solid var(--border)}
+.upanel .usec h3{font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);margin:6px 0 2px}
+.upanel .ustat{font-size:13px;font-weight:600;margin:0 0 2px;display:flex;gap:6px;align-items:center}
+.upanel .ustat.warn{color:var(--med)}.upanel .ustat.err{color:var(--high)}
+.upanel .ulink{display:flex;justify-content:space-between;align-items:center;padding:6px;border-radius:6px;color:var(--text);text-decoration:none;font-size:13px;border:0;background:none;width:100%;font:inherit;cursor:pointer;text-align:left}
+.upanel .ulink:hover,.upanel .ulink:focus-visible{background:var(--accent-bg)}
+.assess{display:flex;align-items:flex-start;gap:10px;width:100%}
+.assess .sp{flex:1}
+.assess .x{border:1px solid transparent;background:none;color:var(--text);font-size:16px;line-height:1;width:28px;height:28px;border-radius:6px;cursor:pointer;flex:none}
+.assess .x:hover,.assess .x:focus-visible{border-color:var(--low-bd);background:var(--surface)}
+.gates{color:var(--high);font-weight:700}
+.perm{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center}
+
 /* phone frame demo */
 .phone{width:390px;max-width:100%;border:1px solid var(--border);border-radius:14px;overflow:visible;background:var(--bg)}
 .phone .topbar{position:relative;border-radius:14px 14px 0 0}
 
 /* responsive */
 @media (max-width:1100px){.cols-dash{grid-template-columns:1fr}.hl14{grid-template-columns:1fr}.ccols{grid-template-columns:1fr}}
-@media (max-width:900px){.shell{grid-template-columns:1fr}nav.app{display:none}.set14{grid-template-columns:1fr}.subnav{display:none}.subsel{display:block;margin-bottom:12px}.frow{grid-template-columns:1fr}.frow .help{grid-column:1}}
+@media (max-width:900px){.frow{grid-template-columns:1fr}.frow .help{grid-column:1}}
+/* the left navigation keeps today's AppNav behaviour on phones (U35); collapsed = icons only, as today */
+.shell.navc{grid-template-columns:52px minmax(0,1fr)}
+.navc nav.app{padding:10px 4px}
+.navc nav.app .lbl,.navc nav.app .count{display:none}
+.navc nav.app a{justify-content:center;padding:6px 0}
+.navc nav.app .sub{margin:2px 0 4px 6px;padding-left:2px}
 @media (max-width:640px){
  .llmind,.statusline,.topbar .crumb{display:none}
  .split .lbl{display:none}
