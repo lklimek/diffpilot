@@ -496,7 +496,6 @@ async fn comments_reads_send_counts_and_omit_uncomputed_assessment_progress() {
 #[tokio::test]
 async fn fixture_status_sources_are_omitted_and_new_prose_sources_explain_review_counts() {
     let w = world().await;
-    w.get(&format!("{PR}/comments")).await;
     let page = w.get(PR).await;
     assert!(
         w.state
