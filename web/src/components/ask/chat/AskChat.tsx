@@ -416,11 +416,7 @@ export function AskChat(props: AskChatProps) {
           {following && subject.kind !== "pr" ? (
             <span className="inline-flex max-w-full min-w-0 items-center gap-0.5 rounded-[10px] border border-accent bg-accent-bg pl-2">
               <Tooltip
-                tip={
-                  s.fileLabel
-                    ? `${s.fileLabel} · ${s.tip}`
-                    : "Your question will be about this place. It follows where you are in the review; × asks about the whole PR instead."
-                }
+                tip={`${s.fileLabel ? `${s.fileLabel} · ` : ""}Your question will be about this place. It follows where you are in the review; × asks about the whole PR instead.`}
               >
                 <span
                   role="group"
