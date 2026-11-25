@@ -27,7 +27,7 @@ RUN curl -fsSL "https://github.com/openai/codex/releases/download/rust-v${CODEX_
 
 FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 ENV CARGO_BUILD_JOBS=2 CLAUDE_PLUGIN_ROOT=/etc/codex/claudius
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git gh ripgrep coreutils python3 python3-jsonschema jq \
+RUN apt-get update && apt-get install -y --no-install-recommends bubblewrap ca-certificates git gh ripgrep coreutils python3 python3-jsonschema jq \
  && rm -rf /var/lib/apt/lists/* \
  && groupadd -g 10002 worker && useradd -u 10002 -g 10002 -M worker \
  && install -d -o 10002 -g 10002 /work /work/home /work/codex /work/out /work/pr-data /run/dp /codex /home/worker /cargo /mirror
