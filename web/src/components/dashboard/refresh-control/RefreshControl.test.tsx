@@ -42,6 +42,13 @@ describe("RefreshControl", () => {
     expect(screen.getByText(/Nightly scan at .* failed/)).toHaveAccessibleDescription("GitHub unavailable");
   });
 
+  it("shows that a cancelled scan kept the last full scan", () => {
+    render(<RefreshControl {...defaults} latest={{ ...SCANNING, state: "cancelled" }} />);
+    expect(screen.getByText(/^Scan cancelled · Full scan \d\d:\d\d$/)).toHaveAccessibleDescription(
+      /Scan started at .* was cancelled.*Last full scan:/,
+    );
+  });
+
   it("refreshes normally and re-judges outdated items using the menu", async () => {
     const onRefresh = vi.fn();
     const onRejudgeOutdated = vi.fn();

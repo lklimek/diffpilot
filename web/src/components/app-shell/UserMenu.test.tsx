@@ -124,9 +124,35 @@ it("opens as a disclosure with normal Tab order and Escape returning to the trig
   expect(screen.getByRole("link", { name: "Usage and limits" })).toHaveFocus();
   await user.tab();
   expect(screen.getByRole("link", { name: "Settings" })).toHaveFocus();
+  await user.tab();
+  expect(screen.getByRole("button", { name: "Keyboard shortcuts" })).toHaveFocus();
+  const helpTip = screen.getByRole("tooltip");
+  expect(helpTip).toHaveTextContent("Show keyboard shortcuts");
+  await user.tab();
+  expect(helpTip).not.toBeVisible();
   await user.keyboard("{Escape}");
   expect(trigger).toHaveFocus();
   expect(trigger).toHaveAttribute("aria-expanded", "false");
+});
+
+it("shows observed dashboard ranking progress when the job feed is unavailable", async () => {
+  const ranking = {
+    state: "waiting_for_analysis",
+    judged: 0,
+    total: 18,
+    resumes_at: null,
+    message: null,
+  } as const;
+  const { rerender } = render(<UserMenu {...props} activity={null} legacyRanking={ranking} />);
+  await userEvent.click(screen.getByRole("button", { name: /^alice/ }));
+  const menu = screen.getByRole("region", { name: "LLM activity" });
+  expect(menu).toHaveTextContent("Waiting for the review analysis to finish.");
+  rerender(
+    <UserMenu {...props} activity={null} legacyRanking={{ ...ranking, state: "running", judged: 2 }} />,
+  );
+  expect(menu).toHaveTextContent("Ranking with the LLM: 2 of 18 items judged.");
+  rerender(<UserMenu {...props} activity={activity} legacyRanking={ranking} />);
+  expect(menu).not.toHaveTextContent("Waiting for the review analysis to finish.");
 });
 
 it("shows an own subject as text if the server gives it an external URL", async () => {

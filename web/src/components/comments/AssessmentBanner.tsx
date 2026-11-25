@@ -4,12 +4,12 @@ import { Tooltip } from "../tooltip/Tooltip";
 import { clockText } from "../format/time";
 
 function activeAssessmentText(progress: CommentAssessmentProgress, now: Date): string {
-  const { in_pass, waiting, running, since, limited } = progress;
+  const { in_pass, waiting, running, since, limited, assessed, total } = progress;
   return [
     in_pass
       ? `Assessing ${in_pass} ${in_pass === 1 ? "comment" : "comments"} now${since ? ` (since ${clockText(since, now)})` : ""}`
       : running && in_pass === undefined
-        ? "Assessment pending or running"
+        ? `Assessment pending or running · ${assessed} of ${total} comments assessed`
         : null,
     waiting ? `${waiting} ${waiting === 1 ? "waits" : "wait"} for the next pass` : null,
     limited ? `${limited} not assessed: daily limit` : null,
