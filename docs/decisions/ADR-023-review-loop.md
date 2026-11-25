@@ -196,8 +196,13 @@ read with tokens (ADR-019).
 - **Duplicates follow their primary** (owner Q6, plan §6 N5): deciding a primary decides its non-gate duplicates,
   also ones linked later, each with its own effects, planned in the same write transaction; gate items are always
   decided individually (RQ4/RQ5). Wire `DecisionVia::FollowsPrimary`.
-- **Imported GitHub decisions** (owner `07b69073` F5, plan §7): a grounded recorded decision of a maintainer, an
-  explicit trusted relay naming one, or an author withdrawing their own point becomes a local decision
-  (`DecisionVia::ImportedGithub`, attribution and evidence link, no effects), only for an item without a decision
-  and only from the item's own thread or a later comment referring to it. Stored in `comment_decision_origins`
-  (migration 0033), so `comment_decisions` keeps its CHECK. Open: OQ5, OQ6.
+- **Imported GitHub decisions** (owner `07b69073` F5, plan §7; security review SEC-006…009): a grounded recorded
+  decision becomes a local decision (`DecisionVia::ImportedGithub`, attribution and evidence link) only for an item
+  without a decision and only from the item's own thread or a later comment referring to it. Authority: a tenant
+  member's own statement matched by numeric GitHub user id; a deterministic relay listed in
+  `SR_MAINTAINER_DELEGATES` through the structured `maintainer-decision v1` marker (never an LLM bot echoing thread
+  text); an author withdrawing their own point, which decides only that author's items and never propagates to other
+  authors' duplicates. The kind imports only with a deterministic cue; otherwise the item stays in Needs you with the
+  recorded decision pre-filled (`import_proposal`, OQ7). **Invariant: an imported decision never has effects**; only a
+  later decision of the owner acts. Stored in `comment_decision_origins` (migration 0033), so `comment_decisions`
+  keeps its CHECK. Open: OQ6, OQ7.
