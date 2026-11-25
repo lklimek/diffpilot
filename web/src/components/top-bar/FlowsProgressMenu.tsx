@@ -155,9 +155,12 @@ export function FlowsProgressMenu(props: FlowsProgressMenuProps) {
           aria-controls={`${id}-flows`}
           aria-label={`Your progress ${reviewed} / ${flows.length}: flows reviewed. Show the flows with their analysis and review state`}
           onClick={() => setOpen((o) => !o)}
-          className="cursor-pointer rounded-md border border-transparent bg-transparent px-1.5 py-0.5 text-[12.5px] text-text hover:border-border"
+          className="review-count-button cursor-pointer rounded-md border border-transparent bg-transparent px-1.5 py-0.5 text-[12.5px] text-text hover:border-border"
         >
-          Your progress <b>{reviewed}</b> / {flows.length} <span aria-hidden>▾</span>
+          Your progress{" "}
+          <span className="whitespace-nowrap">
+            <b>{reviewed}</b> / {flows.length} <span aria-hidden>▾</span>
+          </span>
         </button>
       </Tooltip>
       {open && (

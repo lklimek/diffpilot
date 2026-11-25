@@ -80,9 +80,11 @@ function Breadcrumb({
   };
   const label = (
     <>
-      <span aria-hidden className="review-repo hidden truncate sm:inline">
-        <span className="review-owner hidden min-[1440px]:inline">{pr.repo.owner}/</span>
-        {pr.repo.name}
+      <span aria-hidden className="review-repo hidden min-w-0 sm:inline-flex">
+        <span className="review-owner hidden min-w-0 truncate min-[1440px]:inline">
+          <bdi>{pr.repo.owner}/</bdi>
+        </span>
+        <span className="review-repo-name min-w-0 truncate">{pr.repo.name}</span>
       </span>{" "}
       <span aria-hidden className="shrink-0">
         #{pr.number}
@@ -90,13 +92,13 @@ function Breadcrumb({
       <span className="sr-only">{full}</span>
     </>
   );
-  const prClass = "review-pr-crumb flex min-h-6 min-w-0 items-baseline gap-1 font-semibold text-text";
+  const prClass = "flex min-h-6 min-w-0 items-baseline gap-1 font-semibold text-text";
   return (
     <nav
       aria-label="Breadcrumb"
       className="review-crumb flex min-w-max shrink-0 items-center gap-1.5 sm:min-w-0 sm:shrink"
     >
-      <span className="hidden shrink-0 items-center gap-1.5 sm:inline-flex">
+      <span className="review-crumb-lead hidden shrink-0 items-center gap-1.5 sm:inline-flex">
         <a
           href="/"
           onClick={(event) => follow(event, "/")}
@@ -324,7 +326,7 @@ export function TopBar({
               typeof pendingCount === "string" && pendingCount.endsWith("+") ? ` ${PENDING_INCOMPLETE}` : ""
             }`}
           >
-            <button type="button" onClick={onOpenPending} className={BUTTON}>
+            <button type="button" onClick={onOpenPending} className={`review-count-button ${BUTTON}`}>
               Pending review <b>{pendingText(pendingCount)}</b>
             </button>
           </Tooltip>
