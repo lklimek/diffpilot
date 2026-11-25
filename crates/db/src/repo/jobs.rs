@@ -1,6 +1,8 @@
 //! Repository for `jobs` and `job_events`: the queue behind `QueueExecutor` and the runner protocol.
 //! Frozen signatures (cross-WP).
 
+use std::collections::HashSet;
+
 use contracts::agent::JobKind;
 use contracts::ids::{AnalysisId, FlowId, JobId, PassId, QuestionId, RefreshId};
 use contracts::job::access::AgentAccess;
@@ -19,10 +21,16 @@ use sqlx::{QueryBuilder, Row, Sqlite, SqliteConnection, SqlitePool};
 use crate::error::DbError;
 use crate::repo::settings::CallFailure;
 
+mod activity;
+
+pub(crate) use activity::JobChanges;
+pub use activity::{ActiveJob, Activity, OwnJob};
+
 /// Access to the job queue.
 #[derive(Debug)]
 pub struct Jobs<'a> {
     pub(crate) pool: &'a SqlitePool,
+    pub(crate) changes: &'a JobChanges,
 }
 
 /// Repair runs allowed after a first run whose output verification rejected (brief §5 Pipeline 6).
@@ -572,7 +580,7 @@ struct Current {
 
 async fn current(tx: &mut SqliteConnection, job: JobId) -> Result<(Current, SqliteRow), DbError> {
     let row = sqlx::query(
-        "SELECT kind, state, attempt, cancel_requested, max_attempts, ready_output, ready_output_attempt, payer_id, spec, pull_request_id,
+        "SELECT kind, tenant_id, state, attempt, cancel_requested, max_attempts, ready_output, ready_output_attempt, payer_id, spec, pull_request_id,
              json_extract(result, '$.attempt') AS result_attempt
          FROM jobs WHERE id = ?",
     )
@@ -702,7 +710,8 @@ impl Jobs<'_> {
                 target.pass_id.to_string(),
             ),
         };
-        let inserted = sqlx::query(sql)
+        let sql = format!("{sql} RETURNING tenant_id");
+        let tenant: Option<String> = sqlx::query_scalar(&sql)
             .bind(spec.job_id.to_string())
             .bind(wire_name(spec.kind)?)
             .bind(priority_value(job.priority))
@@ -720,12 +729,11 @@ impl Jobs<'_> {
             .bind(question_id)
             .bind(ts(now))
             .bind(owner)
-            .execute(&mut *tx)
+            .fetch_optional(&mut *tx)
             .await?;
-        if inserted.rows_affected() == 0 {
-            return Err(DbError::NotFound);
-        }
+        let tenant = tenant.ok_or(DbError::NotFound)?;
         tx.commit().await?;
+        self.changes.publish(&tenant);
         self.get(spec.job_id).await
     }
 
@@ -789,16 +797,20 @@ impl Jobs<'_> {
         }
         query.push(
             " ORDER BY j.priority, j.kind <> 'ask', j.kind <> 'verify_comments', j.created_at, j.rowid LIMIT 1)
-             RETURNING id",
+             RETURNING id, tenant_id",
         );
-        let claimed: Option<String> = query.build_query_scalar().fetch_optional(&mut *tx).await?;
-        if let Some(id) = &claimed {
+        let claimed: Option<(String, String)> =
+            query.build_query_as().fetch_optional(&mut *tx).await?;
+        if let Some((id, _)) = &claimed {
             sqlx::query("UPDATE assessment_method_runs SET attempt=(SELECT attempt FROM jobs WHERE id=?),status='running',failure=NULL WHERE job_id=? AND accepted_attempt IS NULL")
                 .bind(id).bind(id).execute(&mut *tx).await?;
         }
         tx.commit().await?;
         match claimed {
-            Some(id) => self.get(parse_wire(&id, "jobs.id")?).await.map(Some),
+            Some((id, tenant)) => {
+                self.changes.publish(&tenant);
+                self.get(parse_wire(&id, "jobs.id")?).await.map(Some)
+            }
             None => Ok(None),
         }
     }
@@ -813,7 +825,7 @@ impl Jobs<'_> {
         lease_until: Timestamp,
     ) -> Result<EventsRecorded, DbError> {
         let mut tx = super::write_tx(self.pool).await?;
-        let (current, _) = current(&mut tx, job).await?;
+        let (current, row) = current(&mut tx, job).await?;
         current.accepts(attempt)?;
         let state = if events.is_empty() {
             current.state
@@ -849,7 +861,11 @@ impl Jobs<'_> {
             .bind(job.to_string())
             .execute(&mut *tx)
             .await?;
+        let tenant: String = row.try_get("tenant_id")?;
         tx.commit().await?;
+        if state != current.state {
+            self.changes.publish(&tenant);
+        }
         Ok(EventsRecorded {
             cancel_requested: current.cancel_requested,
         })
@@ -891,7 +907,11 @@ impl Jobs<'_> {
         .bind(job.to_string())
         .execute(&mut *tx)
         .await?;
+        let tenant: String = row.try_get("tenant_id")?;
         tx.commit().await?;
+        if current.state == JobState::Claimed {
+            self.changes.publish(&tenant);
+        }
         Ok(recorded)
     }
 
@@ -963,9 +983,11 @@ impl Jobs<'_> {
         .execute(&mut *tx)
         .await?;
         apply_credential_effects(&mut tx, &credential, result, now).await?;
+        let tenant: String = row.try_get("tenant_id")?;
         // A dashboard or `verify_comments` job has no session: nothing it reports touches one (ADR-018, ADR-023).
         if kind == JobKind::JudgeWork.as_str() || kind == JobKind::VerifyComments.as_str() {
             tx.commit().await?;
+            self.changes.publish(&tenant);
             return Ok(Completion::Applied { state });
         }
         let next_generation: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(generation),0)+1 FROM analytic_threads WHERE pull_request_id=(SELECT pull_request_id FROM jobs WHERE id=?)")
@@ -1017,13 +1039,14 @@ impl Jobs<'_> {
                 .bind(next_generation).bind(result.job_id.to_string()).bind(result.job_id.to_string()).execute(&mut *tx).await?;
         }
         tx.commit().await?;
+        self.changes.publish(&tenant);
         Ok(Completion::Applied { state })
     }
 
     /// Cancels a queued or paused job at once, or flags a claimed or running one; returns the state after.
     pub async fn request_cancel(&self, job: JobId, now: Timestamp) -> Result<JobState, DbError> {
         let mut tx = super::write_tx(self.pool).await?;
-        let (current, _) = current(&mut tx, job).await?;
+        let (current, row) = current(&mut tx, job).await?;
         match current.state {
             JobState::Queued | JobState::Paused => {
                 let result = server_result(job, current.attempt, JobOutcome::Cancelled);
@@ -1037,7 +1060,9 @@ impl Jobs<'_> {
                 .bind(job.to_string())
                 .execute(&mut *tx)
                 .await?;
+                let tenant: String = row.try_get("tenant_id")?;
                 tx.commit().await?;
+                self.changes.publish(&tenant);
                 Ok(JobState::Cancelled)
             }
             JobState::Claimed | JobState::Running => {
@@ -1059,7 +1084,7 @@ impl Jobs<'_> {
     pub async fn expire_leases(&self, now: Timestamp) -> Result<Vec<ExpiredLease>, DbError> {
         let mut tx = super::write_tx(self.pool).await?;
         let rows = sqlx::query(
-            "SELECT id, state, attempt, max_attempts, cancel_requested FROM jobs
+            "SELECT id, tenant_id, state, attempt, max_attempts, cancel_requested FROM jobs
              WHERE state IN ('claimed', 'running') AND lease_expires_at < ?
              ORDER BY lease_expires_at, rowid",
         )
@@ -1067,7 +1092,9 @@ impl Jobs<'_> {
         .fetch_all(&mut *tx)
         .await?;
         let mut expired = Vec::with_capacity(rows.len());
+        let mut tenants = HashSet::new();
         for row in &rows {
+            tenants.insert(row.try_get::<String, _>("tenant_id")?);
             let id: String = row.try_get("id")?;
             let job: JobId = parse_wire(&id, "jobs.id")?;
             let state: String = row.try_get("state")?;
@@ -1106,19 +1133,28 @@ impl Jobs<'_> {
             expired.push(ExpiredLease { job, state: next });
         }
         tx.commit().await?;
+        for tenant in tenants {
+            self.changes.publish(&tenant);
+        }
         Ok(expired)
     }
 
     /// Re-queues paused jobs whose `resumes_at` has passed.
     pub async fn resume_paused(&self, now: Timestamp) -> Result<Vec<JobId>, DbError> {
-        let ids: Vec<String> = sqlx::query_scalar(
+        let rows: Vec<(String, String)> = sqlx::query_as(
             "UPDATE jobs SET state = 'queued', resumes_at = NULL
-             WHERE state = 'paused' AND resumes_at <= ? RETURNING id",
+             WHERE state = 'paused' AND resumes_at <= ? RETURNING id, tenant_id",
         )
         .bind(ts(now))
         .fetch_all(self.pool)
         .await?;
-        ids.iter().map(|id| parse_wire(id, "jobs.id")).collect()
+        let tenants: HashSet<_> = rows.iter().map(|(_, tenant)| tenant).collect();
+        for tenant in tenants {
+            self.changes.publish(tenant);
+        }
+        rows.iter()
+            .map(|(id, _)| parse_wire(id, "jobs.id"))
+            .collect()
     }
 
     /// Records whether the claimed `attempt` got a GitHub installation token (non-secret; related work is
@@ -1183,7 +1219,9 @@ impl Jobs<'_> {
         .bind(job.to_string())
         .execute(&mut *tx)
         .await?;
+        let tenant: String = row.try_get("tenant_id")?;
         tx.commit().await?;
+        self.changes.publish(&tenant);
         Ok(Some(next))
     }
 

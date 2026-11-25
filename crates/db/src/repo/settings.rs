@@ -7,6 +7,7 @@ use contracts::ids::AnalysisId;
 use contracts::job::result::{JobFailureKind, JobOutcome, LlmCallOutcome};
 use contracts::job::spec::{ModelChoice, ReasoningEffort};
 use contracts::time::Timestamp;
+use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqlitePool};
 
 use super::Db;
@@ -93,6 +94,19 @@ pub struct LastCall {
     pub outcome: LlmCallOutcome,
     /// Typed cause of a failure.
     pub failure: Option<CallFailure>,
+}
+
+impl LastCall {
+    pub(crate) fn from_row(row: &SqliteRow) -> Result<Option<Self>, DbError> {
+        let Some(outcome) = last_call_from_row(row)? else {
+            return Ok(None);
+        };
+        let failure: Option<String> = row.try_get("last_call_failure")?;
+        Ok(Some(Self {
+            outcome,
+            failure: failure.as_deref().map(CallFailure::parse).transpose()?,
+        }))
+    }
 }
 
 /// Ranking effort of the dashboard (`judge_work`) before anyone saved one (the column default).
@@ -326,14 +340,7 @@ impl SettingsRepo<'_> {
         let Some(row) = row else {
             return Ok(None);
         };
-        let Some(outcome) = last_call_from_row(&row)? else {
-            return Ok(None);
-        };
-        let failure: Option<String> = row.try_get("last_call_failure")?;
-        Ok(Some(LastCall {
-            outcome,
-            failure: failure.as_deref().map(CallFailure::parse).transpose()?,
-        }))
+        LastCall::from_row(&row)
     }
 
     /// Sets the language of the user's LLM texts (used by later analyses); `NotFound` for an unknown user.

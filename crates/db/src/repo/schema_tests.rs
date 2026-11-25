@@ -181,7 +181,7 @@ async fn flow_auto_retries_migration_keeps_the_rows_of_an_existing_database() {
         .await
         .expect("pool");
     migrate(&pool, 1).await.expect("0001");
-    let db = Db { pool };
+    let db = Db::from_pool(pool);
     seed(&db).await;
     insert_job(&db, "j1", "a1", "c1", "succeeded")
         .await
@@ -1195,7 +1195,7 @@ async fn jobs_targets_migration_applies_to_a_v1_database() {
         .await
         .expect("pool");
     migrate(&pool, 6).await.expect("schema before 0007");
-    let db = Db { pool };
+    let db = Db::from_pool(pool);
     seed(&db).await;
     let analysis: AnalysisId =
         serde_json::from_value(serde_json::json!("00000000-0000-4000-8000-0000000000a1"))
@@ -1376,7 +1376,7 @@ async fn russian_migration_keeps_the_data_and_accepts_ru() {
         .await
         .expect("pool");
     migrate(&pool, 9).await.expect("schema before 0010");
-    let db = Db { pool };
+    let db = Db::from_pool(pool);
     let analysis = crate::repo::analyses::testing::seed_analysis(&db)
         .await
         .expect("analysis");
@@ -1436,7 +1436,7 @@ async fn dependencies_migration_keeps_documents_and_accepts_the_new_kind() {
         .await
         .expect("pool");
     migrate(&pool, 14).await.expect("schema before 0015");
-    let db = Db { pool };
+    let db = Db::from_pool(pool);
     let analysis = crate::repo::analyses::testing::seed_analysis(&db)
         .await
         .expect("analysis");
@@ -1512,7 +1512,7 @@ async fn question_anchors_migration_keeps_every_question_as_a_step_anchor() {
     migrate(&pool, before_anchors)
         .await
         .expect("schema before 0012");
-    let db = Db { pool };
+    let db = Db::from_pool(pool);
     seed(&db).await;
     sqlx::raw_sql(
         "INSERT INTO questions (id, tenant_id, analysis_id, step_id, user_id, text, state, answer, job_id, created_at,
@@ -1599,7 +1599,7 @@ async fn question_threads_migration_keeps_every_question_with_its_kind() {
     migrate(&pool, before_threads)
         .await
         .expect("schema before 0014");
-    let db = Db { pool };
+    let db = Db::from_pool(pool);
     seed(&db).await;
     sqlx::raw_sql(
         "INSERT INTO questions (id, tenant_id, analysis_id, step_id, path, side, start_line, end_line, user_id, text,
@@ -1916,7 +1916,7 @@ async fn first_v12_start_on_a_partially_bound_seed_ends_the_unlisted_maintainer(
         ],
         "0016 keeps the bound seed and the deployment's own login"
     );
-    let db = Db { pool };
+    let db = Db::from_pool(pool);
     let change = db
         .tenants()
         .reconcile_logins(
@@ -1988,7 +1988,7 @@ async fn verify_comments_jobs_migration_keeps_rows_and_adds_the_pass_owner() {
         .position(|(_, name, _)| *name == "verify_comments_jobs")
         .expect("migration 0018");
     migrate(&pool, before).await.expect("schema before 0018");
-    let db = Db { pool };
+    let db = Db::from_pool(pool);
     seed(&db).await;
     sqlx::raw_sql(
         "INSERT INTO questions (id, tenant_id, analysis_id, step_id, user_id, text, state, created_at, kind)
@@ -2150,7 +2150,7 @@ async fn snooze_ends_migration_keeps_every_snooze_as_not_ended() {
         .position(|(_, name, _)| *name == "dashboard_snooze_ends")
         .expect("migration 0026");
     migrate(&pool, before).await.expect("schema before 0026");
-    let db = Db { pool };
+    let db = Db::from_pool(pool);
     seed(&db).await;
     sqlx::raw_sql(
         "INSERT INTO dashboard_snoozes (tenant_id, user_id, item_key, snoozed_at, until) VALUES
@@ -2247,7 +2247,7 @@ async fn slack_names_migration_gives_existing_settings_an_empty_table() {
         .position(|(_, name, _)| *name == "slack_names")
         .expect("migration 0027");
     migrate(&pool, before).await.expect("schema before 0027");
-    let db = Db { pool };
+    let db = Db::from_pool(pool);
     seed(&db).await;
     sqlx::raw_sql(
         "INSERT INTO dashboard_settings (user_id, tenant_id, ready_label, updated_at)
@@ -2292,7 +2292,7 @@ async fn automatic_trigger_migration_keeps_refreshes_and_what_references_them() 
         .position(|(_, name, _)| *name == "dashboard_trigger_automatic")
         .expect("migration 0029");
     migrate(&pool, before).await.expect("schema before 0029");
-    let db = Db { pool };
+    let db = Db::from_pool(pool);
     seed(&db).await;
     sqlx::raw_sql(
         "INSERT INTO dashboard_refreshes (rowid, id, tenant_id, user_id, trigger, state, started_at, snapshot,

@@ -868,7 +868,7 @@ Fixtures: `fixtures/review-loop/` (spike S13-1).
 | RC17 | GET | `…/comments/decide-rest` | read | – | `DecideRest` (the confirmation list of "Decide the rest per recommendation"; gate items and items without a complete recommendation are left out with their reason) |
 | RW1 | PUT / DELETE | `…/watch` | session_csrf | – | 204; 409 `watch_limit_reached` |
 | RW2 | GET | `/api/v1/watches` | read | – | `WatchList` (with the reader's assessment passes of the last 24 h and the daily limit) |
-| RW3 | GET | `/api/v1/events` | read | – | SSE `UserStreamEvent`: `user_event`, `heartbeat`, `llm_activity` (reserved in B1) (`sse-events.md`) |
+| RW3 | GET | `/api/v1/events` | read | – | SSE `UserStreamEvent`: `user_event`, `heartbeat`, `llm_activity` (`sse-events.md`) |
 | RN1 | GET | `/api/v1/settings/notifications` | session | – | `NotificationSettings` (secrets as `secret_last4` only) |
 | RN2 | PUT / DELETE | `/api/v1/settings/notifications/channels/{kind}` | session_csrf | `PutChannelRequest` / – | `NotificationChannel` / 204; 422 `scheme_not_allowed`; 400 `invalid_request` for a URL with credentials, a loopback, link-local or reserved address or a denied private address, a bad ntfy topic or secret; 422 `secret_required` when a kept secret would follow a changed URL scheme, host or port; 409 `conflict` when the stored target changed while the request was checked; `secret` is a `SecretChange` (absent or `keep`, `replace`, `remove`) |
 | RN3 | POST | `…/channels/{kind}/test` | session_csrf | – | `ChannelTestResult` (one attempt); 429 `rate_limited` with `Retry-After` when 30 messages went to the channel within the hour (nothing sent, health unchanged) |
@@ -961,7 +961,7 @@ Cards show only the frozen primary; secondary results are comparison-only.
 ## v1.4 dashboard, Comments and activity
 
 The following routes return 501 `not_implemented` in B1 once any required session, token or CSRF checks pass.
-The response and status in the table describe their final contract.
+The response and status in the table describe their final contract. B12 activates `GET /api/v1/llm/activity`.
 
 | Method | Path | Auth | Request | Response |
 |---|---|---|---|---|

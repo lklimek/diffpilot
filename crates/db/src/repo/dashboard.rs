@@ -3841,7 +3841,7 @@ mod tests {
             .await
             .expect("pool");
         super::super::migrate(&pool, 2).await.expect("v1 schema");
-        let db = Db { pool };
+        let db = Db::from_pool(pool);
         let analysis = seed_analysis(&db).await.expect("analysis");
         sqlx::raw_sql(
             "INSERT INTO memberships (tenant_id, user_id, created_at) VALUES ('default', 'u1', 't');
@@ -3949,7 +3949,7 @@ mod tests {
             .await
             .expect("pool");
         super::super::migrate(&pool, 4).await.expect("0001-0004");
-        let db = Db { pool };
+        let db = Db::from_pool(pool);
         seed_users(&db).await;
         sqlx::raw_sql(
             "INSERT INTO dashboard_settings (user_id, tenant_id, time_zone, updated_at)

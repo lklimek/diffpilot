@@ -70,12 +70,16 @@ pub struct MethodResult {
 #[derive(Debug)]
 pub struct Assessments<'a> {
     pool: &'a SqlitePool,
+    job_changes: &'a super::jobs::JobChanges,
 }
 
 impl Db {
     /// Assessment persistence and atomic quota primitives.
     pub fn assessments(&self) -> Assessments<'_> {
-        Assessments { pool: &self.pool }
+        Assessments {
+            pool: &self.pool,
+            job_changes: &self.job_changes,
+        }
     }
 }
 
@@ -579,6 +583,7 @@ impl Assessments<'_> {
         sqlx::query("UPDATE assessment_method_runs SET status='queued' WHERE pass_id=? AND method=? AND tenant_id=? AND payer_id=?")
             .bind(run.pass_id.to_string()).bind(wire_name(run.method)?).bind(tenant).bind(&user.0).execute(&mut *tx).await?;
         tx.commit().await?;
+        self.job_changes.publish(tenant);
         Ok(())
     }
 

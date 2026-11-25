@@ -104,8 +104,10 @@ impl FlowWork<'_> {
             let rows = sqlx::query("SELECT id,attempt FROM jobs WHERE analysis_id=? AND kind='analyse_flow' AND state='queued' AND NOT EXISTS (SELECT 1 FROM flow_work w WHERE w.analysis_id=jobs.analysis_id AND w.flow_id=jobs.flow_id AND w.requested_at IS NOT NULL)")
                 .bind(id.to_string()).fetch_all(&mut *tx).await?;
             withdraw(&mut tx, rows, now).await?;
+            self.commit_job_changes(tx, id).await?;
+        } else {
+            tx.commit().await?;
         }
-        tx.commit().await?;
         Ok(())
     }
     /// Request a planned flow, newest demand first. Claimed jobs are never interrupted.
@@ -137,7 +139,7 @@ impl FlowWork<'_> {
         sqlx::query("INSERT INTO flow_work (tenant_id,analysis_id,flow_id,requested_at) SELECT tenant_id,id,?,? FROM analyses WHERE id=? ON CONFLICT(analysis_id,flow_id) DO UPDATE SET requested_at=excluded.requested_at")
             .bind(&flow.0).bind(ts(now)).bind(id.to_string()).execute(&mut *tx).await?;
         demanded(&mut tx, id, flow, now).await?;
-        tx.commit().await?;
+        self.commit_job_changes(tx, id).await?;
         Ok(())
     }
     /// Discards the stored document of `flow`, which today's checks reject, and requests the flow, in one
@@ -154,7 +156,11 @@ impl FlowWork<'_> {
     ) -> Result<bool, DbError> {
         let mut tx = super::write_tx(&self.db.pool).await?;
         let discarded = rerun(&mut tx, id, flow, verified, now).await?;
-        tx.commit().await?;
+        if discarded {
+            self.commit_job_changes(tx, id).await?;
+        } else {
+            tx.commit().await?;
+        }
         Ok(discarded)
     }
     /// "Analyse all remaining flows": background analysis on, and every flow of `rejected` (with the stored
@@ -174,9 +180,27 @@ impl FlowWork<'_> {
         for (flow, verified) in rejected {
             rerun(&mut tx, id, flow, verified, now).await?;
         }
-        tx.commit().await?;
+        self.commit_job_changes(tx, id).await?;
         Ok(())
     }
+
+    async fn commit_job_changes(
+        &self,
+        mut tx: sqlx::Transaction<'static, sqlx::Sqlite>,
+        id: AnalysisId,
+    ) -> Result<(), DbError> {
+        let tenant: Option<String> =
+            sqlx::query_scalar("SELECT tenant_id FROM analyses WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&mut *tx)
+                .await?;
+        tx.commit().await?;
+        if let Some(tenant) = tenant {
+            self.db.job_changes.publish(&tenant);
+        }
+        Ok(())
+    }
+
     /// Cancels the work of an analysis that finished and runs again for flows analysed again: it is `finished`
     /// again (its first finish time kept) with its results, and each flow still without a document is failed with
     /// [`RERUN_CANCELLED`]. `false` (nothing changed) unless it is live after a finish. The caller cancels the jobs.

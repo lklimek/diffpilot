@@ -18,6 +18,7 @@ use crate::repo::jobs::{parse_ts, parse_wire, server_result, ts, wire_name};
 #[derive(Debug)]
 pub struct Analyses<'a> {
     pub(crate) pool: &'a SqlitePool,
+    pub(crate) db: &'a super::Db,
 }
 
 /// A new analysis in state `planning`.
@@ -430,20 +431,13 @@ impl Analyses<'_> {
             *stage = self.live_stage(id).await?;
         }
         if let AnalysisState::Running { idle, .. } = &mut record.state {
-            let db = super::Db {
-                pool: self.pool.clone(),
-            };
-            *idle = db.flow_work().parked(id).await?;
+            *idle = self.db.flow_work().parked(id).await?;
         }
         let mut summary = AnalysisSummary {
             review_ready: Some(sqlx::query_scalar("SELECT state <> 'cancelled' AND EXISTS(SELECT 1 FROM documents WHERE analysis_id=a.id AND kind='plan' AND key='') AND EXISTS(SELECT 1 FROM documents WHERE analysis_id=a.id AND kind='pr_context' AND key='') FROM analyses a WHERE id=?").bind(id.to_string()).fetch_one(self.pool).await?),
             background_analysis: Some(sqlx::query_scalar("SELECT background_analysis FROM analyses WHERE id=?").bind(id.to_string()).fetch_one(self.pool).await?),
-            models_used: Some(
-                super::jobs::Jobs { pool: self.pool }
-                    .models_used(id)
-                    .await?,
-            ),
-            usage: super::jobs::Jobs { pool: self.pool }.usage(id).await?,
+            models_used: Some(self.db.jobs().models_used(id).await?),
+            usage: self.db.jobs().usage(id).await?,
             progress: None,
             has_my_state: None,
             id: record.id,
@@ -616,22 +610,23 @@ impl Analyses<'_> {
                 return Err(DbError::CredentialUnlinked);
             }
         }
-        let updated = sqlx::query(
+        let tenant: Option<String> = sqlx::query_scalar(
             "UPDATE analyses SET state = 'planning', flows_total = NULL, flows_done = 0, paused_until = NULL,
                  failure_flow_id = NULL, failure_flow_title = NULL, failure_message = NULL, failure_reason = NULL, finished_at = NULL,
                  round = round + 1, payer_id = COALESCE(?,payer_id)
              WHERE id = ? AND state = 'failed'
-                 AND (? IS NULL OR EXISTS(SELECT 1 FROM llm_credentials WHERE user_id=? AND state='linked'))",
+                 AND (? IS NULL OR EXISTS(SELECT 1 FROM llm_credentials WHERE user_id=? AND state='linked'))
+             RETURNING tenant_id",
         )
         .bind(payer)
         .bind(id.to_string())
         .bind(payer)
         .bind(payer)
-        .execute(&mut *tx)
+        .fetch_optional(&mut *tx)
         .await?;
-        if updated.rows_affected() == 0 {
+        let Some(tenant) = tenant else {
             return Ok(false);
-        }
+        };
         if payer.is_some() {
             advance_generation(&mut tx, id).await?;
         }
@@ -670,6 +665,7 @@ impl Analyses<'_> {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
+        self.db.job_changes.publish(&tenant);
         Ok(true)
     }
 

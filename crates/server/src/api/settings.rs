@@ -373,7 +373,7 @@ async fn installations(state: &AppState, session: &Session) -> Option<Vec<AppIns
 
 /// The newest LLM fact: the last call, or a credential reported unusable after it (threat model T13); a failure
 /// carries the plain sentence of its typed cause, never the provider's text.
-fn llm_status(
+pub(super) fn llm_status(
     last_call: Option<LastCall>,
     unusable_since: Option<Timestamp>,
 ) -> Option<LlmCallOutcome> {
