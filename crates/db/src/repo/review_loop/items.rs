@@ -91,6 +91,9 @@ pub struct ObservedItem {
 /// A stored item.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ItemRecord {
+    /// Candidate grounded and authorised by the host for this point.
+    #[serde(skip)]
+    pub import_candidate: Option<super::ImportCandidate>,
     /// Versioned source for a grounded body/comment point.
     pub source_id: Option<i64>,
     /// Verbatim source span.
@@ -333,7 +336,10 @@ pub enum PassStart {
 
 const ITEM_COLUMNS: &str = "id, pull_request_id, item_no, kind, stable_key, author, author_kind, url, path,
     start_line, end_line, title, body, body_hash, first_seen_head, first_round, bot_severity, gate_marks, github,
-    state, revision, outside, repeat_of, gone_at, updated_at, source_id, quote, duplicate_of, status_comment";
+    state, revision, outside, repeat_of, gone_at, updated_at, source_id, quote, duplicate_of, status_comment,
+    CASE WHEN EXISTS (SELECT 1 FROM memberships m WHERE m.tenant_id = comment_items.tenant_id
+        AND m.user_id = json_extract(comment_items.import_candidate, '$.user_id'))
+        THEN import_candidate END AS import_candidate";
 
 fn item_from_row(row: &SqliteRow) -> Result<ItemRecord, DbError> {
     let path: Option<String> = row.try_get("path")?;
@@ -350,6 +356,7 @@ fn item_from_row(row: &SqliteRow) -> Result<ItemRecord, DbError> {
     };
     let first_round: Option<i64> = row.try_get("first_round")?;
     Ok(ItemRecord {
+        import_candidate: opt_json_col(row, "import_candidate")?,
         source_id: row.try_get("source_id")?,
         quote: row.try_get("quote")?,
         duplicate_of: opt_wire_col(row, "duplicate_of")?,
@@ -663,6 +670,9 @@ impl ReviewLoop<'_> {
             item_in(&mut tx, id).await?;
             return Err(DbError::Conflict);
         }
+        if !gates.is_empty() {
+            super::origins::reopen_follower(&mut tx, id, now).await?;
+        }
         let item = item_in(&mut tx, id).await?;
         tx.commit().await?;
         Ok(item)
@@ -882,7 +892,7 @@ impl ReviewLoop<'_> {
                 .map(|(repo, number)| serde_json::json!([repo.owner, repo.name, number]))
                 .collect(),
         );
-        let rows: Vec<(i64, i64, bool, bool, i64)> = sqlx::query_as(
+        let rows: Vec<(i64, i64, bool, bool, i64, i64)> = sqlx::query_as(
             "WITH wanted AS (
                  SELECT CAST(j.key AS INTEGER) AS idx, json_extract(j.value, '$[0]') AS owner,
                      json_extract(j.value, '$[1]') AS name, json_extract(j.value, '$[2]') AS number
@@ -896,7 +906,17 @@ impl ReviewLoop<'_> {
                  FROM wanted w
                  JOIN repos r ON r.tenant_id = ?2 AND r.owner = w.owner AND r.name = w.name
                  JOIN pull_requests p ON p.tenant_id = ?2 AND p.repo_id = r.id AND p.number = w.number)
-             SELECT k.idx, k.pr, k.was_read, k.watched, COUNT(i.id)
+             SELECT k.idx, k.pr, k.was_read, k.watched, COUNT(i.id),
+                 (SELECT COUNT(*) FROM comment_decision_origins o
+                    JOIN comment_decisions d ON d.id = o.decision_id
+                    JOIN comment_items ci ON ci.id = d.item_id
+                    LEFT JOIN comment_visits v ON v.tenant_id = ci.tenant_id
+                        AND v.pull_request_id = ci.pull_request_id AND v.user_id = ?3
+                    WHERE ci.tenant_id = ?2 AND ci.pull_request_id = k.pr
+                        AND o.origin = 'imported_github'
+                        AND NOT EXISTS (SELECT 1 FROM comment_decision_undos u WHERE u.decision_id = d.id)
+                        AND NOT EXISTS (SELECT 1 FROM comment_decisions n WHERE n.supersedes = d.id)
+                        AND (v.visited_at IS NULL OR rtrim(d.decided_at, 'Z') > rtrim(v.visited_at, 'Z')))
              FROM known k
              LEFT JOIN comment_items i ON k.was_read AND i.pull_request_id = k.pr AND i.kind <> 'pr_question'
                  AND i.gone_at IS NULL
@@ -910,20 +930,23 @@ impl ReviewLoop<'_> {
         .fetch_all(self.pool)
         .await?;
         rows.into_iter()
-            .map(|(index, pull_request_id, was_read, watched, total)| {
-                Ok(PrCommentTally {
-                    index: usize::try_from(index).unwrap_or(usize::MAX),
-                    pull_request_id,
-                    total: was_read
-                        .then(|| {
-                            u32::try_from(total).map_err(|_| DbError::Corrupt {
-                                column: "comment_items",
+            .map(
+                |(index, pull_request_id, was_read, watched, total, unseen)| {
+                    Ok(PrCommentTally {
+                        index: usize::try_from(index).unwrap_or(usize::MAX),
+                        pull_request_id,
+                        total: was_read
+                            .then(|| {
+                                u32::try_from(total).map_err(|_| DbError::Corrupt {
+                                    column: "comment_items",
+                                })
                             })
-                        })
-                        .transpose()?,
-                    watched,
-                })
-            })
+                            .transpose()?,
+                        imported_unseen: u32::try_from(unseen).unwrap_or(u32::MAX),
+                        watched,
+                    })
+                },
+            )
             .collect()
     }
 
@@ -1003,11 +1026,11 @@ impl ReviewLoop<'_> {
             view.pr.items.push(item);
             Ok(())
         })?;
-        use super::decisions::{DECISION_COLUMNS, decision_from_row, effect_from_row};
+        use super::decisions::{DECISION_COLUMNS, ORIGIN_JOIN, decision_from_row, effect_from_row};
         let decisions = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {DECISION_COLUMNS}, i.pull_request_id AS tally_pr
              FROM comment_decisions d JOIN comment_items i ON i.id = d.item_id
-             JOIN users u ON u.id = d.user_id
+             JOIN users u ON u.id = d.user_id {ORIGIN_JOIN}
              WHERE i.pull_request_id IN (SELECT value FROM json_each(?))
              ORDER BY d.decided_at, d.rowid",
         )))
@@ -1213,6 +1236,8 @@ pub struct PrCommentTally {
     pub pull_request_id: i64,
     /// Comment items; `None` before the first successful read.
     pub total: Option<u32>,
+    /// GitHub imports made since the reader last entered Comments.
+    pub imported_unseen: u32,
     /// The user watches the pull request.
     pub watched: bool,
 }
@@ -1397,6 +1422,9 @@ pub(crate) async fn add_assessment_in(
         .bind(item.to_string())
         .execute(&mut **tx)
         .await?;
+    }
+    if !assessment.gates.is_empty() {
+        super::origins::reopen_follower(tx, item, assessment.assessed_at).await?;
     }
     Ok(true)
 }

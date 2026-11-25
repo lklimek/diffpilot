@@ -195,23 +195,24 @@ read with tokens (ADR-019).
   queued, assessed or counted (owner TODO `07b69073` F1/F2).
 - **Needs you** has one server definition (plan §6 N1–N2), shared with the web through a checked-in fixture.
 - **Duplicates follow their primary** (owner Q6, plan §6 N5): deciding a primary decides its non-gate duplicates,
-  also ones linked later, each with its own effects, planned in the same write transaction; gate items are always
-  decided individually (RQ4/RQ5). Wire `DecisionVia::FollowsPrimary`.
+  also ones linked later. The primary owns artefact work. Followers have their own GitHub reply and resolve effects.
+  Plan the change in the same write transaction. Gate items are always decided individually (RQ4/RQ5). Wire
+  `DecisionVia::FollowsPrimary`.
 - **Imported GitHub decisions** (owner `07b69073` F5, plan §7; security review SEC-006…009): a grounded recorded
   decision becomes a local decision (`DecisionVia::ImportedGithub`, attribution and evidence link) only for an item
   without a decision and only from the item's own thread or a later comment referring to it. Authority: a tenant
-  member's own statement matched by numeric GitHub user id; a comment by one of the member's **Linked logins**
-  (existing per-user dashboard setting; ids resolved on read) only with the structured `maintainer-decision v1` marker
-  (linked logins may be LLM bots echoing thread text, so prose never binds; replaces the environment variable
-  `SR_MAINTAINER_DELEGATES`); an author withdrawing their own point, which decides only that author's items and never propagates to other
-  authors' duplicates. The kind imports only with a deterministic cue; otherwise the item stays in Needs you with the
-  recorded decision pre-filled (`import_proposal`, OQ7). **Invariant: an imported decision never has effects**; only a
+  member's own statement matched by numeric GitHub id. An account from Linked logins can propose a decision
+  with a matching structured marker and a pinned numeric id. That proposal requires the member's confirmation.
+  An author's withdrawal can bind for their own item by numeric GitHub id, including for an author outside the
+  tenant. The withdrawal never propagates. A binding import requires a whole-sentence cue outside negation. A proposal stays in Needs you with the recorded decision pre-filled (`import_proposal`, OQ7).
+  **Invariant: an imported decision never has effects**; only a
   later decision of the owner acts. Stored in `comment_decision_origins` (migration 0033), so `comment_decisions`
-  keeps its CHECK. OQ6 and OQ7 decided (owner 2026-11-25).
+  keeps its CHECK. B11’s `0037_comment_import_followup.sql` stores the visit baseline, linked-account pins
+  and follower effect dependencies.
 - **"Not a review point"** (owner TODO `81a75cdb`, plan §7a, C19): an owner-only internal disposition for an item
   that is not a real review point — no effects, no feed entry, out of Needs you and of later assessment passes,
   logged with who and when, undoable, superseded by a later decision, followed by non-gate duplicates. Stored as an
-  append-only mark (`comment_item_marks`, migration 0035), not as a `comment_decisions` row, so the kind CHECK stays.
+  append-only mark (B17’s `0038_comment_item_marks.sql`), so the `comment_decisions` kind CHECK stays.
 - **Assessment starts only on an explicit trigger** (owner 2026-11-25, plan §6a, C20): reading a PR (PR page,
   Comments, items, "Read GitHub again") never queues a pass; the Comments view starts one with
   `POST …/comments/assess`; watched PRs keep their automatic passes.

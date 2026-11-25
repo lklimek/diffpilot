@@ -407,6 +407,7 @@ export function createApiClient(baseUrl = "") {
     setDashboardTimeZone: (body: SetTimeZoneRequest) => call<void>("setDashboardTimeZone", { body }),
     getPrPage: (pr: PrRef) => call<PrPage>("getPrPage", { params: prParams(pr) }),
     getComments: (pr: PrRef) => call<CommentsOverview>("getComments", { params: prParams(pr) }),
+    visitComments: (pr: PrRef) => call<void>("visitComments", { params: prParams(pr) }),
     readComments: (pr: PrRef) => call<void>("readComments", { params: prParams(pr) }),
     listCommentItems: (pr: PrRef, query: ItemsQuery = { state: null, kind: null }) =>
       call<CommentItem[]>("listCommentItems", { params: prParams(pr), query: definedParams(query) }),

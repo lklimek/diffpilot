@@ -4616,6 +4616,10 @@ also_keys: Array<ItemKey>, };
  */
 export type ItemsQuery = {
 /**
+ * Limit the list to items with an import since the entry preceding this visit.
+ */
+imported_unseen?: boolean,
+/**
  * Only items in this state.
  */
 state: ItemState | null,
@@ -8343,6 +8347,10 @@ review: ReviewLink | null,
  * diffpilot's first successful read of them.
  */
 comments?: CommentTally,
+/**
+ * GitHub decisions imported since the reader last entered Comments on this PR.
+ */
+imported_unseen?: number,
 /**
  * The user watches this pull request (RW1), read at request time; with `comments` absent its comments were
  * not read yet.

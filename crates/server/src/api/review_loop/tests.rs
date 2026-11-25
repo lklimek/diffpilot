@@ -32,6 +32,7 @@ use crate::test_support::session_cookie;
 
 mod assessment;
 mod pr_history;
+mod propagation;
 mod watching;
 
 const PR: &str = "/api/v1/prs/acme/node-client/482";

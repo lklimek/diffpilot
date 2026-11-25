@@ -2532,7 +2532,14 @@ async fn migrations_upgrade_v13_db_in_place() {
     .fetch_all(&db.pool)
     .await
     .unwrap();
-    assert_eq!(versions, [31, 32, 33, 34, 35]);
+    assert_eq!(
+        versions,
+        MIGRATIONS
+            .iter()
+            .skip(migration_count_through(30))
+            .map(|(version, ..)| *version)
+            .collect::<Vec<_>>()
+    );
     let sends: Vec<(String, i64, i64, bool)> = sqlx::query_as(
         "SELECT s.refresh_id, s.attempt, s.items,
                 s.sent_at = r.started_at AND s.tenant_id = r.tenant_id AND s.user_id = r.user_id

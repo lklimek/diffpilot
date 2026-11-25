@@ -1,6 +1,6 @@
 //! Native method adapters into common comparison rows and primary-only projections.
 
-use super::{frozen::Frozen, host, ingest};
+use super::{frozen::Frozen, host, imports, ingest};
 use crate::review_loop::handin;
 use contracts::agent::comment_report::*;
 use contracts::api::review_loop::*;
@@ -40,7 +40,16 @@ fn host_rows(
         .as_ref()
         .map(|r| serde_json::to_value(r).unwrap_or(Value::Null))
         .unwrap_or(output);
-    let report = host::decode(&frozen.data, raw_report.clone())?;
+    let mut report = host::decode(&frozen.data, raw_report.clone())?;
+    for row in &mut report.rows {
+        if row
+            .recorded_decision
+            .as_ref()
+            .is_some_and(|d| frozen.own_reply(&d.comment_url))
+        {
+            row.recorded_decision = None;
+        }
+    }
     if report.dropped > 0 {
         tracing::warn!(pass=%pass.id, dropped=report.dropped,"ungrounded or malformed assessment rows dropped");
     }
@@ -83,10 +92,20 @@ fn host_rows(
                 .filter(|r| r.thread_id.as_ref().is_some_and(|id| members.contains(id)))
                 .flat_map(|r| r.gates.clone()),
         );
-        let card = host_card(&grouped, result, &report.head, &frozen.data.manifest.repo);
-        if card.is_none() {
+        let Some(mut card) = host_card(&grouped, result, &report.head, &frozen.data.manifest.repo)
+        else {
             semantic_dropped += 1;
             continue;
+        };
+        if row.merged_into.is_some() {
+            let mut seen = HashSet::new();
+            card.gates = row
+                .gates
+                .iter()
+                .filter_map(|g| serde_json::from_value(Value::String(g.gate.clone())).ok())
+                .filter(|gate| seen.insert(*gate))
+                .collect();
+            card.recorded_decision = row.recorded_decision.clone();
         }
         let mut common = common(run, row.id.clone(), key.clone(), source.clone(), existing);
         common.recorded_decision = row.recorded_decision.clone();
@@ -177,8 +196,39 @@ fn host_rows(
             None
         };
         if report.head == pass.input.head.0 {
+            let import = row.recorded_decision.as_ref().and_then(|recorded| {
+                imports::candidate(
+                    &frozen.data,
+                    &frozen.authorities,
+                    &pass.payer.0,
+                    imports::Point {
+                        url: &row.comment_url,
+                        thread: row.thread_id.as_deref(),
+                        quote: row.source_quote.as_deref().unwrap_or_default(),
+                        written_at: existing
+                            .and_then(|i| frozen.written.get(&i.stable_key))
+                            .map(|w| w.at),
+                        shared_url: row.source_kind != SourceKind::Inline
+                            && report
+                                .rows
+                                .iter()
+                                .filter(|r| {
+                                    r.comment_url == row.comment_url
+                                        && matches!(
+                                            r.source_kind,
+                                            SourceKind::ReviewBody | SourceKind::PrComment
+                                        )
+                                })
+                                .nth(1)
+                                .is_some(),
+                    },
+                    recorded,
+                )
+            });
+            let carry = existing.and_then(|item| carry(frozen, item, row, import.as_ref()));
             writes.push(PrimaryPoint {
-                carry: existing.and_then(|item| carry(frozen, item, row)),
+                import,
+                carry,
                 key: key.clone(),
                 existing: existing.map(|i| (i.id, i.body_hash.clone())),
                 observed,
@@ -190,11 +240,7 @@ fn host_rows(
                     .unwrap_or(frozen.data.ids.next_id),
                 source: source_binding,
                 duplicate: None,
-                assessment: if row.merged_into.is_none() {
-                    card
-                } else {
-                    None
-                },
+                assessment: (row.merged_into.is_none() || !card.gates.is_empty()).then_some(card),
                 description: Some(row.description.clone()),
                 fingerprint: existing
                     .and_then(|i| frozen.fingerprints.get(&i.id.to_string()))
@@ -266,6 +312,7 @@ fn host_rows(
             linked.duplicate_of = Some(canonical.clone());
             if report.head == pass.input.head.0 {
                 writes.push(PrimaryPoint {
+                    import: None,
                     carry: None,
                     key,
                     existing: Some((item.id, item.body_hash.clone())),
@@ -790,6 +837,7 @@ fn native_rows(
             card.recommendation.reason.clone()
         };
         writes.push(PrimaryPoint {
+            import: None,
             carry: None,
             key,
             existing: Some((item.id, item.body_hash.clone())),
@@ -871,28 +919,26 @@ fn dedup_keys(rows: &mut Vec<AssessmentComparisonItem>, writes: &mut Vec<Primary
     writes.retain(|w| seen.insert(w.key.clone()));
 }
 
-fn carry(frozen: &Frozen, item: &ItemRecord, row: &ReportRow) -> Option<PrimaryCarry> {
+fn contradicts(
+    standing: &super::frozen::FrozenDecision,
+    evidence: &db::repo::review_loop::ImportCandidate,
+) -> bool {
+    evidence.binding
+        && (evidence.kind != standing.kind
+            || evidence
+                .target
+                .as_ref()
+                .is_some_and(|target| Some(target) != standing.target.as_ref()))
+}
+
+fn carry(
+    frozen: &Frozen,
+    item: &ItemRecord,
+    row: &ReportRow,
+    import: Option<&db::repo::review_loop::ImportCandidate>,
+) -> Option<PrimaryCarry> {
     let standing = frozen.standing.get(&item.id.to_string())?;
-    let contradicted = row.recorded_decision.as_ref().is_some_and(|d| {
-        let authority = binding_decision(
-            &frozen.data.manifest.maintainers,
-            &frozen.data.manifest.delegates,
-            &item.author,
-            d,
-        );
-        let kind = match d.kind {
-            RecordedDecisionKind::Decision(k) => k,
-            RecordedDecisionKind::Deferred => ProposedDecisionKind::Todo,
-            RecordedDecisionKind::Withdrawn => ProposedDecisionKind::Reject,
-        };
-        authority
-            && (serde_json::to_value(kind).ok() != serde_json::to_value(standing.kind).ok()
-                || match &standing.target {
-                    Some(DecisionTarget::ExistingPr { number }) => d.target_pr != Some(*number),
-                    Some(DecisionTarget::UpstreamIssue { url }) => &d.target_url != url,
-                    _ => false,
-                })
-    });
+    let contradicted = import.is_some_and(|d| contradicts(standing, d));
     Some(PrimaryCarry {
         decision: standing.id,
         reason: if standing.changed {
@@ -921,24 +967,6 @@ fn carry(frozen: &Frozen, item: &ItemRecord, row: &ReportRow) -> Option<PrimaryC
     })
 }
 
-fn binding_decision(
-    maintainers: &[String],
-    delegates: &[String],
-    author: &str,
-    d: &RecordedDecision,
-) -> bool {
-    maintainers
-        .iter()
-        .any(|who| who.eq_ignore_ascii_case(&d.by))
-        || (delegates.iter().any(|who| who.eq_ignore_ascii_case(&d.by))
-            && d.on_behalf_of.as_ref().is_some_and(|named| {
-                maintainers
-                    .iter()
-                    .any(|who| who.eq_ignore_ascii_case(named))
-            }))
-        || (d.kind == RecordedDecisionKind::Withdrawn && d.by.eq_ignore_ascii_case(author))
-}
-
 fn parse_location(value: &str) -> Option<ItemLocation> {
     let (path, lines) = value.rsplit_once(':')?;
     if !analysis::blob::is_tree_path(path) {
@@ -956,7 +984,7 @@ fn parse_location(value: &str) -> Option<ItemLocation> {
     })
 }
 
-fn local_pr(proposal: &ProposedDecision, repo: &str) -> Option<u32> {
+pub(super) fn local_pr(proposal: &ProposedDecision, repo: &str) -> Option<u32> {
     match &proposal.target_url {
         None => proposal.target_pr,
         Some(raw) => {
@@ -981,6 +1009,52 @@ fn local_pr(proposal: &ProposedDecision, repo: &str) -> Option<u32> {
 mod tests {
     use super::*;
     #[test]
+    fn agreeing_todo_and_follow_up_preserve_standing_titles() {
+        for (kind, target) in [
+            (
+                DecisionKind::Todo,
+                DecisionTarget::Todo {
+                    title: "retry".into(),
+                },
+            ),
+            (
+                DecisionKind::FollowUpPr,
+                DecisionTarget::FollowUpPr {
+                    title: Some("retry".into()),
+                },
+            ),
+        ] {
+            let standing = super::super::frozen::FrozenDecision {
+                id: contracts::ids::DecisionId::new_random(),
+                kind,
+                target: Some(target),
+                changed: false,
+            };
+            let mut evidence = db::repo::review_loop::ImportCandidate {
+                evidence: ImportedDecision {
+                    by: "owner".into(),
+                    by_id: Some(1),
+                    at: Timestamp::now(),
+                    evidence_url: "https://github.com/acme/r/pull/12#discussion_r22".into(),
+                    quote: "We should do this later.".into(),
+                    relay: None,
+                },
+                user_id: "owner".into(),
+                kind,
+                target: None,
+                binding: true,
+                author_withdrawal: false,
+                version: "test".into(),
+            };
+            assert!(!contradicts(&standing, &evidence));
+            evidence.kind = DecisionKind::Reject;
+            assert!(contradicts(&standing, &evidence));
+            evidence.binding = false;
+            assert!(!contradicts(&standing, &evidence));
+        }
+    }
+
+    #[test]
     fn host_external_targets_are_preserved_without_retargeting_the_local_pr() {
         let proposal = ProposedDecision {
             kind: ProposedDecisionKind::HandledInPr,
@@ -991,27 +1065,5 @@ mod tests {
         };
         assert_eq!(local_pr(&proposal, "acme/r"), None);
         assert_eq!(local_pr(&proposal, "other/repo"), Some(17));
-    }
-    #[test]
-    fn delegate_claim_requires_a_named_maintainer_to_bind_disposition() {
-        let mut d = RecordedDecision {
-            kind: RecordedDecisionKind::Decision(ProposedDecisionKind::Reject),
-            by: "relay".into(),
-            on_behalf_of: None,
-            comment_url: "https://github.com/o/r/pull/1#issuecomment-2".into(),
-            quote: "Reject this request".into(),
-            target_pr: None,
-            target_url: None,
-        };
-        let maintainers = vec!["owner".into()];
-        let delegates = vec!["relay".into()];
-        assert!(!binding_decision(&maintainers, &delegates, "reviewer", &d));
-        d.on_behalf_of = Some("owner".into());
-        assert!(binding_decision(&maintainers, &delegates, "reviewer", &d));
-        d.on_behalf_of = Some("stranger".into());
-        assert!(!binding_decision(&maintainers, &delegates, "reviewer", &d));
-        d.by = "owner".into();
-        d.on_behalf_of = None;
-        assert!(binding_decision(&maintainers, &delegates, "reviewer", &d));
     }
 }

@@ -182,6 +182,18 @@ function useInvalidatePr(pr: PrRef) {
     );
 }
 
+/** Records one entry so the import notice stays stable on later reads. */
+export function useVisitComments(pr: PrRef) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.visitComments(pr),
+    // The overview waits for the visit; recording it again is harmless, so transient failures are retried.
+    retry: (count, error) => count < 2 && transientFailure(error),
+    retryDelay: 200,
+    onSuccess: () => client.resetQueries({ queryKey: overviewKey(pr), exact: true }),
+  });
+}
+
 /** Read GitHub again (RC3), then everything of the PR. */
 export function useReadComments(pr: PrRef) {
   const invalidate = useInvalidatePr(pr);

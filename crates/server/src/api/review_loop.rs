@@ -25,7 +25,7 @@ use contracts::routes::{
     ASSESS_COMMENT, DECIDE_COMMENT, DECIDE_COMMENT_BATCH, GET_COMMENT_CONTEXT, GET_COMMENT_LOG,
     GET_COMMENTS, GET_DECIDE_REST, GET_PR_PAGE, LIST_CARRY_OVERS, LIST_COMMENT_ITEMS,
     MARK_COMMENT_GATE, PREVIEW_COMMENT_EFFECTS, READ_COMMENTS, REOPEN_COMMENT_ITEM,
-    SKIP_COMMENT_ITEM, START_COMMENT_ASSESSMENT, UNDO_COMMENT_DECISION,
+    SKIP_COMMENT_ITEM, START_COMMENT_ASSESSMENT, UNDO_COMMENT_DECISION, VISIT_COMMENTS,
 };
 use contracts::time::Timestamp;
 
@@ -88,7 +88,9 @@ impl ApiErrorSource for ReviewLoopApiError {
                 | LoopError::GateRow(_)
                 | LoopError::InvalidCursor
                 | LoopError::BadRange => ApiErrorCode::InvalidRequest,
-                LoopError::NotApplicable | LoopError::AssessmentRunning => ApiErrorCode::Conflict,
+                LoopError::NotApplicable
+                | LoopError::AssessmentRunning
+                | LoopError::FollowerClaimed(_) => ApiErrorCode::Conflict,
                 LoopError::WatchLimitReached => ApiErrorCode::WatchLimitReached,
                 LoopError::RangeTooLarge => ApiErrorCode::RangeTooLarge,
                 LoopError::Mirror(MirrorError::BlobTooLarge { .. }) => ApiErrorCode::NotRendered,
@@ -141,6 +143,9 @@ impl ApiErrorSource for ReviewLoopApiError {
                     "Gate items need their own decision: {}.",
                     item_list(nos)
                 )),
+                LoopError::FollowerClaimed(no) => Cow::Owned(format!(
+                    "An agent has claimed the effects of duplicate C{no}. Try again after the claim ends."
+                )),
                 LoopError::NotApplicable => Cow::Borrowed(
                     "This does not apply to the comment now: it has no standing decision, or an agent claimed \
                      its effects.",
@@ -192,6 +197,7 @@ pub fn routes() -> Router<AppState> {
         .route(GET_COMMENTS.path, get(overview))
         .route(READ_COMMENTS.path, post(read_again))
         .route(START_COMMENT_ASSESSMENT.path, post(start_assessment))
+        .route(VISIT_COMMENTS.path, post(visit))
         .route(LIST_COMMENT_ITEMS.path, get(items))
         .route(GET_COMMENT_CONTEXT.path, get(context))
         .route(ASSESS_COMMENT.path, post(assess_again))
@@ -278,6 +284,21 @@ async fn overview(
     mark_present(&state, &session);
     let handle = handle_of(&state, &session, path).await?;
     Ok(Json(views::overview(&state, &session, handle).await?))
+}
+
+async fn visit(
+    State(state): State<AppState>,
+    SessionCsrf(session): SessionCsrf,
+    path: PrPath,
+) -> ApiResult<StatusCode> {
+    let handle = handle_of(&state, &session, path).await?;
+    state
+        .db
+        .review_loop()
+        .visit_comments(&session.tenant_id, &session.user_id, handle.id)
+        .await
+        .map_err(LoopError::from)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn start_assessment(

@@ -40,6 +40,7 @@ mod handin;
 mod markers;
 pub mod notify;
 mod observe;
+pub(crate) mod propagation;
 mod queue;
 pub(crate) mod seen;
 pub mod views;
@@ -94,6 +95,9 @@ pub enum LoopError {
     /// A gate item in a group or bulk batch, or a table batch leaving out a waiting gate item.
     #[error("gate items need their own decision")]
     GateRow(Vec<u32>),
+    /// A follower has a live agent claim.
+    #[error("an agent has claimed the effects of follower C{0}")]
+    FollowerClaimed(u32),
     /// The item action does not apply now (nothing to undo, an effect already claimed).
     #[error("the action does not apply to the item now")]
     NotApplicable,
@@ -384,7 +388,6 @@ async fn read_now(
         &known_bots,
         state.db.users().member_logins(tenant).await?,
     );
-    pr_data.manifest.delegates = state.config.maintainer_delegates.clone();
     observed.retain(|entry| {
         entry.item.kind == CommentItemKind::Thread
             || entry.item.url.as_ref().is_some_and(|url| {
@@ -758,7 +761,10 @@ async fn ask_again(
                 "a decided item whose carried decision no longer fits is asked again"
             );
         }
-        ActionOutcome::ItemChanged | ActionOutcome::NoDecision | ActionOutcome::EffectClaimed => {
+        ActionOutcome::ItemChanged
+        | ActionOutcome::NoDecision
+        | ActionOutcome::EffectClaimed
+        | ActionOutcome::FollowerClaimed(_) => {
             tracing::debug!(
                 item = record.no,
                 "item changed during the read; asking again is left for the next read"
@@ -817,7 +823,13 @@ async fn carry_over(
 ) -> Result<(), LoopError> {
     let rl = state.db.review_loop();
     let source = stored.decision.id;
+    let automatic = matches!(
+        stored.decision.via,
+        DecisionVia::ImportedGithub | DecisionVia::FollowsPrimary
+    );
     let (kind, reason, evidence) = match verdict {
+        // Keep the original provenance when an automatic decision's point is repeated.
+        carry::Verdict::Carry(evidence) if automatic => (CarryKind::Carried, None, evidence),
         carry::Verdict::Carry(evidence) => {
             let request = DecideRequest {
                 kind: stored.decision.kind,
@@ -845,6 +857,7 @@ async fn carry_over(
             };
             let user = rl.decision_user(source).await?;
             let new = NewDecision {
+                origin: None,
                 item: record.id,
                 item_revision: record.revision,
                 user_id: user,
@@ -863,7 +876,7 @@ async fn carry_over(
             };
             match rl.decide(tenant, &[new], Timestamp::now()).await? {
                 DecideOutcome::Stored(_) => state.feed.wake_sync(),
-                DecideOutcome::ItemChanged(_) => {
+                DecideOutcome::ItemChanged(_) | DecideOutcome::FollowerClaimed(_) => {
                     tracing::debug!(
                         item = record.no,
                         "item changed during the read; carry left for the next read"
@@ -875,18 +888,24 @@ async fn carry_over(
         }
         carry::Verdict::Reask(reason, evidence) => (CarryKind::AskedAgain, Some(reason), evidence),
     };
-    rl.record_carry(
-        tenant,
-        &NewCarryEvent {
-            item: record.id,
-            source_decision: source,
-            kind,
-            reason,
-            evidence,
-        },
-        Timestamp::now(),
-    )
-    .await?;
+    let recorded = rl
+        .record_carry(
+            tenant,
+            &NewCarryEvent {
+                item: record.id,
+                source_decision: source,
+                kind,
+                reason,
+                evidence,
+            },
+            automatic.then_some(record.revision),
+            Timestamp::now(),
+        )
+        .await;
+    if automatic && matches!(recorded, Err(DbError::Conflict)) {
+        return Ok(());
+    }
+    recorded?;
     if kind == CarryKind::AskedAgain {
         // The earlier decision's unclaimed effects were cancelled: they leave the feed.
         state.feed.wake_sync();
@@ -1395,18 +1414,20 @@ pub async fn decide(
         .db
         .review_loop()
         .decide_planned(&session.tenant_id, pr, Timestamp::now(), |view| {
-            Loaded::from_view(handle, view)
-                .ok_or(LoopError::NotFound)?
-                .new_decisions(&session.user_id, rows, via)
+            let loaded = Loaded::from_view(handle, view).ok_or(LoopError::NotFound)?;
+            let mut decisions = loaded.new_decisions(&session.user_id, rows, via)?;
+            loaded.append_propagated(&mut decisions, false);
+            Ok::<_, LoopError>(decisions)
         })
         .await?;
     match outcome {
         DecideOutcome::Stored(stored) => {
             tracing::info!(pr, count = stored.len(), ?via, "decisions stored");
             state.feed.wake_sync();
-            Ok(stored)
+            Ok(stored.into_iter().take(rows.len()).collect())
         }
         DecideOutcome::ItemChanged(nos) => Err(LoopError::ItemChanged(nos)),
+        DecideOutcome::FollowerClaimed(no) => Err(LoopError::FollowerClaimed(no)),
     }
 }
 
@@ -1485,6 +1506,7 @@ impl Loaded {
             .iter()
             .zip(planned)
             .map(|(row, (record, planned))| NewDecision {
+                origin: None,
                 item: record.id,
                 item_revision: row.decision.item_revision,
                 user_id: user.to_owned(),
@@ -1574,6 +1596,7 @@ pub async fn act(
         }
         ActionOutcome::ItemChanged => Err(LoopError::ItemChanged(vec![no])),
         ActionOutcome::NoDecision | ActionOutcome::EffectClaimed => Err(LoopError::NotApplicable),
+        ActionOutcome::FollowerClaimed(no) => Err(LoopError::FollowerClaimed(no)),
     }
 }
 
@@ -1637,7 +1660,10 @@ pub async fn mark_gate(
         .set_gates(record.id, revision, &gates, Timestamp::now())
         .await
     {
-        Ok(record) => {
+        Ok(updated) => {
+            if updated.state == ItemState::Reopened && record.state != ItemState::Reopened {
+                state.feed.wake_sync();
+            }
             tracing::info!(
                 pr = handle.id,
                 item = no,
@@ -1645,7 +1671,7 @@ pub async fn mark_gate(
                 marked,
                 "gate mark changed by the owner"
             );
-            Ok(record)
+            Ok(updated)
         }
         Err(DbError::Conflict) => Err(LoopError::ItemChanged(vec![no])),
         Err(error) => Err(error.into()),

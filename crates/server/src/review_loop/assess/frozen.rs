@@ -15,6 +15,14 @@ use tokio::io::AsyncWriteExt;
 #[derive(Serialize, Deserialize)]
 pub(super) struct Frozen {
     pub data: PrData,
+    #[serde(default)]
+    pub authorities: super::imports::Authorities,
+    #[serde(default)]
+    pub own_reply_urls: std::collections::BTreeSet<String>,
+    #[serde(default)]
+    pub own_reply_texts: std::collections::BTreeSet<String>,
+    #[serde(default)]
+    pub written: std::collections::BTreeMap<String, contracts::api::review_loop::Written>,
     pub items: Vec<ItemRecord>,
     pub sent: Vec<SentItem>,
     pub native: VerifyCommentsInput,
@@ -65,6 +73,16 @@ impl Frozen {
         Ok(serde_json::from_slice(&bytes)?)
     }
 
+    pub fn own_reply(&self, url: &str) -> bool {
+        let confirmed = crate::github::threads::github_web_url(url)
+            .is_some_and(|url| self.own_reply_urls.contains(&url));
+        confirmed
+            || host::all_comments(&self.data).any(|comment| {
+                host::url(comment) == url
+                    && self.own_reply_texts.contains(host::body(comment).trim())
+            })
+    }
+
     pub async fn ids(
         &mut self,
         state: &AppState,
@@ -80,6 +98,23 @@ impl Frozen {
             .unwrap_or(0)
             .saturating_add(1);
         let decisions = state.db.review_loop().pr_decisions(pr).await?;
+        for row in &decisions {
+            for effect in &row.decision.effects {
+                use contracts::api::review_loop::{EffectKind, ReportOutcome};
+                if matches!(effect.kind, EffectKind::Reply | EffectKind::PrComment) {
+                    self.own_reply_texts
+                        .extend(effect.params.text.iter().cloned());
+                    self.own_reply_urls.extend(
+                        effect
+                            .reports
+                            .iter()
+                            .filter(|report| report.outcome == ReportOutcome::Done)
+                            .filter_map(|report| report.reference.as_deref())
+                            .filter_map(crate::github::threads::github_web_url),
+                    );
+                }
+            }
+        }
         let standing = crate::review_loop::standing(&decisions);
         let mut code = super::CodeReader::new(state, summary);
         let description = snapshot

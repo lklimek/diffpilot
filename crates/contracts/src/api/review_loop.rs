@@ -304,6 +304,10 @@ pub struct Written {
 /// Query of RC4.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct ItemsQuery {
+    /// Limit the list to items with an import since the entry preceding this visit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub imported_unseen: Option<bool>,
     /// Only items in this state.
     pub state: Option<ItemState>,
     /// Only items of this kind.

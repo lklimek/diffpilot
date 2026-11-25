@@ -4,7 +4,7 @@
 //! markers and their known keys are read; every other marker and key is ignored (threat model T24). Callers apply
 //! these to bot-authored text only.
 
-use contracts::api::review_loop::BotThreadStatus;
+use contracts::api::review_loop::{BotThreadStatus, DecisionKind};
 use contracts::common::LineRange;
 
 use crate::secrets::sha256;
@@ -379,6 +379,65 @@ pub fn gate(body: &str) -> Option<(GateState, Option<String>)> {
         .filter(|sha| is_hex(sha, 8))
         .map(str::to_ascii_lowercase);
     Some((state, commit))
+}
+
+/// The exact protocol line a configured relay can attach to a recorded decision.
+pub(super) fn relay_kind(line: &str) -> Option<DecisionKind> {
+    let kind = line
+        .strip_prefix("<!-- maintainer-decision v1 kind=")?
+        .strip_suffix(" -->")?;
+    match kind {
+        "withdrawn" => Some(DecisionKind::Reject),
+        "deferred" => Some(DecisionKind::Todo),
+        _ => serde_json::from_value(serde_json::Value::String(kind.into())).ok(),
+    }
+}
+
+/// A deterministic cue in the verbatim decision excerpt.
+pub(super) fn decision_cue(kind: DecisionKind, quote: &str, withdrawal: bool) -> bool {
+    let phrases: &[&str] = match kind {
+        DecisionKind::Reject if withdrawal => &["withdraw", "withdrawing", "withdrawn", "retract"],
+        DecisionKind::Reject => &["won't fix", "wontfix", "not doing", "reject", "withdrawn"],
+        DecisionKind::Todo => &["defer", "deferred", "follow up", "later", "todo"],
+        DecisionKind::Resolve => &["resolved", "already fixed", "already addressed"],
+        DecisionKind::FixHere => &["fix here", "fix in this pr", "will fix", "fixed in this pr"],
+        DecisionKind::FollowUpPr => &["follow up pr", "follow up pull request", "separate pr"],
+        DecisionKind::UpstreamIssue => &["upstream issue", "report upstream", "file upstream"],
+        DecisionKind::HandledInPr => &[],
+        _ => return false,
+    };
+    quote.split(['.', '!', '?']).any(|sentence| {
+        let normalized = sentence.to_ascii_lowercase().replace('’', "'");
+        let words: Vec<_> = normalized
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '\'')
+            .filter(|word| !word.is_empty())
+            .collect();
+        if kind == DecisionKind::HandledInPr {
+            return !words.iter().any(|word| negation(word))
+                && sentence.match_indices('#').any(|(i, _)| {
+                    sentence.as_bytes()[i + 1..]
+                        .first()
+                        .is_some_and(u8::is_ascii_digit)
+                });
+        }
+        phrases.iter().any(|phrase| {
+            let cue: Vec<_> = phrase.split_whitespace().collect();
+            words.windows(cue.len()).enumerate().any(|(at, window)| {
+                window == cue
+                    && !words[..at]
+                        .iter()
+                        .chain(&words[at + cue.len()..])
+                        .any(|word| negation(word))
+            })
+        })
+    })
+}
+
+fn negation(word: &str) -> bool {
+    matches!(
+        word,
+        "not" | "never" | "no" | "neither" | "nor" | "without" | "cannot"
+    ) || word.ends_with("n't")
 }
 
 #[cfg(test)]

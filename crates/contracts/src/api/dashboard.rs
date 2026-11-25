@@ -851,6 +851,10 @@ pub struct WorkItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub comments: Option<CommentTally>,
+    /// GitHub decisions imported since the reader last entered Comments on this PR.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub imported_unseen: Option<u32>,
     /// The user watches this pull request (RW1), read at request time; with `comments` absent its comments were
     /// not read yet.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

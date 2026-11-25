@@ -1169,6 +1169,7 @@ async fn paired_body_points_allocate_ids_only_for_the_primary_and_keep_direct_du
         );
         let first_at = Timestamp::now();
         let choice = db::repo::review_loop::NewDecision {
+            origin: None,
             item: items[0].id,
             item_revision: items[0].revision,
             user_id: "u1".into(),

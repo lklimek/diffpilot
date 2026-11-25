@@ -110,6 +110,35 @@ fn client() -> Result<Client, GithubError> {
         .map_err(GithubError::Client)
 }
 
+/// Resolves a validated linked login with the payer's GitHub token.
+pub(crate) async fn user_id(
+    config: &GithubConfig,
+    token: &SecretString,
+    login: &str,
+) -> Option<u64> {
+    if !super::work::valid_login(login) {
+        return None;
+    }
+    #[derive(Deserialize)]
+    struct User {
+        id: u64,
+    }
+    let response = client()
+        .ok()?
+        .get(endpoint(&config.api_url, &format!("users/{login}")))
+        .bearer_auth(token.expose_secret())
+        .header(ACCEPT, "application/vnd.github+json")
+        .header("x-github-api-version", GITHUB_API_VERSION)
+        .send()
+        .await
+        .ok()?;
+    if response.status() != StatusCode::OK {
+        return None;
+    }
+    let user = response.json::<User>().await.ok()?;
+    (user.id != 0).then_some(user.id)
+}
+
 /// `GET /repos/{owner}/{name}/pulls/{number}` with the user's token.
 pub async fn get_pull(
     config: &GithubConfig,

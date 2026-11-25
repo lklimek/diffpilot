@@ -552,7 +552,11 @@ fn without_ban_line(text: &str) -> String {
 fn golden_prompts_of_fixture_pr_482() {
     let update = std::env::var_os("UPDATE_GOLDEN").is_some();
     let mut stale = Vec::new();
-    for (name, prompt) in all_prompts() {
+    let host_prompt = include_str!("../../../../prompts/check_pr_comments.md");
+    for (name, prompt) in all_prompts()
+        .into_iter()
+        .chain([("check_pr_comments".into(), host_prompt.into())])
+    {
         let path = golden_dir().join(format!("{name}.txt"));
         if update {
             std::fs::create_dir_all(golden_dir()).expect("golden dir");

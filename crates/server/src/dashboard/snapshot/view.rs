@@ -632,6 +632,7 @@ fn work_item(
             llm,
             review: None,
             comments: None,
+            imported_unseen: None,
             watched: false,
             plugin_notes: Vec::new(),
         },

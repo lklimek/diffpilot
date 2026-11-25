@@ -143,7 +143,15 @@ fn item_status(
         status_comment: record.status_comment,
         imported_decision,
         duplicate_of: record.duplicate_of.and_then(|id| loaded.number_of(id)),
-        decision_follows_primary: false,
+        decision_follows_primary: loaded.follower_link(record).is_some_and(|primary| {
+            standing
+                .get(&record.id.to_string())
+                .is_some_and(|follower| {
+                    standing
+                        .get(&primary.to_string())
+                        .is_some_and(|source| follower.primary_decision == Some(source.decision.id))
+                })
+        }),
         gone_at: record.gone_at,
         gates: loaded.gates(record),
     }
@@ -154,6 +162,7 @@ fn item_view(
     loaded: &Loaded,
     record: &ItemRecord,
     status: queue::StatusItem,
+    standing: &HashMap<String, &StoredDecision>,
     ask_answers: u32,
 ) -> CommentItem {
     let assessment = loaded
@@ -164,7 +173,9 @@ fn item_view(
     CommentItem {
         status_comment: status.status_comment,
         imported_decision: status.imported_decision,
-        import_proposal: None,
+        import_proposal: (!standing.contains_key(&record.id.to_string()))
+            .then(|| loaded.import_proposal(record))
+            .flatten(),
         llm_title: assessment
             .and_then(|stored| stored.description.as_deref())
             .map(llm_title),
@@ -281,15 +292,34 @@ pub async fn items(
         .await?
         .is_some_and(|watch| watch.state == WatchState::LimitReached);
     let standing = loaded.standing();
+    let unseen = if query.imported_unseen == Some(true) {
+        Some(
+            state
+                .db
+                .review_loop()
+                .unseen_comment_imports(
+                    &session.tenant_id,
+                    &session.user_id,
+                    loaded.handle.id,
+                    false,
+                )
+                .await?
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>(),
+        )
+    } else {
+        None
+    };
     Ok(loaded
         .items
         .iter()
+        .filter(|record| unseen.as_ref().is_none_or(|ids| ids.contains(&record.id)))
         .filter(|record| query.state.is_none_or(|wanted| record.state == wanted))
         .filter(|record| query.kind.is_none_or(|wanted| record.kind == wanted))
         .map(|record| {
             let asked = answers.get(&record.id).copied().unwrap_or(0);
             let status = item_status(&loaded, record, &standing, pass.as_ref(), limited);
-            item_view(&loaded, record, status, asked)
+            item_view(&loaded, record, status, &standing, asked)
         })
         .collect())
 }
@@ -681,6 +711,17 @@ pub async fn overview(
     let events = rl
         .carry_events(&session.tenant_id, Some(loaded.handle.id), None, u32::MAX)
         .await?;
+    let analysis = latest_analysis(state, session, loaded.handle.id)
+        .await?
+        .map(|summary| summary.id);
+    let mut counts = counts(&loaded, waiting, needs_you);
+    if !session.is_access_token() {
+        counts.imported_unseen = Some(count(
+            rl.unseen_comment_imports(&session.tenant_id, &session.user_id, loaded.handle.id, true)
+                .await?
+                .len(),
+        ));
+    }
     Ok(CommentsOverview {
         watch: watch.map(|watch| super::watch::view(watch, badge.clone())),
         pr: loaded.handle.pr.clone(),
@@ -693,14 +734,12 @@ pub async fn overview(
         head: CommitSha(snapshot.head.clone()),
         purpose: loaded.row.purpose.clone(),
         read: read_view(&loaded),
-        counts: counts(&loaded, waiting, needs_you),
+        counts,
         rounds: rounds(&loaded, &events),
         assessment: progress(&loaded, pass.as_ref(), limited),
         queue: entries,
         badge,
-        analysis: latest_analysis(state, session, loaded.handle.id)
-            .await?
-            .map(|summary| summary.id),
+        analysis,
     })
 }
 

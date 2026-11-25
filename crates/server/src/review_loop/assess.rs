@@ -9,6 +9,7 @@ mod adapter;
 mod ask;
 mod frozen;
 mod host;
+pub(crate) mod imports;
 mod ingest;
 mod paired;
 mod prompt;
@@ -47,6 +48,7 @@ use jiff::SignedDuration;
 use sha2::{Digest, Sha256};
 
 pub use ask::{ItemAskError, answer_landed, ask_about_item, list_questions};
+pub use imports::RelayIds;
 pub(crate) use ingest::guard_posted;
 
 use super::clean;
