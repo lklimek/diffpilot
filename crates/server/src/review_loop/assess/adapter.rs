@@ -562,30 +562,21 @@ fn existing<'a>(frozen: &'a Frozen, row: &ReportRow) -> Option<&'a ItemRecord> {
         .items
         .iter()
         .find(|i| i.no == no && !i.status_comment && i.gone_at.is_none())?;
-    if !item.author.eq_ignore_ascii_case(&row.reviewer) {
-        return None;
-    }
     let offered = frozen.data.ids.items.iter().find(|i| i.id == row.id)?;
     match row.source_kind {
-        SourceKind::Inline => (offered.key == *row.thread_id.as_ref()?).then_some(item),
+        SourceKind::Inline => (item.author.eq_ignore_ascii_case(&row.reviewer)
+            && offered.key == *row.thread_id.as_ref()?)
+        .then_some(item),
         SourceKind::ReviewBody | SourceKind::PrComment => {
-            let quote = row.source_quote.as_deref()?;
-            let old = offered.quote.as_deref()?;
-            let same_source = item.url.as_deref() == Some(row.comment_url.as_str())
-                && (quote.contains(old) || old.contains(quote));
-            let same_quote = crate::review_loop::markers::body_hash(quote)
-                == crate::review_loop::markers::body_hash(old);
             let location = row.location.as_deref().and_then(parse_location);
-            let same_lines = location
-                .as_ref()
-                .zip(item.location.as_ref())
-                .is_some_and(|(a, b)| {
-                    a.path == b.path
-                        && a.lines.zip(b.lines).is_some_and(|(a, b)| {
-                            a.start_line <= b.end_line && b.start_line <= a.end_line
-                        })
-                });
-            (same_source || same_quote || same_lines).then_some(item)
+            item.matches_body_point(
+                offered.quote.as_deref()?,
+                &row.reviewer,
+                &row.comment_url,
+                row.source_quote.as_deref()?,
+                location.as_ref(),
+            )
+            .then_some(item)
         }
         _ => None,
     }

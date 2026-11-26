@@ -30,6 +30,7 @@ pub use decisions::{
     ClaimOutcome, DecideOutcome, DecisionOwner, NewDecision, NewEffect, OpenFeedEntry,
     ReportOutcomeRecord, ReportRequest, StoredDecision,
 };
+pub(super) use items::source_excludes_point_in;
 pub use items::{
     CommentPrRecord, ItemRecord, NewPass, ObservedItem, PassCause, PassRecord, PassStart,
     PassState, PrCommentTally, PrTallyView, PrView, ReadResult, SentItem, StoredAssessment,

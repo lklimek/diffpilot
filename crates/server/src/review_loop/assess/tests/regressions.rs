@@ -413,6 +413,73 @@ async fn marked_points_keep_their_ids_when_a_sibling_is_reassessed() {
 }
 
 #[tokio::test]
+async fn fresh_id_with_a_retrimmed_quote_keeps_the_marked_point() {
+    fresh_id_keeps_the_marked_point("Bound the retry loop for request 1. ", None).await;
+}
+
+#[tokio::test]
+async fn fresh_id_with_a_partial_quote_keeps_the_marked_point() {
+    fresh_id_keeps_the_marked_point("retry loop for request 1", None).await;
+}
+
+#[tokio::test]
+async fn fresh_id_at_overlapping_lines_keeps_the_marked_point() {
+    fresh_id_keeps_the_marked_point("lock before waiting.", Some("src/rpc/client.rs:41-44")).await;
+}
+
+async fn fresh_id_keeps_the_marked_point(quote: &str, location: Option<&str>) {
+    let (f, items) = host_fixture(1).await;
+    let source = &items[0];
+    let mut first = host_row(source, 100, "Bound the retry loop for request 1.");
+    first["location"] = json!("src/rpc/client.rs:40-42");
+    let second = "Release the lock before waiting.";
+    request_pass(&f.state, PR, PassReason::Opened)
+        .await
+        .unwrap();
+    complete_host(&f.state, vec![first, host_row(source, 101, second)]).await;
+    let rl = f.state.db.review_loop();
+    let marked = rl.item_by_no(PR, 100).await.unwrap().unwrap();
+    let sibling = rl.item_by_no(PR, 101).await.unwrap().unwrap();
+    assert_eq!(
+        request_pass(&f.state, PR, PassReason::AssessAgain(sibling.id))
+            .await
+            .unwrap(),
+        PassQueued::Queued,
+    );
+    // The mark may be set after the pass has frozen its input.
+    choose(
+        &f.state,
+        &marked,
+        DecisionKind::NotAReviewPoint,
+        None,
+        vec![],
+    )
+    .await;
+    let mut repeated = host_row(source, 102, quote);
+    if let Some(location) = location {
+        repeated["location"] = json!(location);
+    }
+    let pass = complete_host(&f.state, vec![repeated, host_row(source, 101, second)]).await;
+    assert!(
+        rl.item_by_no(PR, 102).await.unwrap().is_none(),
+        "{quote:?} was projected as a new point"
+    );
+    assert!(rl.item(marked.id).await.unwrap().active_mark.is_some());
+    assert_eq!(
+        Some(
+            rl.latest_assessment(sibling.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .assessment
+                .job
+        ),
+        pass.job_id,
+        "the sibling still receives its assessment"
+    );
+}
+
+#[tokio::test]
 async fn host_new_point_fingerprint_carries_owner_effects_at_unchanged_code() {
     host_point_owner_effects(false).await;
 }

@@ -155,6 +155,32 @@ pub struct ItemRecord {
     pub updated_at: Timestamp,
 }
 
+impl ItemRecord {
+    /// Matches a reported body point by author and source span, quote or overlapping lines.
+    pub fn matches_body_point(
+        &self,
+        old_quote: &str,
+        reviewer: &str,
+        url: &str,
+        quote: &str,
+        location: Option<&ItemLocation>,
+    ) -> bool {
+        let same_source_span = self.url.as_deref() == Some(url)
+            && (quote.contains(old_quote) || old_quote.contains(quote));
+        self.author.eq_ignore_ascii_case(reviewer)
+            && (same_source_span
+                || quote == old_quote
+                || location
+                    .zip(self.location.as_ref())
+                    .is_some_and(|(new, old)| {
+                        new.path == old.path
+                            && new.lines.zip(old.lines).is_some_and(|(new, old)| {
+                                new.start_line <= old.end_line && old.start_line <= new.end_line
+                            })
+                    }))
+    }
+}
+
 /// Result of [`ReviewLoop::upsert_item`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UpsertOutcome {
@@ -397,6 +423,49 @@ fn item_from_row(row: &SqliteRow) -> Result<ItemRecord, DbError> {
         gone_at: opt_ts_col(row, "gone_at")?,
         updated_at: ts_col(row, "updated_at")?,
     })
+}
+
+/// Checks live status comments and marked points under the assessment's write lock.
+pub(in crate::repo) async fn source_excludes_point_in(
+    tx: &mut Transaction<'static, Sqlite>,
+    tenant: &str,
+    pr: i64,
+    url: &str,
+    quote: &str,
+    observed: Option<&ObservedItem>,
+) -> Result<bool, DbError> {
+    let candidates = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT {ITEM_COLUMNS}, {ACTIVE_MARK_COLUMN}
+         FROM comment_items
+         WHERE tenant_id = ? AND pull_request_id = ? AND url = ?
+           AND ((status_comment AND gone_at IS NULL) OR (? AND EXISTS (
+                SELECT 1 FROM comment_item_marks m
+                WHERE m.item_id = comment_items.id AND m.undone_at IS NULL
+           )))"
+    )))
+    .bind(tenant)
+    .bind(pr)
+    .bind(url)
+    .bind(observed.is_some())
+    .fetch_all(&mut **tx)
+    .await?;
+    for row in &candidates {
+        let item = item_from_row(row)?;
+        if (item.status_comment && item.gone_at.is_none())
+            || observed.is_some_and(|point| {
+                item.matches_body_point(
+                    item.quote.as_deref().unwrap_or(&item.body),
+                    &point.author,
+                    url,
+                    quote,
+                    point.location.as_ref(),
+                )
+            })
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// The item `id` inside `tx`.

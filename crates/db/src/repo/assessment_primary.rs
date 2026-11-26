@@ -59,22 +59,14 @@ pub(super) async fn apply(
         .chain(points.iter().filter(|p| p.duplicate.is_some()))
     {
         if let Some((url, _, quote)) = &point.source
-            && sqlx::query_scalar::<_, bool>(
-                "SELECT EXISTS (
-                    SELECT 1 FROM comment_items i WHERE i.tenant_id = ? AND i.pull_request_id = ? AND i.url = ?
-                      AND ((i.status_comment AND i.gone_at IS NULL) OR (
-                          ? AND COALESCE(i.quote, i.body) = ? AND EXISTS (
-                              SELECT 1 FROM comment_item_marks m WHERE m.item_id = i.id AND m.undone_at IS NULL
-                          )
-                      ))
-                )",
+            && review_loop::source_excludes_point_in(
+                tx,
+                tenant,
+                pass.input.pull_request_id,
+                url,
+                quote,
+                point.observed.as_ref().filter(|_| point.existing.is_none()),
             )
-            .bind(tenant)
-            .bind(pass.input.pull_request_id)
-            .bind(url)
-            .bind(point.existing.is_none())
-            .bind(quote)
-            .fetch_one(&mut **tx)
             .await?
         {
             mark_missing(rows, &point.key);
