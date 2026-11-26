@@ -60,8 +60,15 @@ test("Settings: turning the opt-in on asks the browser and is kept in this brows
   await page.evaluate(() => sessionStorage.setItem("test-permission", "denied"));
   await page.reload();
   await expect(browser.getByRole("status")).toContainText("Blocked by the browser for this site.");
-  await page.evaluate(() => sessionStorage.setItem("test-permission", "granted"));
-  await browser.getByRole("button", { name: "Check again" }).click();
+  const checkAgain = browser.getByRole("button", { name: "Check again" });
+  // Expose the new permission during the click so an unrelated render cannot hide the button first.
+  await checkAgain.evaluate((button) => {
+    button.addEventListener("click", () => sessionStorage.setItem("test-permission", "granted"), {
+      capture: true,
+      once: true,
+    });
+  });
+  await checkAgain.click();
   await expect(browser.getByRole("status")).toHaveText("Allowed by the browser, off for diffpilot");
 });
 
