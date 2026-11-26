@@ -430,6 +430,7 @@ impl Launcher {
         &self,
         id: &ContainerId,
         memcan: Option<&McpHttpEndpoint>,
+        check_peer: impl Fn() -> Result<(), Error>,
     ) -> Result<bool, Error> {
         let config = self.settings.template(id, false, memcan)?;
         let name = self.settings.name(id, false);
@@ -437,7 +438,9 @@ impl Launcher {
             return Err(Error::Busy);
         }
         let allocating = self.allocation.lock().await;
+        check_peer()?;
         let mut existing = self.inspect(id, false).await?;
+        check_peer()?;
         let drifted = existing.as_ref().is_some_and(|c| {
             c.config.as_ref().is_none_or(|c| {
                 c.image != config.image
@@ -459,6 +462,7 @@ impl Launcher {
                     )
                     .await?;
             }
+            check_peer()?;
             self.docker.remove_container(&name, None).await?;
             existing = None;
         }
@@ -469,6 +473,7 @@ impl Launcher {
             != Some(true);
         if started {
             let running = self.list().await?;
+            check_peer()?;
             let mut candidates: Vec<_> = running
                 .iter()
                 .filter(|w| w.running && &w.container != id)
@@ -497,11 +502,14 @@ impl Launcher {
                     return Err(Error::Busy);
                 }
                 for (candidate, _operation) in evictions {
+                    check_peer()?;
                     self.stop(&candidate.container).await?;
                 }
             }
             if existing.is_none() {
+                check_peer()?;
                 self.work_volume(id).await?;
+                check_peer()?;
                 self.docker
                     .create_container(
                         Some(
@@ -513,16 +521,35 @@ impl Launcher {
                     )
                     .await?;
             }
+            check_peer()?;
             self.docker.start_container(&name, None).await?;
         }
         self.state().ensured.insert(name.clone(), Instant::now());
         drop(allocating);
-        if let Err(error) = self.configure(id, memcan).await {
-            self.stop(id).await?;
+        let configured = async {
+            check_peer()?;
+            self.configure(id, memcan).await?;
+            check_peer()
+        }
+        .await;
+        if let Err(error) = configured {
+            self.discard_ensure(id).await?;
             return Err(error);
         }
         self.state().used.insert(name, Instant::now());
         Ok(started && matches!(id, ContainerId::Pr { .. }))
+    }
+
+    // The caller holds the same target guard as the discarded Ensure.
+    async fn discard_ensure(&self, id: &ContainerId) -> Result<(), Error> {
+        let name = self.settings.name(id, false);
+        {
+            let mut state = self.state();
+            // If Docker cannot stop it, the idle sweep can still retry immediately.
+            state.ensured.remove(&name);
+            state.used.remove(&name);
+        }
+        self.stop(id).await
     }
 
     async fn fetch(
