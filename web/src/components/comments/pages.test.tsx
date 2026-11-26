@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { expectTagsWithTips } from "../../__tests__/provenance";
 import { expectTrustWording } from "../../__tests__/wording";
-import type { CommentLog, Decision } from "../../api/generated/types";
+import type { CommentLog, Decision, MarkLogEntry } from "../../api/generated/types";
 import {
   carryOvers,
   log,
@@ -211,6 +211,55 @@ describe("DecisionLog (V3)", () => {
     expect(screen.getAllByText(/Agent laptop-cli reports: done/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Found on GitHub/).length).toBeGreaterThan(0);
     expectTrustWording(text());
+  });
+
+  it("shows mark history and offers Undo only for the active entry", async () => {
+    const active: MarkLogEntry = {
+      id: "mark-active",
+      item_no: 30,
+      by: "alice",
+      at: "2026-11-18T09:12:00Z",
+      follows: 14,
+      reason: null,
+      undone_at: null,
+      undone_by: null,
+    };
+    const ended: MarkLogEntry = {
+      ...active,
+      id: "mark-ended",
+      item_no: 31,
+      reason: "Fixture only.",
+      undone_at: "2026-11-18T09:15:00Z",
+      undone_by: "bob",
+    };
+    const props = {
+      log: { ...log(), marks: [ended, active] },
+      pr: PR,
+      now: NOW,
+      storageKey: "t",
+      origin: "http://agentic:3000",
+      onUndoMark: vi.fn(),
+    };
+    const { rerender } = render(<DecisionLog {...props} undoBusy />);
+    const activeEntry = screen.getByText(/C30 · Not a review point/).closest("li")!;
+    expect(activeEntry).toHaveTextContent(/18 Nov 2026, .* by alice · follows C14/);
+    const undo = within(activeEntry).getByRole("button", { name: "Undo mark on C30" });
+    expect(undo).toHaveAttribute("aria-disabled", "true");
+    await userEvent.click(undo);
+    expect(props.onUndoMark).not.toHaveBeenCalled();
+
+    const endedTitle = screen.getByText(/C31 · Not a review point/);
+    const endedEntry = endedTitle.closest("li")!;
+    expect(endedEntry).toHaveTextContent(/Undone 18 Nov 2026, .* by bob/);
+    expect(within(endedEntry).queryByRole("button", { name: /Undo/ })).toBeNull();
+    expect(endedEntry).toHaveClass("text-muted");
+    expect(endedTitle).toHaveClass("line-through");
+    expect(within(endedEntry).getByText('Reason (not posted): "Fixture only."')).toBeVisible();
+
+    rerender(<DecisionLog {...props} undoError="C30 changed. Read it again." />);
+    expect(screen.getByRole("alert")).toHaveTextContent("C30 changed. Read it again.");
+    await userEvent.click(undo);
+    expect(props.onUndoMark).toHaveBeenCalledExactlyOnceWith(active);
   });
 
   it("shows the stored public reply; a reason left out of an edited reply is marked as not posted", () => {

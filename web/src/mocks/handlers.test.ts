@@ -2,11 +2,12 @@ import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { ApiError, createApiClient } from "../api/client";
 import { routes } from "../api/generated/routes";
-import type { AnalysisEvent, AnchoredAskRequest, AskQuestion } from "../api/generated/types";
+import type { AnalysisEvent, AnchoredAskRequest, AskQuestion, DecideRequest } from "../api/generated/types";
 import { setFixtureState } from "./fixtures";
 import { handlers } from "./handlers";
 import { setMockLanguage } from "./handlers/get-settings";
 import { RUN_STEP_MS, resetLive, setLiveState } from "./live-analysis";
+import { PR, resetReviewLoop } from "./review-loop";
 import { MEMCAN_SYNC_MS, resetStore } from "./review-store";
 import { FLOW_TITLES, MOVED_HEAD, setScenario } from "./scenarios";
 
@@ -19,6 +20,7 @@ afterEach(() => {
   setMockLanguage(null);
   resetLive();
   resetStore();
+  resetReviewLoop();
   vi.useRealTimers();
 });
 afterAll(() => server.close());
@@ -26,6 +28,36 @@ afterAll(() => server.close());
 const ID = "6d3a2f1e-0482-4c5e-9a7b-000000000482";
 
 describe("msw handlers from fixtures/pr-482", () => {
+  it("keeps an individual's mark when the primary is marked and undone", async () => {
+    setScenario("comments-v14");
+    const api = createApiClient(BASE);
+    const items = await api.listCommentItems(PR);
+    const request = (no: number, reason: string | null): DecideRequest => ({
+      kind: "not_a_review_point",
+      reason,
+      item_revision: items.find((item) => item.no === no)!.revision,
+      target: null,
+      override: null,
+      resolve_ticked: false,
+      reply_text: null,
+      comment: null,
+    });
+    const individual = await api.decideComment(PR, 30, request(30, null));
+    await api.decideComment(PR, 14, request(14, "Fixture only."));
+    const marked = await api.listCommentItems(PR);
+    expect(marked.find((item) => item.no === 31)?.not_a_review_point?.follows).toBe(14);
+    await api.undoCommentDecision(PR, 14, { item_revision: marked.find((item) => item.no === 14)!.revision });
+
+    const log = await api.getCommentLog(PR);
+    expect(log.marks?.filter((mark) => mark.item_no === 30)).toEqual([
+      expect.objectContaining({ id: individual.id, undone_at: null }),
+    ]);
+    expect(log.marks?.find((mark) => mark.item_no === 31)).toMatchObject({
+      follows: 14,
+      undone_by: "alice",
+    });
+  });
+
   it("cover the routes the slice uses", () => {
     const covered = handlers.map((h) => h.info.header);
     for (const name of [

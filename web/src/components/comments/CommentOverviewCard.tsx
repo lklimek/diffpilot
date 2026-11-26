@@ -48,6 +48,7 @@ export function CommentOverviewCard({
         </p>
       ) : (
         last &&
+        !item.not_a_review_point &&
         !last.undone_at && (
           <p>
             {decisionLabel(last)} · {clockText(last.decided_at, now)}
@@ -58,7 +59,7 @@ export function CommentOverviewCard({
       {status && (
         <p>
           {status}
-          {item.duplicate_of != null && (
+          {item.duplicate_of != null && !item.not_a_review_point && (
             <>
               {" "}
               <ProvenanceTag source="llm" />

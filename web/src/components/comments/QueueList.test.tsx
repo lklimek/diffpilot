@@ -46,7 +46,7 @@ describe("QueueList order (owner 2026-11-23)", () => {
     await userEvent.click(status);
     const menu = screen.getByRole("menu");
     expect(within(menu).getAllByRole("menuitemradio")).toHaveLength(9);
-    expect(within(menu).getByRole("menuitemradio", { name: "Not a review point · 0" })).toBeInTheDocument();
+    expect(within(menu).getByRole("menuitemradio", { name: "Not a review point (0)" })).toBeInTheDocument();
     await userEvent.click(within(menu).getByRole("menuitemradio", { name: /^Decided/ }));
     expect(status).toHaveFocus();
     expect(status).toHaveTextContent("Decided");

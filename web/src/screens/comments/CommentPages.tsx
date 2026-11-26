@@ -2,11 +2,18 @@
 import { useState } from "react";
 import { useNavigate } from "react-router";
 import { ApiError } from "../../api/client";
-import { useCarryOvers, useCommentLog, useDecideBatch, useItemAction } from "../../api/review-loop";
+import {
+  useCarryOvers,
+  useCommentLog,
+  useDecideBatch,
+  useItemAction,
+  useUndoDecision,
+} from "../../api/review-loop";
 import { CarryOvers } from "../../components/comments/CarryOvers";
 import { CommentsTable } from "../../components/comments/CommentsTable";
 import { DecisionLog } from "../../components/comments/DecisionLog";
 import { RoundsTable } from "../../components/comments/RoundsTable";
+import { CHOICE_LABEL } from "../../components/comments/decisions";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { useAskChat } from "../review/askChat";
 import { ALL_CARRY_OVERS_PATH, commentsPath, itemPath } from "../pr/paths";
@@ -41,8 +48,18 @@ export function TableScreen() {
             { via: "table", rows },
             {
               onSuccess: (stored) => {
-                setDone(`${stored.length} decisions recorded, one per row.`);
-                setRecorded((n) => n + 1);
+                const marks = stored.filter((entry) => entry.kind === "not_a_review_point");
+                const decisions = stored.length - marks.length;
+                const messages = [];
+                if (marks.length === 1)
+                  messages.push(`C${marks[0]!.item_no}: ${CHOICE_LABEL.not_a_review_point}.`);
+                else if (marks.length > 1)
+                  messages.push(`${marks.length} items marked “${CHOICE_LABEL.not_a_review_point}”.`);
+                if (decisions) {
+                  messages.push(`${decisions} ${decisions === 1 ? "decision" : "decisions"} recorded.`);
+                  setRecorded((n) => n + 1);
+                }
+                setDone(messages.join(" "));
               },
             },
           )
@@ -62,6 +79,7 @@ export function TableScreen() {
 export function LogScreen() {
   const { pr, login, now, items } = useComments();
   const log = useCommentLog(pr);
+  const undo = useUndoDecision(pr);
   if (log.isError) return <StatusMessage kind="error">{errorText(log.error)}</StatusMessage>;
   if (!log.data) return <StatusMessage kind="loading">Loading the decision log…</StatusMessage>;
   return (
@@ -72,6 +90,9 @@ export function LogScreen() {
       origin={window.location.origin}
       now={now}
       storageKey={`${login}:comments-log`}
+      undoBusy={undo.isPending}
+      undoError={undo.isError ? errorText(undo.error) : null}
+      onUndoMark={(mark) => undo.mutate({ no: mark.item_no, decision: mark.id, mark: true })}
     />
   );
 }

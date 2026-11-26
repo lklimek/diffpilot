@@ -10,9 +10,11 @@ import { clockText } from "../format/time";
 import { ProvenanceTag } from "../section/ProvenanceTag";
 import {
   CHOICE_LABEL,
+  canMark,
   choicesFor,
   decisionLabel,
   gateOf,
+  markText,
   missingInput,
   needOf,
   recommendedValue,
@@ -95,6 +97,13 @@ export function CommentsTable(props: CommentsTableProps) {
     setRows({ ...rows, [item.id]: { ...rowOf(item), ...change } });
   const changed = (item: CommentItem) => rowOf(item).revision !== item.revision;
 
+  const rowRequest = (item: CommentItem): DecisionBatchRow => {
+    const row = rowOf(item);
+    return {
+      item_no: item.no,
+      ...requestOf({ ...item, revision: row.revision }, { ...row, choice: row.choice as Choice }, null),
+    };
+  };
   const missing: string[] = [];
   const counts = new Map<string, number>();
   for (const item of open) {
@@ -106,22 +115,18 @@ export function CommentsTable(props: CommentsTableProps) {
       );
       continue;
     }
-    if (missingInput({ choice: row.choice, value: row.value }))
+    if (row.choice === "not_a_review_point" && !canMark(item))
+      missing.push(`${itemId(item)} (choose another decision)`);
+    else if (row.choice === "not_a_review_point" && gateOf(item))
+      missing.push(`${itemId(item)} (mark individually)`);
+    else if (missingInput({ choice: row.choice, value: row.value }))
       missing.push(`${itemId(item)} (reason or target)`);
     counts.set(CHOICE_LABEL[row.choice], (counts.get(CHOICE_LABEL[row.choice]) ?? 0) + 1);
   }
   const total = [...counts.values()].reduce((a, b) => a + b, 0);
   const submit = () => {
     if (props.busy || missing.length || total === 0) return;
-    props.onSubmit(
-      open.map((item) => {
-        const row = rowOf(item);
-        return {
-          item_no: item.no,
-          ...requestOf({ ...item, revision: row.revision }, { ...row, choice: row.choice as Choice }, null),
-        };
-      }),
-    );
+    props.onSubmit(open.map(rowRequest));
   };
 
   const shownClosed = showAll ? closed : closed.slice(0, 2);
@@ -240,7 +245,10 @@ export function CommentsTable(props: CommentsTableProps) {
             </tr>
             {open.map((item) => {
               const row = rowOf(item);
-              const need = row.choice ? needOf(row.choice) : null;
+              const gate = gateOf(item);
+              const marking = row.choice === "not_a_review_point";
+              const need = row.choice ? needOf(row.choice, gate) : null;
+              const markBlocked = props.busy || changed(item) || !canMark(item) || !row.value.trim();
               const name = `${itemId(item)} (${item.title})`;
               return (
                 <tr key={item.id} data-row={itemId(item)}>
@@ -270,6 +278,18 @@ export function CommentsTable(props: CommentsTableProps) {
                         </option>
                       ))}
                     </select>
+                    {marking && gate && (
+                      <Tooltip tip="Enter a reason to mark this gate item individually.">
+                        <button
+                          type="button"
+                          aria-disabled={markBlocked || undefined}
+                          className={`${buttonClass("plain", true)} mt-1`}
+                          onClick={() => !markBlocked && props.onSubmit([rowRequest(item)])}
+                        >
+                          Mark {itemId(item)}
+                        </button>
+                      </Tooltip>
+                    )}
                     {changed(item) && (
                       <div role="status" className="mt-1 text-xs text-med">
                         Changed since you started; check this row.{" "}
@@ -301,8 +321,10 @@ export function CommentsTable(props: CommentsTableProps) {
                       <input
                         type="checkbox"
                         aria-label={`Resolve ${itemId(item)}`}
-                        checked={(row.choice !== "" && resolveLocked(row.choice)) || row.resolve}
-                        disabled={row.choice !== "" && resolveLocked(row.choice)}
+                        checked={
+                          !marking && ((row.choice !== "" && resolveLocked(row.choice)) || row.resolve)
+                        }
+                        disabled={marking || (row.choice !== "" && resolveLocked(row.choice))}
                         onChange={(e) => set(item, { resolve: e.target.checked })}
                       />
                     ) : (
@@ -313,7 +335,8 @@ export function CommentsTable(props: CommentsTableProps) {
                     <input
                       type="text"
                       aria-label={`Your comment on ${itemId(item)}`}
-                      value={row.comment}
+                      value={marking ? "" : row.comment}
+                      disabled={marking}
                       onChange={(e) => set(item, { comment: e.target.value })}
                       className="min-w-36 rounded-md border border-muted bg-surface px-1.5 py-1"
                     />
@@ -339,12 +362,14 @@ export function CommentsTable(props: CommentsTableProps) {
               </th>
             </tr>
             {shownClosed.map((item) => {
-              const d = item.decisions.at(-1);
+              const d = item.not_a_review_point ? undefined : item.decisions.at(-1);
               return (
                 <tr key={item.id} data-row={itemId(item)} className="bg-ok-bg/40">
                   {common(item)}
                   <td className={TD}>
-                    {d ? (
+                    {item.not_a_review_point ? (
+                      markText(item.not_a_review_point, now)
+                    ) : d ? (
                       <>
                         <b>{decisionLabel(d)}</b>
                         <div className="text-xs text-muted">

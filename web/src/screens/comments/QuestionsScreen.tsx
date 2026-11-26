@@ -1,11 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import type {
-  CommentItem,
-  DecideRequest,
-  DecisionBatchRow,
-  DecisionId,
-  QueueEntry,
-} from "../../api/generated/types";
+import type { CommentItem, DecideRequest, DecisionBatchRow, QueueEntry } from "../../api/generated/types";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { ApiError, AssessmentAdmissionError } from "../../api/client";
@@ -22,6 +16,7 @@ import {
   transientFailure,
   useMarkGate,
   useUndoDecision,
+  type UndoTarget,
 } from "../../api/review-loop";
 import { CollapsibleSection } from "../../components/collapsible/CollapsibleSection";
 import { isTypingField } from "../../components/comments/cardKeys";
@@ -121,7 +116,7 @@ export function QuestionsScreen() {
   const [help, setHelp] = useState(false);
   const [announcement, setAnnouncement] = useState("");
   // The last single decision, offered for Undo until one of its effects is claimed (plan §3.2 item 9).
-  const [undoable, setUndoable] = useState<{ no: number; decision: DecisionId; label: string } | null>(null);
+  const [undoable, setUndoable] = useState<(UndoTarget & { label: string }) | null>(null);
   const [lines, setLines] = useState<{ item: number | null; from: number | null; to: number | null }>({
     item: null,
     from: null,
@@ -223,10 +218,12 @@ export function QuestionsScreen() {
         ? { state: "ready", value: context.data }
         : { state: "loading" };
 
-  const afterDecided = (what: string, next: number[] | null) => {
+  const afterDecided = (what: string, next: number[] | null, mark = false) => {
     const cached = cachedCommentsReview(client, pr);
     const left = needsYouCount(needsYou, cached.overview?.queue, commentsByNo(cached.items));
-    setAnnouncement(`${what}: decision recorded. ${left} ${left === 1 ? "question" : "questions"} left.`);
+    setAnnouncement(
+      `${what}: ${mark ? "Not a review point" : "decision recorded"}. ${left} ${left === 1 ? "question" : "questions"} left.`,
+    );
     selectItem(null, true);
     setSkipped(new Set());
     setAfter(next);
@@ -237,8 +234,9 @@ export function QuestionsScreen() {
       { no: item.no, body: request },
       {
         onSuccess: (decision) => {
-          afterDecided(itemId(item), next);
-          setUndoable({ no: item.no, decision: decision.id, label: itemId(item) });
+          const mark = decision.kind === "not_a_review_point";
+          afterDecided(itemId(item), next, mark);
+          setUndoable({ no: item.no, decision: decision.id, label: itemId(item), mark });
         },
       },
     );
@@ -250,7 +248,11 @@ export function QuestionsScreen() {
       { via, rows },
       {
         onSuccess: () => {
-          afterDecided(`${rows.length} items`, next);
+          afterDecided(
+            `${rows.length} items`,
+            next,
+            rows.every((row) => row.kind === "not_a_review_point"),
+          );
           setUndoable(null);
         },
       },
@@ -263,7 +265,7 @@ export function QuestionsScreen() {
     undoDecision.mutate(undoable, {
       onSuccess: () => {
         setUndoable(null);
-        setAnnouncement(`${label}: decision undone; it is asked again.`);
+        setAnnouncement(`${label}: ${undoable.mark ? "mark" : "decision"} undone; it is asked again.`);
         selectItem(label);
       },
     });

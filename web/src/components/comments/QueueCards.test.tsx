@@ -71,6 +71,25 @@ describe("GroupCard (US5)", () => {
     expect(rows[0]).toMatchObject({ kind: "reject", resolve_ticked: true });
   });
 
+  it("marks every item through the group decision callback", async () => {
+    const { onDecide } = showGroup();
+    await userEvent.click(screen.getByRole("button", { name: "Not a review point" }));
+    expect(onDecide).toHaveBeenCalledTimes(1);
+    expect(onDecide).toHaveBeenCalledWith(
+      [18, 19].map((item_no) => ({
+        item_no,
+        kind: "not_a_review_point",
+        reason: null,
+        target: null,
+        override: null,
+        resolve_ticked: false,
+        reply_text: null,
+        comment: null,
+        item_revision: byNo(item_no).revision,
+      })),
+    );
+  });
+
   it("the LLM tag of the assessment column header takes keyboard focus and shows its tip (brief §4 rule 3)", () => {
     showGroup();
     expectTagsWithTips(screen.getByRole("columnheader", { name: /^LLM assessment/ }), 1);
@@ -620,6 +639,29 @@ describe("CommentsTable (US8, US27)", () => {
       override: { type: "blocker_gate", gate: "G-SECRET" },
       resolve_ticked: true,
     });
+  });
+
+  it("submits a gate mark alone after a reason is given", async () => {
+    const onSubmit = show();
+    await userEvent.selectOptions(
+      screen.getByRole("combobox", { name: /Decision for C14/ }),
+      "not_a_review_point",
+    );
+    const mark = screen.getByRole("button", { name: "Mark C14" });
+    expect(mark).toHaveAttribute("aria-disabled", "true");
+    await userEvent.type(screen.getByRole("textbox", { name: /Reason or target for C14/ }), "Test only.");
+    await userEvent.click(screen.getByRole("button", { name: /Record \d+ decisions/ }));
+    expect(onSubmit).not.toHaveBeenCalled();
+    await userEvent.click(mark);
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(onSubmit).toHaveBeenCalledWith([
+      expect.objectContaining({
+        item_no: 14,
+        kind: "not_a_review_point",
+        reason: "Test only.",
+        resolve_ticked: false,
+      }),
+    ]);
   });
 
   it("an item the latest read no longer shows is listed with that fact and needs no decision (plan §2.1)", async () => {

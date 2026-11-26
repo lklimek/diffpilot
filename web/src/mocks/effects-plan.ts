@@ -146,6 +146,16 @@ class Builder {
 
 /** Validates `request` against `item` and plans its effects (effects.rs `plan`); a string is the refusal. */
 export function plan(item: CommentItem, request: DecideRequest, scope: PlanScope): Planned | DecisionError {
+  const marking = request.kind === "not_a_review_point";
+  if (
+    marking &&
+    (item.kind === "pr_question" ||
+      item.status_comment ||
+      item.not_a_review_point ||
+      item.gone_at ||
+      !["undecided", "reopened", "asked_back"].includes(item.state))
+  )
+    return ERROR.kindNotOffered;
   if (!offered(item, request.kind)) return ERROR.kindNotOffered;
   if (tooLong(request.reason) || tooLong(request.reply_text) || tooLong(request.comment))
     return ERROR.tooLong;
@@ -171,7 +181,9 @@ export function plan(item: CommentItem, request: DecideRequest, scope: PlanScope
     if (tooLong(target.title)) return ERROR.tooLong;
   } else return ERROR.targetInvalid;
   const reason = nonEmpty(request.reason);
-  if (request.kind === "reject" && !reason) return ERROR.reasonRequired;
+  if ((request.kind === "reject" || (marking && item.gates.length > 0)) && !reason)
+    return ERROR.reasonRequired;
+  if (marking) return { effects: [], reply_text: null };
   const alwaysResolves = request.kind === "resolve" || gate !== null;
   if (alwaysResolves && threadId(item) && !request.resolve_ticked) return ERROR.resolveLocked;
   const resolve = request.resolve_ticked;
@@ -296,7 +308,7 @@ export function followedUp(items: CommentItem[]): Set<number> {
  * standing P1 decision covers; the fixture has one PR-level question of each kind at most. */
 export function waiting(items: CommentItem[]): CommentItem[] {
   const covered = followedUp(items);
-  return items.filter((i) => OPEN.has(i.state) && !i.gone_at && !covered.has(i.no));
+  return items.filter((i) => OPEN.has(i.state) && !i.gone_at && !i.not_a_review_point && !covered.has(i.no));
 }
 
 /** observe.rs `BotChangeRequest`: a bot whose latest review requests changes. */

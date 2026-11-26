@@ -93,6 +93,7 @@ self_test() {
   expect_fail "nothing to review"  a.ts  'const s = `Nothing to review`;'             "a.ts:1: \"Nothing to review\""
   expect_fail "no review needed"   a.tsx '<p>No review needed</p>'                    "a.tsx:1: \"No review needed\""
   expect_fail "noise"              a.ts  "const o = { label: 'noise' };"              "a.ts:1: \"noise\""
+  expect_fail "junk"               a.tsx '<button>Mark as Junk</button>'             "a.tsx:1: \"Junk\""
   expect_fail "verified"           a.tsx '<span title="Verified">x</span>'           "a.tsx:1: \"Verified\""
   expect_fail "was wrong"          a.tsx '<button>Was wrong</button>'                 "a.tsx:1: \"Was wrong\""
   expect_fail "confidence"         a.ts  "const s = 'High confidence';"               "a.ts:1: \"confidence\""

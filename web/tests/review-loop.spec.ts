@@ -169,7 +169,7 @@ test("v1.4 queue filters, duplicate decisions, and GitHub provenance", async ({ 
 
   await status.press("ArrowDown");
   const menu = page.getByRole("menu");
-  await expect(menu.getByRole("menuitemradio")).toHaveCount(8);
+  await expect(menu.getByRole("menuitemradio")).toHaveCount(9);
   await menu.getByRole("menuitemradio", { name: "Duplicates · 2" }).click();
   await expect(queue.getByRole("button", { name: /^C30/ })).toBeVisible();
   await status.click();
@@ -245,4 +245,65 @@ test("v1.4 hiding assessment keeps the chosen table decision", async ({ page }) 
   await expect(page).toHaveURL(/\/comments\/table\?/);
   await expect(decision).toHaveValue("resolve");
   await expect(page.getByRole("link", { name: "Table", exact: true })).toBeFocused();
+});
+
+test("queue filter count and Undo restores Needs you", async ({ page }) => {
+  await page.goto(`${PR}/comments?scenario=comments-v14&item=C22`);
+  const queue = page.getByRole("navigation", { name: "Queue" });
+  const status = queue.getByRole("button", { name: /^Status:/ });
+  await expect(status).toHaveText(/Needs you · 11/);
+  await page.getByRole("radio", { name: "Not a review point" }).check();
+  const decide = page.getByRole("button", { name: "Decide", exact: true });
+  await expect(decide).not.toHaveAttribute("aria-disabled", "true");
+  await decide.click();
+  await expect(status).toHaveText(/Needs you · 10/);
+  await status.click();
+  await page.getByRole("menuitemradio", { name: "Not a review point (1)" }).click();
+  await expect(queue.getByRole("button", { name: /^C22/ })).toContainText("Not a review point");
+  await page.getByRole("link", { name: "Decision log and agents" }).click();
+  const entry = page.getByRole("listitem").filter({ hasText: /C22 · Not a review point/ });
+  await expect(entry).toContainText("by alice");
+  await expectAccessible(page);
+  await entry.getByRole("button", { name: "Undo mark on C22" }).click();
+  await expect(entry).toContainText(/Undone .* by alice/);
+  await page.getByRole("link", { name: "Questions, 11 need you" }).click();
+  await expect(queue.getByRole("button", { name: /^C22/ })).toBeVisible();
+});
+
+test("a gate mark is recorded alone from the table", async ({ page }) => {
+  await page.goto(`${PR}/comments/table?scenario=comments-v14`);
+  await page.getByRole("combobox", { name: /^Decision for C14/ }).selectOption("not_a_review_point");
+  await page.getByRole("textbox", { name: /^Reason or target for C14/ }).fill("Fixture only.");
+  await expectAccessible(page);
+  await page.getByRole("button", { name: "Mark C14" }).click();
+  await expect(page.getByText("C14: Not a review point.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: /^Decision for C14/ })).toHaveCount(0);
+  await expect(page.getByRole("combobox", { name: /^Decision for C15/ })).toBeVisible();
+  const provenance = /Not a review point · follows C14 · by alice · 09:\d{2}/;
+  await page.getByRole("button", { name: "Show all", exact: true }).click();
+  await expect(page.locator('tr[data-row="C30"]')).toContainText(provenance);
+
+  await page.getByRole("link", { name: /^Questions,/ }).click();
+  const queue = page.getByRole("navigation", { name: "Queue" });
+  await queue.getByRole("button", { name: /^Status:/ }).click();
+  await page.getByRole("menuitemradio", { name: "Not a review point (3)" }).click();
+  const follower = queue.getByRole("button", { name: /^C30/ });
+  await expect(follower).toContainText(provenance);
+  await follower.click();
+  await expect(page.getByRole("article", { name: "C30" })).toContainText(provenance);
+  await page.getByRole("link", { name: "Decision log and agents", exact: true }).click();
+  await expect(page.getByRole("listitem").filter({ hasText: /C14 · Not a review point/ })).toContainText(
+    "Fixture only.",
+  );
+});
+
+test("Settings lists marked items across cursor pages", async ({ page }) => {
+  await page.goto("/settings/review-loop?scenario=comments-marks");
+  const marks = page.getByRole("region", { name: "Not a review point" });
+  await expect(marks.getByText("Review item 100", { exact: true })).toBeVisible();
+  await expect(marks.getByText("Review item 101", { exact: true })).toHaveCount(0);
+  await marks.getByRole("button", { name: "Show older marked items" }).click();
+  await expect(marks.getByText("Review item 100", { exact: true })).toBeVisible();
+  await expect(marks.getByText("Review item 101", { exact: true })).toBeVisible();
+  await expectAccessible(page);
 });

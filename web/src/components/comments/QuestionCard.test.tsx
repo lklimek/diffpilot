@@ -76,6 +76,47 @@ beforeEach(() => {
   window.localStorage.clear();
 });
 
+it.each([
+  [{ state: "undecided" }, true],
+  [{ state: "reopened" }, true],
+  [{ state: "asked_back" }, true],
+  [{ state: "assessing" }, false],
+  [{ state: "decided" }, false],
+  [{ kind: "pr_question" }, false],
+  [{ status_comment: true }, false],
+  [{ gone_at: NOW.toISOString() }, false],
+  [{ not_a_review_point: { by: "alice", at: NOW.toISOString() } }, false],
+] satisfies [Partial<CommentItem>, boolean][])(
+  "mark_action_offered_only_for_awaiting_items (%j)",
+  (fields, offered) => {
+    show({ ...byNo(22), ...fields });
+    expect(screen.queryByRole("radio", { name: "Not a review point" }) !== null).toBe(offered);
+  },
+);
+
+it("a gate mark requires a private reason and sends no effect inputs", async () => {
+  const { onDecide } = show(byNo(14));
+  await userEvent.click(screen.getByRole("radio", { name: "Not a review point" }));
+  const decide = screen.getByRole("button", { name: /^Decide$/ });
+  await userEvent.click(decide);
+  expect(onDecide).not.toHaveBeenCalled();
+  expect(screen.getByRole("alert")).toHaveTextContent("A reason is required.");
+  expect(screen.queryByRole("checkbox", { name: "Resolve this thread" })).toBeNull();
+  expect(screen.queryByRole("textbox", { name: /Reply text/ })).toBeNull();
+  await userEvent.type(screen.getByRole("textbox", { name: "Reason" }), "Only a test fixture.");
+  await userEvent.click(decide);
+  expect(onDecide).toHaveBeenCalledWith({
+    kind: "not_a_review_point",
+    reason: "Only a test fixture.",
+    target: null,
+    override: null,
+    resolve_ticked: false,
+    reply_text: null,
+    comment: null,
+    item_revision: byNo(14).revision,
+  });
+});
+
 describe("QuestionCard (plan §3.2)", () => {
   it("renders the queued assessment as a paragraph", async () => {
     show({ ...byNo(14), assessment_state: { state: "queued" } });
@@ -91,7 +132,7 @@ describe("QuestionCard (plan §3.2)", () => {
     expect(screen.getByText(/C14 · 2 of 9 · thepastaclaw · bot · inline thread/)).toBeVisible();
     const options = within(screen.getByRole("radiogroup", { name: "Decision on C14" })).getAllByRole("radio");
     expect(options[0]).toHaveAccessibleName("Fix here (Recommended)");
-    expect(options.at(-1)).toHaveAccessibleName(/^Accept despite the gate/);
+    expect(options[7]).toHaveAccessibleName(/^Accept despite the gate/);
     expect(options[0]).toBeChecked();
     expect(screen.getByRole("button", { name: "LLM assessment" })).toHaveAttribute("aria-expanded", "false");
     expect(screen.getByText("The LLM says")).not.toBeVisible();

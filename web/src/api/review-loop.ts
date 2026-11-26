@@ -91,6 +91,17 @@ export const useCommentContext = (pr: PrRef, no: number | null, query: ContextQu
 export const useCommentLog = (pr: PrRef) =>
   useQuery({ queryKey: ["comment-log", ...prKey(pr)], queryFn: () => api.getCommentLog(pr) });
 
+const MARKED_ITEMS_KEY = ["marked-items"] as const;
+
+export function useMarkedItems() {
+  return useInfiniteQuery({
+    queryKey: MARKED_ITEMS_KEY,
+    queryFn: ({ pageParam }) => api.listMarkedItems(pageParam),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.next_cursor,
+  });
+}
+
 /** Carry-overs of one PR (`owner/name/number`) or of all (RC11): the newest page, then older ones on request. */
 export function useCarryOvers(pr: string | null) {
   const query = useInfiniteQuery({
@@ -179,11 +190,12 @@ export const useWatches = () => useQuery({ queryKey: ["watches"], queryFn: api.l
 function useInvalidatePr(pr: PrRef) {
   const client = useQueryClient();
   return () =>
-    Promise.all(
-      ["pr-page", "comments", "comment-items", "comment-log", "decide-rest", "effects-preview"].map((key) =>
-        client.invalidateQueries({ queryKey: [key, ...prKey(pr)] }),
+    Promise.all([
+      ...["pr-page", "comments", "comment-items", "comment-log", "decide-rest", "effects-preview"].map(
+        (key) => client.invalidateQueries({ queryKey: [key, ...prKey(pr)] }),
       ),
-    );
+      client.invalidateQueries({ queryKey: MARKED_ITEMS_KEY }),
+    ]);
 }
 
 /** Records one entry so the import notice stays stable on later reads. */
@@ -272,13 +284,20 @@ export function useItemAction(pr: PrRef) {
  * read again first, so an Undo right after deciding never sends the revision from before that decision. When the
  * item's latest decision is no longer that one (another tab or reader decided since), nothing is sent.
  */
+export type UndoTarget = { no: number; decision: DecisionId; mark?: boolean };
+
 export function useUndoDecision(pr: PrRef) {
   const invalidate = useInvalidatePr(pr);
   const client = useQueryClient();
   return useMutation({
-    mutationFn: async ({ no, decision }: { no: number; decision: DecisionId }) => {
+    mutationFn: async ({ no, decision, mark }: UndoTarget) => {
       const item = (await api.listCommentItems(pr)).find((i) => i.no === no);
-      if (!item || item.decisions.at(-1)?.id !== decision)
+      // The item exposes the active mark but its ID comes from the log. Read the revision before checking the ID.
+      const matches = mark
+        ? item?.not_a_review_point &&
+          (await api.getCommentLog(pr)).marks?.some((entry) => entry.id === decision && !entry.undone_at)
+        : !item?.not_a_review_point && item?.decisions.at(-1)?.id === decision;
+      if (!item || !matches)
         throw new ApiError(409, "item_changed", `C${no} changed since your decision. Read it again.`);
       return api.undoCommentDecision(pr, no, { item_revision: item.revision });
     },
