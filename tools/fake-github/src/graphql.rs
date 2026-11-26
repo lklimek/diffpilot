@@ -7,8 +7,6 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use axum::Json;
-use axum::body::Bytes;
-use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
@@ -430,11 +428,12 @@ impl Graphql {
     }
 }
 
+/// The JSON envelope shared by the GraphQL fixture routes.
 #[derive(Deserialize)]
-struct Request {
-    query: String,
+pub(crate) struct GraphqlRequest {
+    pub(crate) query: String,
     #[serde(default)]
-    variables: Value,
+    pub(crate) variables: Value,
 }
 
 fn graphql_error(status: StatusCode, message: &str) -> Response {
@@ -446,15 +445,15 @@ fn graphql_error(status: StatusCode, message: &str) -> Response {
 }
 
 /// Answers one GraphQL request; a valid access token is required (GitHub has no anonymous GraphQL).
-pub(crate) async fn serve(
-    State(graphql): State<Arc<Graphql>>,
-    headers: HeaderMap,
-    body: Bytes,
+pub(crate) fn serve(
+    graphql: &Graphql,
+    headers: &HeaderMap,
+    request: Option<&GraphqlRequest>,
 ) -> Response {
-    if graphql.oauth.credentials(&headers) != Credentials::Valid {
+    if graphql.oauth.credentials(headers) != Credentials::Valid {
         return graphql_error(StatusCode::UNAUTHORIZED, "Bad credentials");
     }
-    let Ok(request) = serde_json::from_slice::<Request>(&body) else {
+    let Some(request) = request else {
         return graphql_error(StatusCode::BAD_REQUEST, "Problems parsing JSON");
     };
     let query = request.query.as_str();

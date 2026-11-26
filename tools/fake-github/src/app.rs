@@ -15,10 +15,11 @@ use std::path::Path as FilePath;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use axum::body::Bytes;
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::http::header::AUTHORIZATION;
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use contracts::time::Timestamp;
@@ -186,9 +187,7 @@ impl App {
     }
 
     /// The permissions a token request asks for, if the fake grants them; `Err` is the 422 message.
-    fn scope(&self, body: &[u8]) -> Result<BTreeMap<String, String>, String> {
-        let request: MintRequest =
-            serde_json::from_slice(body).map_err(|error| format!("Invalid request: {error}"))?;
+    fn scope(&self, request: MintRequest) -> Result<BTreeMap<String, String>, String> {
         if request.repository_ids.is_some() {
             return Err("fake-github: name the repository in `repositories`, not by id".to_owned());
         }
@@ -291,15 +290,22 @@ async fn access_token(
     State(app): State<Arc<App>>,
     Path(id): Path<u64>,
     headers: HeaderMap,
-    body: Bytes,
+    request: Result<Json<MintRequest>, JsonRejection>,
 ) -> Response {
+    let request = match request {
+        Err(JsonRejection::BytesRejection(error)) => return error.into_response(),
+        request => request,
+    };
     if let Some(refusal) = app.refuse(&headers) {
         return refusal;
     }
     if id != app.installation_id {
         return github_error(StatusCode::NOT_FOUND, "Not Found");
     }
-    let permissions = match app.scope(&body) {
+    let scope = request
+        .map_err(|error| format!("Invalid request: {}", error.body_text()))
+        .and_then(|Json(request)| app.scope(request));
+    let permissions = match scope {
         Ok(permissions) => permissions,
         Err(message) => {
             tracing::warn!(%message, "fake-github refused an installation token request");

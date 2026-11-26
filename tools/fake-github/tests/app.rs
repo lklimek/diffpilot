@@ -12,7 +12,7 @@ use contracts::time::Timestamp;
 use fake_github::Config;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use reqwest::StatusCode;
-use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
+use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
 use serde_json::{Value, json};
 use url::Url;
 
@@ -317,6 +317,49 @@ async fn jwts_github_would_refuse_are_refused() {
         StatusCode::UNAUTHORIZED,
         "no App key, no App"
     );
+}
+
+#[tokio::test]
+async fn installation_token_body_errors_follow_authentication_and_lookup() {
+    let base = spawn(config(true)).await;
+    let jwt = good_jwt();
+    let valid_body = read_only().to_string();
+    for (id, token, content_type, body, status) in [
+        (
+            INSTALLATION,
+            "invalid",
+            "application/json",
+            "{",
+            StatusCode::UNAUTHORIZED,
+        ),
+        ("1", &jwt, "application/json", "{", StatusCode::NOT_FOUND),
+        (
+            INSTALLATION,
+            &jwt,
+            "application/json",
+            "{",
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            INSTALLATION,
+            &jwt,
+            "text/plain",
+            &valid_body,
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+    ] {
+        let response = reqwest::Client::new()
+            .post(format!("{base}/app/installations/{id}/access_tokens"))
+            .bearer_auth(token)
+            .header(USER_AGENT, "diffpilot")
+            .header(CONTENT_TYPE, content_type)
+            .body(body.to_owned())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status);
+    }
+    assert_eq!(credentials(&base).await["installation_tokens"], json!([]));
 }
 
 #[tokio::test]

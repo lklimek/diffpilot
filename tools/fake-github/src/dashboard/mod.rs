@@ -16,8 +16,8 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use axum::body::Bytes;
 use axum::extract::State;
+use axum::extract::rejection::JsonRejection;
 use axum::http::header::{ACCEPT, CONTENT_TYPE, HOST, RETRY_AFTER};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
@@ -30,7 +30,7 @@ use tokio::time::Instant;
 
 use self::rest::{Answer, Endpoint};
 use self::world::World;
-use crate::graphql::Graphql;
+use crate::graphql::{self, Graphql, GraphqlRequest};
 use crate::oauth::{Credentials, Oauth};
 use crate::{RecordedState, StartError, github_error, require_user_agent};
 
@@ -766,13 +766,6 @@ pub(crate) async fn serve_rest(
     crate::serve_recorded(State(state.recorded), method, uri, headers).await
 }
 
-#[derive(Deserialize)]
-struct GraphqlRequest {
-    query: String,
-    #[serde(default)]
-    variables: Value,
-}
-
 /// State of `POST /graphql`: the v1 review endpoint and, when loaded, the dashboard world and the review-loop
 /// recordings.
 #[derive(Clone)]
@@ -789,10 +782,15 @@ pub(crate) struct GraphqlState {
 pub(crate) async fn serve_graphql(
     State(state): State<GraphqlState>,
     headers: HeaderMap,
-    body: Bytes,
+    request: Result<Json<GraphqlRequest>, JsonRejection>,
 ) -> Response {
+    let request = match request {
+        Err(JsonRejection::BytesRejection(error)) => return error.into_response(),
+        request => request.ok(),
+    };
+    let request = request.as_ref().map(|Json(request)| request);
     if let Some(review_loop) = &state.review_loop
-        && let Ok(request) = serde_json::from_slice::<GraphqlRequest>(&body)
+        && let Some(request) = request
         && let Some(answer) = review_loop.answer(&request.query, &request.variables)
     {
         if state.oauth.credentials(&headers) != Credentials::Valid {
@@ -805,7 +803,7 @@ pub(crate) async fn serve_graphql(
         return answer;
     }
     if let Some(dashboard) = &state.dashboard
-        && let Ok(request) = serde_json::from_slice::<GraphqlRequest>(&body)
+        && let Some(request) = request
     {
         if state.oauth.credentials(&headers) != Credentials::Valid {
             return dashboard.unauthorized();
@@ -820,11 +818,11 @@ pub(crate) async fn serve_graphql(
             });
         match doc {
             Ok(doc) if execute::routes_to_v1(&doc, dashboard.recorded_pull.as_ref()) => {}
-            Ok(doc) => return dashboard.graphql(Ok(&doc), &request, &headers),
-            Err(error) => return dashboard.graphql(Err(&error), &request, &headers),
+            Ok(doc) => return dashboard.graphql(Ok(&doc), request, &headers),
+            Err(error) => return dashboard.graphql(Err(&error), request, &headers),
         }
     }
-    crate::graphql::serve(State(state.graphql), headers, body).await
+    graphql::serve(&state.graphql, &headers, request)
 }
 
 /// Test controls of the dashboard world.

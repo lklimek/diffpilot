@@ -166,9 +166,8 @@ describe("AskChat (proposal AC3–AC10)", () => {
       const onSend = vi.fn(() => Promise.reject(Object.assign(new Error(message), { status, code })));
       render(<Harness onSend={onSend} />);
       await userEvent.setup().type(field(), "Why?{Enter}");
-      expect(await within(chat()).findByRole("alert")).toHaveTextContent(
-        new RegExp(`^${said.replace(/[.?]/g, "\\$&")}$`),
-      );
+      const alert = await within(chat()).findByRole("alert");
+      expect(alert.textContent?.replace(/\s+/g, " ").trim()).toBe(said);
     },
   );
 

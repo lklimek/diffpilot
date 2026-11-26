@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use fake_github::{Config, StartError};
-use reqwest::header::{ACCEPT, AUTHORIZATION, LOCATION, USER_AGENT};
+use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, LOCATION, USER_AGENT};
 use reqwest::{Client, StatusCode, redirect};
 use serde_json::Value;
 use serde_json::value::RawValue;
@@ -681,6 +681,37 @@ async fn pending(base: &str, token: &str) -> Value {
     let (status, body) = graphql(base, token, PENDING, pull_variables()).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     body["data"]["repository"]["pullRequest"].clone()
+}
+
+#[tokio::test]
+async fn graphql_body_errors_preserve_authentication_and_the_body_limit() {
+    let base = spawn(config()).await;
+    let token = token(&sign_in(&base).await, "access_token");
+    let valid_body =
+        serde_json::json!({"query": PENDING, "variables": pull_variables()}).to_string();
+    let oversized_body = " ".repeat(2 * 1024 * 1024 + 1);
+    for (token, content_type, body, status) in [
+        ("invalid", "application/json", "{", StatusCode::UNAUTHORIZED),
+        (&token, "application/json", "{", StatusCode::BAD_REQUEST),
+        (&token, "text/plain", &valid_body, StatusCode::BAD_REQUEST),
+        (
+            &token,
+            "application/json",
+            &oversized_body,
+            StatusCode::PAYLOAD_TOO_LARGE,
+        ),
+    ] {
+        let response = client()
+            .post(format!("{base}/graphql"))
+            .bearer_auth(token)
+            .header(USER_AGENT, "diffpilot")
+            .header(CONTENT_TYPE, content_type)
+            .body(body.to_owned())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status);
+    }
 }
 
 #[tokio::test]
