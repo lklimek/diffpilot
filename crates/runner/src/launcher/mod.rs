@@ -5,7 +5,7 @@ mod template;
 
 use std::{
     collections::{HashMap, HashSet},
-    sync::Arc,
+    sync::{Arc, Mutex, MutexGuard, Weak},
     time::Instant,
 };
 
@@ -17,6 +17,7 @@ use bollard::{
 };
 use contracts::{job::access::McpHttpEndpoint, launcher::WorkerStatus, runtime::ContainerId};
 use futures::StreamExt;
+use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 
 pub use client::Client;
 pub use serve::serve;
@@ -65,11 +66,17 @@ pub enum Error {
     RuntimeConfig,
 }
 
-/// Container state is serialized under the service's lifecycle mutex.
-#[derive(Clone)]
 struct Launcher {
     docker: Docker,
     settings: Settings,
+    state: Mutex<Lifecycle>,
+    // Only Ensure can grow the running set. Stop and idle sweep never wait on allocation.
+    allocation: AsyncMutex<()>,
+}
+
+#[derive(Default)]
+struct Lifecycle {
+    operations: HashMap<String, Weak<AsyncMutex<()>>>,
     used: HashMap<String, Instant>,
     ensured: HashMap<String, Instant>,
     attached: HashMap<String, Arc<()>>,
@@ -133,41 +140,48 @@ const ENSURE_RESERVATION: std::time::Duration =
     std::time::Duration::from_secs(contracts::job::spec::JobLimits::MAX_RUNTIME_SECS as u64 + 60);
 
 impl Launcher {
-    fn occupied(&self, name: &str) -> bool {
-        self.attached.contains_key(name)
-            || self.fetching.contains(name)
-            || self
-                .ensured
-                .get(name)
-                .is_some_and(|at| at.elapsed() < ENSURE_RESERVATION)
+    fn new(docker: Docker, settings: Settings) -> Self {
+        Self {
+            docker,
+            settings,
+            state: Mutex::default(),
+            allocation: AsyncMutex::default(),
+        }
     }
 
-    fn begin_attachment(&mut self, name: &str) -> Option<Arc<()>> {
-        if self.fetching.contains(name)
-            || self.attached.contains_key(name)
-            || self
-                .ensured
-                .remove(name)
-                .is_none_or(|at| at.elapsed() >= ENSURE_RESERVATION)
-        {
+    fn state(&self) -> MutexGuard<'_, Lifecycle> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn operation(&self, name: &str) -> Arc<AsyncMutex<()>> {
+        let mut state = self.state();
+        state.operations.retain(|_, lock| lock.strong_count() != 0);
+        if let Some(lock) = state.operations.get(name).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let operation = Arc::default();
+        state
+            .operations
+            .insert(name.to_owned(), Arc::downgrade(&operation));
+        operation
+    }
+
+    fn try_idle_operation(&self, name: &str) -> Option<OwnedMutexGuard<()>> {
+        let operation = self.operation(name).try_lock_owned().ok()?;
+        if self.state().occupied(name) {
             return None;
         }
-        let relay = Arc::new(());
-        self.attached.insert(name.to_owned(), relay.clone());
-        Some(relay)
+        Some(operation)
     }
 
-    fn has_attachment(&self, name: &str, relay: &Arc<()>) -> bool {
-        self.attached
-            .get(name)
-            .is_some_and(|current| Arc::ptr_eq(current, relay))
+    fn begin_attachment(&self, name: &str) -> Option<Arc<()>> {
+        self.state().begin_attachment(name)
     }
 
-    fn finish_attachment(&mut self, name: String, relay: &Arc<()>) {
-        if self.has_attachment(&name, relay) {
-            self.attached.remove(&name);
-            self.used.insert(name, Instant::now());
-        }
+    fn finish_attachment(&self, name: String, relay: &Arc<()>) {
+        self.state().finish_attachment(name, relay);
     }
 
     async fn objects(&self) -> Result<Vec<ContainerSummary>, Error> {
@@ -279,7 +293,8 @@ impl Launcher {
         }
     }
 
-    async fn stop(&mut self, id: &ContainerId) -> Result<(), Error> {
+    // Service callers hold this container's operation lock across Docker mutations.
+    async fn stop(&self, id: &ContainerId) -> Result<(), Error> {
         let name = self.settings.name(id, false);
         if let Some(c) = self.inspect(id, false).await? {
             if c.state.and_then(|s| s.running) == Some(true) {
@@ -294,14 +309,15 @@ impl Launcher {
                 self.docker.remove_container(&name, None).await?;
             }
         }
-        self.used.remove(&name);
-        self.ensured.remove(&name);
-        self.attached.remove(&name);
+        let mut state = self.state();
+        state.used.remove(&name);
+        state.ensured.remove(&name);
+        state.attached.remove(&name);
         Ok(())
     }
 
-    async fn remove(&mut self, id: &ContainerId) -> Result<(), Error> {
-        if self.occupied(&self.settings.name(id, false)) {
+    async fn remove(&self, id: &ContainerId) -> Result<(), Error> {
+        if self.state().occupied(&self.settings.name(id, false)) {
             return Err(Error::Busy);
         }
         self.stop(id).await?;
@@ -409,17 +425,18 @@ impl Launcher {
         .unwrap_or(Err(Error::RuntimeConfig))
     }
 
-    // Return whether a CS1 start needs CS3; the service performs it outside the lifecycle lock.
+    // Return whether a CS1 start needs CS3; the service performs it outside the operation lock.
     async fn ensure(
-        &mut self,
+        &self,
         id: &ContainerId,
         memcan: Option<&McpHttpEndpoint>,
     ) -> Result<bool, Error> {
         let config = self.settings.template(id, false, memcan)?;
         let name = self.settings.name(id, false);
-        if self.occupied(&name) {
+        if self.state().occupied(&name) {
             return Err(Error::Busy);
         }
+        let allocating = self.allocation.lock().await;
         let mut existing = self.inspect(id, false).await?;
         let drifted = existing.as_ref().is_some_and(|c| {
             c.config.as_ref().is_none_or(|c| {
@@ -458,19 +475,28 @@ impl Launcher {
                 .collect();
             if candidates.len() >= self.settings.max_running {
                 let needed = candidates.len() - self.settings.max_running + 1;
-                candidates.retain(|w| {
-                    let name = self.settings.name(&w.container, false);
-                    !self.occupied(&name)
-                });
-                candidates.sort_by_key(|w| {
-                    self.used
-                        .get(&self.settings.name(&w.container, false))
-                        .copied()
-                });
-                if candidates.len() < needed {
+                {
+                    let state = self.state();
+                    candidates.sort_by_key(|w| {
+                        state
+                            .used
+                            .get(&self.settings.name(&w.container, false))
+                            .copied()
+                    });
+                }
+                let evictions: Vec<_> = candidates
+                    .into_iter()
+                    .filter_map(|worker| {
+                        let guard =
+                            self.try_idle_operation(&self.settings.name(&worker.container, false))?;
+                        Some((worker, guard))
+                    })
+                    .take(needed)
+                    .collect();
+                if evictions.len() < needed {
                     return Err(Error::Busy);
                 }
-                for candidate in candidates.into_iter().take(needed) {
+                for (candidate, _operation) in evictions {
                     self.stop(&candidate.container).await?;
                 }
             }
@@ -489,13 +515,13 @@ impl Launcher {
             }
             self.docker.start_container(&name, None).await?;
         }
+        self.state().ensured.insert(name.clone(), Instant::now());
+        drop(allocating);
         if let Err(error) = self.configure(id, memcan).await {
             self.stop(id).await?;
             return Err(error);
         }
-        let now = Instant::now();
-        self.used.insert(name.clone(), now);
-        self.ensured.insert(name, now);
+        self.state().used.insert(name, Instant::now());
         Ok(started && matches!(id, ContainerId::Pr { .. }))
     }
 
@@ -575,24 +601,28 @@ impl Launcher {
     }
 
     // The provider retires local keys before releasing a job attachment.
-    async fn sweep(&mut self) -> Result<(), Error> {
-        self.ensured
+    async fn sweep(&self) -> Result<(), Error> {
+        self.state()
+            .ensured
             .retain(|_, at| at.elapsed() < ENSURE_RESERVATION);
         for worker in self.list().await?.into_iter().filter(|w| w.running) {
             let name = self.settings.name(&worker.container, false);
-            if !self.occupied(&name)
-                && self
-                    .used
-                    .get(&name)
-                    .is_none_or(|t| t.elapsed().as_secs() >= self.settings.idle_seconds)
-            {
+            let Some(_operation) = self.try_idle_operation(&name) else {
+                continue;
+            };
+            let expired = self
+                .state()
+                .used
+                .get(&name)
+                .is_none_or(|t| t.elapsed().as_secs() >= self.settings.idle_seconds);
+            if expired {
                 self.stop(&worker.container).await?;
             }
         }
         Ok(())
     }
 
-    async fn reconcile(&mut self) -> Result<(), Error> {
+    async fn reconcile(&self) -> Result<(), Error> {
         for worker in self.list().await? {
             self.stop(&worker.container).await?;
         }
@@ -618,6 +648,45 @@ impl Launcher {
             }
         }
         Ok(())
+    }
+}
+
+impl Lifecycle {
+    fn occupied(&self, name: &str) -> bool {
+        self.attached.contains_key(name)
+            || self.fetching.contains(name)
+            || self
+                .ensured
+                .get(name)
+                .is_some_and(|at| at.elapsed() < ENSURE_RESERVATION)
+    }
+
+    fn begin_attachment(&mut self, name: &str) -> Option<Arc<()>> {
+        if self.fetching.contains(name)
+            || self.attached.contains_key(name)
+            || self
+                .ensured
+                .remove(name)
+                .is_none_or(|at| at.elapsed() >= ENSURE_RESERVATION)
+        {
+            return None;
+        }
+        let relay = Arc::new(());
+        self.attached.insert(name.to_owned(), relay.clone());
+        Some(relay)
+    }
+
+    fn has_attachment(&self, name: &str, relay: &Arc<()>) -> bool {
+        self.attached
+            .get(name)
+            .is_some_and(|current| Arc::ptr_eq(current, relay))
+    }
+
+    fn finish_attachment(&mut self, name: String, relay: &Arc<()>) {
+        if self.has_attachment(&name, relay) {
+            self.attached.remove(&name);
+            self.used.insert(name, Instant::now());
+        }
     }
 }
 
