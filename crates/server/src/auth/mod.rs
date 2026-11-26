@@ -246,6 +246,17 @@ impl Session {
         }
     }
 
+    /// Verifies the request's CSRF header against this browser session.
+    pub(crate) fn check_csrf(&self, headers: &HeaderMap) -> Result<(), AuthError> {
+        let presented = headers
+            .get(CSRF_HEADER)
+            .and_then(|value| value.to_str().ok());
+        match (presented, self.csrf_token()) {
+            (Some(token), Some(expected)) if secrets_equal(token, expected) => Ok(()),
+            _ => Err(AuthError::CsrfRejected),
+        }
+    }
+
     /// Whether the request authenticated with a personal access token.
     pub(crate) fn is_access_token(&self) -> bool {
         matches!(self.credential, Credential::AccessToken(_))
@@ -370,14 +381,8 @@ impl FromRequestParts<AppState> for SessionCsrf {
         let session = Session::load(parts, state)
             .await?
             .ok_or(ApiFailure(AuthError::Unauthenticated))?;
-        let presented = parts
-            .headers
-            .get(CSRF_HEADER)
-            .and_then(|value| value.to_str().ok());
-        match (presented, session.csrf_token()) {
-            (Some(token), Some(expected)) if secrets_equal(token, expected) => Ok(Self(session)),
-            _ => Err(ApiFailure(AuthError::CsrfRejected)),
-        }
+        session.check_csrf(&parts.headers)?;
+        Ok(Self(session))
     }
 }
 

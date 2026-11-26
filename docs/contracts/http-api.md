@@ -281,6 +281,9 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
 - **Controlled owners** (R16, v1.2). Replaces the installation-wide list of controlled GitHub owners (case-insensitive,
   deduplicated, sorted); `Settings.controlled_owners` reports it with who changed it and when. The pull request's
   owner is controlled whether listed or not.
+- **Browser Settings session** (v1.5). A browser may send `X-CSRF-Token` with a Settings read to bind its
+  response to the session that opened the form. A mismatched session token returns 403 `csrf_rejected`.
+  Cookie requests without the header and access-token reads still use the usual read authentication.
 - **LLM selection** (v1.5). Settings reads the authenticated payer's effective model, reasoning effort, Ask
   effort and ranking effort. Each unset preference falls back to the installation's pre-v1.5 selection and
   then to Sol 6.1/high, Ask medium and ranking low. `changed_by` and `changed_at` report only a personal

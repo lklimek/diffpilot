@@ -7,7 +7,7 @@ use std::borrow::Cow;
 
 use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, put};
 use axum::{Json, Router};
 use contracts::api::error::ApiErrorCode;
@@ -28,7 +28,9 @@ use db::repo::settings::{AnalysedRepo, CallFailure, LastCall, LlmSelectionUpdate
 
 use crate::api::error::{ApiErrorSource, ApiFailure};
 use crate::auth::access_tokens::github_read;
-use crate::auth::{Session, SessionCsrf, user_access_token, user_token_rejected};
+use crate::auth::{
+    AuthError, CSRF_HEADER, Session, SessionCsrf, user_access_token, user_token_rejected,
+};
 use crate::github::rest::{self, GithubError, is_valid_repo};
 use crate::memcan::profile;
 use crate::pipeline;
@@ -52,6 +54,9 @@ pub enum SettingsApiError {
     /// The gateway did not return a common status or challenge.
     #[error("the Codex gateway is unavailable")]
     Gateway(#[from] crate::gateway::client::Error),
+    /// A session-bound settings read could not verify the session.
+    #[error(transparent)]
+    Auth(#[from] AuthError),
     /// Malformed JSON body, or a value outside the allowed list.
     #[error("the request body is not valid")]
     Json(#[from] JsonRejection),
@@ -79,6 +84,7 @@ impl ApiErrorSource for SettingsApiError {
     fn code(&self) -> ApiErrorCode {
         match self {
             Self::GatewayNotConfigured | Self::Gateway(_) => ApiErrorCode::Unavailable,
+            Self::Auth(error) => error.code(),
             Self::Json(rejection) => rejection.code(),
             Self::Path(rejection) => rejection.code(),
             Self::InvalidRepository | Self::InvalidModel | Self::InvalidOwners => {
@@ -94,6 +100,7 @@ impl ApiErrorSource for SettingsApiError {
             Self::GatewayNotConfigured | Self::Gateway(_) => {
                 Cow::Borrowed("The Codex connection is unavailable. Try again later.")
             }
+            Self::Auth(error) => error.public_message(),
             Self::Json(rejection) => rejection.public_message(),
             Self::Path(rejection) => rejection.public_message(),
             Self::Db(error) => error.public_message(),
@@ -130,7 +137,14 @@ pub fn routes() -> Router<AppState> {
         .route(GET_REPO_SETTINGS.path, get(read_repo))
 }
 
-async fn read(State(state): State<AppState>, session: Session) -> SettingsResult<Json<Settings>> {
+async fn read(
+    State(state): State<AppState>,
+    session: Session,
+    headers: HeaderMap,
+) -> SettingsResult<Json<Settings>> {
+    if headers.contains_key(CSRF_HEADER) && !session.is_access_token() {
+        session.check_csrf(&headers).map_err(failure)?;
+    }
     Ok(Json(settings(&state, &session).await.map_err(failure)?))
 }
 
@@ -1206,6 +1220,24 @@ pub(super) mod tests {
         assert_eq!(settings["llm_selection"]["current"], choice);
         assert_eq!(settings["llm_selection"]["ask_effort"], "medium");
         assert_eq!(settings["llm_selection"]["changed_by"], "lklimek");
+    }
+
+    #[tokio::test]
+    async fn settings_read_can_require_the_expected_browser_session() {
+        let h = harness().await;
+        for (token, expected) in [
+            ("stale-token", StatusCode::FORBIDDEN),
+            ("csrf", StatusCode::OK),
+        ] {
+            let request = Request::get(GET_SETTINGS.path)
+                .header("cookie", &h.cookie)
+                .header(CSRF_HEADER, token)
+                .body(Body::empty())
+                .unwrap();
+            let response = api::router(h.state.clone()).oneshot(request).await.unwrap();
+            assert_eq!(response.status(), expected);
+        }
+        assert_eq!(h.get(GET_SETTINGS.path).await.0, StatusCode::OK);
     }
 
     #[tokio::test]

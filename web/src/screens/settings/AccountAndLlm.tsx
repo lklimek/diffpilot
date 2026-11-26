@@ -87,12 +87,12 @@ export function LlmPage({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => 
   const setJudgeEffort = useSetJudgeEffort();
   const setLanguage = useSetLanguage();
   const setSlots = useSetLlmJobSlots();
-  const save = async ({ model, ask, ranking, slots }: LlmChoiceChanges) => {
-    // Each mutation returns the full selection and updates the same cache.
-    if (model) await setLlm.mutateAsync(model);
-    if (ask) await setAskEffort.mutateAsync(ask);
-    if (ranking) await setJudgeEffort.mutateAsync(ranking);
-    if (slots !== undefined) await setSlots.mutateAsync(slots);
+  const sessionScope = settings.sessionScope;
+  const save = async (sessionScope: number, { model, ask, ranking, slots }: LlmChoiceChanges) => {
+    if (model) await setLlm.mutateAsync({ value: model, sessionScope });
+    if (ask) await setAskEffort.mutateAsync({ value: ask, sessionScope });
+    if (ranking) await setJudgeEffort.mutateAsync({ value: ranking, sessionScope });
+    if (slots !== undefined) await setSlots.mutateAsync({ value: slots, sessionScope });
   };
   return (
     <>
@@ -115,11 +115,12 @@ export function LlmPage({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => 
           lastCall={settings.data?.llm_status}
         />
       </div>
-      {settings.data?.llm_selection && (
+      {settings.data?.llm_selection && sessionScope !== undefined && (
         <LlmSelectionCard
+          key={sessionScope}
           selection={settings.data.llm_selection}
           jobSlots={settings.data.llm_job_slots}
-          onSave={save}
+          onSave={(changes) => save(sessionScope, changes)}
           onDirtyChange={onDirtyChange}
         />
       )}

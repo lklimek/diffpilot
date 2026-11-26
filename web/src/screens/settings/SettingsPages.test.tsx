@@ -1,3 +1,4 @@
+import { QueryClient } from "@tanstack/react-query";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
@@ -86,6 +87,60 @@ it("saves three concurrent LLM job slots without changing the model", async () =
   expect(slots).toHaveValue(3);
   expect(model.getByLabelText("Model")).toHaveValue("gpt-6.1-sol");
   expect(writes).toEqual([{ slots: 3 }]);
+});
+
+it("drops a settings draft and its cache when the browser changes accounts", async () => {
+  const original = { login: "alice", csrf: "alice-session", model: "gpt-6.1-sol" };
+  const colleague = { login: "bob", csrf: "bob-session", model: "gpt-6-sol" };
+  let signedIn = original;
+  const reads: (string | null)[] = [];
+  const writes: (string | null)[] = [];
+  const changedAccounts = () =>
+    HttpResponse.json({ code: "csrf_rejected", message: "Reload the page." }, { status: 403 });
+  server.use(
+    http.get("/api/v1/me", () =>
+      HttpResponse.json({
+        user: { login: signedIn.login, name: null, avatar_url: null, language: "en" },
+        csrf_token: signedIn.csrf,
+      }),
+    ),
+    http.get("/api/v1/settings", ({ request }) => {
+      const token = request.headers.get("X-CSRF-Token");
+      reads.push(token);
+      if (token !== null && token !== signedIn.csrf) return changedAccounts();
+      return HttpResponse.json({
+        ...SETTINGS,
+        llm_selection: {
+          ...SETTINGS.llm_selection!,
+          current: { model: signedIn.model, reasoning_effort: "high" },
+        },
+      });
+    }),
+    http.put("/api/v1/settings/llm", async ({ request }) => {
+      const token = request.headers.get("X-CSRF-Token");
+      writes.push(token);
+      if (token !== signedIn.csrf) return changedAccounts();
+      return HttpResponse.json({ ...SETTINGS.llm_selection!, current: await request.json() });
+    }),
+  );
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  renderRoute("/settings/llm", queryClient);
+  const card = within(await screen.findByRole("region", { name: "Model and effort" }));
+  expect(card.getByLabelText("Model")).toHaveValue(original.model);
+  await userEvent.selectOptions(card.getByLabelText("Model"), "gpt-6-astra");
+
+  signedIn = colleague;
+  await userEvent.click(card.getByRole("button", { name: "Save" }));
+
+  await waitFor(() => expect(screen.getByLabelText("Model")).toHaveValue(colleague.model));
+  expect(writes).toEqual([original.csrf]);
+  expect(reads).toEqual(expect.arrayContaining([original.csrf, colleague.csrf]));
+  expect(reads).not.toContain(null);
+  const entries = queryClient.getQueriesData<typeof SETTINGS>({ queryKey: ["settings", "session"] });
+  expect(entries.map(([, data]) => data?.llm_selection?.current.model)).toEqual([colleague.model]);
+  const cacheKeys = JSON.stringify(entries.map(([key]) => key));
+  expect(cacheKeys).not.toContain(original.csrf);
+  expect(cacheKeys).not.toContain(colleague.csrf);
 });
 
 it("retries the failed effort without repeating a successful edit from the same Save", async () => {
