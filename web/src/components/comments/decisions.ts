@@ -11,8 +11,10 @@ import type {
   EffectsPreview,
   Executor,
   Gate,
+  ItemMark,
   PlannedEffect,
 } from "../../api/generated/types";
+import { clockText } from "../format/time";
 import { awaitsDecision } from "./queueStatus";
 
 /** A choice on a card: a decision kind, or D8 "Accept despite the gate" (stored as Reject with a gate override). */
@@ -34,6 +36,11 @@ export const CHOICE_LABEL: Record<Choice, string> = {
   keep_reviews: "Keep them",
   not_a_review_point: "Not a review point",
 };
+
+export function markText(mark: ItemMark, now?: Date): string {
+  const follows = mark.follows == null ? "" : ` · follows C${mark.follows}`;
+  return `${CHOICE_LABEL.not_a_review_point}${follows} · by ${mark.by} · ${clockText(mark.at, now)}`;
+}
 
 /** Thread and body item decisions in their base order (D2, D3, D4, D5, D6, D7, D1). */
 const ITEM_CHOICES: Choice[] = [

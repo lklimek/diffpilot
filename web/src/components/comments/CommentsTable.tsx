@@ -14,6 +14,7 @@ import {
   choicesFor,
   decisionLabel,
   gateOf,
+  markText,
   missingInput,
   needOf,
   recommendedValue,
@@ -367,7 +368,7 @@ export function CommentsTable(props: CommentsTableProps) {
                   {common(item)}
                   <td className={TD}>
                     {item.not_a_review_point ? (
-                      CHOICE_LABEL.not_a_review_point
+                      markText(item.not_a_review_point, now)
                     ) : d ? (
                       <>
                         <b>{decisionLabel(d)}</b>

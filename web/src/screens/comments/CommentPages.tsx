@@ -13,6 +13,7 @@ import { CarryOvers } from "../../components/comments/CarryOvers";
 import { CommentsTable } from "../../components/comments/CommentsTable";
 import { DecisionLog } from "../../components/comments/DecisionLog";
 import { RoundsTable } from "../../components/comments/RoundsTable";
+import { CHOICE_LABEL } from "../../components/comments/decisions";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { useAskChat } from "../review/askChat";
 import { ALL_CARRY_OVERS_PATH, commentsPath, itemPath } from "../pr/paths";
@@ -47,9 +48,18 @@ export function TableScreen() {
             { via: "table", rows },
             {
               onSuccess: (stored) => {
-                setDone(`${stored.length} decisions recorded, one per row.`);
-                if (!stored.every((decision) => decision.kind === "not_a_review_point"))
+                const marks = stored.filter((entry) => entry.kind === "not_a_review_point");
+                const decisions = stored.length - marks.length;
+                const messages = [];
+                if (marks.length === 1)
+                  messages.push(`C${marks[0]!.item_no}: ${CHOICE_LABEL.not_a_review_point}.`);
+                else if (marks.length > 1)
+                  messages.push(`${marks.length} items marked “${CHOICE_LABEL.not_a_review_point}”.`);
+                if (decisions) {
+                  messages.push(`${decisions} ${decisions === 1 ? "decision" : "decisions"} recorded.`);
                   setRecorded((n) => n + 1);
+                }
+                setDone(messages.join(" "));
               },
             },
           )

@@ -276,8 +276,21 @@ test("a gate mark is recorded alone from the table", async ({ page }) => {
   await page.getByRole("textbox", { name: /^Reason or target for C14/ }).fill("Fixture only.");
   await expectAccessible(page);
   await page.getByRole("button", { name: "Mark C14" }).click();
+  await expect(page.getByText("C14: Not a review point.", { exact: true })).toBeVisible();
   await expect(page.getByRole("combobox", { name: /^Decision for C14/ })).toHaveCount(0);
   await expect(page.getByRole("combobox", { name: /^Decision for C15/ })).toBeVisible();
+  const provenance = /Not a review point · follows C14 · by alice · 09:\d{2}/;
+  await page.getByRole("button", { name: "Show all", exact: true }).click();
+  await expect(page.locator('tr[data-row="C30"]')).toContainText(provenance);
+
+  await page.getByRole("link", { name: /^Questions,/ }).click();
+  const queue = page.getByRole("navigation", { name: "Queue" });
+  await queue.getByRole("button", { name: /^Status:/ }).click();
+  await page.getByRole("menuitemradio", { name: "Not a review point (3)" }).click();
+  const follower = queue.getByRole("button", { name: /^C30/ });
+  await expect(follower).toContainText(provenance);
+  await follower.click();
+  await expect(page.getByRole("article", { name: "C30" })).toContainText(provenance);
   await page.getByRole("link", { name: "Decision log and agents", exact: true }).click();
   await expect(page.getByRole("listitem").filter({ hasText: /C14 · Not a review point/ })).toContainText(
     "Fixture only.",

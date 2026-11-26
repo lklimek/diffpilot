@@ -1201,7 +1201,11 @@ function planRows(rows: DecisionBatchRow[]): PlannedRow[] | Refusal {
         item.gone_at
       )
         continue;
-      if (row.kind === "not_a_review_point" && (!isOpen(item) || item.kind === "pr_question")) continue;
+      if (
+        row.kind === "not_a_review_point" &&
+        (item.not_a_review_point || !isOpen(item) || item.kind === "pr_question")
+      )
+        continue;
       const carried = item.decisions.at(-1)?.carried_from;
       if (!isOpen(item) && !isAssessing(item) && !it!.decisions.some((decision) => decision.id === carried))
         continue;

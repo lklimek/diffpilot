@@ -21,7 +21,7 @@ import { buttonClass } from "../button/button";
 import { OpenExternal } from "../dashboard/common/OpenExternal";
 import { ProvenanceTag, provenanceNote, type ProvenanceSource } from "../section/ProvenanceTag";
 import { Tooltip } from "../tooltip/Tooltip";
-import { CHOICE_LABEL, decisionLabel } from "./decisions";
+import { CHOICE_LABEL, decisionLabel, markText } from "./decisions";
 import { itemId } from "./parts";
 
 /** The key of a queue entry (its item numbers). */
@@ -196,7 +196,7 @@ export function commentStatusText(item: CommentItem, inPass?: number, since?: st
         ? `Not assessed: ${NOT_ASSESSED[item.assessment_state.reason] ?? item.assessment_state.reason}`
         : "Not assessed";
     case "not_a_review_point":
-      return QUEUE_STATUS.not_a_review_point;
+      return markText(item.not_a_review_point!, now);
     case "duplicates":
       return `⧉ Same point as C${item.duplicate_of}`;
     case "status_comments":

@@ -230,13 +230,16 @@ export function DecisionLog({
             ))}
             {entries.map((d) =>
               "at" in d ? (
-                <li key={d.id} className="rounded-lg border border-border bg-surface px-3 py-2">
-                  <b>
+                <li
+                  key={d.id}
+                  className={`rounded-lg border border-border bg-surface px-3 py-2 ${d.undone_at ? "text-muted" : ""}`}
+                >
+                  <b className={d.undone_at ? "line-through" : undefined}>
                     {dateTimeText(d.at)} · C{d.item_no} · {CHOICE_LABEL.not_a_review_point}
                   </b>{" "}
                   by {d.by}
                   {d.follows != null && ` · follows C${d.follows}`}
-                  {d.reason && <div>Reason: {d.reason}</div>}
+                  {d.reason && <div>Reason (not posted): &quot;{d.reason}&quot;</div>}
                   {d.undone_at ? (
                     <div>
                       Undone {dateTimeText(d.undone_at)} by {d.undone_by}

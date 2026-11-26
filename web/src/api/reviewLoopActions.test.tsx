@@ -5,18 +5,20 @@ import { setupServer } from "msw/node";
 import type { ReactNode } from "react";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { listItems, resetReviewLoop } from "../mocks/review-loop";
-import type { CommentItem, ItemActionRequest, PrRef } from "./generated/types";
+import type { CommentItem, ItemActionRequest, MarkLogEntry, PrRef } from "./generated/types";
 import { useAssessAgain, useUndoDecision } from "./review-loop";
 
 const PR: PrRef = { repo: { owner: "acme", name: "node-client" }, number: 482 };
 const ITEMS = "/api/v1/prs/acme/node-client/482/comments/items";
 
 let stored: CommentItem[] = [];
+let marks: MarkLogEntry[] = [];
 const undone: ItemActionRequest[] = [];
 let assessStatus = 202;
 const server = setupServer(
   http.get("/api/v1/me", () => HttpResponse.json({ user: null, csrf_token: "csrf" })),
   http.get(ITEMS, () => HttpResponse.json(stored)),
+  http.get("/api/v1/prs/acme/node-client/482/comments/log", () => HttpResponse.json({ marks })),
   http.post(`${ITEMS}/C14/undo`, async ({ request }) => {
     undone.push((await request.json()) as ItemActionRequest);
     return HttpResponse.json(stored.find((i) => i.no === 14));
@@ -36,6 +38,7 @@ const server = setupServer(
 beforeAll(() => server.listen({ onUnhandledFrame: "error" }));
 afterEach(() => {
   undone.length = 0;
+  marks = [];
   assessStatus = 202;
   resetReviewLoop();
 });
@@ -72,6 +75,26 @@ describe("Undo (RC12, F5)", () => {
     act(() => result.current.undo.mutate({ no: 14, decision: "d-new" }));
     await waitFor(() => expect(result.current.undo.isError).toBe(true));
     expect(result.current.undo.error?.message).toBe("C14 changed since your decision. Read it again.");
+    expect(undone).toEqual([]);
+  });
+
+  it("refuses mark Undo with 409 after that mark ended and another took its place", async () => {
+    const mark = { by: "alice", at: "2026-11-18T09:20:00Z" };
+    const item = listItems().find((i) => i.no === 14)!;
+    stored = [{ ...item, revision: 9, not_a_review_point: mark }];
+    marks = [
+      { id: "ended", item_no: 14, ...mark, undone_at: mark.at, undone_by: "alice", reason: null },
+      { id: "current", item_no: 14, ...mark, undone_at: null, undone_by: null, reason: null },
+    ];
+    const { result } = setup();
+    act(() => result.current.undo.mutate({ no: 14, decision: "ended", mark: true }));
+    await waitFor(() =>
+      expect(result.current.undo.error).toMatchObject({
+        status: 409,
+        code: "item_changed",
+        message: "C14 changed since your decision. Read it again.",
+      }),
+    );
     expect(undone).toEqual([]);
   });
 });
