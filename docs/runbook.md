@@ -24,7 +24,8 @@ sr() { docker compose --env-file /srv/diffpilot/.env -f /srv/diffpilot/app/deplo
 ## First deploy (empty database)
 
 1. Register a GitHub App with callback `https://YOUR_HOST/auth/github/callback`, repository permissions
-   Pull requests read/write and Contents/Checks/Issues/Metadata read. Install it on the reviewed repositories.
+   Pull requests read/write and Contents, Checks, Issues, Metadata and Commit statuses read-only. Install it on
+   the reviewed repositories.
 2. Keep the App private key server-only, uid 10010 mode 0400 in production. Configure `.env` from
    `.env.example`: public URL, allowed logins, App IDs/client secret/key path, MemCan URL/token, encryption key
    (`openssl rand -base64 32`), runner secret (`openssl rand -hex 32`), socket GID and image references.
@@ -135,11 +136,10 @@ the matching pre-migration full DB-volume backup; never start old binaries again
 1. Run `traefik version` on the proxy host, or run it inside the running Traefik container with `docker exec`.
    Proceed with **3.6.4 or newer** on v3 or **2.11.32 or newer** on v2. Save the current router configuration.
    Keep request-body logging disabled in Traefik and cloudflared, including during troubleshooting.
-2. Set `SR_GITHUB_WEBHOOK_SECRET` in the server's deployment environment (at least 32 characters, generated with
-   `openssl rand -hex 32` for a new webhook). For file-based secrets, use `SR_GITHUB_WEBHOOK_SECRET_FILE` and the
-   [webhook secrets overlay](deployment.md#github-webhook-secrets-as-files). Set `SR_GITHUB_WEBHOOK_URL` to
-   `https://webhooks.manago.cloud/diffpilot/github` for this installation so Settings shows the URL to enter in
-   GitHub. Remove `SR_MAINTAINER_DELEGATES` from the deployment environment. Members now configure their
+2. Leave `SR_GITHUB_WEBHOOK_SECRET` and `SR_GITHUB_WEBHOOK_SECRET_FILE` unset for the first v1.4 deploy. This
+   preserves hourly watch probes until the cutover. Set `SR_GITHUB_WEBHOOK_URL` to
+   `https://webhooks.manago.cloud/diffpilot/github` so Settings shows the URL to enter in GitHub. Remove
+   `SR_MAINTAINER_DELEGATES` from the deployment environment. Members now configure their
    [linked logins](settings.md#linked-logins) in Settings to relay decision proposals.
 3. Write `/srv/diffpilot/compose.webhook-port.yaml` and add `-f /srv/diffpilot/compose.webhook-port.yaml` to `sr`,
    after the base Compose file and any secrets overlays. Keep the override in subsequent deploys. This appends
@@ -152,41 +152,69 @@ the matching pre-migration full DB-volume backup; never start old binaries again
          - "127.0.0.1:3002:3002"
    ```
 
-   Use loopback if Traefik reaches the host through loopback. Otherwise replace `127.0.0.1` with a specific
-   private host address reachable by Traefik and restrict inbound TCP 3002 to Traefik. Deploy v1.4 using the
-   [upgrade procedure](#upgrade), or apply the override to an already running v1.4 stack with
-   `sr up -d --no-build --wait server`. Verify the server is healthy and `sr port server 3002` shows the chosen
-   bind address and port.
-4. **Switch the Traefik route only after the v1.4 server is deployed.** Keep the tunnel's existing host matcher
-   and use ``Path(`/diffpilot/github`)`` for an exact path match. Set the `ReplacePath` middleware to
-   `/webhooks/github` and point the service at `http://<host>:3002`, where `<host>` is the address Traefik reaches.
-   The resulting upstream URL must be `http://<host>:3002/webhooks/github`. Remove any broader `/diffpilot/`
-   matcher for this route and verify the reloaded router uses port 3002.
-5. Check rejection with an unsigned POST. Use the public URL if the WAF permits the probe. If the WAF admits only
-   GitHub traffic, run the example directly at the published listener from the proxy side, substituting the bind
-   address from step 3. Expect **401** from diffpilot. The probe creates no delivery receipt and triggers no work.
+   Use loopback when Traefik reaches the host through loopback. For remote Traefik, replace `127.0.0.1` with a
+   host address only Traefik can reach. If the address is shared and Docker uses its iptables backend, restrict
+   the published port to Traefik's source IP in `DOCKER-USER`, matching the original destination address and
+   port with `conntrack`. Docker-published ports bypass ordinary ufw rules. See [Docker's firewall documentation](https://docs.docker.com/engine/network/firewall-iptables/).
+
+   Deploy v1.4 using the [upgrade procedure](#upgrade), or apply the override to an already running v1.4 stack
+   with `sr up -d --no-build --wait server`. Verify the server is healthy and `sr port server 3002` shows the
+   chosen bind address and port.
+4. **The owner switches the route after the v1.4 server is deployed.** Prepare the exact Traefik match
+   ``Path(`/diffpilot/github`)`` with the existing host matcher. Set an explicit router `priority` greater than
+   the broader UI router's effective priority, for example `100` if the UI priority is lower. Configure
+   `ReplacePath` to `/webhooks/github` and the service to `http://<host>:3002`, using the address Traefik reaches.
+   The upstream URL is `http://<host>:3002/webhooks/github`.
+
+   In one maintenance window, set `SR_GITHUB_WEBHOOK_SECRET` to match the App (at least 32 characters, or use
+   `openssl rand -hex 32` for a new secret). For files, set `SR_GITHUB_WEBHOOK_SECRET_FILE` and use the
+   [webhook secrets overlay](deployment.md#github-webhook-secrets-as-files). Run
+   `sr up -d --no-build --wait --force-recreate server` and immediately switch the Traefik route. Once the
+   server starts with the secret, watched PRs in repositories it considers live skip hourly probes. Until the
+   route is switched and GitHub delivers events, use **Read GitHub again** for those PRs. If the cutover fails,
+   roll back the secret and recreate the server to restore hourly probes.
+
+   In the Traefik dashboard or `/api/http/routers` on its admin endpoint, confirm the active rule, priority,
+   middleware and service. Check the service's upstream address in `/api/http/services`.
+5. Send a POST with a well-formed invalid signature through Traefik's tunnel-facing entry point. Run the check
+   from the trusted network, resolving the webhook hostname to Traefik directly. Use the Host expected by the
+   router and, if necessary, the entry point's CA with `--cacert`.
 
    ```sh
-   webhook_test_url='http://127.0.0.1:3002/webhooks/github'
+   traefik_ip='<traefik-ip>'
+   webhook_host='webhooks.manago.cloud'
    delivery_id=$(python3 -c 'import uuid; print(uuid.uuid4())')
+   bad_signature=$(printf '%064d' 0)
    curl -sS -o /dev/null -w '%{http_code}\n' \
+     --resolve "$webhook_host:443:$traefik_ip" \
+     -H "Host: $webhook_host" \
      -H 'Content-Type: application/json' \
      -H 'X-GitHub-Event: ping' \
      -H "X-GitHub-Delivery: $delivery_id" \
-     --data-binary '{}' "$webhook_test_url"
+     -H "X-Hub-Signature-256: sha256=$bad_signature" \
+     --data-binary '{}' "https://$webhook_host/diffpilot/github"
    ```
+
+   **401** means the request reached the webhook receiver and failed signature verification. The server creates
+   no delivery receipt and triggers no work. **404** indicates a route to the UI port or a path mismatch. Check
+   the router match, priority, rewrite and upstream port before continuing.
 
 6. In the GitHub App, grant read access to **Commit statuses** and subscribe to the
    [listed events](deployment.md#4-github-app). Have installation owners accept the new permission. Set the
-   webhook URL, enter the matching secret and save with **Active** and SSL verification enabled. Under
-   **Advanced → Recent deliveries**, open the `ping`
-   delivery and click **Redeliver**. Expect HTTP **200** for the redelivery. The server logs that it received
-   the ping or deduplicated its delivery ID. This checks the full path through the tunnel and Traefik with a
-   GitHub signature.
+   webhook URL, enter the matching secret and save with **Active** and SSL verification enabled. GitHub sends
+   a fresh `ping` when the App webhook is first created. Find it under **Advanced → Recent deliveries** and
+   click **Redeliver**. Expect HTTP **200**. The server logs that it received the ping or deduplicated the delivery.
+   This checks the full path through the tunnel and Traefik with a GitHub signature.
 
-**Rollback.** Disable this Traefik webhook router or restore the saved proxy configuration with the webhook
-route disabled. Deactivate the webhook in the GitHub App. Remove the port override from `sr`, unset the server
-webhook secret variables and recreate the server to unpublish 3002 and restore hourly watch probes. If rolling
+   GitHub can redeliver only the last three days of deliveries. For an existing App with no recent `ping`, check
+   **Advanced → Recent deliveries** after saving the webhook settings. If no fresh ping appears, redeliver a
+   recent successful event and check for a **2xx**, or wait for the next subscribed event and check its response
+   there. GitHub documents [when it sends a ping](https://docs.github.com/en/webhooks/webhook-events-and-payloads#ping)
+   and [how to redeliver App webhooks](https://docs.github.com/en/webhooks/testing-and-troubleshooting-webhooks/redelivering-webhooks#redelivering-github-app-webhooks).
+
+**Rollback.** Unset `SR_GITHUB_WEBHOOK_SECRET` and `SR_GITHUB_WEBHOOK_SECRET_FILE`, remove the port override
+from `sr`, and run `sr up -d --no-build --wait --force-recreate server`. This restores hourly watch probes and
+unpublishes 3002. Disable the Traefik webhook router and deactivate the webhook in the GitHub App. If rolling
 back the application too, restore the matching pre-migration backup as described in [Upgrade](#upgrade). Use
 Refresh or the nightly scan while webhooks are disabled.
 
@@ -194,31 +222,45 @@ Refresh or the nightly scan while webhooks are disabled.
 
 1. Set `SR_GITHUB_WEBHOOK_SECRET_PREVIOUS` to the old secret and `SR_GITHUB_WEBHOOK_SECRET` to the new one. For
    file-based secrets, put the old value in the `previous` file and the new value in the `current` file, with the
-   [matching `_FILE` variables](deployment.md#github-webhook-secrets-as-files). Recreate the server with
-   `sr up -d --no-build --wait --force-recreate server`. If needed, enable receiver debug output for this deploy
-   with `RUST_LOG=info,server::webhooks::receive=debug`.
-2. Replace the webhook secret in the GitHub App settings and save. Wait for a delivery that logs
-   `GitHub webhook signature verified` with `secret=current`.
+   [matching `_FILE` variables](deployment.md#github-webhook-secrets-as-files). Save the existing `RUST_LOG`
+   setting and set `RUST_LOG=info,server::webhooks::receive=debug` in `/srv/diffpilot/.env`. Recreate the server
+   with `sr up -d --no-build --wait --force-recreate server`.
+2. Replace the webhook secret in the GitHub App settings and save. Read the server's Compose logs with
+   `sr logs --since 10m server | grep -F 'GitHub webhook signature verified'`. Wait for a delivery that shows
+   `secret=current` (the new secret). Older lines with `secret=previous` show the old secret was used.
 3. Remove `SR_GITHUB_WEBHOOK_SECRET_PREVIOUS` or `SR_GITHUB_WEBHOOK_SECRET_PREVIOUS_FILE` and its previous secret
-   file. Restore the original log level and recreate the server again.
+   file. Restore `RUST_LOG` in `.env` (remove the setting if it was unset) and run the recreate command again.
 
 ### Refused or missed GitHub deliveries
 
 - The receiver verifies `X-Hub-Signature-256` over the original body and checks the App target before processing
   any delivery. Source IPs and WAF rules provide no authentication. For 401, check the shared secret and App target.
 - A 404 can indicate a path mismatch or routing to the UI listener. A 503 can indicate a missing secret, a busy
-  receiver or a timeout. The listener can also refuse TCP connections at its connection limit. In a signed-in
-  session, `GET /api/v1/settings/github-webhook` reports `configured`, the latest verified delivery time from
-  stored receipts and recent untracked drops (`last_delivery_at`), and counts of drops (`dropped_deliveries`)
-  and TCP connection refusals (`refused_connections`). Both counters reset on restart. The drop count covers
-  at most the last 14 days.
+  receiver or a timeout. The listener can also refuse TCP connections at its connection limit.
 - Before the draining 404 handler shipped, the old UI route could reset connections during upload. About 40% of
   deliveries in the observed pre-v1.4 setup ended in 502 at Traefik. The nightly scan and Refresh recover the facts.
-- GitHub does not retry failed deliveries automatically and diffpilot runs no redelivery sweep. To retry one,
-  open GitHub App **Edit → Advanced → Recent deliveries**, select its delivery and click **Redeliver**.
+- GitHub does not retry failed deliveries automatically and diffpilot runs no redelivery sweep. To retry a
+  delivery from the last three days, open GitHub App **Edit → Advanced → Recent deliveries**, select the
+  delivery and click **Redeliver**.
   Refresh or the nightly scan recover My work facts. For a watched PR in a live repository, wait for its next
   event or use **Read GitHub again** in Comments.
   See [GitHub's redelivery instructions](https://docs.github.com/en/webhooks/testing-and-troubleshooting-webhooks/redelivering-webhooks).
+
+To read the counters, set `DP_READ_TOKEN` in the environment to a diffpilot personal access token with `read`
+scope. Use the UI/API base URL (`SR_PUBLIC_URL`) and run with shell tracing disabled. Pass the bearer header on
+standard input so the token stays out of the `curl` arguments and output.
+
+```sh
+diffpilot_url='https://review.example.com'
+printf 'Authorization: Bearer %s\n' "${DP_READ_TOKEN:?Set the diffpilot read token in the environment}" |
+  curl -fsS --header @- "$diffpilot_url/api/v1/settings/github-webhook" |
+  jq -e '{configured, last_delivery_at, dropped_deliveries, refused_connections}'
+```
+
+With the webhook enabled, expect `configured: true` and a recent `last_delivery_at` after a fresh signed delivery.
+The timestamp covers stored receipts and recent untracked drops. Both counters reset on restart. `dropped_deliveries`
+counts untracked deliveries over at most the last 14 days. `refused_connections` counts TCP refusals at the
+listener's connection limit and stays at zero during normal operation below that limit.
 
 ## Upgrade to v1.3
 

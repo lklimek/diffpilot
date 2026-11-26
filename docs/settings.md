@@ -79,9 +79,8 @@ Revoking a token stops it at once. Sign out everywhere revokes every token.
 ### Token usage
 
 **Today**, **Last 7 days** and **This month** use the server container's time zone. The deployment sets no `TZ`,
-so the windows use UTC. Today starts at midnight, Last 7 days starts at midnight six days ago, and This month
-starts at midnight on the first of the current month. The server includes the monthly total in the Settings
-response. The current screen may show it as unavailable.
+so the windows use UTC. Today starts at 00:00 UTC, Last 7 days starts at 00:00 UTC six days ago, and This month
+counts usage from 00:00 UTC on the first day of the current calendar month.
 
 ### Language of LLM texts
 

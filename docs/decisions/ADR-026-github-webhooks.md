@@ -1,9 +1,8 @@
 # ADR-026: GitHub App webhooks drive item refresh; no automatic scans; judgements go outdated instead of re-run
 
-- Status: accepted for v1.4. Owner decisions P1–P4 and the infrastructure of MemCan TODO `dea64a94`
-  (2026-11-24/25); owner answers OQ1–OQ4 of 2026-11-25 in `docs/v1.4-phase-b-plan.md` §11. Plan: `docs/v1.4-phase-b-plan.md`
-  §2, §4, §5. Security review SEC-001…013 (Smythe, 2026-11-25,
-  `/data/artifacts/diffpilot/2026-11-25/v14-phase-b-sec/sec-findings.md`) adopted.
+- Status: accepted (owner, 2026-11-25, v1.4 Phase B). Based on owner decisions P1–P4 and the infrastructure
+  of MemCan TODO `dea64a94` (2026-11-24/25). The [Phase B plan](../v1.4-phase-b-plan.md) records owner answers
+  OQ1–OQ4 in §11 and the webhook safeguards from the 2026-11-25 security review in §2 and §13.
 - Supersedes plan `docs/v1.1-dashboard-plan.md` §M (F2 automatic scans, F3 fact checks; v1.3 MW1). Reverses the
   rejected alternative "GitHub webhooks for watched PRs" of ADR-023 (amendment 2026-11-25 there). Extends ADR-020
   (nightly scan rule), ADR-022 §5 (targeted re-read is the event path) and ADR-017 (judgement reuse rule).
@@ -32,9 +31,11 @@ Automatic re-judging of changed items spent the daily cap (120) on items whose r
    Early responses drain the unread body up to 4 MiB within the body timeout. An oversized `Content-Length`
    gets 413 and closes the connection. A body that exceeds the size or time limit during draining also closes
    the connection.
-3. **Trust:** Authentication always requires the signature and App target checks. The WAF and source IPs provide
-   traffic filtering. The App `claudbot` is public. A repository event is processed only when its repository is
-   **tracked by at least one tenant** (owner 2026-11-25). Tracking comes from the owners listed under **When GitHub
+3. **Trust:** Authentication always requires the signature and App target checks. The WAF uses source IPs only
+   to filter traffic because any GitHub account can send webhooks from the same GitHub delivery ranges. The public
+   App `claudbot` can receive correctly signed deliveries from outside installations. The server processes a
+   repository event only if **at least one tenant tracks the repository** (owner 2026-11-25). Tracking comes from
+   the owners listed under **When GitHub
    search refuses an account**, repository rules, active PR watches, analyses and My work snapshots. The server
    matches numeric repository IDs when available. Untracked deliveries are acknowledged (202) and counted as
    `not_allowed` without storing a delivery row.
