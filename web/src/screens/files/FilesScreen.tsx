@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Navigate, useLocation, useNavigate, useParams } from "react-router";
-import { ApiError } from "../../api/client";
+import { ApiError, errorText } from "../../api/client";
 import { routes } from "../../api/generated/routes";
 import type {
   AnalysisId,
@@ -66,7 +66,7 @@ import { FILES_SHORTCUTS, shortcutAction } from "../../components/help/shortcuts
 import { useSectionState } from "../../components/inspector/sectionState";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { ReviewTopBar } from "../shell/ReviewTopBar";
-import { DiffCode, errorText, MAX_RANGE_LINES, useHideContextChanges, type CodeContext } from "../tour/code";
+import { DiffCode, MAX_RANGE_LINES, useHideContextChanges, type CodeContext } from "../tour/code";
 import { flagComment } from "../../components/comment/prefill";
 import { useCommentDrafts, useUnresolvedPosts } from "../tour/drafts";
 import { InspectorPane, type CommentLineState, type FilesInspector } from "../tour/InspectorPane";

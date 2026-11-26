@@ -23,6 +23,7 @@ import { DuplicateLinks, DuplicateOfLink } from "./DuplicateLinks";
 import { NOT_ASSESSED } from "./queueStatus";
 import { DecisionForm } from "./DecisionForm";
 import { GateMenu } from "./GateMenu";
+import { GithubProposal } from "./GithubDecision";
 import { GithubCommentText } from "./GithubCommentText";
 import { NotesElsewhere } from "./NotesElsewhere";
 import { CodeText } from "../section/CodeText";
@@ -350,6 +351,7 @@ export function QuestionCard(props: QuestionCardProps) {
         {ctx ? <NotesElsewhere notes={ctx.notes} /> : <span className="text-muted">—</span>}
       </div>
 
+      <GithubProposal item={item} />
       {props.reask && <Reask event={props.reask} now={now} storageKey={key("reask")} />}
 
       <CollapsibleSection

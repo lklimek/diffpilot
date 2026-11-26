@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { ApiError } from "../../api/client";
+import { errorText } from "../../api/client";
 import type { AnalysisId } from "../../api/generated/types";
 import {
   useAnalysisLive,
@@ -15,9 +15,6 @@ import { useProgressNotifications } from "../../app/workNotifications";
 import { LanguageTag } from "../../components/language-tag/LanguageTag";
 import { AnalysisProgress } from "../../components/progress/AnalysisProgress";
 import { StatusMessage } from "../../components/status/StatusMessage";
-
-const errorText = (error: unknown) =>
-  error instanceof ApiError ? error.message : "Something went wrong. Try again.";
 
 /** Live analysis progress and controls on the PR page. */
 export function LiveReview({

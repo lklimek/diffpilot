@@ -1,13 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import { ApiError } from "../../api/client";
+import { ApiError, errorText } from "../../api/client";
 import type { ChannelKind, ChannelTestResult } from "../../api/generated/types";
 import { useChannelActions, useNotificationSettings } from "../../api/review-loop";
 import { useNow } from "../../app/now";
 import { NotificationChannelCard } from "../../components/settings/NotificationChannelCard";
 import { StatusMessage } from "../../components/status/StatusMessage";
-
-const errorText = (error: unknown) =>
-  error instanceof ApiError ? error.message : "Something went wrong. Try again.";
 
 /** Review loop › Notifications push channels (V7, RN1–RN3): ntfy and a generic webhook. */
 export function NotificationChannels({

@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { CommentItem, DecideRequest, DecisionBatchRow, QueueEntry } from "../../api/generated/types";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
-import { ApiError, AssessmentAdmissionError } from "../../api/client";
+import { errorText } from "../../api/client";
 import {
   cachedCommentsOverview,
   useAssessAgain,
@@ -47,11 +47,6 @@ import { buttonClass } from "../../components/button/button";
 import { useAskChat, useAskPlace } from "../review/askChat";
 import { commentsPath, prPath } from "../pr/paths";
 import { useComments } from "./CommentsRoute";
-
-const errorText = (error: unknown) =>
-  error instanceof ApiError || error instanceof AssessmentAdmissionError
-    ? error.message
-    : "Something went wrong. Try again.";
 
 const LINES_STEP = 12;
 const KEYS: [string, string][] = [

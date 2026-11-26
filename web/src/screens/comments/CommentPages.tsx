@@ -1,7 +1,7 @@
 // V2–V5 of the Comments view, inside the Comments layout (CommentsRoute).
 import { useState } from "react";
 import { useNavigate } from "react-router";
-import { ApiError } from "../../api/client";
+import { errorText } from "../../api/client";
 import {
   useCarryOvers,
   useCommentLog,
@@ -18,9 +18,6 @@ import { StatusMessage } from "../../components/status/StatusMessage";
 import { useAskChat } from "../review/askChat";
 import { ALL_CARRY_OVERS_PATH, commentsPath, itemPath } from "../pr/paths";
 import { useComments } from "./CommentsRoute";
-
-const errorText = (error: unknown) =>
-  error instanceof ApiError ? error.message : "Something went wrong. Try again.";
 
 /** V2 Table page (RQ21). */
 export function TableScreen() {

@@ -1,3 +1,4 @@
+import { AssessmentQuotaText } from "../comments/AssessmentQuotaText";
 import { Tooltip } from "../tooltip/Tooltip";
 import { useEffect, useId, useState } from "react";
 import type { AssessmentConfig, AssessmentMethod, AssessmentSettings } from "../../api/generated/types";
@@ -56,7 +57,7 @@ export function AssessmentSettingsCard({
       </FormRow>
       <p>A/B runs both methods and costs roughly 2× in tokens and time. A pair uses one daily pass.</p>
       <p>
-        {settings.quota.remaining} of 80 daily passes remaining. Resets at {settings.quota.resets_at} (UTC).
+        <AssessmentQuotaText quota={settings.quota} />
       </p>
       <p>Toggle A/B for each PR on its Comments page. Selected PRs:</p>
       {settings.config.ab_prs.length ? (

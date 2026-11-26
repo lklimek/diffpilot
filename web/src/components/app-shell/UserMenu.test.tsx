@@ -158,26 +158,6 @@ it("opens as a disclosure with normal Tab order and Escape returning to the trig
   expect(trigger).toHaveAttribute("aria-expanded", "false");
 });
 
-it("shows observed dashboard ranking progress when the job feed is unavailable", async () => {
-  const ranking = {
-    state: "waiting_for_analysis",
-    judged: 0,
-    total: 18,
-    resumes_at: null,
-    message: null,
-  } as const;
-  const { rerender } = render(<UserMenu {...props} activity={null} legacyRanking={ranking} />);
-  await userEvent.click(screen.getByRole("button", { name: /^alice/ }));
-  const menu = screen.getByRole("region", { name: "LLM activity" });
-  expect(menu).toHaveTextContent("Waiting for the review analysis to finish.");
-  rerender(
-    <UserMenu {...props} activity={null} legacyRanking={{ ...ranking, state: "running", judged: 2 }} />,
-  );
-  expect(menu).toHaveTextContent("Ranking with the LLM: 2 of 18 items judged.");
-  rerender(<UserMenu {...props} activity={activity} legacyRanking={ranking} />);
-  expect(menu).not.toHaveTextContent("Waiting for the review analysis to finish.");
-});
-
 it("shows an own subject as text if the server gives it an external URL", async () => {
   render(
     <UserMenu
@@ -227,19 +207,20 @@ it("keeps all five own jobs visible and summarizes other users separately in eac
 
 it("keeps the banner silent on idle, running and recovery, and reports a failed call", () => {
   const { rerender } = render(<UserMenu {...props} activity={activity} />);
-  expect(screen.queryByRole("status")).toBeNull();
+  expect(screen.getByRole("status")).toBeEmptyDOMElement();
+  const notice = screen.getByRole("status");
   rerender(<UserMenu {...props} activity={{ ...activity, running: [running] }} />);
-  expect(screen.queryByRole("status")).toBeNull();
+  expect(screen.getByRole("status")).toBeEmptyDOMElement();
 
   rerender(<UserMenu {...props} activity={{ ...activity, last_call: failed }} />);
-  const notice = screen.getByRole("status");
+  expect(screen.getByRole("status")).toBe(notice);
   expect(notice).toHaveTextContent("Last LLM call failed");
   rerender(<UserMenu {...props} activity={{ ...activity, last_call: failed, queued: [queued] }} />);
   expect(screen.getByRole("status")).toBe(notice);
   expect(notice).not.toHaveTextContent(/queued/);
 
   rerender(<UserMenu {...props} activity={activity} />);
-  expect(screen.queryByRole("status")).toBeNull();
+  expect(screen.getByRole("status")).toBeEmptyDOMElement();
 });
 
 it("uses neutral labels for future job kinds and wait reasons", async () => {

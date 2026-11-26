@@ -3,7 +3,6 @@ import { createPortal } from "react-dom";
 import { Navigate, Outlet, useLocation, useOutletContext } from "react-router";
 import { useMe } from "../../api/queries";
 import type { AppSection } from "../../components/app-shell/AppNav";
-import { useUserEventNotifications } from "../../app/userEvents";
 import { ALL_CARRY_OVERS_PATH } from "../pr/paths";
 import { MY_WORK_PATH, PRS_PATH, SETTINGS_HELP_PATH, SETTINGS_PAGES, SETTINGS_PATH } from "./paths";
 import { ShellLayout } from "./ShellLayout";
@@ -33,7 +32,6 @@ const PAGES: Record<string, { section: AppSection; crumb: string }> = {
 export function ShellRoute() {
   const { pathname } = useLocation();
   const login = useMe().data?.user?.login ?? null;
-  useUserEventNotifications();
   // The router matches `/prs/` as `/prs`.
   const path = pathname.replace(/(.)\/+$/, "$1");
   const settingsPage = SETTINGS_PAGES.find(({ href }) => href === path);

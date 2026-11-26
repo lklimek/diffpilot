@@ -12,6 +12,12 @@ import { DecideRestCard, EmptyQueueCard, GroupCard, PrQuestionCard } from "./Que
 import { QueueList } from "./QueueList";
 
 const byNo = (no: number) => listItems().find((i) => i.no === no)!;
+const proposal = {
+  kind: "resolve",
+  by: "alice-relay",
+  at: "2026-11-18T09:20:00Z",
+  evidence_url: "https://github.com/acme/node-client/pull/482#discussion_r900",
+} as const;
 const NOW = new Date("2026-11-18T09:27:00Z");
 const PENDING = "Planning the effects of your current input; you can decide once they are shown.";
 const REFUSED = "The server refused this input (its message is shown above); change it to decide.";
@@ -69,6 +75,18 @@ describe("GroupCard (US5)", () => {
     const rows = onDecide.mock.calls[0]![0];
     expect(rows.map((r: { item_no: number }) => r.item_no)).toEqual([18, 19]);
     expect(rows[0]).toMatchObject({ kind: "reject", resolve_ticked: true });
+  });
+
+  it("shows the proposed choice in the group and uses it only after confirmation", async () => {
+    byNo(18).import_proposal = proposal;
+    const { onDecide } = showGroup();
+    expect(screen.getByText(/@alice-relay proposes: Resolve/)).toBeVisible();
+    expect(onDecide).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Decide 2 items" }));
+    expect(onDecide.mock.calls[0]![0]).toMatchObject([
+      { item_no: 18, kind: "resolve" },
+      { item_no: 19, kind: "reject" },
+    ]);
   });
 
   it("marks every item through the group decision callback", async () => {
@@ -327,6 +345,22 @@ describe("DecideRestCard (US7)", () => {
     expectPlanAgain(preview);
     await userEvent.click(apply);
     expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it("starts from the proposal in Decide the rest and requires the owner's reason", async () => {
+    byNo(22).import_proposal = { ...proposal, kind: "reject" };
+    const onConfirm = showRest();
+    expect(screen.getByText(/@alice-relay proposes: Reject/)).toBeVisible();
+    const apply = screen.getByRole("button", { name: /^Apply \d+ decisions$/ });
+    await userEvent.click(apply);
+    expect(onConfirm).not.toHaveBeenCalled();
+    await userEvent.type(screen.getByRole("textbox", { name: /^C22 · Reason/ }), "Owner's reason");
+    await userEvent.click(apply);
+    expect(onConfirm.mock.calls[0]![0]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ item_no: 22, kind: "reject", reason: "Owner's reason" }),
+      ]),
+    );
   });
 
   it("lists the server's rows, names every item left out with its reason, stores nothing before Apply", async () => {

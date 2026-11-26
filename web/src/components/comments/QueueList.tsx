@@ -401,13 +401,13 @@ export function QueueList({
         <p className="m-0 px-2 text-xs text-muted">No items in this view.</p>
       )}
       {status === "needs_you" && restCount > 0 && (
-        <Tooltip tip="Each recommendation becomes its own decision after a confirmation list; gate items are left out.">
+        <Tooltip tip="Each recommendation, or a GitHub proposal where there is one, becomes its own decision after a confirmation list; gate items are left out.">
           <button
             type="button"
             onClick={onDecideRest}
             className={`${buttonClass("plain", true)} my-2 text-left whitespace-normal!`}
           >
-            Decide the rest per recommendation ({restCount})
+            Decide the rest ({restCount})
           </button>
         </Tooltip>
       )}

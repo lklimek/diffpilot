@@ -1,7 +1,7 @@
 import { Tooltip } from "../tooltip/Tooltip";
 import { useId, useState } from "react";
 import type { CommentItem, DecisionBatchRow, DecisionVia } from "../../api/generated/types";
-import { GithubDecision } from "./GithubDecision";
+import { GithubDecision, GithubProposal } from "./GithubDecision";
 import { commentStatus } from "./queueStatus";
 import { buttonClass } from "../button/button";
 import { OpenExternal } from "../dashboard/common/OpenExternal";
@@ -163,7 +163,10 @@ export function CommentsTable(props: CommentsTableProps) {
         <td className={TD}>
           {item.kind.replace("_", " ")} · {item.author_kind}
         </td>
-        <td className={TD}>{problem(item)}</td>
+        <td className={TD}>
+          {problem(item)}
+          <GithubProposal item={item} />
+        </td>
         <td className={TD}>
           {a ? (
             <>

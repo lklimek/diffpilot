@@ -1,6 +1,8 @@
+import { useAssessmentSettings } from "../../api/assessment-settings";
+import { AssessmentQuotaText } from "../../components/comments/AssessmentQuotaText";
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, Navigate, useNavigate, useSearchParams } from "react-router";
-import { api } from "../../api/client";
+import { api, errorText } from "../../api/client";
 import { useMe, useMyAnalyses } from "../../api/queries";
 import { useWatches } from "../../api/review-loop";
 import type { PrRef } from "../../api/generated/types";
@@ -41,8 +43,6 @@ const LOGIN_ERRORS = new Map<string, [string, string]>([
     ["The sign-in expired.", "It took too long or was started in another tab. Sign in again."],
   ],
 ]);
-const errorText = (error: unknown) =>
-  error instanceof Error ? error.message : "Something went wrong. Try again.";
 
 export function LegacyReviewRedirect() {
   const [search] = useSearchParams();
@@ -114,6 +114,7 @@ function History({
 }) {
   const client = useQueryClient();
   const watches = useWatches();
+  const quota = useAssessmentSettings().data?.quota;
   const history = useInfiniteQuery({
     queryKey: ["pr-history"],
     initialPageParam: null as string | null,
@@ -222,7 +223,11 @@ function History({
           <span>
             Watching {watches.data.watches.filter(({ state }) => state !== "ended").length} of{" "}
             {watches.data.limit}
-            {" · "}assessment passes today {watches.data.passes_today} of {watches.data.daily_limit}
+          </span>
+        )}
+        {quota && (
+          <span>
+            <AssessmentQuotaText quota={quota} />
           </span>
         )}
         <Link to={ALL_CARRY_OVERS_PATH}>Carry-overs on all pull requests</Link>

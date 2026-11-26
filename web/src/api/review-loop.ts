@@ -1,6 +1,6 @@
 // Queries and mutations of the review loop (docs/review-workflow-plan.md §6: RC1–RC17, RW1–RW2, RN1–RN3) and the
 // Ask questions about its items (RC7).
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   keepPreviousData,
   useInfiniteQuery,
@@ -9,7 +9,7 @@ import {
   useQueryClient,
   type QueryClient,
 } from "@tanstack/react-query";
-import { api, ApiError, AssessmentAdmissionError, type AssessmentAdmissionIssue } from "./client";
+import { api, ApiError, AssessmentAdmissionError, errorText, type AssessmentAdmissionIssue } from "./client";
 import { withoutRetried } from "./questionHistory";
 import type {
   CommentItem,
@@ -199,34 +199,55 @@ export function useVisitComments(pr: PrRef) {
   const client = useQueryClient();
   return useMutation({
     mutationFn: () => api.visitComments(pr),
-    // The overview waits for the visit; recording it again is harmless, so transient failures are retried.
-    retry: (count, error) => count < 2 && transientFailure(error),
-    retryDelay: 200,
-    onSuccess: () => client.resetQueries({ queryKey: overviewKey(pr), exact: true }),
+    // A lost response can follow a committed write. Replaying it would advance the import cutoff.
+    retry: false,
+    onSuccess: () =>
+      Promise.all([
+        client.invalidateQueries({ queryKey: overviewKey(pr), exact: true }),
+        client.invalidateQueries({ queryKey: [...itemsKey(pr), "imported-unseen"], exact: true }),
+        client.invalidateQueries({ queryKey: ["dashboard-items"] }),
+      ]),
   });
 }
 
-export type AssessmentStartIssue = AssessmentAdmissionIssue | { code: "failed"; message: string };
+export type AssessmentStartIssue =
+  AssessmentAdmissionIssue | { code: "failed"; message: string } | { code: "busy" };
 
-async function startCommentAssessment(pr: PrRef): Promise<AssessmentStartIssue | null> {
-  try {
-    await api.startCommentAssessment(pr);
-    return null;
-  } catch (error) {
-    if (error instanceof AssessmentAdmissionError) return error.issue;
-    if (error instanceof ApiError && error.status === 409 && error.code === "conflict") return null;
-    return { code: "failed", message: error instanceof ApiError ? error.message : "Try again later." };
+const ASSESSMENT_CONFLICT_BACKOFF_MS = [2_000, 8_000];
+
+async function startCommentAssessment(pr: PrRef, signal?: AbortSignal): Promise<AssessmentStartIssue | null> {
+  for (let attempt = 0; !signal?.aborted; attempt += 1) {
+    try {
+      await api.startCommentAssessment(pr, signal);
+      return null;
+    } catch (error) {
+      if (error instanceof AssessmentAdmissionError) return error.issue;
+      if (!(error instanceof ApiError && error.status === 409 && error.code === "conflict")) {
+        return { code: "failed", message: errorText(error, "Try again later.") };
+      }
+      if (!signal) return null;
+    }
+    const delay = ASSESSMENT_CONFLICT_BACKOFF_MS[attempt];
+    if (delay === undefined) return { code: "busy" };
+    await new Promise((resolve) => setTimeout(resolve, delay));
   }
+  return null;
 }
 
 /** Start a pass on entry to Comments. */
 export const useStartCommentAssessment = (pr: PrRef) =>
   useMutation({ mutationFn: () => startCommentAssessment(pr) });
 
-/** Read GitHub again (RC3). Only Comments can request a pass for newly read items. */
+/** Read GitHub again (RC3). A follow-up assessment has its own lifetime, separate from the read. */
 export function useReadComments(pr: PrRef, onAssessment?: (issue: AssessmentStartIssue | null) => void) {
   const client = useQueryClient();
   const invalidate = useInvalidatePr(pr);
+  const visit = useRef<{ controller: AbortController; assessing: boolean } | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    visit.current = { controller, assessing: false };
+    return () => controller.abort();
+  }, []);
   return useMutation({
     mutationFn: async () => {
       const before = onAssessment ? client.getQueryData<CommentItem[]>(itemsKey(pr)) : undefined;
@@ -234,16 +255,20 @@ export function useReadComments(pr: PrRef, onAssessment?: (issue: AssessmentStar
       await api.readComments(pr);
       await invalidate();
       const fresh = client.getQueryState<CommentItem[]>(itemsKey(pr));
-      if (
-        onAssessment &&
-        known &&
-        fresh?.status === "success" &&
-        fresh.data?.some(({ no }) => !known.has(no))
-      ) {
-        const issue = await startCommentAssessment(pr);
+      return known && fresh?.status === "success" && fresh.data?.some(({ no }) => !known.has(no));
+    },
+    onSuccess: (newItems) => {
+      const current = visit.current;
+      if (!newItems || !onAssessment || !current || current.assessing || current.controller.signal.aborted)
+        return;
+      current.assessing = true;
+      onAssessment(null);
+      void startCommentAssessment(pr, current.controller.signal).then((issue) => {
+        current.assessing = false;
+        if (current.controller.signal.aborted) return;
         onAssessment(issue);
-        if (!issue) await invalidate();
-      }
+        if (!issue) void invalidate();
+      });
     },
   });
 }

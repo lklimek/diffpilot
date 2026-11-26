@@ -89,24 +89,62 @@ describe("V1 Questions (US3, US4, US11)", () => {
     expect(visited).toHaveBeenCalledTimes(1);
   });
 
-  it("tries the Comments entry again after a transient failure and then reads the overview", async () => {
-    let tries = 0;
-    const readOverview = vi.fn();
+  it("shows new imports after a lost visit response without advancing the cutoff twice", async () => {
+    let cutoff = 0;
     server.use(
       http.post("/api/v1/prs/acme/node-client/482/comments/visit", () => {
-        tries += 1;
-        return new HttpResponse(null, { status: tries === 1 ? 503 : 204 });
+        cutoff += 1;
+        // The write committed but the browser lost its response.
+        return cutoff === 1 ? HttpResponse.error() : new HttpResponse(null, { status: 204 });
       }),
       http.get("/api/v1/prs/acme/node-client/482/comments", () => {
-        readOverview();
-        return HttpResponse.json(overview());
+        const data = overview();
+        return HttpResponse.json({
+          ...data,
+          counts: { ...data.counts, imported_unseen: cutoff === 1 ? 1 : 0 },
+        });
       }),
     );
-    renderRoute(PR);
-    await userEvent.click(await screen.findByRole("link", { name: "Open Comments →" }));
+    renderRoute(`${PR}/comments`);
+    expect(await screen.findByRole("link", { name: "1 new decision imported from GitHub" })).toBeVisible();
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not confirm this Comments visit.");
+    expect(cutoff).toBe(1);
+  });
+
+  it("surfaces a missing PR when recording the Comments visit", async () => {
+    server.use(
+      http.post("/api/v1/prs/acme/node-client/482/comments/visit", () =>
+        HttpResponse.json(
+          { code: "not_found", message: "This pull request was not found." },
+          { status: 404 },
+        ),
+      ),
+    );
+    renderRoute(`${PR}/comments`);
+    expect(await screen.findByRole("alert")).toHaveTextContent("This pull request was not found.");
+  });
+
+  it("keeps the queue usable after a server error and repeats the visit only on Retry", async () => {
+    let visits = 0;
+    server.use(
+      http.post(
+        "/api/v1/prs/acme/node-client/482/comments/visit",
+        () => new HttpResponse(null, { status: ++visits === 1 ? 503 : 204 }),
+      ),
+      http.get("/api/v1/prs/acme/node-client/482/comments", () => {
+        const data = overview();
+        return HttpResponse.json({
+          ...data,
+          counts: { ...data.counts, imported_unseen: visits === 2 ? 1 : 0 },
+        });
+      }),
+    );
+    renderRoute(`${PR}/comments`);
     expect(await screen.findByRole("navigation", { name: "Queue" })).toBeVisible();
-    expect(readOverview).toHaveBeenCalledOnce();
-    expect(tries).toBe(2);
+    expect(visits).toBe(1);
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByRole("link", { name: "1 new decision imported from GitHub" })).toBeVisible();
+    expect(visits).toBe(2);
   });
 
   it.each([200, 502])("reads items after the overview settles with HTTP %i", async (status) => {
@@ -219,10 +257,8 @@ describe("V1 Questions (US3, US4, US11)", () => {
   it("a group can be split; Decide the rest leaves gate items out", async () => {
     renderRoute(`${PR}/comments?item=C18`);
     expect(await screen.findByRole("heading", { name: /Same recommendation: Reject/ })).toBeVisible();
-    await userEvent.click(await screen.findByRole("button", { name: /Decide the rest per recommendation/ }));
-    expect(
-      await screen.findByRole("heading", { name: /Decide the rest per recommendation — confirm/ }),
-    ).toBeVisible();
+    await userEvent.click(await screen.findByRole("button", { name: /^Decide the rest \(/ }));
+    expect(await screen.findByRole("heading", { name: /Decide the rest — confirm/ })).toBeVisible();
     expect(screen.getByRole("alert")).toHaveTextContent(
       /C14 \(gate item G-FUNDS\), C15 \(gate item G-SECRET\)/,
     );
@@ -416,20 +452,26 @@ describe("v1.4 review status", () => {
     ).toHaveTextContent(/^11$/);
   });
 
-  it("opens the PR status details and restores focus on Escape", async () => {
-    renderRoute(PR);
-    const trigger = await screen.findByRole("button", { name: "Questions waiting" });
-    expect(screen.queryByText("PR Hygiene")).toBeNull();
-    await userEvent.click(trigger);
-    const panel = within(screen.getByRole("dialog", { name: "Pull request status" }));
-    expect(panel.getByRole("heading", { name: /^PR Hygiene/ })).toBeVisible();
-    expect(panel.getByText(/Bot rounds: 4/)).toBeVisible();
-    await userEvent.tab();
-    expect(panel.getAllByRole("link")[0]).toHaveFocus();
-    await userEvent.keyboard("{Escape}");
-    expect(trigger).toHaveFocus();
-    expect(trigger).toHaveAttribute("aria-expanded", "false");
-  });
+  it.each([PR, `${PR}/comments`])(
+    "shows U22 status details on %s and restores focus on Escape",
+    async (path) => {
+      renderRoute(path);
+      const trigger = await screen.findByRole("button", { name: "Questions waiting" });
+      expect(screen.queryByText("PR Hygiene")).toBeNull();
+      await userEvent.click(trigger);
+      const panel = within(screen.getByRole("dialog", { name: "Pull request status" }));
+      expect(await panel.findByRole("heading", { name: /^PR Hygiene/ })).toBeVisible();
+      expect(await panel.findByRole("heading", { name: /^thepastaclaw status/ })).toBeVisible();
+      expect(panel.getByText(/CI: 2 passed, 1 pending/)).toBeVisible();
+      expect(panel.getAllByText(/data of/)).toHaveLength(2);
+      expect(panel.getByText(/Bot rounds: 4/)).toBeVisible();
+      await userEvent.tab();
+      expect(panel.getAllByRole("link")[0]).toHaveFocus();
+      await userEvent.keyboard("{Escape}");
+      expect(trigger).toHaveFocus();
+      expect(trigger).toHaveAttribute("aria-expanded", "false");
+    },
+  );
 
   it("decides linked duplicate items with their primary and undoes the same decision together", async () => {
     setScenario("comments-v14");

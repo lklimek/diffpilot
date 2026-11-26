@@ -2,10 +2,13 @@ import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { expect, it, vi } from "vitest";
+import { FakeEventSource } from "../../__tests__/fake-event-source";
 import { renderRoute, startMockServer } from "../../__tests__/screen";
 import { unlinkedCodex } from "../../mocks/assessment";
-import { idleActivity } from "../../mocks/llm-activity";
-import { SETTINGS, setScenario } from "../../mocks/scenarios";
+import dashboardItems from "../../../../fixtures/dashboard/api/items.json";
+import type { ItemPage } from "../../api/generated/types";
+import { failedActivity, idleActivity, pausedActivity } from "../../mocks/llm-activity";
+import { SETTINGS } from "../../mocks/scenarios";
 
 const server = startMockServer();
 const renderShell = vi.hoisted(() => vi.fn());
@@ -21,32 +24,6 @@ vi.mock("./ShellLayout", async (importOriginal) => {
 });
 
 const accountButton = () => screen.findByRole("button", { name: /^alice/ });
-
-it("reads the last call even when job activity has no server endpoint", async () => {
-  setScenario("llm-error");
-  server.use(http.get("/api/v1/llm/activity", () => new HttpResponse(null, { status: 404 })));
-  renderRoute("/");
-
-  await userEvent.click(await accountButton());
-  expect(await screen.findByRole("button", { name: "alice — LLM not working" })).toBeVisible();
-  expect(await screen.findByText("Job activity unavailable.")).toBeVisible();
-  expect(screen.getByText("The LLM provider's usage limit was reached.")).toBeVisible();
-});
-
-it("uses the current Codex account pause when the job route is absent", async () => {
-  const pausedUntil = new Date(Date.now() + 60 * 60_000).toISOString();
-  server.use(
-    http.get("/api/v1/llm/activity", () => new HttpResponse(null, { status: 404 })),
-    http.get("/api/v1/settings/codex", () =>
-      HttpResponse.json({ ...unlinkedCodex, paused_until: pausedUntil }),
-    ),
-  );
-  renderRoute("/review");
-
-  await userEvent.click(await accountButton());
-  expect(await screen.findByRole("button", { name: /^alice — LLM paused until/ })).toBeVisible();
-  expect(screen.getByText(/^Paused at the usage limit until/)).toBeVisible();
-});
 
 it.each(["/", "/review"])("signs out from %s using the existing session route", async (path) => {
   let requestBody: unknown;
@@ -101,49 +78,22 @@ it("takes the activity route's last call and pause as authoritative without fetc
   expect(codex).not.toHaveBeenCalled();
 });
 
-it.each([404, 405, 501])(
-  "shows the fallback attention indicator without polling after %i",
-  async (status) => {
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-    try {
-      const activity = vi.fn(() =>
-        status === 501
-          ? HttpResponse.json(
-              { code: "not_implemented", message: "This feature is not available yet." },
-              { status },
-            )
-          : new HttpResponse(null, { status }),
-      );
-      const settings = vi.fn(() =>
-        HttpResponse.json({
-          ...SETTINGS,
-          llm_status: {
-            at: new Date().toISOString(),
-            status: { state: "not_working", message: "LLM call failed." },
-          },
-        }),
-      );
-      const codex = vi.fn(() => HttpResponse.json(unlinkedCodex));
-      server.use(
-        http.get("/api/v1/llm/activity", activity),
-        http.get("/api/v1/settings", settings),
-        http.get("/api/v1/settings/codex", codex),
-      );
-      renderRoute("/review");
-      const trigger = await screen.findByRole("button", { name: "alice — LLM not working" });
-      expect(trigger).toHaveAttribute("aria-expanded", "false");
-      await act(() => vi.advanceTimersByTimeAsync(60_000));
-      expect(activity).toHaveBeenCalledOnce();
-      expect(settings).toHaveBeenCalledOnce();
-      expect(codex).toHaveBeenCalledOnce();
-      await userEvent.click(trigger);
-      expect(await screen.findByText("Job activity unavailable.")).toBeVisible();
-      expect(screen.getByText("LLM call failed.")).toBeVisible();
-    } finally {
-      vi.useRealTimers();
-    }
-  },
-);
+it("keeps a reserved job activity route absent without querying legacy sources", async () => {
+  const activity = vi.fn(() => new HttpResponse(null, { status: 501 }));
+  const settings = vi.fn(() => HttpResponse.json(SETTINGS));
+  const codex = vi.fn(() => HttpResponse.json(unlinkedCodex));
+  server.use(
+    http.get("/api/v1/llm/activity", activity),
+    http.get("/api/v1/settings", settings),
+    http.get("/api/v1/settings/codex", codex),
+  );
+  renderRoute("/review");
+  await userEvent.click(await accountButton());
+  expect(await screen.findByText("Job activity unavailable.")).toBeVisible();
+  expect(activity).toHaveBeenCalledOnce();
+  expect(settings).not.toHaveBeenCalled();
+  expect(codex).not.toHaveBeenCalled();
+});
 
 it("updates the activity in the menu without rendering the shell layout again", async () => {
   let answer!: () => void;
@@ -164,4 +114,72 @@ it("updates the activity in the menu without rendering the shell layout again", 
   answer();
   expect(await screen.findByRole("button", { name: /^alice — LLM paused until/ })).toBeVisible();
   expect(renderShell).toHaveBeenCalledTimes(renders);
+});
+
+it("updates import counts in an idle My work tab without a new revision", async () => {
+  let imported = false;
+  const items = dashboardItems as unknown as ItemPage;
+  server.use(
+    http.get("/api/v1/dashboard/items", ({ request }) => {
+      const etag = imported ? '"imports"' : '"initial"';
+      if (request.headers.get("If-None-Match") === etag) return new HttpResponse(null, { status: 304 });
+      return HttpResponse.json(
+        {
+          ...items,
+          items: items.items.map((item) => ({
+            ...item,
+            imported_unseen: imported && item.number === 482 && item.kind === "pr" ? 2 : 0,
+          })),
+        },
+        { headers: { ETag: etag } },
+      );
+    }),
+  );
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    renderRoute("/");
+    await screen.findByRole("link", { name: /acme.*node-client.*482/i });
+    imported = true;
+    await act(() => vi.advanceTimersByTimeAsync(61_000));
+    expect(await screen.findByRole("link", { name: "2 new GitHub decisions" })).toHaveAttribute(
+      "href",
+      "/pr/acme/node-client/482/comments?imported_unseen=true",
+    );
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("uses LLM activity events without notification opt-in and refetches only on reconnect", async () => {
+  FakeEventSource.reset();
+  vi.stubGlobal("EventSource", FakeEventSource);
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  let answer = idleActivity;
+  const read = vi.fn(() => HttpResponse.json(answer));
+  server.use(http.get("/api/v1/llm/activity", read));
+  try {
+    renderRoute("/review");
+    await userEvent.click(await accountButton());
+    expect(await screen.findByText("Idle")).toBeVisible();
+    const source = FakeEventSource.instances.find(({ url }) => url === "/api/v1/events")!;
+    expect(source).toBeDefined();
+    act(() => source.open());
+    act(() =>
+      source.emit({
+        event: "llm_activity",
+        data: JSON.stringify({ event: "llm_activity", activity: failedActivity }),
+      }),
+    );
+    expect(await screen.findByText("Codex sign-in expired.")).toBeVisible();
+    await act(() => vi.advanceTimersByTimeAsync(61_000));
+    expect(read).toHaveBeenCalledOnce();
+    answer = pausedActivity;
+    act(() => source.drop());
+    act(() => source.open());
+    expect(await screen.findByText(/^Paused at the usage limit until/)).toBeVisible();
+    expect(read).toHaveBeenCalledTimes(2);
+  } finally {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  }
 });

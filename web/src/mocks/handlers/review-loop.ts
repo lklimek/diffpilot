@@ -1,3 +1,4 @@
+import { scenario } from "../scenarios";
 import { HttpResponse, type HttpResponseResolver, type PathParams } from "msw";
 import type {
   AnchoredAskRequest,
@@ -9,6 +10,7 @@ import type {
   ItemActionRequest,
   NotificationChannel,
   PutChannelRequest,
+  UserStreamEvent,
 } from "../../api/generated/types";
 import {
   PR,
@@ -226,13 +228,35 @@ export const reviewLoopHandlers = [
     }),
   ),
   route("listWatches", () => HttpResponse.json(watches())),
-  // RW3: the stream stays open; the mocks create no user events.
+  // RW3: keep the stream open as it is for a signed-in user.
   route(
     "userEvents",
     () =>
-      new HttpResponse(new ReadableStream({ start() {} }), {
-        headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-store" },
-      }),
+      new HttpResponse(
+        new ReadableStream({
+          start(controller) {
+            if (!scenario().reviewLoopNotification) return;
+            const event = {
+              event: "user_event",
+              user_event: {
+                kind: "questions_ready",
+                id: "0f7c1d1e-0000-4000-8000-000000000001",
+                pr: PR,
+                text: "acme/node-client #482: 3 questions ready",
+                count: 3,
+                url: "/pr/acme/node-client/482/comments",
+                at: "2026-11-18T09:27:00Z",
+              },
+            } satisfies UserStreamEvent;
+            controller.enqueue(
+              new TextEncoder().encode(`event: user_event\ndata: ${JSON.stringify(event)}\n\n`),
+            );
+          },
+        }),
+        {
+          headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-store" },
+        },
+      ),
   ),
   route("getNotificationSettings", () => HttpResponse.json(notificationSettings())),
   route("putNotificationChannel", async ({ params, request }) => {

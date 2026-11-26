@@ -1,3 +1,4 @@
+import { AssessmentQuotaText } from "./AssessmentQuotaText";
 import type { AssessmentConfig, AssessmentSettings } from "../../api/generated/types";
 
 /** Explicit selection affects future passes only. */
@@ -39,7 +40,7 @@ export function AssessmentControls({
         pair uses one daily pass. Changing this does not start an assessment.
       </p>
       <p>
-        {settings.quota.remaining} of 80 daily passes remaining; resets at {settings.quota.resets_at} (UTC).
+        <AssessmentQuotaText quota={settings.quota} />
       </p>
       {settings.config.ab_until &&
         (Date.parse(settings.config.ab_until) <= now.getTime() ? (

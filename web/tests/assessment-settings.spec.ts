@@ -46,7 +46,7 @@ test("PR A/B opt-in preserves primary, quota and visible comments; report is rea
   const quotes = await cards.locator("[data-comment-text]").allTextContents();
   expect(headings.length).toBeGreaterThan(0);
   expect(quotes.length).toBeGreaterThan(0);
-  const quota = page.getByText("79 of 80 daily passes remaining; resets at 2026-11-19T00:00:00Z (UTC).");
+  const quota = page.getByText("79 of 80 daily passes remaining · resets at 19 Nov 2026, 00:00");
   await expect(quota).toBeVisible();
   await toggle.click();
   await expect(toggle).toBeChecked();

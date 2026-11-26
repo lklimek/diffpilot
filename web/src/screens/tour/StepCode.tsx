@@ -1,13 +1,13 @@
 import { useRef, useState, type ComponentProps } from "react";
 import { useQueries } from "@tanstack/react-query";
-import { ApiError } from "../../api/client";
+import { ApiError, errorText } from "../../api/client";
 import type { LineRange, Step, StepFacts } from "../../api/generated/types";
 import { linesQuery, useLines } from "../../api/queries";
 import { inApp } from "../../components/inApp";
 import { CONTEXT_ACTION, ContextFold } from "../../components/code-view/ContextFold";
 import { Tooltip } from "../../components/tooltip/Tooltip";
 import { StatusMessage } from "../../components/status/StatusMessage";
-import { errorText, LinesCode } from "./code";
+import { LinesCode } from "./code";
 
 type Direction = "above" | "below";
 type Neighbour = { step: Step; label: string; href: string };

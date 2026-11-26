@@ -113,6 +113,7 @@ interface Scenario {
   settings?: Settings;
   settingsV14?: "unavailable" | "unconfigured" | "at-limit" | "reset-fails";
   llmActivity?: LlmActivity;
+  reviewLoopNotification?: boolean;
   /** `repos/{owner}/{name}/settings` answer; null = not known yet (409 `analysis_not_finished`). */
   repoSettings?: RepoSettings | null;
   /** Changes to the `tour` answer. */
@@ -368,6 +369,8 @@ const SCENARIOS = {
   // The empty queue with no agent subscribed: how to start one is shown open.
   "comments-no-agent": { comments: "no-agent" },
   "comments-github-error": { comments: "github-error" },
+  "review-loop-notification": { reviewLoopNotification: true },
+  "comments-proposals": { comments: "proposals" },
   "comments-v14": { comments: "v14" },
   "comments-marks": { comments: "marks" },
   "comments-watched": { comments: "watched" },

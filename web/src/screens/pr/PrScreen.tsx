@@ -1,9 +1,8 @@
 import { Link, useLocation, useNavigate, useParams } from "react-router";
-import { ApiError } from "../../api/client";
+import { errorText } from "../../api/client";
 import { useMe } from "../../api/queries";
 import { usePrPage, useReadComments, useWatchPr } from "../../api/review-loop";
 import { useNow } from "../../app/now";
-import { useUserEventNotifications } from "../../app/userEvents";
 import { usePrTabSubject } from "../../app/tabStatus";
 import { prGithubUrl } from "../../components/github/links";
 import type { AnalysisId } from "../../api/generated/types";
@@ -17,9 +16,6 @@ import { MY_WORK_PATH } from "../shell/paths";
 import { PrReviewPanel } from "./PrReviewPanel";
 import { commentsPath, prOfParams } from "./paths";
 
-const errorText = (error: unknown) =>
-  error instanceof ApiError ? error.message : "Something went wrong. Try again.";
-
 /** V0 PR page (plan §3.1): header, "Review the code" and "Process PR comments". */
 export function PrScreen() {
   const pr = prOfParams(useParams());
@@ -32,7 +28,6 @@ export function PrScreen() {
   const read = useReadComments(pr);
   const navigate = useNavigate();
   const now = new Date(useNow());
-  useUserEventNotifications();
   const data = page.data;
   const display = `${pr.repo.owner}/${pr.repo.name} #${pr.number}`;
   const key = (section: string) => `${login ?? "anonymous"}:pr-page:${section}`;

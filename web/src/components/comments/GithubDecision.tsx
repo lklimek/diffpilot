@@ -3,7 +3,7 @@ import { OpenExternal } from "../dashboard/common/OpenExternal";
 import { dateTimeText } from "../format/time";
 import { isGithubUrl } from "../github/links";
 import { ProvenanceTag } from "../section/ProvenanceTag";
-import { CHOICE_LABEL } from "./decisions";
+import { CHOICE_LABEL, githubProposal } from "./decisions";
 import { itemId } from "./parts";
 
 export function githubDecisionEvidence(item: CommentItem): string | null {
@@ -40,5 +40,22 @@ export function GithubDecision({
         </>
       )}
     </>
+  );
+}
+
+export function GithubProposal({ item }: { item: CommentItem }) {
+  const proposal = githubProposal(item);
+  if (!proposal) return null;
+  const actor = proposal.by.startsWith("@") ? proposal.by : `@${proposal.by}`;
+  return (
+    <div className="my-1 flex flex-wrap items-center gap-1.5 text-sm">
+      <ProvenanceTag source="github" />
+      <span>
+        {actor} proposes: {CHOICE_LABEL[proposal.kind]} · {dateTimeText(proposal.at)}
+      </span>
+      {isGithubUrl(proposal.evidence_url) && (
+        <OpenExternal href={proposal.evidence_url} label="Proposal on GitHub" />
+      )}
+    </div>
   );
 }

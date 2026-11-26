@@ -72,8 +72,26 @@ export function choicesFor(item: CommentItem): Choice[] {
   ];
 }
 
+/** A GitHub proposal the owner can confirm on this item. */
+export function githubProposal(item: CommentItem) {
+  return awaitsDecision(item) &&
+    !item.not_a_review_point &&
+    item.import_proposal &&
+    ITEM_CHOICES.includes(item.import_proposal.kind)
+    ? item.import_proposal
+    : null;
+}
+
 /** What a choice needs typed in. */
 export type Need = "reason" | "pr" | "title" | "upstream" | "todo" | null;
+
+export const NEED_LABEL: Record<NonNullable<Need>, string> = {
+  reason: "Reason (posted as the public reply)",
+  pr: "Existing pull request",
+  title: "Title of the new follow-up PR (optional)",
+  upstream: 'Upstream issue or PR URL, or "create"',
+  todo: "TODO title",
+};
 
 /** The input a choice needs (D3, D8 reason; D4 PR; D5 optional title; D6 URL or "create"; D7 title). */
 export function needOf(choice: Choice, gate: Gate | null = null): Need {

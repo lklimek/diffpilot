@@ -3,7 +3,7 @@ import { rankingUsageQuery } from "../../api/queries";
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router";
 import { useDashboardTabStatus } from "../../app/tabStatus";
-import { ApiError } from "../../api/client";
+import { ApiError, errorText } from "../../api/client";
 import { Banner } from "../../components/banner/Banner";
 import { RefreshControl } from "../../components/dashboard/refresh-control/RefreshControl";
 import { ScanProgress } from "../../components/dashboard/scan-progress/ScanProgress";
@@ -44,9 +44,6 @@ import {
   watchErrorText,
 } from "./state";
 import { useDashboardPage } from "./useDashboardPage";
-
-const errorText = (error: unknown) =>
-  error instanceof ApiError ? error.message : "Something went wrong. Try again.";
 
 /** Why a snooze failed: the item left the list (404), the server's reason, or a retry hint. */
 const snoozeErrorText = (error: unknown) =>
@@ -268,6 +265,7 @@ export function DashboardScreen() {
           wakingKeys={page.wake.pendingKeys}
           onRejudge={(key) => page.rejudge.mutate({ key })}
           rejudgingKeys={page.rejudge.pendingKeys}
+          rankingNotice={page.notice}
           usageHref={LLM_USAGE_PATH}
           snapshotAt={snapshotAt}
           reviewHref={reviewHref}
@@ -374,16 +372,6 @@ export function DashboardScreen() {
         ) : (
           main
         ))}
-      <p
-        role="status"
-        className={
-          page.notice
-            ? "fixed right-4 bottom-4 z-40 rounded-md border border-border bg-surface px-3 py-2 shadow"
-            : "sr-only"
-        }
-      >
-        {page.notice}
-      </p>
       <KeyboardHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
     </>
   );

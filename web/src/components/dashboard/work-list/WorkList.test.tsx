@@ -598,6 +598,17 @@ describe("WorkList: comments of a pull request (owner 2026-11-23)", () => {
     expect(issueRow.querySelector("[data-comments-link]")).toBeNull();
   });
 
+  it("announces judgement changes once for the list", () => {
+    const { rerender } = render(list({ rejudgingKeys: [counted.key, unread.key] }));
+    const region = screen.getByRole("region", { name: "Needs you" });
+    const status = within(region).getByRole("status");
+    expect(status).toHaveTextContent("Re-judging 2 items.");
+    expect(region.querySelectorAll("[aria-live]")).toHaveLength(0);
+    rerender(list({ rankingNotice: "Ranking finished: 2 items judged." }));
+    expect(within(region).getByRole("status")).toBe(status);
+    expect(status).toHaveTextContent("Ranking finished: 2 items judged.");
+  });
+
   it("links a nonzero server count of new GitHub decisions to the imports filter", () => {
     render(list({ items: [{ ...counted, imported_unseen: 2 }] }));
     expect(screen.getByRole("link", { name: "2 new GitHub decisions" })).toHaveAttribute(

@@ -100,7 +100,8 @@ for (const state of ["default", "wrong", "missed", "noq", "noprofile", "resume"]
         await steps.nth(i).click();
         const statuses = page.getByRole("status");
         await expect(statuses.and(page.locator("[data-ask-announcement]"))).toBeEmpty();
-        await expect(statuses).toHaveCount(1);
+        await expect(page.getByRole("banner").getByRole("status")).toBeEmpty();
+        await expect(statuses).toHaveCount(2);
         await expectTrustWording(page);
       }
     }

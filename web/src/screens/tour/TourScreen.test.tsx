@@ -599,7 +599,9 @@ describe("Tour screen (brief §4.3)", () => {
       state: "answered",
       answer: { answer: "It is not.", evidence: [] },
     };
-    act(() => FakeEventSource.latest().emit({ event: "question", question: answered }));
+    act(() =>
+      FakeEventSource.latest(`/api/v1/analyses/${ID}/events`).emit({ event: "question", question: answered }),
+    );
     expect(await within(thread).findByText("It is not.")).toBeInTheDocument();
     // The Inspector keeps a read-only copy of the step's threads.
     const copy = within(inspector()).getByRole("region", { name: /^Your questions about this step \(\d+\)/ });
@@ -691,7 +693,7 @@ describe("Tour screen (brief §4.3)", () => {
     await open();
     await openStep("1", "5");
     await user().keyboard("a");
-    act(() => FakeEventSource.latest().fail());
+    act(() => FakeEventSource.latest(`/api/v1/analyses/${ID}/events`).fail());
     expect(
       await within(screen.getByRole("dialog", { name: "Ask" })).findByText(
         /The connection that delivers answers was lost/,

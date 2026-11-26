@@ -23,13 +23,22 @@ afterEach(() => vi.unstubAllGlobals());
 /** Opens the progress screen and delivers the snapshot `state`. */
 async function showAt(state: AnalysisState) {
   const router = renderRoute(`/analyses/${ID}/progress`);
-  await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+  await waitFor(() =>
+    expect(
+      FakeEventSource.instances.filter(({ url }) => url === `/api/v1/analyses/${ID}/events`),
+    ).toHaveLength(1),
+  );
   emit(state);
   return router;
 }
 
 const emit = (state: AnalysisState) =>
-  act(() => FakeEventSource.latest().emit({ event: "analysis", summary: { ...analysis, state } }));
+  act(() =>
+    FakeEventSource.latest(`/api/v1/analyses/${ID}/events`).emit({
+      event: "analysis",
+      summary: { ...analysis, state },
+    }),
+  );
 
 const pageText = () => document.body.textContent ?? "";
 
@@ -39,7 +48,11 @@ describe("Analysis progress on the PR page (brief §4.2, review-workflow-plan §
     await waitFor(() => expect(router.state.location.pathname).toBe("/pr/acme/node-client/482"));
     expect(router.state.location.search).toBe("?scenario=x");
     expect(await screen.findByText("Connecting…")).toBeVisible();
-    await waitFor(() => expect(FakeEventSource.latest().url).toBe(`/api/v1/analyses/${ID}/events`));
+    await waitFor(() =>
+      expect(FakeEventSource.latest(`/api/v1/analyses/${ID}/events`).url).toBe(
+        `/api/v1/analyses/${ID}/events`,
+      ),
+    );
   });
 
   it("planning → running k of n → finished with Open; the PR is in the top bar", async () => {
@@ -55,7 +68,7 @@ describe("Analysis progress on the PR page (brief §4.2, review-workflow-plan §
     expect(screen.getByRole("link", { name: "Open review" })).toHaveAttribute("href", `/analyses/${ID}`);
     expect(screen.queryByRole("button", { name: "Cancel analysis" })).toBeNull();
     act(() =>
-      FakeEventSource.latest().emit({
+      FakeEventSource.latest(`/api/v1/analyses/${ID}/events`).emit({
         event: "analysis",
         summary: { ...analysis, state: { state: "finished", total: 5 }, has_my_state: true },
       }),
@@ -74,9 +87,18 @@ describe("Analysis progress on the PR page (brief §4.2, review-workflow-plan §
   it("failed before any flow: plain description; Retry asks the server to retry", async () => {
     setScenario("failed-early");
     renderRoute(`/analyses/${ID}/progress`);
-    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    await waitFor(() =>
+      expect(
+        FakeEventSource.instances.filter(({ url }) => url === `/api/v1/analyses/${ID}/events`),
+      ).toHaveLength(1),
+    );
     // The snapshot's stage data says planning had not finished.
-    act(() => FakeEventSource.latest().emit({ event: "analysis", summary: liveAnalysis() }));
+    act(() =>
+      FakeEventSource.latest(`/api/v1/analyses/${ID}/events`).emit({
+        event: "analysis",
+        summary: liveAnalysis(),
+      }),
+    );
     expect(screen.getByText("The analysis failed before any flow was planned")).toBeVisible();
     expect(screen.getByText("The repository could not be fetched. Retry the analysis.")).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "Retry" }));
@@ -131,10 +153,10 @@ describe("Analysis progress on the PR page (brief §4.2, review-workflow-plan §
 
   it("connection lost: keeps the last state and says it reconnects; the next snapshot clears it", async () => {
     await showAt({ state: "running", done: 2, total: 5 });
-    act(() => FakeEventSource.latest().drop());
+    act(() => FakeEventSource.latest(`/api/v1/analyses/${ID}/events`).drop());
     expect(screen.getByText("Connection lost; reconnecting…")).toBeVisible();
     expect(screen.getByText("2 of 5 flows analysed")).toBeVisible();
-    act(() => FakeEventSource.latest().open());
+    act(() => FakeEventSource.latest(`/api/v1/analyses/${ID}/events`).open());
     emit({ state: "running", done: 4, total: 5 });
     expect(screen.queryByText("Connection lost; reconnecting…")).toBeNull();
     expect(screen.getByText("4 of 5 flows analysed")).toBeVisible();

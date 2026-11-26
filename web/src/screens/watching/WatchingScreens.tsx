@@ -1,13 +1,10 @@
 import { useNavigate } from "react-router";
-import { ApiError } from "../../api/client";
+import { errorText } from "../../api/client";
 import { useCarryOvers } from "../../api/review-loop";
 import { useNow } from "../../app/now";
 import { CarryOvers } from "../../components/comments/CarryOvers";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { ALL_CARRY_OVERS_PATH } from "../pr/paths";
-
-const errorText = (error: unknown) =>
-  error instanceof ApiError ? error.message : "Something went wrong. Try again.";
 
 /** V5 `/comments/carry-overs`: all pull requests. */
 export function AllCarryOversScreen() {

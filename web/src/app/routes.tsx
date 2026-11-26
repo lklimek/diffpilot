@@ -1,4 +1,5 @@
-import type { RouteObject } from "react-router";
+import { Outlet, type RouteObject } from "react-router";
+import { useUserEvents } from "./userEvents";
 import { ShellRoute, StartRoute } from "../screens/shell/ShellRoute";
 import { LegacyReviewRedirect, LegacyWatchingRedirect, PrsScreen } from "../screens/prs/PrsScreen";
 import { NotFoundScreen } from "../screens/home/NotFoundScreen";
@@ -20,7 +21,7 @@ import { ReviewRoute } from "../screens/review/ReviewRoute";
  * My work, Pull requests, Settings and all carry-overs share the
  * navigation shell; the PR page and Comments (review-workflow-plan §3) have the review's top bar.
  */
-export const appRoutes: RouteObject[] = [
+const pages: RouteObject[] = [
   {
     element: <ShellRoute />,
     children: [
@@ -61,3 +62,10 @@ export const appRoutes: RouteObject[] = [
   { path: "/analyses/:analysisId/progress", element: <ProgressRedirect /> },
   { path: "*", element: <NotFoundScreen /> },
 ];
+
+function UserEventsLayout() {
+  useUserEvents();
+  return <Outlet />;
+}
+
+export const appRoutes: RouteObject[] = [{ element: <UserEventsLayout />, children: pages }];

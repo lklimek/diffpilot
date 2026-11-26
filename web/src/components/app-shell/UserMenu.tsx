@@ -1,8 +1,8 @@
-import { useId, useRef, useState } from "react";
-import type { LlmCallOutcome, RankingStatus, LlmActivity } from "../../api/generated/types";
+import { useId } from "react";
+import type { LlmActivity } from "../../api/generated/types";
 import { navigateOnClick, type Navigate } from "../dashboard/common/navigate";
 import { clockText, dateTimeText } from "../format/time";
-import { useOutsidePress } from "../popover/useOutsidePress";
+import { useAnchoredPanel } from "../popover/useAnchoredPanel";
 import { Tooltip } from "../tooltip/Tooltip";
 import { LlmActivityList } from "./LlmActivityList";
 
@@ -15,9 +15,6 @@ export interface UserMenuProps {
   usageHref: string;
   now: Date;
   activity: LlmActivity | null | undefined;
-  legacyRanking?: RankingStatus | null;
-  pausedUntil?: string | null;
-  lastCall?: LlmCallOutcome | null;
   onNavigate?: Navigate;
   onHelp?: () => void;
   onSignOut: () => void;
@@ -32,9 +29,6 @@ export function UserMenu({
   usageHref,
   now,
   activity,
-  legacyRanking,
-  pausedUntil = activity?.paused_until ?? null,
-  lastCall = activity?.last_call ?? null,
   onNavigate,
   onHelp,
   onSignOut,
@@ -42,15 +36,10 @@ export function UserMenu({
   signOutError,
 }: UserMenuProps) {
   const id = useId();
-  const wrapper = useRef<HTMLDivElement>(null);
-  const trigger = useRef<HTMLButtonElement>(null);
-  const [open, setOpen] = useState(false);
-  useOutsidePress(open, wrapper, () => setOpen(false));
-
-  const close = () => {
-    setOpen(false);
-    trigger.current?.focus();
-  };
+  const { root, anchor, panel, open, setOpen, closeAndFocus, dismiss } = useAnchoredPanel<HTMLDivElement>({
+    align: "end",
+  });
+  const { paused_until: pausedUntil, last_call: lastCall = null } = activity ?? {};
   const paused = pausedUntil && Date.parse(pausedUntil) > now.getTime() ? pausedUntil : null;
   const failed = lastCall?.status.state === "not_working";
   const attention = paused ? "paused" : failed ? "failed" : null;
@@ -68,22 +57,10 @@ export function UserMenu({
     });
 
   return (
-    <div
-      ref={wrapper}
-      className="relative flex flex-none items-center"
-      onKeyDown={(event) => {
-        if (event.key !== "Escape" || !open) return;
-        event.preventDefault();
-        event.stopPropagation();
-        close();
-      }}
-      onBlur={(event) => {
-        if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) setOpen(false);
-      }}
-    >
+    <div ref={root} className="relative flex flex-none items-center" {...dismiss}>
       <Tooltip tip={attention ? name : `Signed in as ${login} (GitHub)`}>
         <button
-          ref={trigger}
+          ref={anchor}
           type="button"
           aria-label={name}
           aria-haspopup="dialog"
@@ -117,22 +94,20 @@ export function UserMenu({
           </span>
         </button>
       </Tooltip>
-      {failed && (
-        <span role="status" className="sr-only">
-          Last LLM call failed at {dateTimeText(lastCall.at)}.
-        </span>
-      )}
+      <span role="status" className="sr-only">
+        {failed ? `Last LLM call failed at ${dateTimeText(lastCall.at)}.` : ""}
+      </span>
       {open && (
         <div
           id={id}
+          ref={panel}
           role="dialog"
           aria-label={panelName}
-          className="absolute right-0 top-full z-50 mt-1 grid max-h-[calc(100dvh-4rem)] w-88 max-w-[calc(100vw-2rem)] gap-1 overflow-y-auto overscroll-contain rounded-lg border border-border bg-surface p-1 text-left text-[13px] whitespace-normal text-text shadow-tip [overflow-wrap:anywhere]"
+          className="fixed z-50 grid w-88 max-w-[calc(100vw-2rem)] gap-1 overflow-y-auto overscroll-contain rounded-lg border border-border bg-surface p-1 text-left text-[13px] whitespace-normal text-text shadow-tip [overflow-wrap:anywhere]"
         >
           <p className="px-2.5 py-1 text-xs text-muted">Signed in as {login} (GitHub)</p>
           <LlmActivityList
             activity={activity}
-            legacyRanking={legacyRanking}
             lastCall={lastCall}
             pausedUntil={paused}
             now={now}
@@ -148,7 +123,7 @@ export function UserMenu({
                 type="button"
                 aria-keyshortcuts="?"
                 onClick={() => {
-                  close();
+                  closeAndFocus();
                   onHelp();
                 }}
                 className={ACTION}

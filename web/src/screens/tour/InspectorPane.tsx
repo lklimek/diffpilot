@@ -1,3 +1,4 @@
+import { errorText } from "../../api/client";
 import type { UseQueryResult } from "@tanstack/react-query";
 import type { ReactNode, RefObject } from "react";
 import type {
@@ -41,7 +42,7 @@ import {
 import type { SectionControl } from "../../components/inspector/sectionState";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { useAskChat } from "../review/askChat";
-import { DiffCode, errorText } from "./code";
+import { DiffCode } from "./code";
 import { stepQuery } from "./sequence";
 
 /** The line a comment is being written on, with the displayed lines it was chosen in. */

@@ -11,8 +11,10 @@ import {
   choicesFor,
   decideBlocked,
   gateOf,
+  githubProposal,
   missingInput,
   needOf,
+  NEED_LABEL,
   plannedReply,
   previewFor,
   recommendedValue,
@@ -29,14 +31,6 @@ export const COMMENT_HINT =
   "Saved with the decision and sent to the agent that executes it. Not posted to GitHub: the reply text below is what gets posted.";
 
 const INPUT = "w-full rounded-md border border-muted bg-surface px-2 py-1 text-text";
-
-const NEED_LABEL: Record<NonNullable<ReturnType<typeof needOf>>, string> = {
-  reason: "Reason (posted as the public reply)",
-  pr: "Existing pull request",
-  title: "Title of the new follow-up PR (optional)",
-  upstream: 'Upstream issue or PR URL, or "create"',
-  todo: "TODO title",
-};
 
 interface DecisionFormProps {
   item: CommentItem;
@@ -70,8 +64,10 @@ export function DecisionForm(props: DecisionFormProps) {
   const id = useId();
   const choices = choicesFor(item);
   const recommended = item.assessment?.recommendation.kind ?? null;
-  const [choice, setChoice] = useState<Choice>(choices[0]!);
-  const [value, setValue] = useState(() => recommendedValue(item));
+  const initialChoice = githubProposal(item)?.kind ?? choices[0]!;
+  const initialValue = initialChoice === recommended ? recommendedValue(item) : "";
+  const [choice, setChoice] = useState<Choice>(initialChoice);
+  const [value, setValue] = useState(initialValue);
   const [resolve, setResolve] = useState(true);
   const [comment, setComment] = useState("");
   const [reply, setReply] = useState<string | null>(null);
@@ -81,8 +77,8 @@ export function DecisionForm(props: DecisionFormProps) {
   const [touched, setTouched] = useState(false);
   if (item.revision !== seen && !touched) {
     setSeen(item.revision);
-    setChoice(choices[0]!);
-    setValue(recommendedValue(item));
+    setChoice(initialChoice);
+    setValue(initialValue);
   }
   const changed = item.revision !== seen;
   const touch = () => {

@@ -42,6 +42,7 @@ interface WorkListProps {
   wakingKeys?: string[];
   onRejudge?: (key: string) => void;
   rejudgingKeys?: string[];
+  rankingNotice?: string | null;
   usageHref?: string;
   snapshotAt?: string | null;
   /** In-app href of a pull request's review (plan §F.1); built by the screen. */
@@ -118,6 +119,7 @@ export function WorkList({
   wakingKeys,
   onRejudge,
   rejudgingKeys = [],
+  rankingNotice,
   usageHref,
   snapshotAt,
   reviewHref,
@@ -137,6 +139,7 @@ export function WorkList({
   const [status, setStatus] = useState<WorkStatus>("all");
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [cursor, setCursor] = useState<string | null>(null);
+  const [lastRejudge, setLastRejudge] = useState<{ key: string; judgedAt: string | null }>();
   /** Focus targets of the rows for `j`/`k`: a row's expander, an alarm's frame. */
   const targets = useRef(new Map<string, HTMLElement>());
   const titleId = useId();
@@ -156,6 +159,17 @@ export function WorkList({
   const alarms = groupItems(items).alarms;
   const { tiers, notJudged } = groupItems(shown);
   const rows = [...alarms, ...tiers.flatMap((group) => group.items), ...notJudged];
+  const rejudging = items.filter(
+    ({ key, judgement }) => rejudgingKeys.includes(key) || judgement?.state === "judging",
+  ).length;
+  const lastItem = lastRejudge && items.find(({ key }) => key === lastRejudge.key);
+  const updated =
+    lastItem?.judgement?.state === "current" && lastItem.judgement.judged_at !== lastRejudge?.judgedAt;
+  const judgementAnnouncement = rejudging
+    ? `Re-judging ${rejudging} ${rejudging === 1 ? "item" : "items"}.`
+    : updated
+      ? `Re-judged ${lastItem.title}.`
+      : null;
   const count = (kind: ItemKind) => items.filter((item) => item.kind === kind).length;
   const filterBy =
     onFiltersChange &&
@@ -227,7 +241,12 @@ export function WorkList({
     watching: watchingKeys.includes(item.key),
     snapshotAt,
     onFilter: filterBy,
-    onRejudge: onRejudge && (() => onRejudge(item.key)),
+    onRejudge:
+      onRejudge &&
+      (() => {
+        setLastRejudge({ key: item.key, judgedAt: item.judgement?.judged_at ?? null });
+        onRejudge(item.key);
+      }),
     rejudging: rejudgingKeys.includes(item.key),
     usageHref,
   });
@@ -269,6 +288,15 @@ export function WorkList({
           {status === "excluded"
             ? `${statusCounts.excluded} excluded or snoozed`
             : `${rows.length} of ${items.length} items, ranked`}
+          <span
+            className={
+              rankingNotice
+                ? "fixed right-4 bottom-4 z-40 rounded-md border border-border bg-surface px-3 py-2 text-sm text-text shadow"
+                : "sr-only"
+            }
+          >
+            {rankingNotice ?? judgementAnnouncement}
+          </span>
         </span>
         <span className="flex-1" />
         <ToggleGroup
