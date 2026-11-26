@@ -16,7 +16,7 @@ use super::{
 };
 use crate::state::AppState;
 
-const BACKOFF: [SignedDuration; 3] = [
+pub(super) const BACKOFF: [SignedDuration; 3] = [
     SignedDuration::from_secs(10),
     SignedDuration::from_mins(1),
     SignedDuration::from_mins(10),
@@ -112,11 +112,15 @@ pub(super) async fn complete(
         Err(code) => {
             let retry = retry_at(delivery.attempts, now);
             if github.fail(delivery, code, retry, now).await? && retry.is_none() {
-                tracing::warn!(delivery_id = %delivery.id, %code, "GitHub webhook delivery exhausted its retries");
+                warn_exhausted(delivery.id, code);
             }
         }
     }
     Ok(())
+}
+
+pub(super) fn warn_exhausted(delivery_id: uuid::Uuid, code: DeliveryError) {
+    tracing::warn!(%delivery_id, %code, "GitHub webhook delivery exhausted its retries");
 }
 
 fn retry_at(attempts: i64, now: Timestamp) -> Option<Timestamp> {

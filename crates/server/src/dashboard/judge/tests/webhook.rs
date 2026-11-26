@@ -812,10 +812,10 @@ async fn event_during_scan_rereads_the_replacement_snapshot() {
         )
         .await
         .unwrap();
-    // Recover both original hints with a fresh worker after the scan has replaced its snapshot.
+    // One carrier holds both affected items after a worker restart.
     let mut d = Dispatcher::default();
     let resumed = wall + SignedDuration::from_secs(20);
-    assert_eq!(intake_ready(&h, &mut d, at + WINDOW * 2, resumed).await, 2);
+    assert_eq!(intake_ready(&h, &mut d, at + WINDOW * 2, resumed).await, 1);
     d.flush(
         &h.state,
         at + WINDOW * 3,
@@ -1043,13 +1043,13 @@ async fn watch_probe_charges_shared_budget_and_gates_the_full_read() {
             let retry = h
                 .db()
                 .github()
-                .next_pending(expired + SignedDuration::from_secs(11))
+                .next_pending(h.db().github().next_retry(expired).await.unwrap().unwrap())
                 .await
                 .unwrap()
                 .unwrap();
             assert_eq!(
-                retry.attempts, 1,
-                "the delivery should enter the durable retry ladder"
+                retry.attempts, 0,
+                "waiting for the rate limit cannot consume a failure retry"
             );
         }
     }
@@ -1115,11 +1115,116 @@ async fn deferred_watch_burst_does_not_block_other_deliveries() {
 }
 
 #[tokio::test]
-async fn scan_hold_releases_intake_and_expires_at_deadline() {
+async fn deferred_flood_for_one_pr_keeps_one_pending_row() {
+    let (h, github) = setup("alice", 1, 4000).await;
+    let wall = Timestamp::now();
+    let start = Instant::now();
+    watch_pr(&h, 2, &["u1"], wall).await;
+    *github.throttle_once.lock().unwrap() = Some(wall + SignedDuration::from_mins(20));
+    let pull = signal(ChangeKind::PullRequest, repo("wallet-ui"), Some(2));
+    let review = signal(ChangeKind::PullRequestReview, repo("wallet-ui"), Some(2));
+    let mut d = Dispatcher::default();
+    for offset in [0, 20] {
+        let at = start + Duration::from_secs(offset);
+        let clock = wall + SignedDuration::from_secs(offset as i64);
+        for _ in 0..150 {
+            record(&h, clock, &pull).await;
+        }
+        if offset != 0 {
+            record(&h, clock, &review).await;
+        }
+        intake_ready(&h, &mut d, at, clock).await;
+        d.flush(&h.state, at + WINDOW, clock + SignedDuration::from_secs(10))
+            .await
+            .unwrap();
+    }
+    let db = h.db().github();
+    let reset = wall + SignedDuration::from_mins(21);
+    let carrier = db.next_pending(reset).await.unwrap().unwrap();
+    assert!(db.next_retry(reset).await.unwrap().is_none());
+    assert!(
+        db.next_pending_excluding(reset, &[carrier.id])
+            .await
+            .unwrap()
+            .is_none()
+    );
+    d = Dispatcher::default();
+    let at = start + Duration::from_secs(21 * 60);
+    assert_eq!(intake_ready(&h, &mut d, at, reset).await, 1);
+    d.flush(&h.state, at + WINDOW, reset + SignedDuration::from_secs(10))
+        .await
+        .unwrap();
+    assert!(
+        github
+            .queries
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|q| q.starts_with("query(")),
+        "the review signal in the second window triggers a full read after restart"
+    );
+}
+
+#[tokio::test]
+async fn deferred_watch_spacing_does_not_reread_completed_dashboard() {
+    let (h, github) = setup("alice", 1, 4000).await;
+    let wall = Timestamp::now();
+    let start = Instant::now();
+    watch_pr(&h, 1, &["u1"], wall).await;
+    let change = || signal(ChangeKind::PullRequest, repo("wallet-ui"), Some(1));
+    let mut d = Dispatcher::default();
+    enqueue(&h, &mut d, start, change()).await;
+    d.flush(
+        &h.state,
+        start + WINDOW,
+        wall + SignedDuration::from_secs(10),
+    )
+    .await
+    .unwrap();
+    seed(&h, "u1", &snapshot(prs(1), vec![], vec![])).await;
+    let later = start + WINDOW * 2;
+    enqueue(&h, &mut d, later, change()).await;
+    d.flush(
+        &h.state,
+        later + WINDOW,
+        wall + SignedDuration::from_secs(30),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        read(&h, "u1").await.pull_requests[0].facts.title,
+        "Changed pull request 1"
+    );
+    let mut d = Dispatcher::default();
+    let ready = wall + SignedDuration::from_secs(71);
+    let at = start + Duration::from_secs(71);
+    assert_eq!(intake_ready(&h, &mut d, at, ready).await, 1);
+    d.flush(&h.state, at + WINDOW, ready + SignedDuration::from_secs(10))
+        .await
+        .unwrap();
+    let queries = github.queries.lock().unwrap();
+    assert_eq!(
+        queries
+            .iter()
+            .filter(|q| q.contains("a0: repository") && !q.contains("reviewThreads { totalCount }"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        queries
+            .iter()
+            .filter(|q| q.contains("reviewThreads { totalCount }"))
+            .count(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn retried_scan_hold_starts_when_blocked_and_keeps_its_w4_attempt() {
     let (h, github) = setup("alice", 1, 4000).await;
     seed(&h, "u1", &snapshot(prs(1), vec![], vec![])).await;
     let dashboard = h.db().dashboard();
-    let StartOutcome::Started { .. } = dashboard
+    let StartOutcome::Started { refresh, .. } = dashboard
         .start_refresh(
             DEFAULT_TENANT,
             "u1",
@@ -1135,10 +1240,20 @@ async fn scan_hold_releases_intake_and_expires_at_deadline() {
     let start = Instant::now();
     let id = record(
         &h,
-        wall,
+        wall - SignedDuration::from_mins(30),
         &signal(ChangeKind::PullRequest, repo("wallet-ui"), Some(1)),
     )
     .await;
+    let db = h.db().github();
+    let original = db.next_pending(wall).await.unwrap().unwrap();
+    db.fail(
+        &original,
+        db::repo::github::DeliveryError::Dispatch,
+        Some(wall),
+        wall,
+    )
+    .await
+    .unwrap();
     let mut d = Dispatcher::default();
     assert_eq!(
         crate::webhooks::work_step(&h.state, &mut d).await.unwrap(),
@@ -1155,6 +1270,12 @@ async fn scan_hold_releases_intake_and_expires_at_deadline() {
         d.in_flight().is_empty(),
         "a running scan cannot occupy intake"
     );
+    let first_hold = db
+        .next_pending(wall + SignedDuration::from_secs(24))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((first_hold.id, first_hold.attempts), (id, 1));
     let late = wall + SignedDuration::from_mins(6);
     assert_eq!(
         intake_ready(&h, &mut d, start + Duration::from_secs(360), late).await,
@@ -1185,6 +1306,32 @@ async fn scan_hold_releases_intake_and_expires_at_deadline() {
             .unwrap()
             .state,
         RefreshState::Scanning
+    );
+    dashboard
+        .store_snapshot(
+            DEFAULT_TENANT,
+            "u1",
+            refresh.id,
+            &snapshot(prs(1), vec![], vec![]),
+            now(),
+        )
+        .await
+        .unwrap();
+    let resumed = expired + SignedDuration::from_secs(20);
+    assert_eq!(
+        intake_ready(&h, &mut d, start + Duration::from_secs(390), resumed).await,
+        1
+    );
+    d.flush(
+        &h.state,
+        start + Duration::from_secs(400),
+        resumed + SignedDuration::from_secs(10),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        read(&h, "u1").await.pull_requests[0].facts.title,
+        "Changed pull request 1"
     );
 }
 

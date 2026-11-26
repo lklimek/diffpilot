@@ -924,8 +924,10 @@ async fn dashboard_fanout_matches_repository_ids_in_each_tenant() {
 async fn deferred_delivery_yields_to_earlier_eligible_work() {
     let db = test_db().await;
     let github = db.github();
-    let now = Timestamp::now();
+    let now = Timestamp::from_second(Timestamp::now().as_second()).unwrap()
+        + SignedDuration::from_nanos(123_456_789);
     let later = now + SignedDuration::from_secs(30);
+    let eligible_at = later - SignedDuration::from_nanos(789);
     let repository = repo(7, "acme", "node-client");
     let change = WebhookChange {
         kind: ChangeKind::PullRequest,
@@ -957,9 +959,30 @@ async fn deferred_delivery_yields_to_earlier_eligible_work() {
     };
 
     let first = Uuid::new_v4();
-    queue(first, now).await;
+    queue(first, now - RESUME_WINDOW + SignedDuration::from_secs(10)).await;
     let pending = github.next_pending(now).await.unwrap().unwrap();
-    github.defer(&pending, later).await.unwrap();
+    let destination = Destination::Watch { pr: 1 };
+    let mut work = DispatchTarget::new(destination.clone(), 0);
+    work.review = true;
+    assert!(
+        github
+            .save_targets(&pending, &[DispatchTarget::new(destination.clone(), 0)])
+            .await
+            .unwrap()
+    );
+    github
+        .settle_target(
+            &destination,
+            &[&pending],
+            DispatchOutcome::Deferred {
+                work,
+                ready_at: later,
+                hold_until: later + SignedDuration::from_mins(1),
+            },
+            now,
+        )
+        .await
+        .unwrap();
     assert!(github.next_pending(now).await.unwrap().is_none());
 
     let second = Uuid::new_v4();
@@ -967,7 +990,42 @@ async fn deferred_delivery_yields_to_earlier_eligible_work() {
     let eligible = github.next_pending(later).await.unwrap().unwrap();
     assert_eq!(eligible.id, second);
     github.finish(&eligible, later).await.unwrap();
-    let resumed = github.next_pending(later).await.unwrap().unwrap();
+    assert_eq!(
+        github
+            .next_retry(now + SignedDuration::from_secs(15))
+            .await
+            .unwrap(),
+        Some(eligible_at)
+    );
+    let resumed = github
+        .next_pending(eligible_at)
+        .await
+        .unwrap()
+        .expect("a scheduled destination remains eligible across the ingress cutoff");
     assert_eq!((resumed.id, resumed.attempts), (first, 0));
-    assert_eq!(resumed.changes[0].number, Some(1));
+    let target = resumed
+        .targets
+        .first()
+        .expect("a target is ready at the stored microsecond deadline");
+    assert_eq!(target.destination, destination);
+    assert!(target.review);
+
+    let redelivery = later + SignedDuration::from_secs(1);
+    queue(first, redelivery).await;
+    github
+        .settle_target(
+            &destination,
+            &[&resumed],
+            DispatchOutcome::Complete,
+            redelivery,
+        )
+        .await
+        .unwrap();
+    let current = github.next_pending(redelivery).await.unwrap().unwrap();
+    assert_eq!(current.id, first);
+    assert_eq!(current.targets[0].destination, destination);
+    assert!(
+        current.targets[0].review,
+        "redelivery preserves merged work and fences the old lease"
+    );
 }

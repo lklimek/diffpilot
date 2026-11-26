@@ -5,7 +5,10 @@ use std::time::Duration;
 
 use contracts::time::Timestamp;
 use db::error::DbError;
-use db::repo::github::{ChangeKind, DeliveryError, PendingDelivery};
+use db::repo::github::{
+    ChangeKind, DashboardItem, DashboardRead, DeliveryError, Destination, DispatchOutcome,
+    DispatchTarget, PendingDelivery, WebhookChange,
+};
 use jiff::SignedDuration;
 use tokio::time::Instant;
 use uuid::Uuid;
@@ -24,62 +27,87 @@ const SCAN_RECHECK: Duration = Duration::from_secs(2);
 const WATCH_DEFERRAL_LIMIT: SignedDuration = SignedDuration::from_mins(65);
 pub(super) const MAX_HELD: usize = 256;
 
-struct Window<T> {
+struct Window {
     due: Instant,
     deliveries: Vec<Uuid>,
-    work: T,
+    items: event::EventItems,
+    review: bool,
 }
 
-impl<T: Default> Window<T> {
+impl Window {
     fn new(now: Instant) -> Self {
         Self {
             due: now + WINDOW,
             deliveries: Vec::new(),
-            work: T::default(),
+            items: event::EventItems::default(),
+            review: false,
         }
     }
 
-    fn attach(&mut self, delivery: Uuid) -> usize {
-        if self.deliveries.last() == Some(&delivery) {
-            return 0;
+    fn merge(&mut self, target: &DispatchTarget) {
+        self.review |= target.review;
+        for item in &target.items {
+            let items = match item.read {
+                DashboardRead::Pull => &mut self.items.pulls,
+                DashboardRead::Issue => &mut self.items.issues,
+                DashboardRead::Candidate => &mut self.items.candidates,
+            };
+            items.insert(
+                PrKey::new(&item.repo, item.number),
+                ItemRef {
+                    repo: item.repo.clone(),
+                    number: item.number,
+                },
+            );
         }
-        self.deliveries.push(delivery);
-        1
+    }
+
+    fn defer(
+        &self,
+        destination: Destination,
+        previous: Option<Timestamp>,
+        now: Timestamp,
+        delay: Duration,
+        limit: SignedDuration,
+    ) -> DispatchOutcome {
+        let mut work = DispatchTarget::new(destination, 0);
+        work.review = self.review;
+        for (read, items) in [
+            (DashboardRead::Pull, &self.items.pulls),
+            (DashboardRead::Issue, &self.items.issues),
+            (DashboardRead::Candidate, &self.items.candidates),
+        ] {
+            work.items.extend(items.values().map(|item| DashboardItem {
+                read,
+                repo: item.repo.clone(),
+                number: item.number,
+            }));
+        }
+        // If the destination is still blocked at expiry, start a fresh hold without spending a retry.
+        let hold_until = previous
+            .filter(|deadline| *deadline > now)
+            .unwrap_or_else(|| now + limit);
+        let ready_at = SignedDuration::try_from(delay)
+            .ok()
+            .and_then(|delay| now.checked_add(delay))
+            .map_or(hold_until, |ready| ready.min(hold_until));
+        DispatchOutcome::Deferred {
+            work,
+            ready_at,
+            hold_until,
+        }
     }
 }
 
 struct Held {
     delivery: PendingDelivery,
     remaining: usize,
-    failed: bool,
-    retry_at: Option<Timestamp>,
 }
 
-enum WindowOutcome {
-    Complete,
-    Failed,
-    Deferred {
-        now: Timestamp,
-        delay: Duration,
-        max_age: SignedDuration,
-    },
-}
-
-impl WindowOutcome {
-    fn from_result<T, E>(result: Result<T, E>) -> Self {
-        if result.is_ok() {
-            Self::Complete
-        } else {
-            Self::Failed
-        }
-    }
-}
-
-/// Single consumer's coalescing state. Deferred work returns to the durable queue with its original hints.
+/// Single consumer's fixed windows. Deferred destinations live in SQLite between attempts.
 #[derive(Default)]
 pub(crate) struct Dispatcher {
-    users: BTreeMap<Scope, Window<event::EventItems>>,
-    watches: BTreeMap<i64, Window<bool>>,
+    windows: BTreeMap<Destination, Window>,
     held: HashMap<Uuid, Held>,
     budgets: HashMap<String, EventBudget>,
 }
@@ -90,11 +118,7 @@ impl Dispatcher {
     }
 
     pub(super) fn next_due(&self) -> Option<Instant> {
-        self.users
-            .values()
-            .map(|window| window.due)
-            .chain(self.watches.values().map(|window| window.due))
-            .min()
+        self.windows.values().map(|window| window.due).min()
     }
 
     pub(crate) async fn enqueue(
@@ -103,69 +127,44 @@ impl Dispatcher {
         mut delivery: PendingDelivery,
         now: Instant,
     ) -> Result<(), DbError> {
-        if delivery.changes.is_empty() {
-            return state.db.github().finish(&delivery, Timestamp::now()).await;
-        }
-        let github = state.db.github();
-        let (targets, watched) = tokio::join!(
-            github.dashboard_targets(&delivery.changes, SNAPSHOT_VERSION),
-            github.watch_targets(&delivery.changes),
-        );
-        let (Ok(targets), Ok(watched)) = (targets, watched) else {
-            return worker::complete(
-                &state.db,
-                &delivery,
-                Err(DeliveryError::Dispatch),
-                Timestamp::now(),
-            )
-            .await;
-        };
-
-        let id = delivery.id;
-        let mut remaining = 0;
-        for target in targets {
-            let window = self
-                .users
-                .entry(Scope {
-                    tenant_id: target.tenant_id,
-                    user_id: target.user_id,
-                })
-                .or_insert_with(|| Window::new(now));
-            let items = if target.candidate {
-                &mut window.work.candidates
-            } else if matches!(
-                delivery
-                    .changes
-                    .get(target.change)
-                    .map(|change| change.kind),
-                Some(ChangeKind::Issue)
-            ) {
-                &mut window.work.issues
-            } else {
-                &mut window.work.pulls
+        let db = state.db.github();
+        if !delivery.changes.is_empty() {
+            delivery.targets = match route(state, &delivery.changes, delivery.attempts).await {
+                Ok(targets) => targets,
+                Err(_) => {
+                    return worker::complete(
+                        &state.db,
+                        &delivery,
+                        Err(DeliveryError::Dispatch),
+                        Timestamp::now(),
+                    )
+                    .await;
+                }
             };
-            items.insert(
-                PrKey::new(&target.repo, target.number),
-                ItemRef {
-                    repo: target.repo,
-                    number: target.number,
-                },
-            );
-            remaining += window.attach(id);
+            if !delivery.targets.is_empty()
+                && !db.save_targets(&delivery, &delivery.targets).await?
+            {
+                return Ok(());
+            }
         }
-        for (pr, review) in watched {
-            let window = self.watches.entry(pr).or_insert_with(|| Window::new(now));
-            window.work |= review;
-            remaining += window.attach(id);
+        if delivery.targets.is_empty() {
+            return db.finish(&delivery, Timestamp::now()).await;
         }
-        delivery.changes = Vec::new();
+        let remaining = delivery.targets.len();
+        for target in delivery.targets.drain(..) {
+            let window = self
+                .windows
+                .entry(target.destination.clone())
+                .or_insert_with(|| Window::new(now));
+            window.merge(&target);
+            window.deliveries.push(delivery.id);
+        }
+        delivery.changes.clear();
         self.held.insert(
-            id,
+            delivery.id,
             Held {
                 delivery,
                 remaining,
-                failed: false,
-                retry_at: None,
             },
         );
         Ok(())
@@ -178,123 +177,148 @@ impl Dispatcher {
         wall: Timestamp,
     ) -> Result<(), DbError> {
         let started = Instant::now();
-        let scopes: Vec<_> = self
-            .users
+        let due: Vec<_> = self
+            .windows
             .iter()
             .filter(|(_, window)| window.due <= now)
-            .map(|(scope, _)| scope.clone())
+            .map(|(destination, _)| destination.clone())
             .collect();
-        for scope in scopes {
-            if let Some(window) = self.users.remove(&scope) {
-                let budget = self
-                    .budgets
-                    .entry(scope.user_id.clone())
-                    .or_default()
-                    .clone();
-                let instant = now + started.elapsed();
-                let outcome =
-                    match event::reread_items(state, &scope, &window.work, budget, instant).await {
-                        Ok(event::EventRead::Scanning) => WindowOutcome::Deferred {
-                            now: wall
-                                + SignedDuration::try_from(started.elapsed()).unwrap_or_default(),
-                            delay: SCAN_RECHECK,
-                            max_age: SignedDuration::try_from(
-                                state.dashboard.scan_limit().saturating_add(WINDOW),
-                            )
-                            .unwrap_or(WATCH_DEFERRAL_LIMIT),
-                        },
-                        result => WindowOutcome::from_result(result),
-                    };
-                self.finished(window.deliveries, outcome);
-            }
-        }
-
-        let prs: Vec<_> = self
-            .watches
-            .iter()
-            .filter(|(_, window)| window.due <= now)
-            .map(|(pr, _)| *pr)
-            .collect();
-        for pr in prs {
-            if let Some(window) = self.watches.remove(&pr) {
-                let elapsed = started.elapsed();
-                let at = wall + SignedDuration::try_from(elapsed).unwrap_or_default();
-                let outcome = match watch::event_probe(
-                    state,
-                    pr,
-                    at,
-                    window.work,
-                    &mut self.budgets,
-                    now + elapsed,
-                )
-                .await
-                {
-                    Ok(Some(delay)) => WindowOutcome::Deferred {
-                        now: at,
-                        delay,
-                        max_age: WATCH_DEFERRAL_LIMIT,
-                    },
-                    result => WindowOutcome::from_result(result),
-                };
-                self.finished(window.deliveries, outcome);
-            }
-        }
-        let completed: Vec<_> = self
-            .held
-            .iter()
-            .filter(|(_, held)| held.remaining == 0)
-            .map(|(id, _)| *id)
-            .collect();
-        let at = wall + SignedDuration::try_from(started.elapsed()).unwrap_or_default();
-        for id in completed {
-            if let Some(held) = self.held.get(&id) {
-                if let Some(retry_at) = held.retry_at {
-                    state.db.github().defer(&held.delivery, retry_at).await?;
-                } else {
-                    let outcome = if held.failed {
-                        Err(DeliveryError::Dispatch)
+        let db = state.db.github();
+        for destination in due {
+            let Some(window) = self.windows.get_mut(&destination) else {
+                continue;
+            };
+            let elapsed = started.elapsed();
+            let at = wall + SignedDuration::try_from(elapsed).unwrap_or_default();
+            let instant = now + elapsed;
+            let parked = db.parked_target(&destination, at).await?;
+            let previous = parked
+                .as_ref()
+                .and_then(|row| row.targets.first())
+                .and_then(|target| {
+                    window.merge(target);
+                    target.hold_until
+                });
+            let outcome = match &destination {
+                Destination::Dashboard { tenant, user } => {
+                    if !db.dashboard_member(tenant, user).await? {
+                        DispatchOutcome::Complete
                     } else {
-                        Ok(())
-                    };
-                    worker::complete(&state.db, &held.delivery, outcome, at).await?;
-                }
-                self.held.remove(&id);
-            }
-        }
-        Ok(())
-    }
-
-    fn finished(&mut self, deliveries: Vec<Uuid>, outcome: WindowOutcome) {
-        for id in deliveries {
-            if let Some(held) = self.held.get_mut(&id) {
-                held.remaining -= 1;
-                match outcome {
-                    WindowOutcome::Complete => (),
-                    WindowOutcome::Failed => held.failed = true,
-                    WindowOutcome::Deferred {
-                        now,
-                        delay,
-                        max_age,
-                    } => {
-                        if let Some(deadline) = held
-                            .delivery
-                            .received_at
-                            .checked_add(max_age)
-                            .filter(|deadline| *deadline > now)
+                        let scope = Scope {
+                            tenant_id: tenant.clone(),
+                            user_id: user.clone(),
+                        };
+                        let budget = self.budgets.entry(user.clone()).or_default().clone();
+                        match event::reread_items(state, &scope, &window.items, budget, instant)
+                            .await
                         {
-                            let retry = SignedDuration::try_from(delay)
-                                .ok()
-                                .and_then(|delay| now.checked_add(delay))
-                                .map_or(deadline, |retry| retry.min(deadline));
-                            // Re-evaluate all destinations when the first one becomes eligible.
-                            held.retry_at =
-                                Some(held.retry_at.map_or(retry, |previous| previous.min(retry)));
-                        } else {
-                            held.failed = true;
+                            Ok(event::EventRead::Scanning) => window.defer(
+                                destination.clone(),
+                                previous,
+                                at,
+                                SCAN_RECHECK,
+                                SignedDuration::try_from(
+                                    state.dashboard.scan_limit().saturating_add(WINDOW),
+                                )
+                                .unwrap_or(WATCH_DEFERRAL_LIMIT),
+                            ),
+                            Ok(event::EventRead::Complete) => DispatchOutcome::Complete,
+                            Err(_) => DispatchOutcome::Failed(&worker::BACKOFF),
+                        }
+                    }
+                }
+                Destination::Watch { pr } => {
+                    match watch::event_probe(
+                        state,
+                        *pr,
+                        at,
+                        window.review,
+                        &mut self.budgets,
+                        instant,
+                    )
+                    .await
+                    {
+                        Ok(Some(delay)) => window.defer(
+                            destination.clone(),
+                            previous,
+                            at,
+                            delay,
+                            WATCH_DEFERRAL_LIMIT,
+                        ),
+                        Ok(None) => DispatchOutcome::Complete,
+                        Err(_) => DispatchOutcome::Failed(&worker::BACKOFF),
+                    }
+                }
+            };
+            // Prefer the parked row so waves of new deliveries keep the same carrier.
+            let leases: Vec<_> = parked
+                .iter()
+                .chain(
+                    window
+                        .deliveries
+                        .iter()
+                        .filter(|id| parked.as_ref().is_none_or(|parked| parked.id != **id))
+                        .filter_map(|id| self.held.get(id).map(|held| &held.delivery)),
+                )
+                .collect();
+            for id in db.settle_target(&destination, &leases, outcome, at).await? {
+                worker::warn_exhausted(id, DeliveryError::Dispatch);
+            }
+            if let Some(window) = self.windows.remove(&destination) {
+                for id in window.deliveries {
+                    if let Some(held) = self.held.get_mut(&id) {
+                        held.remaining -= 1;
+                        if held.remaining == 0 {
+                            self.held.remove(&id);
                         }
                     }
                 }
             }
         }
+        Ok(())
     }
+}
+
+async fn route(
+    state: &AppState,
+    changes: &[WebhookChange],
+    attempts: i64,
+) -> Result<Vec<DispatchTarget>, DbError> {
+    let github = state.db.github();
+    let (dashboard, watched) = tokio::try_join!(
+        github.dashboard_targets(changes, SNAPSHOT_VERSION),
+        github.watch_targets(changes),
+    )?;
+    let mut targets = BTreeMap::new();
+    for target in dashboard {
+        let destination = Destination::Dashboard {
+            tenant: target.tenant_id,
+            user: target.user_id,
+        };
+        let read = if target.candidate {
+            DashboardRead::Candidate
+        } else if matches!(
+            changes.get(target.change).map(|change| change.kind),
+            Some(ChangeKind::Issue)
+        ) {
+            DashboardRead::Issue
+        } else {
+            DashboardRead::Pull
+        };
+        targets
+            .entry(destination.clone())
+            .or_insert_with(|| DispatchTarget::new(destination, attempts))
+            .items
+            .push(DashboardItem {
+                repo: target.repo,
+                number: target.number,
+                read,
+            });
+    }
+    let watches = watched.into_iter().map(|(pr, review)| {
+        let mut target = DispatchTarget::new(Destination::Watch { pr }, attempts);
+        target.review = review;
+        target
+    });
+    Ok(targets.into_values().chain(watches).collect())
 }

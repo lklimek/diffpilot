@@ -17,8 +17,10 @@ use crate::error::DbError;
 
 mod dispatch;
 mod installations;
+mod queue;
 
 pub use dispatch::DashboardTarget;
+pub use queue::{DashboardItem, DashboardRead, Destination, DispatchOutcome, DispatchTarget};
 mod tracking;
 
 const RETENTION: SignedDuration = SignedDuration::from_hours(14 * 24);
@@ -152,9 +154,29 @@ pub struct PendingDelivery {
     pub changes: Vec<WebhookChange>,
     /// Dispatch failures in this attempt series.
     pub attempts: i64,
-    /// When the original delivery entered the durable queue.
-    pub received_at: Timestamp,
+    /// Resolved destinations eligible for dispatch.
+    pub targets: Vec<DispatchTarget>,
     received_at_raw: String,
+}
+
+impl PendingDelivery {
+    fn from_row(
+        (id, payload, attempts, received_at_raw): (String, String, i64, String),
+    ) -> Result<Self, DbError> {
+        let (changes, targets) = match serde_json::from_str(&payload)? {
+            queue::Payload::Hints(changes) => (changes, Vec::new()),
+            queue::Payload::Targets(targets) => (Vec::new(), targets),
+        };
+        Ok(Self {
+            id: Uuid::parse_str(&id).map_err(|_| DbError::Corrupt {
+                column: "delivery_id",
+            })?,
+            changes,
+            attempts,
+            targets,
+            received_at_raw,
+        })
+    }
 }
 
 /// Closed set of stored processing errors.
@@ -279,7 +301,12 @@ impl Github<'_> {
                                             changes, state, received_at, processed_at, error)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(delivery_id) DO UPDATE SET
-                 changes = excluded.changes, state = excluded.state, processed_at = excluded.processed_at,
+                 changes = CASE WHEN json_type(github_deliveries.changes, '$[0].destination') = 'object'
+                     THEN (SELECT json_group_array(json_set(value, '$.attempts', 0, '$.ready_at', NULL,
+                                                          '$.hold_until', NULL, '$.exhausted', json('false')))
+                           FROM json_each(github_deliveries.changes))
+                     ELSE excluded.changes END,
+                 state = excluded.state, processed_at = excluded.processed_at,
                  received_at = excluded.received_at, attempts = 0, error = excluded.error",
         )
         .bind(id).bind(delivery.hash).bind(delivery.event).bind(delivery.action).bind(delivery.installation_id)
@@ -339,7 +366,12 @@ impl Github<'_> {
     /// Restarts recent interrupted deliveries. Older deliveries wait for manual redelivery.
     pub async fn resume(&self, now: Timestamp) -> Result<(), DbError> {
         sqlx::query(
-            "UPDATE github_deliveries SET state = 'pending', attempts = 0, processed_at = NULL, error = NULL
+            "UPDATE github_deliveries SET state = 'pending', attempts = 0, processed_at = NULL, error = NULL,
+                 changes = CASE WHEN json_type(changes, '$[0].destination') = 'object'
+                     THEN (SELECT json_group_array(json_set(value, '$.attempts', 0, '$.ready_at', NULL,
+                                                          '$.hold_until', NULL, '$.exhausted', json('false')))
+                           FROM json_each(changes))
+                     ELSE changes END
              WHERE state = 'failed' AND received_at >= ?",
         ).bind(ts(now - RESUME_WINDOW)).execute(self.pool).await?;
         Ok(())
@@ -357,25 +389,22 @@ impl Github<'_> {
         held: &[Uuid],
     ) -> Result<Option<PendingDelivery>, DbError> {
         // Coverage is applied at receipt. Removed repositories only fence in-flight REST lookups.
+        // Scheduled destinations use their eligibility time once the receipt is too old for intake.
+        let eligible_at = ts(now);
         let row: Option<(String, String, i64, String)> = sqlx::query_as(
             "SELECT delivery_id,
                     CASE WHEN event = 'installation_repositories' AND action = 'removed' THEN '[]' ELSE changes END,
                     attempts, received_at FROM github_deliveries
-             WHERE state = 'pending' AND received_at >= ? AND (processed_at IS NULL OR processed_at <= ?)
-               AND delivery_id NOT IN (SELECT value FROM json_each(?))
+             WHERE state = 'pending' AND (processed_at IS NULL OR processed_at <= ?2)
+               AND (received_at >= ?1 OR (processed_at >= ?1 AND json_type(changes, '$[0].destination') = 'object'))
+               AND delivery_id NOT IN (SELECT value FROM json_each(?3))
              ORDER BY COALESCE(processed_at, received_at), rowid LIMIT 1",
-        ).bind(ts(now - RESUME_WINDOW)).bind(ts(now)).bind(serde_json::to_string(held)?)
+        ).bind(ts(now - RESUME_WINDOW)).bind(&eligible_at).bind(serde_json::to_string(held)?)
          .fetch_optional(self.pool).await?;
-        row.map(|(id, changes, attempts, received_at)| {
-            Ok(PendingDelivery {
-                id: Uuid::parse_str(&id).map_err(|_| DbError::Corrupt {
-                    column: "delivery_id",
-                })?,
-                changes: serde_json::from_str(&changes)?,
-                attempts,
-                received_at: parse_ts(&received_at, "received_at")?,
-                received_at_raw: received_at,
-            })
+        row.map(|row| {
+            let mut delivery = PendingDelivery::from_row(row)?;
+            delivery.targets.retain(|target| target.ready(&eligible_at));
+            Ok(delivery)
         })
         .transpose()
     }
@@ -384,7 +413,8 @@ impl Github<'_> {
     pub async fn next_retry(&self, now: Timestamp) -> Result<Option<Timestamp>, DbError> {
         let next: Option<String> = sqlx::query_scalar(
             "SELECT MIN(processed_at) FROM github_deliveries
-             WHERE state = 'pending' AND received_at >= ? AND processed_at > ?",
+             WHERE state = 'pending' AND processed_at > ?2
+               AND (received_at >= ?1 OR json_type(changes, '$[0].destination') = 'object')",
         )
         .bind(ts(now - RESUME_WINDOW))
         .bind(ts(now))
@@ -398,13 +428,6 @@ impl Github<'_> {
     /// Completes a delivery unless redelivery replaced the worker's attempt.
     pub async fn finish(&self, delivery: &PendingDelivery, now: Timestamp) -> Result<(), DbError> {
         self.update_pending(delivery, "done", None, now).await?;
-        Ok(())
-    }
-
-    /// Returns an unfinished delivery to the durable queue without consuming a failure retry.
-    pub async fn defer(&self, delivery: &PendingDelivery, until: Timestamp) -> Result<(), DbError> {
-        self.update_pending(delivery, "pending", None, until)
-            .await?;
         Ok(())
     }
 
