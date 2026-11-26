@@ -23,6 +23,8 @@ COPY web/ ./
 COPY fixtures/dashboard/api /src/fixtures/dashboard/api
 # The type check also reads the API schemas the settings help test imports.
 COPY schemas/api /src/schemas/api
+# And the needs-you cases the server and web share (queue status test).
+COPY docs/contracts/fixtures/needs-you-cases.json /src/docs/contracts/fixtures/needs-you-cases.json
 RUN npm run build
 
 FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db AS cargo-about
