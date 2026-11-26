@@ -4,7 +4,8 @@ Self-hosted web tool that helps a human review a GitHub PR: final code with chan
 walked step by step, with LLM analysis (container app-server) clearly separated from deterministic facts.
 
 ## Read first
-- `docs/design-brief.md` — the approved design; authoritative. Mockups: `docs/mockups/` (brief wins).
+- `docs/design-brief.md` — the approved design; authoritative. Mockups: `docs/mockups/` (brief wins). Accepted ADRs
+  take precedence over brief text they amend or supersede.
 - `docs/implementation-plan.md` — stages, work packages, contracts, architecture guard. Coordinators start at its §1.
 - `docs/contracts/`, `docs/decisions/` (ADRs), `docs/spikes/` — once they exist.
 - `docs/v1.1-dashboard-plan.md` — stage v1.1 (GitHub work dashboard, ADR-016..020); mirrors the implementation plan's rules.
@@ -42,7 +43,7 @@ walked step by step, with LLM analysis (container app-server) clearly separated 
   Model and effort come from `select_model`, a plain Rust function in the server using the stored
   installation-wide Settings choice (default Sol, high; Ask: stored Ask effort, default medium). Each new job reads the current choice.
 - Flow jobs write tagged `out/flow.md` and run `sr-check`; server and checker share `analysis::tagged` (ADR-014).
-  Format version 3 (incidental changes): server and runner images are rebuilt together. Plan, PR context and Ask keep JSON.
+  Format version 3 (incidental changes): server and worker images are rebuilt together. Plan, PR context and Ask keep JSON.
 - Only `runner::provider` and `server::gateway` know Codex; only `analysis::tech` (TechPlugin) knows path/line rules and call hierarchy
   (`generic` returns `None` in v1).
 - Every UI block is a self-contained component in `web/src/components/`: props in, callbacks out, no fetching,
