@@ -45,7 +45,7 @@ export function worldSettings() {
 }
 export type DashboardSettings = ReturnType<typeof worldSettings>;
 
-/** Signs in without opening My work, so its first automatic scan uses the prepared settings and fixtures. */
+/** Signs in without opening My work, so tests can prepare its settings and fixtures first. */
 export async function signInForDashboardSetup(page: Page): Promise<void> {
   const response = await page.request.get("/auth/github/login");
   expect(response.ok()).toBe(true);
@@ -202,6 +202,9 @@ export const groupIds = (page: Page, name: string) =>
 
 /** The top bar's Refresh button. */
 export const refreshButton = (page: Page) => page.getByRole("button", { name: "Refresh", exact: true });
+
+/** Full scan status in the fake world, where the watched repositories are not live. */
+export const notLiveScan = /^Not live · scan \d\d:\d\d$/;
 
 /** Puts `login` on the running server's allow-list until its next start (which applies SR_ALLOWED_LOGINS). */
 export function allowLogin(stack: Stack, login: string): void {

@@ -98,12 +98,12 @@ test("PR page → Comments → the LLM assessment arrives → a decision stores 
     "LLM assessment",
     "Round",
   ]);
-  // D3 includes three extra prose sources; gate and CI status comments are ignored.
+  // The assessment excludes the bot's status comment and the gate and CI statements.
   await expect(card.getByRole("definition")).toHaveText([
     /^6 read \d\d:\d\d/,
     "1",
     "0 decisions",
-    "0 of 12 comments assessed",
+    "0 of 11 comments assessed",
     "3 (thepastaclaw)",
   ]);
   await expect(page.getByRole("region", { name: "Review the code" })).toContainText("No analysis yet.");
@@ -148,7 +148,9 @@ test("PR page → Comments → the LLM assessment arrives → a decision stores 
     "partly valid at the PR head",
   );
   await queueStatus.click();
-  await queue.getByRole("menuitemradio", { name: /^Needs you · 13$/ }).click();
+  await expect(queue.getByRole("menuitemradio", { name: "Status comments · 1", exact: true })).toBeVisible();
+  // Needs you includes the eleven assessed comments and the separate PR-level merge question.
+  await queue.getByRole("menuitemradio", { name: "Needs you · 12", exact: true }).click();
   await expect(
     queue.getByRole("button", { name: new RegExp(`^${ITEM} .*LLM recommends Fix here$`) }),
   ).toBeVisible();

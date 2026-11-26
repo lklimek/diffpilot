@@ -51,7 +51,7 @@ test("dashboard_llm_text_renders_as_text: hostile TODO and LLM text stays text",
   await refreshButton(page).click();
   await waitForRefresh(page, ranked);
 
-  // The TODOs change (judged again, alone in one batch); the judge answers them with hostile text, asked parts 0.
+  // The judge answers the changed TODOs with hostile text and zero points for each asked part.
   const listed = (await (await page.request.get("/api/v1/dashboard/items?limit=500")).json()) as {
     items: Item[];
   };
@@ -87,7 +87,11 @@ test("dashboard_llm_text_renders_as_text: hostile TODO and LLM text stays text",
   }));
   const shown = await latestRefresh(page);
   await refreshButton(page).click();
-  const done = await waitForRefresh(page, (r) => r.id !== shown?.id && ranked(r));
+  const scanned = await waitForRefresh(page, (r) => r.id !== shown?.id && ranked(r));
+  expect(scanned.judged).toBe(0);
+  await page.getByRole("button", { name: "More refresh options" }).click();
+  await page.getByRole("menuitem", { name: "Refresh and re-judge outdated (2)" }).click();
+  const done = await waitForRefresh(page, (r) => r.id !== scanned.id && ranked(r));
   expect(done.judged, "both TODOs judged with the hostile answer").toBe(2);
 
   // Every hostile text is on the page as typed: the alarm row, the titles, and each row's details.

@@ -1,4 +1,4 @@
-// My work (v1.1 plan §A.4, §B.3, §F, §M): open the dashboard at `/` → automatic scan → the provisional
+// My work (v1.1 plan §A.4, §B.3, §F; v1.4 G1): open the dashboard at `/` → manual scan → the provisional
 // list → the ranked list (fake provider's neutral judgements), in the tab title too; TODO rows off and on; a row's
 // Review link and the moved `/?pr=` deep link; cancel during a scan; MemCan down keeps the TODO rows.
 import { checkScreen, memcan, PR_URL, signIn, userMenuButton } from "../support/app";
@@ -6,6 +6,7 @@ import {
   groupIds,
   JUDGE_DATA,
   latestRefresh,
+  notLiveScan,
   ranked,
   refreshButton,
   rowIds,
@@ -23,7 +24,7 @@ test.describe.configure({ mode: "serial" });
 
 const TODOS = ["TODO-3fa91c2e", "TODO-91bd0a44"];
 
-test("My work: automatic scan → provisional → ranked → manual refresh", async ({ page, stack }) => {
+test("My work: manual scan → provisional → ranked → refresh reuses judgements", async ({ page, stack }) => {
   test.skip(
     !stack.script || !stack.memcan,
     "needs the fake provider's script and fake MemCan (a local stack)",
@@ -35,11 +36,11 @@ test("My work: automatic scan → provisional → ranked → manual refresh", as
   await saveSettings(page, { ...worldSettings(), schedule_enabled: false });
   await seedTodos(page, stack);
   await page.goto("/");
-  await waitForRefresh(page, (r) => r.state === "scanning");
-  // The first summary read wakes the scanner; reload to observe it without waiting for the 60 s summary poll.
-  await page.reload();
+  await expect(page.getByText("Nothing scanned yet.")).toBeVisible();
+  expect(await latestRefresh(page)).toBeNull();
   await expect(page).toHaveURL(/\/$/);
   await expect(page).toHaveTitle("diffpilot My work");
+  await refreshButton(page).click();
   const progress = page.getByRole("region", { name: "Refreshing from GitHub and MemCan" });
   await expect(progress.getByRole("progressbar", { name: "Scan progress" })).toBeVisible();
   const details = progress.getByRole("button", { name: "Details" });
@@ -70,7 +71,10 @@ test("My work: automatic scan → provisional → ranked → manual refresh", as
   // wait on others), 5 issues, 2 TODOs; the list opens with every kind shown.
   const account = userMenuButton(page);
   const activity = page.getByRole("region", { name: "LLM activity" });
-  const ranking = activity.getByText(/^Ranking with the LLM: \d+ of 18 items judged\.$/);
+  const ranking = activity
+    .getByRole("list", { name: /^Running now/ })
+    .getByRole("listitem")
+    .filter({ hasText: "Ranking" });
   await expect(workList(page).getByRole("heading", { name: /^Not judged yet.*·\s*18$/ })).toBeVisible({
     timeout: 90_000,
   });
@@ -82,7 +86,7 @@ test("My work: automatic scan → provisional → ranked → manual refresh", as
   await screens(page, "dashboard-provisional");
 
   const done = await waitForRefresh(page, ranked, 150_000);
-  expect(done.trigger).toBe("automatic");
+  expect(done.trigger).toBe("manual");
   expect([done.judged, done.reused]).toEqual([18, 0]);
   if ((await account.getAttribute("aria-expanded")) === "false") await account.click();
   await expect(activity).toBeVisible();
@@ -100,7 +104,7 @@ test("My work: automatic scan → provisional → ranked → manual refresh", as
   await expect(page.getByRole("heading", { name: /^Not judged yet/ })).toHaveCount(0);
   expect(await groupIds(page, "P1")).toEqual(["PLAT-1203", "WUI-320", "NC-482"]);
   expect((await groupIds(page, "P2"))[0]).toBe("WUI-311");
-  const scanStatus = page.getByText(/^Full scan \d\d:\d\d$/);
+  const scanStatus = page.getByText(notLiveScan);
   await expect(scanStatus).toBeVisible();
   await expect(scanStatus).toHaveAccessibleDescription(/Last full scan:.*LLM judged 18 · reused 0\./);
   await checkScreen(page);
@@ -159,7 +163,7 @@ test("cancel during a scan: the scan stops, the list stays", async ({ page }) =>
   const cancelled = await waitForRefresh(page, (r) => r.id !== shown?.id && r.state === "cancelled", 30_000);
   expect(cancelled.scanned_at).toBeNull();
   await expect(progress).toHaveCount(0);
-  const status = page.getByText(/^Scan cancelled · Full scan \d\d:\d\d$/);
+  const status = page.getByText(/^Scan cancelled · Not live · scan \d\d:\d\d$/);
   await expect(status).toBeVisible();
   await expect(status).toHaveAccessibleDescription(/Scan started at .* was cancelled\. Last full scan:/);
   expect(await rowIds(page)).toEqual(before);
@@ -181,7 +185,7 @@ test("MemCan down: the refresh finishes, TODO rows are kept and a note says they
     const done = await waitForRefresh(page, (r) => r.id !== shown?.id && ranked(r));
     expect(done.failure).toBeNull();
     expect(done.trigger).toBe("manual");
-    await expect(page.getByText(/^Full scan \d\d:\d\d$/)).toBeVisible();
+    await expect(page.getByText(notLiveScan)).toBeVisible();
     expect(await rowIds(page)).toEqual(expect.arrayContaining(TODOS));
     await page.getByRole("button", { name: /^« More · waiting \d+ · ready \d+$/ }).click();
     await expect(
