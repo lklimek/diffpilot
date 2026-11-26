@@ -285,26 +285,20 @@ fn verified_renames(
         let Some(&id) = ids.get(&key) else {
             return true;
         };
-        let expected_names: Vec<_> = names
-            .iter()
-            .filter(|(known_id, _)| *known_id == id)
-            .collect();
-        let base = detail.base_repository.as_ref();
-        let actual = base.and_then(|base| base.github_id());
-        if actual != Some(id) {
-            return actual.is_none()
-                && expected_names
-                    .iter()
-                    .all(|(_, repo)| PrKey::new(repo, item.number) == key);
-        }
-        let Some(current) =
-            base.and_then(|base| ItemRef::parse(&base.name_with_owner, item.number))
+        let Some(base) = detail
+            .base_repository
+            .as_ref()
+            .filter(|base| base.github_id() == Some(id))
         else {
             return false;
         };
+        let Some(current) = ItemRef::parse(&base.name_with_owner, item.number) else {
+            return false;
+        };
         let current_key = PrKey::new(&current.repo, current.number);
-        let previous: Vec<_> = expected_names
-            .into_iter()
+        let previous: Vec<_> = names
+            .iter()
+            .filter(|(known_id, _)| *known_id == id)
             .map(|(_, repo)| ItemRef {
                 repo: repo.clone(),
                 number: item.number,
