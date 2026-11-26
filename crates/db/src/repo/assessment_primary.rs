@@ -45,21 +45,23 @@ pub struct PrimaryCarry {
     pub evidence: contracts::api::review_loop::CarryEvidence,
 }
 
-pub(super) async fn apply(
+/// Projects accepted points and returns the marked points that suppressed fresh IDs.
+pub(super) async fn apply<'a>(
     tx: &mut Transaction<'static, Sqlite>,
     tenant: &str,
     pass: &AssessmentPass,
-    points: &[PrimaryPoint],
+    points: &'a [PrimaryPoint],
     rows: &mut [AssessmentComparisonItem],
-) -> Result<(), DbError> {
+) -> Result<Vec<(u32, &'a str)>, DbError> {
     let mut applied = std::collections::HashMap::new();
+    let mut suppressed = Vec::new();
     for point in points
         .iter()
         .filter(|p| p.duplicate.is_none())
         .chain(points.iter().filter(|p| p.duplicate.is_some()))
     {
         if let Some((url, _, quote)) = &point.source
-            && review_loop::source_excludes_point_in(
+            && let Some(exclusion) = review_loop::source_point_exclusion_in(
                 tx,
                 tenant,
                 pass.input.pull_request_id,
@@ -69,6 +71,9 @@ pub(super) async fn apply(
             )
             .await?
         {
+            if let review_loop::SourcePointExclusion::Marked(no) = exclusion {
+                suppressed.push((no, url.as_str()));
+            }
             mark_missing(rows, &point.key);
             continue;
         }
@@ -178,7 +183,7 @@ pub(super) async fn apply(
             }
         }
     }
-    Ok(())
+    Ok(suppressed)
 }
 
 fn mark_missing(rows: &mut [AssessmentComparisonItem], key: &str) {

@@ -2638,3 +2638,49 @@ async fn marked_item_discards_an_in_flight_assessment() {
     );
     assert!(rl.latest_assessment(item.id).await.unwrap().is_none());
 }
+
+#[tokio::test]
+async fn blank_quotes_never_suppress_a_fresh_point() {
+    let db = db().await;
+    sqlx::query("INSERT INTO memberships (tenant_id, user_id, created_at) VALUES (?, 'u1', 't')")
+        .bind(T)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let rl = db.review_loop();
+    for (old, fresh) in [
+        ("A marked review point", ""),
+        ("A marked review point ", " "),
+        ("", "A distinct review point"),
+        (" ", "A distinct review point "),
+    ] {
+        let url = format!(
+            "https://github.com/acme/node-client/pull/482#issuecomment-{}",
+            uuid::Uuid::new_v4()
+        );
+        let mut point = observed(&url, old);
+        point.kind = CommentItemKind::PrComment;
+        point.url = Some(url.clone());
+        point.location = None;
+        let UpsertOutcome::New(item) = rl
+            .upsert_item(T, PR, &point, ItemState::Undecided, at(1))
+            .await
+            .unwrap()
+        else {
+            panic!("new point")
+        };
+        let mut mark = fix_decision(&item);
+        mark.kind = DecisionKind::NotAReviewPoint;
+        mark.effects.clear();
+        rl.decide(T, &[mark], at(2)).await.unwrap();
+
+        let mut tx = crate::repo::write_tx(&db.pool).await.unwrap();
+        assert!(
+            source_point_exclusion_in(&mut tx, T, PR, &url, fresh, Some(&point))
+                .await
+                .unwrap()
+                .is_none(),
+            "blank quote matched for {old:?} and {fresh:?}"
+        );
+    }
+}

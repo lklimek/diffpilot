@@ -425,15 +425,34 @@ fn item_from_row(row: &SqliteRow) -> Result<ItemRecord, DbError> {
     })
 }
 
+/// Why the live source prevents projection of a reported point.
+pub(in crate::repo) enum SourcePointExclusion {
+    /// A live status comment is excluded from assessment.
+    StatusComment,
+    /// A fresh ID repeats an actively marked point.
+    Marked(u32),
+}
+
+fn same_marked_quote(marked: &str, fresh: &str) -> bool {
+    let marked = marked.split_whitespace().collect::<Vec<_>>().join(" ");
+    let fresh = fresh.split_whitespace().collect::<Vec<_>>().join(" ");
+    if marked.is_empty() || fresh.is_empty() {
+        return false;
+    }
+    // A contained excerpt must cover at least half the marked text and be longer than a generic anchor.
+    let minimum = marked.chars().count().div_ceil(2).max(20);
+    fresh == marked || (fresh.chars().count() >= minimum && marked.contains(&fresh))
+}
+
 /// Checks live status comments and marked points under the assessment's write lock.
-pub(in crate::repo) async fn source_excludes_point_in(
+pub(in crate::repo) async fn source_point_exclusion_in(
     tx: &mut Transaction<'static, Sqlite>,
     tenant: &str,
     pr: i64,
     url: &str,
     quote: &str,
     observed: Option<&ObservedItem>,
-) -> Result<bool, DbError> {
+) -> Result<Option<SourcePointExclusion>, DbError> {
     let candidates = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT {ITEM_COLUMNS}, {ACTIVE_MARK_COLUMN}
          FROM comment_items
@@ -451,21 +470,16 @@ pub(in crate::repo) async fn source_excludes_point_in(
     .await?;
     for row in &candidates {
         let item = item_from_row(row)?;
-        if (item.status_comment && item.gone_at.is_none())
-            || observed.is_some_and(|point| {
-                item.matches_body_point(
-                    item.quote.as_deref().unwrap_or(&item.body),
-                    &point.author,
-                    url,
-                    quote,
-                    point.location.as_ref(),
-                )
-            })
+        if item.status_comment && item.gone_at.is_none() {
+            return Ok(Some(SourcePointExclusion::StatusComment));
+        }
+        if observed.is_some_and(|point| item.author.eq_ignore_ascii_case(&point.author))
+            && same_marked_quote(item.quote.as_deref().unwrap_or(&item.body), quote)
         {
-            return Ok(true);
+            return Ok(Some(SourcePointExclusion::Marked(item.no)));
         }
     }
-    Ok(false)
+    Ok(None)
 }
 
 /// The item `id` inside `tx`.

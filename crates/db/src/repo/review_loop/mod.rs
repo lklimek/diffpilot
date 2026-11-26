@@ -30,12 +30,12 @@ pub use decisions::{
     ClaimOutcome, DecideOutcome, DecisionOwner, NewDecision, NewEffect, OpenFeedEntry,
     ReportOutcomeRecord, ReportRequest, StoredDecision,
 };
-pub(super) use items::source_excludes_point_in;
 pub use items::{
     CommentPrRecord, ItemRecord, NewPass, ObservedItem, PassCause, PassRecord, PassStart,
     PassState, PrCommentTally, PrTallyView, PrView, ReadResult, SentItem, StoredAssessment,
     UpsertOutcome,
 };
+pub(super) use items::{SourcePointExclusion, source_point_exclusion_in};
 pub use marks::ActiveMark;
 pub(super) use marks::active_in_pass;
 pub use notify::{

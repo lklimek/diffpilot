@@ -453,7 +453,8 @@ impl Assessments<'_> {
             .bind(wire_name(result.status)?).bind(accepted).bind(result.failure.map(wire_name).transpose()?)
             .bind(result.reported_head.as_ref().map(|head| &head.0)).bind(run.pass_id.to_string()).bind(wire_name(run.method)?).bind(tenant).bind(&user.0).bind(attempt).execute(&mut *tx).await?;
         let mut items = result.items.clone();
-        super::assessment_primary::apply(&mut tx, tenant, &pass, primary, &mut items).await?;
+        let suppressed =
+            super::assessment_primary::apply(&mut tx, tenant, &pass, primary, &mut items).await?;
         if run.method != pass.config.primary_method {
             for item in &mut items {
                 let aligned: Option<(Option<String>,Option<String>,String)> = sqlx::query_as("SELECT primary_item_id,primary_item_hash,source FROM assessment_comparison_items WHERE pass_id=? AND method=? AND comparison_key=? AND status='matched'")
@@ -550,6 +551,14 @@ impl Assessments<'_> {
                 .bind(ts(Timestamp::now())).bind(tenant).bind(pass.input.pull_request_id).execute(&mut *tx).await?;
         }
         tx.commit().await?;
+        for (item, source) in suppressed {
+            tracing::info!(
+                pr = pass.input.pull_request_id,
+                item,
+                source,
+                "fresh assessment point suppressed by an internal mark"
+            );
+        }
         Ok(true)
     }
 

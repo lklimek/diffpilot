@@ -6,6 +6,10 @@ use contracts::assessment::*;
 use db::repo::review_loop::{NewDecision, NewEffect};
 
 async fn host_fixture(count: usize) -> (Fixture, Vec<ItemRecord>) {
+    host_source_fixture(count, false).await
+}
+
+async fn host_source_fixture(count: usize, review_body: bool) -> (Fixture, Vec<ItemRecord>) {
     let f = fixture(HEAD).await;
     f.state
         .db
@@ -17,22 +21,40 @@ async fn host_fixture(count: usize) -> (Fixture, Vec<ItemRecord>) {
         )
         .await
         .unwrap();
-    let mut comments = vec![];
+    let mut source_records = vec![];
     let mut sources = vec![];
     let mut items = vec![];
+    let (kind, source_kind, key, fragment) = if review_body {
+        (
+            CommentItemKind::ReviewBody,
+            CommentSourceKind::ReviewBody,
+            "review",
+            "pullrequestreview",
+        )
+    } else {
+        (
+            CommentItemKind::PrComment,
+            CommentSourceKind::PrComment,
+            "comment",
+            "issuecomment",
+        )
+    };
     for n in 1..=count {
-        let url = format!("https://github.com/acme/node-client/pull/482#issuecomment-{n}");
-        let body =
+        let url = format!("https://github.com/acme/node-client/pull/482#{fragment}-{n}");
+        let mut body =
             format!("Bound the retry loop for request {n}. Release the lock before waiting.");
+        if review_body {
+            body.push_str(" Add a timeout while waiting.");
+        }
         let seen = ObservedItem {
-            kind: CommentItemKind::PrComment,
+            kind,
             author: "owner".into(),
             author_kind: AuthorKind::Human,
             url: Some(url.clone()),
             location: None,
             body: body.clone(),
             body_hash: crate::review_loop::markers::body_hash(&body),
-            ..observed(&format!("comment:{n}:1"))
+            ..observed(&format!("{key}:{n}:1"))
         };
         let UpsertOutcome::New(item) = f
             .state
@@ -58,7 +80,7 @@ async fn host_fixture(count: usize) -> (Fixture, Vec<ItemRecord>) {
                 PR,
                 &CommentSource {
                     url: url.clone(),
-                    kind: CommentSourceKind::PrComment,
+                    kind: source_kind,
                     author: "owner".into(),
                     body: body.clone(),
                     body_hash: crate::review_loop::handin::hash(&body),
@@ -68,17 +90,27 @@ async fn host_fixture(count: usize) -> (Fixture, Vec<ItemRecord>) {
             )
             .await
             .unwrap();
-        comments.push(json!({"id":n,"url":url,"author":{"login":"owner"},"body":body}));
+        source_records.push(json!({"id":n,"url":url,"author":{"login":"owner"},"body":body}));
         sources.push(url);
         items.push(item);
     }
-    let data = json!({"manifest":{"repo":"acme/node-client","pr":482,"head":HEAD,"base_sha":BASE,"base_ref":"main","title":"Retry calls","body":"Bound retries","pr_author":"alice","maintainers":["owner"],"bots":[]},"threads":[],"review_comments":[],"reviews":[],"comments":comments,"conventions":{},"ids":{"next_id":1,"items":[]},"scope":{"threads":[],"sources":sources}});
+    let (reviews, comments) = if review_body {
+        (source_records, vec![])
+    } else {
+        (vec![], source_records)
+    };
+    let data = json!({"manifest":{"repo":"acme/node-client","pr":482,"head":HEAD,"base_sha":BASE,"base_ref":"main","title":"Retry calls","body":"Bound retries","pr_author":"alice","maintainers":["owner"],"bots":[]},"threads":[],"review_comments":[],"reviews":reviews,"comments":comments,"conventions":{},"ids":{"next_id":1,"items":[]},"scope":{"threads":[],"sources":sources}});
     store_read(&f.state, "Bound retries", json!({"pr_data":data})).await;
     (f, items)
 }
 
 fn host_row(item: &ItemRecord, id: u32, quote: &str) -> Value {
-    json!({"id":format!("CMT-{id:03}"),"source_kind":"pr_comment","reviewer":"owner","comment_url":item.url,"source_quote":quote,"description":"Bound retries","reasoning":"The loop has no upper bound.","assessment":"valid","proposed_action":"Fix here","proposed_decision":{"kind":"fix_here"}})
+    let source_kind = if item.kind == CommentItemKind::ReviewBody {
+        "review_body"
+    } else {
+        "pr_comment"
+    };
+    json!({"id":format!("CMT-{id:03}"),"source_kind":source_kind,"reviewer":"owner","comment_url":item.url,"source_quote":quote,"description":"Bound retries","reasoning":"The loop has no upper bound.","assessment":"valid","proposed_action":"Fix here","proposed_decision":{"kind":"fix_here"}})
 }
 
 async fn complete_host(state: &AppState, rows: Vec<Value>) -> PassRecord {
@@ -414,21 +446,53 @@ async fn marked_points_keep_their_ids_when_a_sibling_is_reassessed() {
 
 #[tokio::test]
 async fn fresh_id_with_a_retrimmed_quote_keeps_the_marked_point() {
-    fresh_id_keeps_the_marked_point("Bound the retry loop for request 1. ", None).await;
+    fresh_id_near_marked_point("Bound the retry loop for request 1. ", None, false, false).await;
 }
 
 #[tokio::test]
 async fn fresh_id_with_a_partial_quote_keeps_the_marked_point() {
-    fresh_id_keeps_the_marked_point("retry loop for request 1", None).await;
+    fresh_id_near_marked_point("retry loop for request 1", None, false, false).await;
 }
 
 #[tokio::test]
-async fn fresh_id_at_overlapping_lines_keeps_the_marked_point() {
-    fresh_id_keeps_the_marked_point("lock before waiting.", Some("src/rpc/client.rs:41-44")).await;
+async fn fresh_id_at_overlapping_lines_creates_a_new_nitpick() {
+    fresh_id_near_marked_point(
+        "Add a timeout while waiting.",
+        Some("src/rpc/client.rs:41-44"),
+        false,
+        true,
+    )
+    .await;
 }
 
-async fn fresh_id_keeps_the_marked_point(quote: &str, location: Option<&str>) {
-    let (f, items) = host_fixture(1).await;
+#[tokio::test]
+async fn fresh_id_in_an_updated_review_creates_a_new_point() {
+    fresh_id_near_marked_point(
+        "Bound the retry loop for request 1. Warn when the retry limit is reached.",
+        None,
+        true,
+        true,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn fresh_id_with_a_short_excerpt_creates_a_new_point() {
+    fresh_id_near_marked_point("the retry loop", None, false, true).await;
+}
+
+#[tokio::test]
+async fn fresh_id_with_normalised_whitespace_keeps_the_marked_point() {
+    fresh_id_near_marked_point("Bound the   retry loop for request 1.", None, true, false).await;
+}
+
+async fn fresh_id_near_marked_point(
+    quote: &str,
+    location: Option<&str>,
+    edited_review: bool,
+    expect_created: bool,
+) {
+    let (f, items) = host_source_fixture(1, true).await;
     let source = &items[0];
     let mut first = host_row(source, 100, "Bound the retry loop for request 1.");
     first["location"] = json!("src/rpc/client.rs:40-42");
@@ -440,6 +504,37 @@ async fn fresh_id_keeps_the_marked_point(quote: &str, location: Option<&str>) {
     let rl = f.state.db.review_loop();
     let marked = rl.item_by_no(PR, 100).await.unwrap().unwrap();
     let sibling = rl.item_by_no(PR, 101).await.unwrap().unwrap();
+    if edited_review {
+        let mut data = rl
+            .pr_state(PR)
+            .await
+            .unwrap()
+            .unwrap()
+            .github_snapshot
+            .unwrap()["pr_data"]
+            .clone();
+        let mut source = f
+            .state
+            .db
+            .comment_sources()
+            .list(DEFAULT_TENANT, PR)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap()
+            .source;
+        let body = format!("{quote} {second}");
+        data["reviews"][0]["body"] = json!(body);
+        source.body_hash = crate::review_loop::handin::hash(&body);
+        source.body = body;
+        f.state
+            .db
+            .comment_sources()
+            .put(DEFAULT_TENANT, PR, &source)
+            .await
+            .unwrap();
+        store_read(&f.state, "Bound retries", json!({"pr_data": data})).await;
+    }
     assert_eq!(
         request_pass(&f.state, PR, PassReason::AssessAgain(sibling.id))
             .await
@@ -459,11 +554,30 @@ async fn fresh_id_keeps_the_marked_point(quote: &str, location: Option<&str>) {
     if let Some(location) = location {
         repeated["location"] = json!(location);
     }
+    let (logs, _subscriber) = crate::test_support::logs::LogCapture::start_scoped();
     let pass = complete_host(&f.state, vec![repeated, host_row(source, 101, second)]).await;
-    assert!(
-        rl.item_by_no(PR, 102).await.unwrap().is_none(),
-        "{quote:?} was projected as a new point"
+    let fresh = rl.item_by_no(PR, 102).await.unwrap();
+    assert_eq!(
+        fresh.is_some(),
+        expect_created,
+        "unexpected projection for {quote:?}"
     );
+    if let Some(fresh) = fresh {
+        assert_eq!(fresh.state, ItemState::Undecided);
+        assert!(fresh.active_mark.is_none());
+        assert_eq!(fresh.quote.as_deref(), Some(quote));
+    }
+    let logs = logs.text();
+    let audit = logs
+        .lines()
+        .find(|line| line.contains("fresh assessment point suppressed by an internal mark"));
+    assert_eq!(audit.is_none(), expect_created, "{logs}");
+    if let Some(line) = audit {
+        assert!(line.contains("INFO"), "{line}");
+        assert!(line.contains(&format!("pr={PR}")), "{line}");
+        assert!(line.contains(&format!("item={}", marked.no)), "{line}");
+        assert!(line.contains(source.url.as_deref().unwrap()), "{line}");
+    }
     assert!(rl.item(marked.id).await.unwrap().active_mark.is_some());
     assert_eq!(
         Some(
