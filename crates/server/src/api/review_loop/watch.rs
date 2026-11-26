@@ -178,26 +178,33 @@ async fn user_stream(
             };
             match wake {
                 Wake::Stop => return None,
-                Wake::Heartbeat => {
-                    if !session_live(&c.state, &c.session).await {
+                Wake::Heartbeat | Wake::Activity => {
+                    let heartbeat = matches!(wake, Wake::Heartbeat);
+                    if heartbeat && !session_live(&c.state, &c.session).await {
                         return None;
                     }
-                    let at = Timestamp::now();
-                    return Some((UserStreamEvent::Heartbeat { at }, c));
-                }
-                Wake::Activity => {
-                    let activity = match llm_activity::snapshot(&c.state, &c.session).await {
-                        Ok(activity) => activity,
-                        Err(error) => {
-                            tracing::warn!(%error, "LLM activity could not be read; closing the user event stream");
-                            return None;
+                    // Slot changes and the payer's work in other tenants do not notify this tenant.
+                    if !heartbeat || Instant::now() >= c.next_activity {
+                        let activity = match llm_activity::snapshot(&c.state, &c.session).await {
+                            Ok(activity) => activity,
+                            Err(error) => {
+                                tracing::warn!(%error, "LLM activity could not be read; closing the user event stream");
+                                return None;
+                            }
+                        };
+                        if activity != c.last_activity {
+                            c.last_activity = activity.clone();
+                            c.pending
+                                .push_back(UserStreamEvent::LlmActivity { activity });
                         }
-                    };
-                    // Only visible changes trigger an event or advance the stream's cooldown.
-                    if activity != c.last_activity {
-                        c.last_activity = activity.clone();
-                        c.pending
-                            .push_back(UserStreamEvent::LlmActivity { activity });
+                    }
+                    if heartbeat {
+                        return Some((
+                            UserStreamEvent::Heartbeat {
+                                at: Timestamp::now(),
+                            },
+                            c,
+                        ));
                     }
                 }
                 Wake::Poll => {
@@ -348,6 +355,77 @@ mod tests {
             .expect("in time")
             .expect("a heartbeat");
         assert_eq!(third.name(), "heartbeat", "{third:?}");
+    }
+
+    #[tokio::test]
+    async fn heartbeat_reconciles_slots_and_the_payers_other_tenant_load() {
+        use contracts::api::llm::{LlmJob, WaitReason};
+        use contracts::job::spec::JobPriority;
+        use db::repo::analyses::testing::{judge_spec, seed_analysis, seed_ranking_refresh};
+        use db::repo::jobs::{JobStage, NewJob};
+        use std::num::NonZeroU16;
+
+        let state = test_state().await;
+        seed_analysis(&state.db).await.unwrap();
+        let session = session(&state).await;
+        let refresh = seed_ranking_refresh(&state.db).await.unwrap();
+        let judge = state
+            .db
+            .jobs()
+            .enqueue(
+                NewJob {
+                    spec: judge_spec(refresh),
+                    stage: JobStage::Judge { refresh, batch: 1 },
+                    priority: JobPriority::Batch,
+                    generation: 0,
+                },
+                Timestamp::now(),
+            )
+            .await
+            .unwrap();
+        let mut events = Box::pin(
+            user_stream(
+                state.clone(),
+                session,
+                Duration::from_secs(60),
+                Duration::from_millis(30),
+            )
+            .await
+            .unwrap()
+            .filter_map(|event| async move {
+                match event {
+                    UserStreamEvent::LlmActivity { activity } => Some(activity),
+                    _ => None,
+                }
+            }),
+        );
+        let mut assert_wait = async |expected: WaitReason| {
+            let activity = tokio::time::timeout(WAIT, events.next())
+                .await
+                .expect("updated activity while the judge is queued")
+                .unwrap();
+            assert!(
+                activity.running.is_empty(),
+                "another tenant's job stays hidden"
+            );
+            assert!(
+                matches!(
+                    activity.queued.as_slice(),
+                    [LlmJob::Own { id, waits_for: Some(reason), .. }] if *id == judge.id && *reason == expected
+                ),
+                "{activity:?}"
+            );
+        };
+        assert_wait(WaitReason::Runner).await;
+        crate::api::llm_activity_tests::claim_foreign_analysis(&state, "u1").await;
+        assert_wait(WaitReason::AnalysisRunning).await;
+        state
+            .db
+            .settings()
+            .set_llm_job_slots("u1", NonZeroU16::new(2).unwrap())
+            .await
+            .unwrap();
+        assert_wait(WaitReason::Runner).await;
     }
 
     /// RW3 ends when the server stops.

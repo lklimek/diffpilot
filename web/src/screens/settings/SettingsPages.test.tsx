@@ -1,5 +1,5 @@
 import { QueryClient } from "@tanstack/react-query";
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { expect, it } from "vitest";
@@ -166,6 +166,61 @@ it.each(["model", "language"] as const)(
     }
   },
 );
+
+it("keeps the saved language when an earlier profile read finishes late", async () => {
+  let language = "en";
+  let delayProfile = false;
+  const deferred = () => {
+    let resolve!: () => void;
+    const promise = new Promise<void>((done) => {
+      resolve = done;
+    });
+    return { promise, resolve };
+  };
+  const waiting = deferred();
+  const release = deferred();
+  const served = deferred();
+  const cookie = "language-session";
+  server.use(
+    http.get("/api/v1/me", async () => {
+      const profile = {
+        user: { login: "alice", name: null, avatar_url: null, language },
+        csrf_token: cookie,
+      };
+      if (delayProfile) {
+        delayProfile = false;
+        waiting.resolve();
+        await release.promise;
+        served.resolve();
+      }
+      return HttpResponse.json(profile);
+    }),
+    http.get("/api/v1/settings", () => HttpResponse.json({ ...SETTINGS, language })),
+    http.put("/api/v1/settings/language", async ({ request }) => {
+      language = ((await request.json()) as { language: string }).language;
+      return new HttpResponse(null, { status: 204 });
+    }),
+  );
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  renderRoute("/settings/llm", queryClient);
+  const select = await screen.findByLabelText("Explanations, questions and assessments are written in");
+  expect(select).toHaveValue("en");
+
+  delayProfile = true;
+  const staleRead = queryClient.refetchQueries({ queryKey: ["me"], exact: true });
+  await waiting.promise;
+  try {
+    await userEvent.selectOptions(select, "pl");
+    await waitFor(() => expect(select).toHaveValue("pl"));
+  } finally {
+    await act(async () => {
+      release.resolve();
+      await served.promise;
+      await staleRead;
+    });
+  }
+  expect(queryClient.getQueryData(["me"])).toMatchObject({ user: { language: "pl" } });
+});
 
 it("retries the failed effort without repeating a successful edit from the same Save", async () => {
   const writes: string[] = [];
