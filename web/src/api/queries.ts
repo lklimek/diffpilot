@@ -30,7 +30,11 @@ import { withoutRetried } from "./questionHistory";
 
 /** The signed-in user and CSRF token. */
 export const useMe = () =>
-  useQuery({ queryKey: ["me"], queryFn: api.getBrowserSession, refetchOnWindowFocus: "always" });
+  useQuery({
+    queryKey: ["me"],
+    queryFn: ({ signal }) => api.getBrowserSession(signal),
+    refetchOnWindowFocus: "always",
+  });
 
 /** The reader's own analyses, the latest per PR, newest first (Recent reviews); disabled while signed out. */
 export const useMyAnalyses = (enabled: boolean, limit?: number) =>
@@ -361,7 +365,11 @@ export const useSetLanguage = () => {
       const meKey = ["me"];
       const me = client.getQueryData<Awaited<ReturnType<typeof api.getBrowserSession>>>(meKey);
       if (me?.sessionScope === sessionScope && me.user) {
+        const profilePending = client.isFetching({ queryKey: meKey, exact: true }) > 0;
         client.setQueryData(meKey, { ...me, user: { ...me.user, language } });
+        if (profilePending) {
+          await client.refetchQueries({ queryKey: meKey, exact: true }, { cancelRefetch: true });
+        }
       }
     },
     onError: (error) => {

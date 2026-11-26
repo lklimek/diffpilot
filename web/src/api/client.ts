@@ -353,8 +353,9 @@ export function createApiClient(baseUrl = "") {
     return { unchanged: false, body: (await response.json()) as T, etag: response.headers.get("ETag") };
   }
 
-  async function getBrowserSession() {
-    const me = await call<MeResponse>("getMe");
+  async function getBrowserSession(signal?: AbortSignal) {
+    const me = await call<MeResponse>("getMe", { signal });
+    signal?.throwIfAborted();
     if (csrfToken !== me.csrf_token) sessionScope++;
     csrfToken = me.csrf_token;
     return { ...me, sessionScope };
