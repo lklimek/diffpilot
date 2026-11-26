@@ -249,10 +249,11 @@ The containers fix the rest themselves (data paths, listen ports, the runner's s
 `SR_DATA_DIR`, `SR_LISTEN_ADDR`, `SR_RUNNER_LISTEN_ADDR`, `SR_WEBHOOK_LISTEN_ADDR`, `SR_RUNNER_STATE_DIR`
 or `SR_RUNNER_WORK_DIR`.
 
-A standalone server defaults `SR_WEBHOOK_LISTEN_ADDR` to `127.0.0.1:3002`. Compose sets it to the server's
-`public` network address (`SR_SERVER_PUBLIC_ADDR`, default `172.29.73.2`) on port 3002. The base Compose file leaves
-port 3002 unpublished. Apply the [port override](runbook.md#upgrade-to-v14-and-enable-github-webhooks) when enabling
-webhooks. The dev stack assigns a separate loopback port per instance.
+The standalone server binary defaults `SR_WEBHOOK_LISTEN_ADDR` to `127.0.0.1:3002`. The server image
+sets it to `0.0.0.0:3002`. Compose sets it to the server's `public` network address (`SR_SERVER_PUBLIC_ADDR`,
+default `172.29.73.2`) on port 3002. The base Compose file leaves port 3002 unpublished. Apply the
+[port override](runbook.md#upgrade-to-v14-and-enable-github-webhooks) when enabling webhooks. The dev stack
+assigns a separate loopback port per instance.
 
 Settings token-usage windows (Today, Last 7 days and This month) use the server container's time zone. The
 deployment sets no `TZ`, so the windows use UTC. Last 7 days starts at midnight six days ago.

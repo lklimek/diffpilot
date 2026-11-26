@@ -646,6 +646,49 @@ async fn event_added_during_scan_gets_follow_up_after_failure() {
 }
 
 #[tokio::test]
+async fn cancel_does_not_start_event_follow_up() {
+    let (h, _) = setup("alice", 1, 4000).await;
+    let id = h.rank("u1", &snapshot(prs(1), vec![], vec![])).await;
+    let first = h.claim().await;
+    let mut d = Dispatcher::default();
+    let start = Instant::now();
+    enqueue(&h, &mut d, start, candidate(2)).await;
+    flush(&h, &mut d, start + WINDOW).await;
+
+    let (status, body) = h
+        .post(
+            "u1",
+            &format!("/api/v1/dashboard/refreshes/{id}/cancel"),
+            None,
+        )
+        .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(body["ranking"]["state"], "cancelled");
+    let record = h
+        .db()
+        .dashboard()
+        .refresh(DEFAULT_TENANT, "u1", id)
+        .await
+        .unwrap();
+    assert_eq!(
+        (record.state, record.ranking_attempt),
+        (RefreshState::Finished, first.round)
+    );
+    assert_eq!(h.jobs(id).await.len(), 1);
+    assert_eq!(read(&h, "u1").await.pending_event_items, [key(2)]);
+
+    h.complete(&first, JobOutcome::Cancelled).await;
+    enqueue(&h, &mut d, start + WINDOW, candidate(2)).await;
+    flush(&h, &mut d, start + WINDOW * 2).await;
+    let (_, input) = h.serve(|input| succeeded(neutral(input))).await;
+    assert_eq!(
+        input.items.iter().map(|item| &item.key).collect::<Vec<_>>(),
+        [&key(2)]
+    );
+    h.ranked("u1", id).await;
+}
+
+#[tokio::test]
 async fn new_item_relation_from_reread_not_event() {
     let (h, github) = setup("somebody-else", 1, 4000).await;
     let id = seed(&h, "u1", &snapshot(vec![], vec![], vec![])).await;

@@ -221,7 +221,7 @@ async fn rank(state: AppState, run: RankRun) {
         None => tracing::debug!(refresh = %run.refresh_id, attempt = run.attempt,
             "dashboard ranking no longer current; its late results are dropped"),
     }
-    refresh::continue_rejudges(&state, &run.scope, run.refresh_id, run.attempt).await;
+    refresh::continue_rejudges(&state, &run.scope, run.refresh_id, run.attempt, true).await;
 }
 
 /// One ranking attempt in progress.
@@ -338,6 +338,7 @@ impl<'a> Ranking<'a> {
                         &self.run.scope,
                         holder.id,
                         holder.ranking_attempt,
+                        true,
                     )
                     .await;
                     return Ok(None);

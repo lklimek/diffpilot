@@ -208,7 +208,8 @@ pub async fn cancel(
                 if let Ok(status) = &status {
                     state.dashboard.publish(status.clone());
                 }
-                continue_rejudges(state, scope, id, record.ranking_attempt).await;
+                // Webhook items wait for the next event or scan after a user cancels.
+                continue_rejudges(state, scope, id, record.ranking_attempt, false).await;
                 return Ok(status?);
             }
             Ok(false) | Err(DbError::Conflict) => continue,
@@ -253,24 +254,24 @@ pub(crate) async fn rejudge(
     Ok(())
 }
 
-/// Hands unserved clicks or event items to a new ranking. The caller holds the writer.
+/// Hands unserved clicks and, when enabled, event items to a new ranking. The caller holds the writer.
 pub(super) async fn continue_rejudges(
     state: &AppState,
     scope: &Scope,
     id: RefreshId,
     attempt: u32,
+    follow_up_events: bool,
 ) {
     let readers = state.dashboard.readers();
     readers.end_rejudge_attempt(scope, id, attempt);
-    let pending = async {
-        let mode = if readers.has_waiting_rejudges(scope) {
-            RankMode::Rejudge
-        } else {
-            RankMode::Pending
-        };
-        rank_pending_locked(state, scope, mode).await
+    let mode = if readers.has_waiting_rejudges(scope) {
+        Some(RankMode::Rejudge)
+    } else {
+        follow_up_events.then_some(RankMode::Pending)
     };
-    if let Err(error) = pending.await {
+    if let Some(mode) = mode
+        && let Err(error) = rank_pending_locked(state, scope, mode).await
+    {
         tracing::warn!(%error, %id, "pending dashboard items could not start a follow-up ranking");
     }
 }
@@ -559,7 +560,7 @@ async fn run(
                 "dashboard refresh failed; the previous snapshot stays");
             end_failed_scan(&state, &scope, id, failure).await;
             let _writer = state.dashboard.readers().writer(&scope).await;
-            continue_rejudges(&state, &scope, id, 0).await;
+            continue_rejudges(&state, &scope, id, 0, true).await;
         }
     }
 }
