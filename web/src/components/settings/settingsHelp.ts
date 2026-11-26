@@ -119,6 +119,16 @@ const HELP = {
     empty: "Not known yet until the first analysis calls the LLM.",
     example: "After a failed call the provider's message stands below the status.",
   },
+  token_usage: {
+    section: "LLM & usage",
+    title: "Token usage",
+    what: "The tokens the provider reported for jobs linked to analyses in your tenant, grouped by completion time.",
+    when: "Today starts at midnight in the server's time zone. Last 7 days includes today and the previous six calendar days. This month starts at midnight on the first day of the current calendar month.",
+    empty: "No totals appear for a window without usage reports.",
+    example:
+      "In the standard UTC deployment, Today starts at 00:00 UTC, Last 7 days starts at 00:00 UTC six days ago, and This month starts at 00:00 UTC on the first of the month.",
+    onPage: false,
+  },
   memcan_status: {
     section: "MemCan",
     title: "Memory",
@@ -131,7 +141,7 @@ const HELP = {
     section: "LLM & usage",
     title: "Language of LLM texts",
     what: "The language of explanations, questions and assessments the LLM writes for you.",
-    when: "Read when an analysis starts; an analysis keeps the language it started with, its Ask answers too. Dashboard ranking texts follow it from the next refresh; until they are judged again they show as provisional.",
+    when: "An analysis and its Ask answers keep the language chosen when the analysis started. Changing the language makes existing My work judgements outdated. Refresh updates facts and can judge new items. To update existing ranking texts, click the item's outdated badge or use Refresh and re-judge outdated.",
     empty: "English.",
     limits: "English, Polski or Русский.",
     example: "Polski, then analyse the pull request again to get its texts in Polish.",
@@ -154,6 +164,9 @@ const HELP = {
     when: "Read when Settings opens. Read-only; install or change the App on GitHub.",
     empty: "No installation: pull requests can be analysed, but comments must be written on GitHub.",
     example: "Install the App on dashpay to comment on dashpay/platform from here.",
+    details: [
+      "The card shows the URL to enter in the GitHub App when the operator configures it. My work receives live GitHub updates for tracked repositories with an active App installation and a configured webhook secret. Your tenant tracks repositories through its repository rules, owners listed under When GitHub search refuses an account, active watches, analyses and My work snapshots. Use Refresh to recover missed facts or wait for the nightly scan. Existing judgements can become outdated when their facts change.",
+    ],
   },
   repository_settings: {
     section: "Repositories",
@@ -182,6 +195,9 @@ const HELP = {
     limits: "Up to 5 GitHub logins (letters, digits, - or _, up to 39); not your own login.",
     example:
       "A bot account that opens pull requests you take care of (e.g. Claudius-Maginificent): put it here so its pull requests count as yours, and keep it in Known bots so its reviews count as a bot's. Do not put it into Excluded authors.",
+    details: [
+      "In the item's thread, the linked account writes the proposed decision in plain text and puts the matching marker on a line of its own outside quotes and code. For example, a proposal to reject uses `<!-- maintainer-decision v1 kind=reject -->`. Diffpilot checks the account's numeric GitHub ID and shows an eligible proposal in Needs you for you to confirm.",
+    ],
   },
   repo: {
     section: "Repositories",
@@ -358,10 +374,12 @@ const HELP = {
   ranking_limits: {
     section: "LLM & usage",
     title: "Ranking limits",
-    what: "The LLM judges at most 48 items per refresh and 120 per day for each user.",
-    when: "Every ranking. Items not judged again because they did not change cost nothing.",
-    empty: "Fixed limits; there is no setting.",
-    example: "A first refresh with 150 items judges 48; the rest stay provisional until later refreshes.",
+    what: "Each user can send up to 120 items for judgement per day. A scan also caps sends at 48 items per refresh. Re-judging one item or ranking new items from GitHub events outside a scan uses the daily limit.",
+    when: "Items count when sent, including re-judgements. Reused judgements cost nothing. A failed or cancelled batch that reports no input or output tokens is refunded.",
+    empty:
+      "The daily count starts again at midnight in your configured time zone (UTC by default). Use Reset my limits and confirm to clear your own daily count immediately. A running ranking continues and the per-refresh cap still applies.",
+    example:
+      "A first refresh with 150 items can judge up to 48. The remaining items can stay provisional until a later refresh has room.",
     onPage: false,
   },
   access_tokens: {

@@ -9,6 +9,8 @@ walked step by step, with LLM analysis (container app-server) clearly separated 
 - `docs/contracts/`, `docs/decisions/` (ADRs), `docs/spikes/` — once they exist.
 - `docs/v1.1-dashboard-plan.md` — stage v1.1 (GitHub work dashboard, ADR-016..020); mirrors the implementation plan's rules.
 - `docs/review-workflow-plan.md` — stage v1.3 (processing PR comments: PR page, Comments, Watch, decision feed; ADR-023).
+- `docs/v1.4-ui-plan.md` — stage v1.4 UI (My work, Comments, Settings and LLM activity).
+- `docs/v1.4-phase-b-plan.md` — stage v1.4 server (webhooks, outdated judgements, ranking limits and imported decisions).
 
 ## v1.3 common contract amendment
 - [ADR-025](docs/decisions/ADR-025-container-runtime.md) and [container contracts](docs/contracts/containers.md)

@@ -49,7 +49,7 @@ pub struct Manifest {
     pub title: String,
     /// Author-stated PR description.
     pub body: String,
-    /// Trusted maintainer relays.
+    /// Linked GitHub logins that can relay proposals for member confirmation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub delegates: Vec<String>,
     /// PR author's login; only their own text is author context.

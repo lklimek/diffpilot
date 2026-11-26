@@ -530,7 +530,7 @@
           "type": "string"
         },
         "delegates": {
-          "description": "Trusted maintainer relays.",
+          "description": "Linked GitHub logins that can relay proposals for member confirmation.",
           "type": "array",
           "items": {
             "type": "string"
