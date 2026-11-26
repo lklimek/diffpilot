@@ -167,7 +167,7 @@ describe("Tour: unsent comment drafts survive navigation", () => {
         ),
       ),
     );
-    act(() => FakeEventSource.latest().fail());
+    act(() => FakeEventSource.latest(`/api/v1/analyses/${ID}/events`).fail());
     expect(await screen.findByText("Sign in again to continue.")).toBeVisible();
     expect(window.sessionStorage.getItem(key)).toContain("kept over a timeout");
     cleanup();
@@ -211,7 +211,7 @@ describe("Tour: a background refresh that cannot succeed", () => {
         ),
       ),
     );
-    act(() => FakeEventSource.latest().fail());
+    act(() => FakeEventSource.latest(`/api/v1/analyses/${ID}/events`).fail());
     expect(await screen.findByText("Sign in again to continue.")).toBeVisible();
     expect(screen.queryByRole("navigation", { name: "Flows and steps" })).toBeNull();
   });
@@ -224,7 +224,10 @@ describe("Tour: a background refresh that cannot succeed", () => {
     server.use(http.get("/api/v1/analyses/:id/tour", () => HttpResponse.json({ code, message }, { status })));
     const summary = seedFor("default", "analysis") as AnalysisSummary;
     act(() =>
-      FakeEventSource.latest().emit({ event: "analysis", summary: { ...summary, review_ready: true } }),
+      FakeEventSource.latest(`/api/v1/analyses/${ID}/events`).emit({
+        event: "analysis",
+        summary: { ...summary, review_ready: true },
+      }),
     );
     expect(await screen.findByText(message)).toBeVisible();
     expect(screen.queryByRole("navigation", { name: "Flows and steps" })).toBeNull();
@@ -254,13 +257,19 @@ describe("Tour: a flow analysed again", () => {
     running.flows[0]!.analysis_status = { state: "analysing", started_at: null, message: null };
     server.use(http.get("/api/v1/analyses/:id/tour", () => HttpResponse.json(running)));
     act(() =>
-      FakeEventSource.latest().emit({ event: "analysis", summary: { ...summary, review_ready: true } }),
+      FakeEventSource.latest(`/api/v1/analyses/${ID}/events`).emit({
+        event: "analysis",
+        summary: { ...summary, review_ready: true },
+      }),
     );
     await within(nav()).findByRole("button", { name: /^Flow 1:/ });
     await waitFor(() => expect(feedbackReads).toBeGreaterThan(0));
     server.use(http.get("/api/v1/analyses/:id/tour", () => HttpResponse.json(seed)));
     act(() =>
-      FakeEventSource.latest().emit({ event: "analysis", summary: { ...summary, review_ready: true } }),
+      FakeEventSource.latest(`/api/v1/analyses/${ID}/events`).emit({
+        event: "analysis",
+        summary: { ...summary, review_ready: true },
+      }),
     );
     await user().click(within(nav()).getByRole("button", { name: /^Flow 1:/ }));
     const step2 = await within(nav()).findByRole("button", { name: /^Step 2: / });
@@ -333,7 +342,10 @@ describe("Tour: a failed background refresh keeps the open review", () => {
     );
     const summary = seedFor("default", "analysis") as AnalysisSummary;
     act(() =>
-      FakeEventSource.latest().emit({ event: "analysis", summary: { ...summary, review_ready: true } }),
+      FakeEventSource.latest(`/api/v1/analyses/${ID}/events`).emit({
+        event: "analysis",
+        summary: { ...summary, review_ready: true },
+      }),
     );
     const alert = await within(main()).findByRole("alert");
     expect(alert).toHaveTextContent("Could not refresh the review: Tour could not be built.");

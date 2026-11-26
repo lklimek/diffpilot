@@ -1,9 +1,9 @@
+import { errorText } from "../../api/client";
 import { useEffect, useState } from "react";
 import { Link, Navigate, useBlocker, useLocation } from "react-router";
 import { useMe } from "../../api/queries";
 import { UnsavedChangesPrompt } from "../../components/dashboard/settings-dashboard/UnsavedChangesPrompt";
 import { SettingsHelpOrigin, settingsGuideHref } from "../../components/settings/helpOrigin";
-import { messageOf } from "../../components/inspector/action";
 import { SignInCard } from "../../components/sign-in/SignInCard";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import {
@@ -73,7 +73,7 @@ export function SettingsScreen({ page }: { page: SettingsPage }) {
         <UnsavedChangesPrompt onStay={blocker.reset} onLeave={blocker.proceed} />
       )}
       {me.isPending && <StatusMessage kind="loading">Loading…</StatusMessage>}
-      {me.isError && <StatusMessage kind="error">{messageOf(me.error)}</StatusMessage>}
+      {me.isError && <StatusMessage kind="error">{errorText(me.error)}</StatusMessage>}
       {me.isSuccess && !user && <SignInCard loginHref="/auth/github/login" />}
       {user && (
         <SettingsHelpOrigin value={origin}>

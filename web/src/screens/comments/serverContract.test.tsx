@@ -416,6 +416,44 @@ describe("202 Accepted without a body (RC3 read again, RC6 assess again; review_
     expect(starts).toBe(2);
   });
 
+  it("assesses newly read items after a single-item pass releases the PR", async () => {
+    let starts = 0;
+    let busy = false;
+    server.use(
+      http.post("/api/v1/prs/:owner/:name/:number/comments/items/:item/assess", () => {
+        busy = true;
+        return new HttpResponse(null, { status: 202 });
+      }),
+      http.post("/api/v1/prs/:owner/:name/:number/comments/read", () => {
+        listItems().push({ ...byNo(14), no: 90, id: "new-item", title: "New item", llm_title: undefined });
+        return new HttpResponse(null, { status: 202 });
+      }),
+      http.post("/api/v1/prs/:owner/:name/:number/comments/assess", () => {
+        starts += 1;
+        if (busy) {
+          busy = false;
+          return HttpResponse.json(
+            { code: "conflict", message: "Assessment already running." },
+            { status: 409 },
+          );
+        }
+        if (starts > 1) byNo(90).title = "Assessment of newly read item";
+        return new HttpResponse(null, { status: 202 });
+      }),
+    );
+    renderRoute(`${PR}/comments?item=C14`);
+    await screen.findByRole("heading", { name: /C14 · Retry may resend/ });
+    await userEvent.click(screen.getByRole("button", { name: "LLM assessment" }));
+    await userEvent.click(screen.getByRole("button", { name: "Assess again" }));
+    await screen.findByText(/^Asked: diffpilot's LLM assesses this comment again/);
+    await userEvent.click(screen.getByRole("button", { name: "Questions waiting" }));
+    await userEvent.click(screen.getByRole("button", { name: "Read GitHub again" }));
+    expect(
+      await screen.findByRole("button", { name: /C90.*Assessment of newly read item/ }, { timeout: 4000 }),
+    ).toBeVisible();
+    expect(starts).toBe(3);
+  });
+
   it("opens Comments when the visit and assessment routes return 501", async () => {
     const absent = () => new HttpResponse(null, { status: 501 });
     const visit = vi.fn(absent);

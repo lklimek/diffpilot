@@ -1,17 +1,17 @@
-import { useId, useLayoutEffect, useRef, useState } from "react";
+import { useId } from "react";
 import type { CiStatus, GithubRead, PluginNote, PrBadgeView } from "../../api/generated/types";
 import { buttonClass } from "../button/button";
 import { badgeLook } from "../comments/StateBadge";
 import { OpenExternal, httpUrl } from "../dashboard/common/OpenExternal";
 import { clockText } from "../format/time";
-import { useOutsidePress } from "../popover/useOutsidePress";
+import { useAnchoredPanel } from "../popover/useAnchoredPanel";
 import { Tooltip } from "../tooltip/Tooltip";
 import { isGithubUrl } from "../github/links";
 
 interface StatusPopoverProps {
   badge: PrBadgeView;
   rounds: number;
-  notes: PluginNote[];
+  notes?: PluginNote[];
   read: GithubRead;
   now: Date;
   itemId: string;
@@ -24,7 +24,7 @@ interface StatusPopoverProps {
 export function StatusPopover({
   badge,
   rounds,
-  notes,
+  notes = [],
   read,
   now,
   itemId,
@@ -33,35 +33,7 @@ export function StatusPopover({
   onRead,
 }: StatusPopoverProps) {
   const id = useId();
-  const root = useRef<HTMLDivElement>(null);
-  const trigger = useRef<HTMLButtonElement>(null);
-  const panel = useRef<HTMLElement>(null);
-  const [open, setOpen] = useState(false);
-  useOutsidePress(open, root, () => setOpen(false));
-  useLayoutEffect(() => {
-    if (!open) return;
-    const place = () => {
-      if (!trigger.current || !panel.current) return;
-      const { left, top, bottom } = trigger.current.getBoundingClientRect();
-      const margin = 8;
-      const below = window.innerHeight - bottom - margin * 2;
-      const above = top - margin * 2;
-      const opensAbove = panel.current.scrollHeight > below && above > below;
-      Object.assign(panel.current.style, {
-        left: `${Math.max(margin, Math.min(left, window.innerWidth - panel.current.offsetWidth - margin))}px`,
-        top: opensAbove ? "" : `${bottom + margin}px`,
-        bottom: opensAbove ? `${window.innerHeight - top + margin}px` : "",
-        maxHeight: `${Math.max(0, opensAbove ? above : below)}px`,
-      });
-    };
-    place();
-    window.addEventListener("resize", place);
-    window.addEventListener("scroll", place, true);
-    return () => {
-      window.removeEventListener("resize", place);
-      window.removeEventListener("scroll", place, true);
-    };
-  }, [open]);
+  const { root, anchor, panel, open, setOpen, dismiss } = useAnchoredPanel<HTMLElement>({ gap: 8 });
   const state = badgeLook(badge);
   const ciBreakdown = ci && [ci.check_runs, ci.statuses].filter((source) => source !== undefined);
   const ciWords = ciBreakdown?.length
@@ -72,23 +44,10 @@ export function StatusPopover({
         .join(", ")
     : null;
   return (
-    <div
-      ref={root}
-      className="relative inline-flex max-w-full"
-      onKeyDown={(event) => {
-        if (!open || event.key !== "Escape") return;
-        event.preventDefault();
-        event.stopPropagation();
-        setOpen(false);
-        trigger.current?.focus();
-      }}
-      onBlur={(event) => {
-        if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) setOpen(false);
-      }}
-    >
+    <div ref={root} className="relative inline-flex max-w-full" {...dismiss}>
       <Tooltip tip="Shows the facts behind the pull request status and when GitHub was read.">
         <button
-          ref={trigger}
+          ref={anchor}
           type="button"
           aria-haspopup="dialog"
           aria-expanded={open}

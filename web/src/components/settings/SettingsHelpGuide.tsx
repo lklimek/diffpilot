@@ -1,4 +1,5 @@
 import { Fragment } from "react";
+import { CodeText } from "../section/CodeText";
 import { GithubMark } from "../github/GithubMark";
 import { isGithubUrl } from "../github/links";
 import { HELP_SECTIONS, HELP_TOPICS, SETTINGS_HELP, helpLines } from "./settingsHelp";
@@ -57,6 +58,24 @@ export function SettingsHelpGuide() {
                     <Linked text={paragraph} />
                   </p>
                 ))}
+                {help.guideNote && (
+                  <>
+                    {help.guideNote.heading && (
+                      <h4 className="text-sm font-semibold">{help.guideNote.heading}</h4>
+                    )}
+                    <p className="text-sm">
+                      {help.guideNote.text
+                        .split(/\*\*/)
+                        .map((text, i) =>
+                          i % 2 === 1 ? (
+                            <strong key={i}>{text}</strong>
+                          ) : (
+                            <CodeText key={i} text={text} linkPaths={false} />
+                          ),
+                        )}
+                    </p>
+                  </>
+                )}
               </section>
             );
           })}

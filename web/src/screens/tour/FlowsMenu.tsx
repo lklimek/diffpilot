@@ -1,8 +1,8 @@
+import { errorText } from "../../api/client";
 import { useState } from "react";
 import type { FlowId, StepId, Tour } from "../../api/generated/types";
 import type { useFlowWork } from "../../api/queries";
 import { FlowsProgressMenu } from "../../components/top-bar/FlowsProgressMenu";
-import { errorText } from "./code";
 
 type Work = ReturnType<typeof useFlowWork>;
 type Action = "request" | "pause" | "resume" | "background";

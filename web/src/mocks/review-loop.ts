@@ -56,7 +56,15 @@ import { scenario } from "./scenarios";
 
 /** Mockup states of the review loop (scenario field `comments`). */
 export type CommentsMockState =
-  "no-analysis" | "running" | "empty" | "no-agent" | "github-error" | "watched" | "v14" | "marks";
+  | "no-analysis"
+  | "running"
+  | "empty"
+  | "no-agent"
+  | "github-error"
+  | "watched"
+  | "v14"
+  | "marks"
+  | "proposals";
 
 const state = (): CommentsMockState | undefined => scenario().comments;
 
@@ -582,7 +590,25 @@ let store: {
   skips: Map<number, number>;
 } | null = null;
 const items = (): CommentItem[] => {
-  store ??= { items: state() === "v14" ? v14Items() : seedItems(), marks: [], decided: 0, skips: new Map() };
+  if (!store) {
+    const seeded = state() === "v14" ? v14Items() : seedItems();
+    if (state() === "proposals") {
+      // A member's statement without a binding cue and a relay from their linked login.
+      seeded.find(({ no }) => no === 22)!.import_proposal = {
+        kind: "reject",
+        by: "alice",
+        at: at("08:50"),
+        evidence_url: `${URL_PR}#discussion_r1041`,
+      };
+      seeded.find(({ no }) => no === 14)!.import_proposal = {
+        kind: "resolve",
+        by: "alice-relay",
+        at: at("08:55"),
+        evidence_url: `${URL_PR}#discussion_r1042`,
+      };
+    }
+    store = { items: seeded, marks: [], decided: 0, skips: new Map() };
+  }
   return store.items;
 };
 

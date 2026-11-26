@@ -124,7 +124,7 @@ export interface LoadedItems {
 
 /**
  * Reads every page of the ranked list. `previous` (the same query's last answer) is sent as `If-None-Match`: a
- * 304 keeps it, since the first page names the revision and a revision fixes the whole list. A cursor of an
+ * 304 keeps it. Review-loop counts can change within a revision. A cursor of an
  * older revision (409 `cursor_expired`) restarts the paging.
  */
 export async function loadAllItems(previous: LoadedItems | undefined): Promise<LoadedItems> {
@@ -159,7 +159,9 @@ export function useDashboardItems(revision: string | undefined, hasSnapshot: boo
     enabled: revision !== undefined && hasSnapshot,
     placeholderData: (previous) => previous,
     refetchInterval: (query) =>
-      query.state.data?.items.some(({ judgement }) => judgement?.state === "judging") ? 5_000 : false,
+      query.state.data?.items.some(({ judgement }) => judgement?.state === "judging")
+        ? 5_000
+        : SUMMARY_REFETCH_MS,
   });
 }
 

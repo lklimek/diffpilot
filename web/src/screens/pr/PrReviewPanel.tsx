@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router";
-import { ApiError } from "../../api/client";
+import { ApiError, errorText } from "../../api/client";
 import type { AnalysisId, AnalysisSummary, LlmLanguage, PrRef } from "../../api/generated/types";
 import { prCheckKey, useCreateAnalysis, useResolvePr } from "../../api/queries";
 import { useTabActivity } from "../../app/tabStatus";
@@ -16,9 +16,6 @@ import { Tooltip } from "../../components/tooltip/Tooltip";
 import { GITHUB_SYNC_SETTINGS_PATH } from "../shell/paths";
 import { LiveReview } from "./LiveReview";
 import { analysisHref, openTip, reviewOutcome } from "./outcome";
-
-const errorText = (error: unknown) =>
-  error instanceof ApiError ? error.message : "Something went wrong. Try again.";
 
 export function PrReviewPanel({
   pr,

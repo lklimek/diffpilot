@@ -11,6 +11,7 @@ import {
   choicesFor,
   decideBlocked,
   gateOf,
+  githubProposal,
   missingInput,
   needOf,
   plannedReply,
@@ -70,8 +71,10 @@ export function DecisionForm(props: DecisionFormProps) {
   const id = useId();
   const choices = choicesFor(item);
   const recommended = item.assessment?.recommendation.kind ?? null;
-  const [choice, setChoice] = useState<Choice>(choices[0]!);
-  const [value, setValue] = useState(() => recommendedValue(item));
+  const initialChoice = githubProposal(item)?.kind ?? choices[0]!;
+  const initialValue = initialChoice === recommended ? recommendedValue(item) : "";
+  const [choice, setChoice] = useState<Choice>(initialChoice);
+  const [value, setValue] = useState(initialValue);
   const [resolve, setResolve] = useState(true);
   const [comment, setComment] = useState("");
   const [reply, setReply] = useState<string | null>(null);
@@ -81,8 +84,8 @@ export function DecisionForm(props: DecisionFormProps) {
   const [touched, setTouched] = useState(false);
   if (item.revision !== seen && !touched) {
     setSeen(item.revision);
-    setChoice(choices[0]!);
-    setValue(recommendedValue(item));
+    setChoice(initialChoice);
+    setValue(initialValue);
   }
   const changed = item.revision !== seen;
   const touch = () => {

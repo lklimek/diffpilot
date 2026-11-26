@@ -8,7 +8,7 @@ import { flagTarget, remarkTarget, summariseRemarks } from "../../components/rem
 import { useSectionState } from "../../components/inspector/sectionState";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Navigate, useParams, useLocation, useNavigate, useNavigationType } from "react-router";
-import { ApiError } from "../../api/client";
+import { ApiError, errorText } from "../../api/client";
 import type {
   AnalysisId,
   Annotation,
@@ -59,14 +59,7 @@ import { StepBlock } from "../../components/step/StepBlock";
 import { ReviewTopBar } from "../shell/ReviewTopBar";
 import { Tooltip } from "../../components/tooltip/Tooltip";
 import { busyTip } from "../../components/button/button";
-import {
-  ChunkedCode,
-  DiffCode,
-  FileDiffCode,
-  errorText,
-  useHideContextChanges,
-  type CodeContext,
-} from "./code";
+import { ChunkedCode, DiffCode, FileDiffCode, useHideContextChanges, type CodeContext } from "./code";
 import { DiagramPane } from "./DiagramPane";
 import { useCommentDrafts, useUnresolvedPosts } from "./drafts";
 import { InspectorPane, type CommentLineState } from "./InspectorPane";

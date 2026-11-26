@@ -6,6 +6,7 @@ import { Planned } from "../../__tests__/planned";
 import { expectTrustWording } from "../../__tests__/wording";
 import type { CommentItem } from "../../api/generated/types";
 import { context, listItems, resetReviewLoop } from "../../mocks/review-loop";
+import { setScenario } from "../../mocks/scenarios";
 import type { EffectsPreviewState } from "./decisions";
 import { COMMENT_HINT } from "./DecisionForm";
 import { QuestionCard, type ContextState } from "./QuestionCard";
@@ -72,8 +73,27 @@ function show(item: CommentItem, props: Partial<Parameters<typeof QuestionCard>[
 }
 
 beforeEach(() => {
+  setScenario(null);
   resetReviewLoop();
   window.localStorage.clear();
+});
+
+it.each([
+  { no: 22, by: "alice", kind: "Reject", comment: "1041" },
+  { no: 14, by: "alice-relay", kind: "Resolve (already fixed)", comment: "1042" },
+])("shows and preselects the GitHub proposal on C$no", async ({ no, by, kind, comment }) => {
+  setScenario("comments-proposals");
+  const { onDecide } = show(byNo(no));
+  expect(screen.getByText(new RegExp(`proposes: ${kind.split(" ")[0]}`, "i"))).toHaveTextContent(`@${by}`);
+  expect(screen.getByRole("link", { name: /Proposal on GitHub/ })).toHaveAttribute(
+    "href",
+    `https://github.com/acme/node-client/pull/482#discussion_r${comment}`,
+  );
+  expect(screen.getByRole("radio", { name: kind })).toBeChecked();
+  expect(onDecide).not.toHaveBeenCalled();
+  if (no === 22) await userEvent.type(screen.getByRole("textbox", { name: /Reason/ }), "My reason.");
+  await userEvent.click(screen.getByRole("button", { name: "Decide" }));
+  expect(onDecide).toHaveBeenCalledWith(expect.objectContaining({ kind: no === 22 ? "reject" : "resolve" }));
 });
 
 it.each([

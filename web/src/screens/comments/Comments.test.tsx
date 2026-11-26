@@ -89,24 +89,47 @@ describe("V1 Questions (US3, US4, US11)", () => {
     expect(visited).toHaveBeenCalledTimes(1);
   });
 
-  it("tries the Comments entry again after a transient failure and then reads the overview", async () => {
-    let tries = 0;
-    const readOverview = vi.fn();
+  it("shows new imports after a lost visit response without advancing the cutoff twice", async () => {
+    let cutoff = 0;
     server.use(
       http.post("/api/v1/prs/acme/node-client/482/comments/visit", () => {
-        tries += 1;
-        return new HttpResponse(null, { status: tries === 1 ? 503 : 204 });
+        cutoff += 1;
+        // The write committed but the browser lost its response.
+        return cutoff === 1 ? HttpResponse.error() : new HttpResponse(null, { status: 204 });
       }),
       http.get("/api/v1/prs/acme/node-client/482/comments", () => {
-        readOverview();
-        return HttpResponse.json(overview());
+        const data = overview();
+        return HttpResponse.json({
+          ...data,
+          counts: { ...data.counts, imported_unseen: cutoff === 1 ? 1 : 0 },
+        });
       }),
     );
-    renderRoute(PR);
-    await userEvent.click(await screen.findByRole("link", { name: "Open Comments →" }));
-    expect(await screen.findByRole("navigation", { name: "Queue" })).toBeVisible();
-    expect(readOverview).toHaveBeenCalledOnce();
-    expect(tries).toBe(2);
+    renderRoute(`${PR}/comments`);
+    expect(await screen.findByRole("link", { name: "1 new decision imported from GitHub" })).toBeVisible();
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not confirm this Comments visit.");
+    expect(cutoff).toBe(1);
+  });
+
+  it("surfaces a missing PR when recording the Comments visit", async () => {
+    server.use(
+      http.post("/api/v1/prs/acme/node-client/482/comments/visit", () =>
+        HttpResponse.json(
+          { code: "not_found", message: "This pull request was not found." },
+          { status: 404 },
+        ),
+      ),
+    );
+    renderRoute(`${PR}/comments`);
+    expect(await screen.findByRole("alert")).toHaveTextContent("This pull request was not found.");
+  });
+
+  it("opens Comments directly without recording a PR main-page opening", async () => {
+    const mainPage = vi.fn(() => HttpResponse.json(prPage()));
+    server.use(http.get("/api/v1/prs/acme/node-client/482", mainPage));
+    renderRoute(`${PR}/comments`);
+    expect(await screen.findByRole("heading", { name: /C21 · Retry cap/ })).toBeVisible();
+    expect(mainPage).not.toHaveBeenCalled();
   });
 
   it.each([200, 502])("reads items after the overview settles with HTTP %i", async (status) => {

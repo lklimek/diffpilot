@@ -105,6 +105,11 @@ export class ApiError extends Error {
   }
 }
 
+/** User-facing API error text with a plain fallback for transport and unexpected failures. */
+export function errorText(error: unknown, fallback = "Something went wrong. Try again."): string {
+  return error instanceof ApiError || error instanceof AssessmentAdmissionError ? error.message : fallback;
+}
+
 /** Assessment admission uses a tagged response instead of ApiError's message envelope. */
 export type AssessmentAdmissionIssue =
   AssessmentAdmissionFailure | { code: "assessment_daily_limit"; resets_at?: undefined };
@@ -172,6 +177,7 @@ function openEventStream<E>(
   names: readonly string[],
   onEvent: (event: E) => void,
   onError: (closed: boolean) => void,
+  onReconnect?: () => void,
 ): () => void {
   const source = new EventSource(path);
   const onMessage = (message: MessageEvent<string>) => {
@@ -192,7 +198,15 @@ function openEventStream<E>(
   };
   // Named events only reach listeners of their name: any other type is ignored by the browser.
   for (const name of names) source.addEventListener(name, onMessage);
-  source.onerror = () => onError(source.readyState === EventSource.CLOSED);
+  let disconnected = false;
+  source.onerror = () => {
+    disconnected = true;
+    onError(source.readyState === EventSource.CLOSED);
+  };
+  source.onopen = () => {
+    if (disconnected) onReconnect?.();
+    disconnected = false;
+  };
   return () => source.close();
 }
 
@@ -216,11 +230,13 @@ function isErrorBody(value: unknown): value is { code: ApiErrorCode; message: st
 /** Callbacks of the per-user event stream (RW3). */
 export interface UserEventHandlers {
   onEvent: (event: UserEvent) => void;
-  onError: (closed: boolean) => void;
+  onActivity?: (activity: LlmActivity) => void;
+  onReconnect?: () => void;
+  onError?: (closed: boolean) => void;
 }
 
 /** SSE names of RW3 (`sse-events.md` "Review-loop events"): the `event` tag of `UserStreamEvent`. */
-const USER_STREAM_NAMES = ["user_event", "heartbeat"] satisfies UserStreamEvent["event"][];
+const USER_STREAM_NAMES = ["user_event", "llm_activity", "heartbeat"] satisfies UserStreamEvent["event"][];
 
 /** Route parameters of a pull request (`{owner}/{name}/{number}`). */
 const prParams = (pr: PrRef) => ({ owner: pr.repo.owner, name: pr.repo.name, number: String(pr.number) });
@@ -305,12 +321,7 @@ export function createApiClient(baseUrl = "") {
       await new Promise((resolve) => setTimeout(resolve, retryAfterMs(response)));
       response = await send(name, options, needsCsrf ? (csrfToken ?? null) : null);
     }
-    if (
-      allowAbsent &&
-      ([404, 405, 501].includes(response.status) ||
-        (response.ok && response.headers.get("Content-Type")?.includes("text/html")))
-    )
-      return null;
+    if (allowAbsent && response.status === 501) return null;
     if (!response.ok) throw await errorOf(response);
     // 204, and the 202 of RC3 and RC6, carry no body.
     const body = await response.text();
@@ -460,7 +471,8 @@ export function createApiClient(baseUrl = "") {
     getPrPage: (pr: PrRef) => call<PrPage>("getPrPage", { params: prParams(pr) }),
     getComments: (pr: PrRef) => call<CommentsOverview>("getComments", { params: prParams(pr) }),
     visitComments: (pr: PrRef) => optional<void>("visitComments", { params: prParams(pr) }),
-    startCommentAssessment: (pr: PrRef) => optional<void>("startCommentAssessment", { params: prParams(pr) }),
+    startCommentAssessment: (pr: PrRef, signal?: AbortSignal) =>
+      optional<void>("startCommentAssessment", { params: prParams(pr), signal }),
     readComments: (pr: PrRef) => call<void>("readComments", { params: prParams(pr) }),
     listCommentItems: (pr: PrRef, query: ItemsQuery = { state: null, kind: null }) =>
       call<CommentItem[]>("listCommentItems", { params: prParams(pr), query: definedParams(query) }),
@@ -511,8 +523,10 @@ export function createApiClient(baseUrl = "") {
         USER_STREAM_NAMES,
         (event) => {
           if (event.event === "user_event") handlers.onEvent(event.user_event);
+          if (event.event === "llm_activity") handlers.onActivity?.(event.activity);
         },
-        handlers.onError,
+        handlers.onError ?? (() => {}),
+        handlers.onReconnect,
       );
     },
     /** Opens a refresh's event stream; returns a function that closes it. */

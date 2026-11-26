@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router";
-import { api, ApiError } from "../../api/client";
+import { api, ApiError, errorText } from "../../api/client";
 import { routes } from "../../api/generated/routes";
 import type { RepoRef } from "../../api/generated/types";
 import {
@@ -12,7 +12,6 @@ import {
   useSettings,
 } from "../../api/queries";
 import { DashboardSettingsCard } from "../../components/dashboard/settings-dashboard/DashboardSettingsCard";
-import { messageOf } from "../../components/inspector/action";
 import { AppInstallationsCard } from "../../components/settings/AppInstallationsCard";
 import { ControlledOwnersCard } from "../../components/settings/ControlledOwnersCard";
 import { RepoSettingsCard } from "../../components/settings/RepoSettingsCard";
@@ -22,7 +21,7 @@ import { useReportDirty } from "./useReportDirty";
 function DashboardSettingsStatus({ error }: { error: unknown }) {
   return (
     <StatusMessage kind={error ? "error" : "loading"}>
-      {error ? messageOf(error) : "Loading the dashboard settings…"}
+      {error ? errorText(error) : "Loading the dashboard settings…"}
     </StatusMessage>
   );
 }
@@ -51,11 +50,11 @@ export function GitHubSyncPage({ onDirtyChange }: { onDirtyChange: (dirty: boole
       installations={settings.data.app_installations}
       signInHref={routes.authLogin.path}
       webhook={webhook.data}
-      webhookError={webhook.isError ? messageOf(webhook.error) : undefined}
+      webhookError={webhook.isError ? errorText(webhook.error) : undefined}
     />
   ) : (
     <StatusMessage kind={settings.isError ? "error" : "loading"}>
-      {settings.isError ? messageOf(settings.error) : "Loading GitHub App settings…"}
+      {settings.isError ? errorText(settings.error) : "Loading GitHub App settings…"}
     </StatusMessage>
   );
   return (
@@ -76,7 +75,7 @@ export function GitHubSyncPage({ onDirtyChange }: { onDirtyChange: (dirty: boole
           owners={settings.data.controlled_owners}
           busy={owners.isPending}
           saved={owners.isSuccess}
-          error={owners.isError ? messageOf(owners.error) : undefined}
+          error={owners.isError ? errorText(owners.error) : undefined}
           onSave={(value) => owners.mutate(value)}
           onDirtyChange={ownersDirty}
         />
@@ -101,7 +100,7 @@ function RepositoryDetails({ repo }: { repo: RepoRef }) {
     );
   return (
     <StatusMessage kind={settings.isError ? "error" : "loading"}>
-      {settings.isError ? messageOf(error) : "Loading the repository settings…"}
+      {settings.isError ? errorText(error) : "Loading the repository settings…"}
     </StatusMessage>
   );
 }
@@ -135,7 +134,7 @@ export function RepositoriesPage({ onDirtyChange }: { onDirtyChange: (dirty: boo
     owner && name && extra === undefined ? <RepositoryDetails repo={{ owner, name }} /> : null;
   return (
     <>
-      {catalogue.isError && <StatusMessage kind="error">{messageOf(catalogue.error)}</StatusMessage>}
+      {catalogue.isError && <StatusMessage kind="error">{errorText(catalogue.error)}</StatusMessage>}
       {dashboard.data ? (
         <DashboardSettingsCard
           view={dashboard.data}

@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAssessmentSettings, useCodexAccount } from "../../api/assessment-settings";
-import { api } from "../../api/client";
+import { api, errorText } from "../../api/client";
 import {
   useAccessTokenActions,
   useAccessTokens,
@@ -14,7 +14,6 @@ import {
 } from "../../api/queries";
 import { useNow } from "../../app/now";
 import { AccessTokensCard } from "../../components/dashboard/settings-access-tokens/AccessTokensCard";
-import { messageOf } from "../../components/inspector/action";
 import { MemcanStatusLine } from "../../components/section/MemcanStatusLine";
 import { AccountCard } from "../../components/settings/AccountCard";
 import { CodexAccountCard } from "../../components/settings/CodexAccountCard";
@@ -49,7 +48,7 @@ export function AccountPage() {
         challenge={codex.challenge}
         now={now}
         busy={codex.link.isPending || codex.unlink.isPending}
-        error={codexError ? messageOf(codexError) : undefined}
+        error={codexError ? errorText(codexError) : undefined}
         onLink={() => {
           codex.unlink.reset();
           codex.link.mutate();
@@ -65,7 +64,7 @@ export function AccountPage() {
       ) : (
         <Section title="Access tokens">
           <StatusMessage kind={tokens.isError ? "error" : "loading"}>
-            {tokens.isError ? messageOf(tokens.error) : "Loading your access tokens…"}
+            {tokens.isError ? errorText(tokens.error) : "Loading your access tokens…"}
           </StatusMessage>
         </Section>
       )}
@@ -97,7 +96,7 @@ export function LlmPage({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => 
       <div id={LLM_USAGE_SECTION} className="scroll-mt-14">
         <UsageLimitsSection
           ranking={ranking.data}
-          rankingError={ranking.isError ? messageOf(ranking.error) : undefined}
+          rankingError={ranking.isError ? errorText(ranking.error) : undefined}
           rankingZone={dashboard.data?.settings.time_zone ?? undefined}
           onReset={async () => {
             const usage = await api.resetRankingUsage();
@@ -105,9 +104,9 @@ export function LlmPage({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => 
             client.setQueryData(rankingKey, usage);
           }}
           quota={assessment.data?.quota}
-          quotaError={assessment.isError ? messageOf(assessment.error) : undefined}
+          quotaError={assessment.isError ? errorText(assessment.error) : undefined}
           tokens={settings.data && (settings.data.llm_usage ?? null)}
-          tokensError={!settings.data && settings.isError ? messageOf(settings.error) : undefined}
+          tokensError={!settings.data && settings.isError ? errorText(settings.error) : undefined}
           codex={codex.status.data}
           now={now}
           lastCall={settings.data?.llm_status}
@@ -125,7 +124,7 @@ export function LlmPage({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => 
           language={settings.data.language}
           busy={setLanguage.isPending}
           onChange={(language) => setLanguage.mutate(language)}
-          error={setLanguage.isError ? messageOf(setLanguage.error) : undefined}
+          error={setLanguage.isError ? errorText(setLanguage.error) : undefined}
         />
       )}
     </>
@@ -138,7 +137,7 @@ export function MemcanPage() {
     <Section title="MemCan status">
       {!settings.data ? (
         <StatusMessage kind={settings.isError ? "error" : "loading"}>
-          {settings.isError ? messageOf(settings.error) : "Loading MemCan status…"}
+          {settings.isError ? errorText(settings.error) : "Loading MemCan status…"}
         </StatusMessage>
       ) : (
         <p>

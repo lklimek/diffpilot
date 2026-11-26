@@ -130,3 +130,21 @@ test("in the Files view an Ask answer notifies too; a click opens its lines ther
   await page.evaluate(() => window.__notifications.at(-1)!.onclick!(new Event("click")));
   await expect(page).toHaveURL(/\/files#lines\?file=src%2Frpc%2Fclient\.rs&side=head&line=98&end=101$/);
 });
+
+test("a review-loop notification opens the PR page without starting an assessment", async ({ page }) => {
+  await recordNotifications(page, { optedIn: true, focused: false });
+  const assessments: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().endsWith("/comments/assess")) {
+      assessments.push(request.url());
+    }
+  });
+  await page.goto("/prs?scenario=review-loop-notification");
+  await expect
+    .poll(() => page.evaluate(() => window.__notifications.map((n) => n.options.body)))
+    .toContain("acme/node-client #482: 3 questions ready");
+  await page.evaluate(() => window.__notifications[0]!.onclick!(new Event("click")));
+  await expect(page.getByRole("link", { name: /^Open Comments/ })).toBeVisible();
+  await expect(page).toHaveURL("/pr/acme/node-client/482");
+  expect(assessments).toHaveLength(0);
+});

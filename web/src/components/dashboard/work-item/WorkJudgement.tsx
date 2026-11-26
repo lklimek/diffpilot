@@ -27,13 +27,11 @@ export function WorkJudgement({
   const { judgement } = item;
   if (!judgement) return null;
   return (
-    <span aria-live="polite">
-      <JudgementMark
-        judgement={rejudging ? { ...judgement, state: "judging" } : judgement}
-        onRejudge={onRejudge}
-        usageHref={usageHref}
-        onNavigate={onNavigate}
-      />
-    </span>
+    <JudgementMark
+      judgement={rejudging ? { ...judgement, state: "judging" } : judgement}
+      onRejudge={onRejudge}
+      usageHref={usageHref}
+      onNavigate={onNavigate}
+    />
   );
 }

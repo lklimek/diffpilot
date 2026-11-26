@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Navigate, useLocation, useNavigate, useParams } from "react-router";
-import { ApiError } from "../../api/client";
+import { ApiError, errorText } from "../../api/client";
 import { routes } from "../../api/generated/routes";
 import type { AnalysisId, FilesResponse, Tour } from "../../api/generated/types";
 import { useDependencies, useFiles, useMe, useTour } from "../../api/queries";
@@ -21,7 +21,6 @@ import { StatusMessage } from "../../components/status/StatusMessage";
 import { Tooltip } from "../../components/tooltip/Tooltip";
 import { ReviewTopBar } from "../shell/ReviewTopBar";
 import { GITHUB_SYNC_SETTINGS_PATH } from "../shell/paths";
-import { errorText } from "../tour/code";
 import { checksHref } from "../tour/review";
 import { commentsPath, prPath } from "../pr/paths";
 

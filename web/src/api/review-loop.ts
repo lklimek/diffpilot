@@ -1,6 +1,6 @@
 // Queries and mutations of the review loop (docs/review-workflow-plan.md §6: RC1–RC17, RW1–RW2, RN1–RN3) and the
 // Ask questions about its items (RC7).
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   keepPreviousData,
   useInfiniteQuery,
@@ -9,7 +9,7 @@ import {
   useQueryClient,
   type QueryClient,
 } from "@tanstack/react-query";
-import { api, ApiError, AssessmentAdmissionError, type AssessmentAdmissionIssue } from "./client";
+import { api, ApiError, AssessmentAdmissionError, errorText, type AssessmentAdmissionIssue } from "./client";
 import { withoutRetried } from "./questionHistory";
 import type {
   CommentItem,
@@ -203,24 +203,33 @@ export function useVisitComments(pr: PrRef) {
   const client = useQueryClient();
   return useMutation({
     mutationFn: () => api.visitComments(pr),
-    // The overview waits for the visit; recording it again is harmless, so transient failures are retried.
-    retry: (count, error) => count < 2 && transientFailure(error),
-    retryDelay: 200,
+    // A lost response can follow a committed write. Replaying it would advance the import cutoff.
+    retry: false,
     onSuccess: () => client.resetQueries({ queryKey: overviewKey(pr), exact: true }),
   });
 }
 
 export type AssessmentStartIssue = AssessmentAdmissionIssue | { code: "failed"; message: string };
 
-async function startCommentAssessment(pr: PrRef): Promise<AssessmentStartIssue | null> {
-  try {
-    await api.startCommentAssessment(pr);
-    return null;
-  } catch (error) {
-    if (error instanceof AssessmentAdmissionError) return error.issue;
-    if (error instanceof ApiError && error.status === 409 && error.code === "conflict") return null;
-    return { code: "failed", message: error instanceof ApiError ? error.message : "Try again later." };
+async function startCommentAssessment(
+  pr: PrRef,
+  pendingRead?: AbortSignal,
+): Promise<AssessmentStartIssue | null> {
+  while (!pendingRead?.aborted) {
+    try {
+      await api.startCommentAssessment(pr, pendingRead);
+      return null;
+    } catch (error) {
+      if (error instanceof AssessmentAdmissionError) return error.issue;
+      if (!(error instanceof ApiError && error.status === 409 && error.code === "conflict")) {
+        return { code: "failed", message: errorText(error, "Try again later.") };
+      }
+      if (!pendingRead) return null;
+    }
+    // An individual assessment or Ask may own the pass and finish without starting another batch.
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
   }
+  return null;
 }
 
 /** Start a pass on entry to Comments. */
@@ -231,8 +240,13 @@ export const useStartCommentAssessment = (pr: PrRef) =>
 export function useReadComments(pr: PrRef, onAssessment?: (issue: AssessmentStartIssue | null) => void) {
   const client = useQueryClient();
   const invalidate = useInvalidatePr(pr);
+  const pendingRead = useRef<AbortController | null>(null);
+  useEffect(() => () => pendingRead.current?.abort(), []);
   return useMutation({
     mutationFn: async () => {
+      pendingRead.current?.abort();
+      const controller = new AbortController();
+      pendingRead.current = controller;
       const before = onAssessment ? client.getQueryData<CommentItem[]>(itemsKey(pr)) : undefined;
       const known = before && new Set(before.map(({ no }) => no));
       await api.readComments(pr);
@@ -240,11 +254,13 @@ export function useReadComments(pr: PrRef, onAssessment?: (issue: AssessmentStar
       const fresh = client.getQueryState<CommentItem[]>(itemsKey(pr));
       if (
         onAssessment &&
+        !controller.signal.aborted &&
         known &&
         fresh?.status === "success" &&
         fresh.data?.some(({ no }) => !known.has(no))
       ) {
-        const issue = await startCommentAssessment(pr);
+        const issue = await startCommentAssessment(pr, controller.signal);
+        if (controller.signal.aborted) return;
         onAssessment(issue);
         if (!issue) await invalidate();
       }

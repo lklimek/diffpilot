@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { AssessmentSettingsCard } from "./AssessmentSettingsCard";
+import { dateTimeText } from "../format/time";
 import { AssessmentControls } from "../comments/AssessmentControls";
 const now = new Date("2026-11-18T09:00:00Z");
 const settings = {
@@ -12,8 +13,9 @@ it("shows primary, selected PRs, cost and quota; saving preserves selections", (
   const onSave = vi.fn();
   render(<AssessmentSettingsCard now={now} settings={settings} busy={false} onSave={onSave} />);
   expect(screen.getByLabelText("Primary assessment method")).toHaveValue("claudius_host");
-  expect(screen.getByText(/79 of 80/)).toBeVisible();
-  expect(screen.getByText(/2026-11-19T00:00:00Z/)).toBeVisible();
+  expect(
+    screen.getByText(`79 of 80 daily passes remaining · resets at ${dateTimeText(settings.quota.resets_at)}`),
+  ).toBeVisible();
   expect(screen.getByText(/roughly 2×/)).toBeVisible();
   expect(screen.getByText("acme/node-client#482")).toBeVisible();
   fireEvent.change(screen.getByLabelText("Primary assessment method"), { target: { value: "prompt_v4" } });

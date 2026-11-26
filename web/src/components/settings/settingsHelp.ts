@@ -38,6 +38,8 @@ export interface SettingHelp {
   example: string;
   /** Further paragraphs of the guide (not in the tip). */
   details?: string[];
+  /** An additional guide paragraph with inline Markdown. */
+  guideNote?: { heading?: string; text: string };
   /** False for a topic the page has no control for (it appears in the guide only). */
   onPage?: false;
 }
@@ -118,6 +120,12 @@ const HELP = {
     when: "Updated by every LLM call. Read-only.",
     empty: "Not known yet until the first analysis calls the LLM.",
     example: "After a failed call the provider's message stands below the status.",
+    guideNote: {
+      heading: "Token usage",
+      text: `**Today**, **Last 7 days** and **This month** use the server container's time zone. The deployment sets no \`TZ\`,
+so the windows use UTC. Today starts at 00:00 UTC, Last 7 days starts at 00:00 UTC six days ago, and This month
+counts usage from 00:00 UTC on the first day of the current calendar month.`,
+    },
   },
   memcan_status: {
     section: "MemCan",
@@ -154,6 +162,13 @@ const HELP = {
     when: "Read when Settings opens. Read-only; install or change the App on GitHub.",
     empty: "No installation: pull requests can be analysed, but comments must be written on GitHub.",
     example: "Install the App on dashpay to comment on dashpay/platform from here.",
+    guideNote: {
+      text: `The card shows the URL to enter in the GitHub App when the operator configures it. My work receives live GitHub
+updates for tracked repositories with an active App installation and a configured webhook secret. Your tenant
+tracks repositories through its repository rules, owners listed under **When GitHub search refuses an account**,
+active watches, analyses and My work snapshots. Use **Refresh** to recover missed facts or wait for the nightly
+scan. Existing judgements can become outdated when their facts change.`,
+    },
   },
   repository_settings: {
     section: "Repositories",
@@ -182,6 +197,12 @@ const HELP = {
     limits: "Up to 5 GitHub logins (letters, digits, - or _, up to 39); not your own login.",
     example:
       "A bot account that opens pull requests you take care of (e.g. Claudius-Maginificent): put it here so its pull requests count as yours, and keep it in Known bots so its reviews count as a bot's. Do not put it into Excluded authors.",
+    guideNote: {
+      text: `A linked account can relay a decision proposal. In the item's thread, the account posts the decision in plain
+text and puts the matching marker on a line of its own outside quotes and code. For example, a proposal to reject
+uses \`<!-- maintainer-decision v1 kind=reject -->\`. Diffpilot checks the account's numeric GitHub ID and shows an
+eligible proposal in **Needs you** for you to confirm.`,
+    },
   },
   repo: {
     section: "Repositories",
@@ -475,6 +496,10 @@ export function settingsHelpMarkdown(): string {
       out.push("", `### ${help.title}`, "");
       for (const [label, text] of helpLines(help)) out.push(`- **${label}:** ${markdownText(text)}`);
       for (const paragraph of help.details ?? []) out.push("", markdownText(paragraph));
+      if (help.guideNote) {
+        if (help.guideNote.heading) out.push("", `### ${help.guideNote.heading}`);
+        out.push("", help.guideNote.text);
+      }
     }
   }
   return `${out.join("\n")}\n`;

@@ -1,15 +1,7 @@
-import {
-  useId,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type KeyboardEvent,
-  type ReactNode,
-  type RefObject,
-} from "react";
+import { useId, useLayoutEffect, useRef, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { buttonClass } from "../button/button";
 import { navigateOnClick, type Navigate } from "../dashboard/common/navigate";
-import { useOutsidePress } from "../popover/useOutsidePress";
+import { useAnchoredPanel } from "../popover/useAnchoredPanel";
 import { Tooltip, useTipPrecedence } from "../tooltip/Tooltip";
 
 const ITEM = '[role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"]';
@@ -34,53 +26,26 @@ export function MenuButton({
   triggerRef,
 }: MenuButtonProps) {
   const id = useId();
-  const wrapper = useRef<HTMLDivElement>(null);
-  const ownButton = useRef<HTMLButtonElement>(null);
-  const button = triggerRef ?? ownButton;
-  const menu = useRef<HTMLDivElement>(null);
-  const [open, setOpen] = useState(false);
+  const { root, anchor, panel, open, setOpen, closeAndFocus, dismiss } = useAnchoredPanel<HTMLDivElement>({
+    align: "end",
+    anchorRef: triggerRef,
+  });
   const initialFocus = useRef<"first" | "last">("first");
-  const items = () => Array.from(menu.current?.querySelectorAll<HTMLElement>(ITEM) ?? []);
-  const close = () => {
-    button.current?.focus();
-    setOpen(false);
-  };
-  useOutsidePress(open, wrapper, () => setOpen(false));
+  const items = () => Array.from(panel.current?.querySelectorAll<HTMLElement>(ITEM) ?? []);
   useTipPrecedence(open);
 
   useLayoutEffect(() => {
-    if (!open) return;
-    const anchor = button.current!;
-    const panel = menu.current!;
-    const place = () => {
-      const { top, right, bottom } = anchor.getBoundingClientRect();
-      const gap = 4;
-      const margin = 8;
-      const above = top - gap - margin;
-      const below = window.innerHeight - bottom - gap - margin;
-      const opensAbove = panel.scrollHeight > below && above > below;
-      panel.style.left = `${Math.max(margin, Math.min(right, window.innerWidth - margin) - panel.offsetWidth)}px`;
-      panel.style.top = opensAbove ? "" : `${bottom + gap}px`;
-      panel.style.bottom = opensAbove ? `${window.innerHeight - top + gap}px` : "";
-      panel.style.maxHeight = `${Math.max(0, opensAbove ? above : below)}px`;
-    };
-    place();
-    const entries = Array.from(panel.querySelectorAll<HTMLElement>(ITEM));
-    const first = entries.at(initialFocus.current === "first" ? 0 : -1) ?? panel;
+    if (!open || !panel.current) return;
+    const entries = Array.from(panel.current.querySelectorAll<HTMLElement>(ITEM));
+    const first = entries.at(initialFocus.current === "first" ? 0 : -1) ?? panel.current;
     first.focus();
-    window.addEventListener("resize", place);
-    window.addEventListener("scroll", place, true);
-    return () => {
-      window.removeEventListener("resize", place);
-      window.removeEventListener("scroll", place, true);
-    };
-  }, [button, open]);
+  }, [open, panel]);
 
   const onMenuKey = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "Escape" || (event.key === "Tab" && event.shiftKey)) {
+    if (event.key === "Tab" && event.shiftKey) {
       event.preventDefault();
       event.stopPropagation();
-      close();
+      closeAndFocus();
       return;
     }
     const entries = items();
@@ -116,10 +81,10 @@ export function MenuButton({
   };
 
   return (
-    <div ref={wrapper} className="inline-flex" onClick={(event) => event.stopPropagation()}>
+    <div ref={root} className="inline-flex" {...dismiss} onClick={(event) => event.stopPropagation()}>
       <Tooltip tip={tip} className="inline-flex">
         <button
-          ref={button}
+          ref={anchor}
           id={`${id}-trigger`}
           type="button"
           aria-label={label}
@@ -144,25 +109,16 @@ export function MenuButton({
       </Tooltip>
       {open && (
         <div
-          ref={menu}
+          ref={panel}
           id={id}
           role="menu"
           aria-labelledby={`${id}-trigger`}
           tabIndex={-1}
           className="fixed z-50 w-64 max-w-[calc(100vw-16px)] overflow-y-auto overscroll-contain rounded-lg border border-border bg-surface p-1 text-left text-sm whitespace-normal text-text shadow-tip [overflow-wrap:anywhere]"
-          onBlur={(event) => {
-            if (
-              event.relatedTarget &&
-              event.relatedTarget !== button.current &&
-              !event.currentTarget.contains(event.relatedTarget)
-            ) {
-              setOpen(false);
-            }
-          }}
           onKeyDown={onMenuKey}
           onClick={(event) => {
             const item = (event.target as Element).closest(ITEM);
-            if (item && item.getAttribute("aria-disabled") !== "true") close();
+            if (item && item.getAttribute("aria-disabled") !== "true") closeAndFocus();
           }}
         >
           {children}

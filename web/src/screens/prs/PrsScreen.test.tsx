@@ -6,8 +6,8 @@ import { renderRoute, startMockServer } from "../../__tests__/screen";
 
 const server = startMockServer();
 
-it.each([404, 501])("merges legacy analyses and watches when history returns %s", async (status) => {
-  server.use(http.get("/api/v1/me/prs", () => new HttpResponse(null, { status })));
+it("merges analyses and watches while history is reserved", async () => {
+  server.use(http.get("/api/v1/me/prs", () => new HttpResponse(null, { status: 501 })));
   renderRoute("/prs");
   const list = await screen.findByRole("list", { name: "Your pull requests" });
   await within(list).findByText(/analysis .*failed/);
@@ -91,10 +91,27 @@ it("loads the next C17 page and keeps opened-only PRs without a review action", 
 });
 
 it("counts active watches in the usage header, excluding the ended watch from the numerator", async () => {
-  server.use(http.get("/api/v1/me/prs", () => new HttpResponse(null, { status: 404 })));
+  server.use(http.get("/api/v1/me/prs", () => new HttpResponse(null, { status: 501 })));
   renderRoute("/prs");
-  expect(await screen.findByText("Watching 4 of 20 · assessment passes today 7 of 80")).toBeVisible();
+  expect(await screen.findByText("Watching 4 of 20")).toBeVisible();
+  expect(await screen.findByText(/^79 of 80 daily passes remaining · resets at /)).toBeVisible();
   expect(await screen.findByText("ended: merged or closed")).toBeVisible();
+});
+
+it.each([404, 405])("surfaces HTTP %i as a failed history request", async (status) => {
+  server.use(
+    http.get("/api/v1/me/prs", () =>
+      HttpResponse.json({ code: "not_found", message: "History could not be read." }, { status }),
+    ),
+  );
+  renderRoute("/prs");
+  expect(await screen.findByRole("alert")).toHaveTextContent("History could not be read.");
+});
+
+it("shows a plain message when the history response cannot be parsed", async () => {
+  server.use(http.get("/api/v1/me/prs", () => HttpResponse.html("<p>Broken upstream response</p>")));
+  renderRoute("/prs");
+  expect(await screen.findByRole("alert")).toHaveTextContent("Something went wrong. Try again.");
 });
 
 it("names each finished review link with its PR", async () => {

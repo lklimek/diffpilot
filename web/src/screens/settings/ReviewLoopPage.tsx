@@ -1,10 +1,9 @@
 import { useCallback, useState } from "react";
 import { useAssessmentSettings, useSetAssessmentSettings } from "../../api/assessment-settings";
 import { useMarkedItems } from "../../api/review-loop";
-import { ApiError } from "../../api/client";
+import { ApiError, errorText } from "../../api/client";
 import { useNow } from "../../app/now";
 import { useNotifySetting } from "../../app/workNotifications";
-import { messageOf } from "../../components/inspector/action";
 import { AssessmentSettingsCard } from "../../components/settings/AssessmentSettingsCard";
 import { MarkedItemsCard } from "../../components/settings/MarkedItemsCard";
 import { NotificationsCard } from "../../components/settings/NotificationsCard";
@@ -43,7 +42,7 @@ export function ReviewLoopPage({ onDirtyChange }: { onDirtyChange: (dirty: boole
             save.isError
               ? save.error instanceof ApiError && save.error.code === "conflict"
                 ? "Settings changed elsewhere. Your edits are kept. Check the changed values and save again."
-                : messageOf(save.error)
+                : errorText(save.error)
               : undefined
           }
           onSave={(config) =>
@@ -57,7 +56,7 @@ export function ReviewLoopPage({ onDirtyChange }: { onDirtyChange: (dirty: boole
       ) : (
         <Section title="Comment assessment">
           <StatusMessage kind={assessment.isError ? "error" : "loading"}>
-            {assessment.isError ? messageOf(assessment.error) : "Loading assessment settings…"}
+            {assessment.isError ? errorText(assessment.error) : "Loading assessment settings…"}
           </StatusMessage>
         </Section>
       )}
@@ -74,7 +73,7 @@ export function ReviewLoopPage({ onDirtyChange }: { onDirtyChange: (dirty: boole
       </section>
       <MarkedItemsCard
         items={marks.data?.pages.flatMap((page) => page.items)}
-        error={marks.isError ? messageOf(marks.error) : undefined}
+        error={marks.isError ? errorText(marks.error) : undefined}
         loadingOlder={marks.isFetchingNextPage}
         onShowOlder={marks.hasNextPage ? () => void marks.fetchNextPage() : undefined}
       />

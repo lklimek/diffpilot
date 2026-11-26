@@ -1,3 +1,4 @@
+import { AssessmentQuotaText } from "../comments/AssessmentQuotaText";
 import { Tooltip } from "../tooltip/Tooltip";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import type {
@@ -169,10 +170,9 @@ export function UsageLimitsSection({
         </Tile>
         <Tile title="Comment assessment">
           {quota ? (
-            <>
-              <p>{80 - quota.remaining} of 80 passes today</p>
-              <p>Resets at {dateTimeText(quota.resets_at)}</p>
-            </>
+            <p>
+              <AssessmentQuotaText quota={quota} />
+            </p>
           ) : quotaError ? (
             <p role="alert">{quotaError}</p>
           ) : (

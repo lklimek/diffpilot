@@ -119,7 +119,9 @@ describe("Ask chat in the review (proposal AC1, AC4, AC6, AC8, AC11)", () => {
       failure: null,
       created_at: "2026-11-16T10:15:00Z",
     };
-    act(() => FakeEventSource.latest().emit({ event: "question", question: answered }));
+    act(() =>
+      FakeEventSource.latest(`/api/v1/analyses/${ID}/events`).emit({ event: "question", question: answered }),
+    );
     await waitFor(() => expect(launcher()).toHaveAccessibleName(/^Ask 1 new answer: open your private chat/));
     await user().click(launcher());
     const last = () => chat().querySelector<HTMLElement>('[data-thread="t4"]')!;
@@ -148,7 +150,7 @@ describe("Ask chat in the review (proposal AC1, AC4, AC6, AC8, AC11)", () => {
     await user().keyboard("a");
     const field = within(chat()).getByRole("textbox", { name: "Your question" });
     await user().type(field, "Draft");
-    act(() => FakeEventSource.latest().fail());
+    act(() => FakeEventSource.latest(`/api/v1/analyses/${ID}/events`).fail());
     expect(within(chat()).getByRole("status")).toHaveTextContent(
       "The connection that delivers answers was lost.",
     );

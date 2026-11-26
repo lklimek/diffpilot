@@ -7,6 +7,29 @@ import { expectTrustWording } from "./support";
 const PR = "/pr/acme/node-client/482";
 const chat = (page: Page) => page.getByRole("dialog", { name: "Ask" });
 
+test("the owner can confirm GitHub proposals from a member and a linked login", async ({ page }) => {
+  await page.goto(`${PR}/comments?scenario=comments-proposals&item=C22`);
+  await expect(page.getByText(/@alice proposes: Reject/)).toBeVisible();
+  await expect(page.getByRole("link", { name: /Proposal on GitHub/ })).toHaveAttribute(
+    "href",
+    /#discussion_r1041$/,
+  );
+  await expect(page.getByRole("radio", { name: "Reject", exact: true })).toBeChecked();
+  await page
+    .getByRole("navigation", { name: "Queue" })
+    .getByRole("button", { name: /^C14\b/ })
+    .click();
+  await expect(page.getByText(/@alice-relay proposes: Resolve/)).toBeVisible();
+  await expect(page.getByRole("link", { name: /Proposal on GitHub/ })).toHaveAttribute(
+    "href",
+    /#discussion_r1042$/,
+  );
+  await expect(page.getByRole("radio", { name: "Resolve (already fixed)" })).toBeChecked();
+  await page.getByRole("button", { name: "Decide", exact: true }).click();
+  await page.getByRole("link", { name: "Decision log and agents" }).click();
+  await expect(page.getByText(/C14 · Resolve/)).toBeVisible();
+});
+
 test("table_row_opens_question", async ({ page }) => {
   await page.goto(`${PR}/comments/table`);
   await page.getByRole("link", { name: "Jitter uses a fixed seed" }).click();

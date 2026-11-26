@@ -25,10 +25,10 @@ export class FakeEventSource {
     FakeEventSource.instances = [];
   }
 
-  /** The most recently created instance. */
-  static latest(): FakeEventSource {
-    const latest = FakeEventSource.instances.at(-1);
-    if (!latest) throw new Error("no EventSource was created");
+  /** The most recently created instance, optionally for a particular stream. */
+  static latest(url?: string): FakeEventSource {
+    const latest = FakeEventSource.instances.findLast((source) => url === undefined || source.url === url);
+    if (!latest) throw new Error(`no EventSource was created${url ? ` for ${url}` : ""}`);
     return latest;
   }
 

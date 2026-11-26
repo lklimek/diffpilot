@@ -2,7 +2,7 @@
 import type { UseQueryResult } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import type { CodeViewProps } from "../../components/code-view/CodeView";
-import { ApiError } from "../../api/client";
+import { errorText } from "../../api/client";
 import type {
   AnalysisId,
   Annotation,
@@ -49,11 +49,6 @@ export function useHideContextChanges(login: string | null): [boolean, (hide: bo
     }
   };
   return [hide, change];
-}
-
-/** Plain text of a failed request. */
-export function errorText(error: unknown): string {
-  return error instanceof ApiError ? error.message : "Something went wrong. Reload the page.";
 }
 
 /** Most lines one range request may ask for (`RangeQuery::MAX_LINES`, http-api.md "Ranges"). */

@@ -39,6 +39,9 @@ describe("subscribeUserEvents (RW3, sse-events.md)", () => {
   });
 });
 
-it.each(["questions_ready", "round_executed"] as const)("opens Comments from a %s notification", (kind) => {
-  expect(userEventNotice({ ...EVENT, kind }).path).toBe("/pr/acme/node-client/482/comments");
-});
+it.each(["questions_ready", "round_executed"] as const)(
+  "opens the PR main page from a %s notification",
+  (kind) => {
+    expect(userEventNotice({ ...EVENT, kind }).path).toBe("/pr/acme/node-client/482");
+  },
+);
