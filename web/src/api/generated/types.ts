@@ -5063,7 +5063,7 @@ title: string,
  */
 body: string,
 /**
- * Trusted maintainer relays.
+ * Linked GitHub logins that can relay proposals for member confirmation.
  */
 delegates?: Array<string>,
 /**

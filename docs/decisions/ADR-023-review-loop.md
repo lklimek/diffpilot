@@ -198,7 +198,7 @@ read with tokens (ADR-019).
   also ones linked later. The primary owns artefact work. Followers have their own GitHub reply and resolve effects.
   Plan the change in the same write transaction. Gate items are always decided individually (RQ4/RQ5). Wire
   `DecisionVia::FollowsPrimary`.
-- **Imported GitHub decisions** (owner `07b69073` F5, plan §7; security review SEC-006…009): a grounded recorded
+- **Imported GitHub decisions** (owner `07b69073` F5, plan §7 I1–I7): a grounded recorded
   decision becomes a local decision (`DecisionVia::ImportedGithub`, attribution and evidence link) only for an item
   without a decision and only from the item's own thread or a later comment referring to it. Authority: a tenant
   member's own statement matched by numeric GitHub id. An account from Linked logins can propose a decision

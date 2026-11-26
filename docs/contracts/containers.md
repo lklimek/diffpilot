@@ -142,7 +142,8 @@ the common PR-container retirement instruction. Existing attempt tokens and self
 W5 uses claudius 13.7.0 (`71096d7d4481977added8761b2cfd63cd84852b4`), including the corrected
 `validate_report.py --ids` contract. `PrDataItem.decision` is a standing choice with kind/target/title,
 without reply-chain attribution. A missing required target rejects host input before admission.
-Tenant members can relay decisions using their linked GitHub accounts and the structured decision marker. The server resolves linked accounts to numeric GitHub ids.
+A linked GitHub account can submit a decision proposal with the structured decision marker. The server checks
+the account's numeric GitHub ID. The member confirms the proposal in diffpilot before it becomes a decision.
 Neither bot status nor tenant membership implicitly grants relay authority.
 
 The server archives non-secret inputs under `data_dir/assessment-snapshots/<pass>.json` with mode 0600.

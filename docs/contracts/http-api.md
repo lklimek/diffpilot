@@ -22,9 +22,9 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
 - Webhook listener `SR_WEBHOOK_LISTEN_ADDR` defaults to `127.0.0.1:3002` and serves only `POST /webhooks/github`.
   The public listener drains requests to `/webhooks/*` before returning 404, up to 4 MiB and 8 seconds.
   A declared body over 4 MiB gets a 413 with `Connection: close` immediately. A drain that exceeds either limit
-  returns 404 with `Connection: close`. The dedicated route registers `github_signature` authentication.
-  Its contract-only handler returns 501. The receiver will authenticate the delivery by GitHub signature and
-  App target, then check whether a tenant tracks the repository. [ADR-026](../decisions/ADR-026-github-webhooks.md)
+  returns 404 with `Connection: close`. The dedicated route authenticates the delivery by GitHub signature
+  and App target, then checks whether a tenant tracks the repository. With no webhook secret configured, it
+  returns 503 `webhook_not_configured`. [ADR-026](../decisions/ADR-026-github-webhooks.md)
 - `session`: session cookie (`__Host-sr_session`, Secure, HttpOnly, SameSite=Lax, Path=/; `sr_session` without
   Secure only when `SR_PUBLIC_URL` is http and no trusted proxy forwards https), opaque token stored hashed. A
   session lasts 7 days, ends after 24 h unused, and only while its user stays on the tenant's allowlist (ADR-007
@@ -346,7 +346,7 @@ Body `ApiError {code, message}`; `message` is plain text for the user, never int
 | `github_refused` | 422 | GitHub refused a change made as the user (the Viewed mark, R13: refused before executing it, a rate limit, or `FORBIDDEN`); nothing was changed |
 | `not_rendered` | 422 | file classified as not rendered; diff of a binary file |
 | `internal` | 500 | anything else (no detail) |
-| `not_implemented` | 501 | a reserved route whose feature handler is pending |
+| `not_implemented` | 501 | operation unavailable because the server does not implement it |
 | `github_unavailable` | 502 | GitHub error or unexpected answer |
 | `unavailable` | 503 | the database was busy or locked past its wait; carries `Retry-After: 1`. The web client retries a GET, PUT or DELETE once after that delay, never a POST |
 | `insufficient_scope` | 403 | a valid access token without the route's scope |
@@ -689,8 +689,9 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
   or a release branch, every check passed except ignored ones, nothing left to answer, no ready label, not held by a
   current plug-in); they are ranked. `merge_state_pending` counts those of the user's pull requests Ready to merge
   could list whose merge state GitHub had not computed by the scan (the next refresh reads them again); null when the snapshot did not record merge states.
-  A summary read in a browser session keeps My work open for 3 minutes while the v1.1 refresh schedule applies.
-  See the v1.4 dashboard status additions below.
+  Refreshes come from GitHub webhooks for tracked items, manual Refresh and the nightly scan. Reading the
+  summary does not schedule a refresh. A summary read in a browser session (not an access-token read) counts as
+  the user's presence for the plug-in poller (ADR-022 §3). See the v1.4 dashboard status additions below.
 - **Excluded items (R1, B4).** `SnapshotMeta.exclusions` tells what the rules left out of the ranking, computed
   with the ranking at read time from the stored scan facts (so every stored snapshot has it; the web shows "not
   recorded for this snapshot" only when the field is absent): `total` (= `excluded`) and the non-zero `counts` per
@@ -974,12 +975,9 @@ Cards show only the frozen primary; secondary results are comparison-only.
 
 ## v1.4 dashboard, Comments and activity
 
-The response and status in the table describe the route contract. Reserved routes return 501 `not_implemented`
-once any required session, token or CSRF checks pass.
-
 | Method | Path | Auth | Request | Response |
 |---|---|---|---|---|
-| POST | `/webhooks/github` | github_signature | GitHub delivery | 202 when accepted, 200 for ping or a duplicate |
+| POST | `/webhooks/github` | github_signature | GitHub delivery | 202 when accepted, including deliveries dropped for untracked repositories, and 200 for ping or a duplicate |
 | POST | `/api/v1/dashboard/items/{key}/rejudge` | session_csrf | – | 202 for an accepted click or an item already judging, 404 outside the current snapshot, 409 `conflict` for an item that is not outdated or when the daily cap is reached |
 | GET | `/api/v1/settings/repository-installations` | read | – | `RepositoryInstallations` |
 | GET | `/api/v1/settings/github-webhook` | read | – | `GithubWebhook` |
@@ -1033,7 +1031,5 @@ once any required session, token or CSRF checks pass.
   or end, or page visit. Pass `limit` (1–100, default 50) and the previous page's opaque `next_cursor`. An invalid
   cursor returns 400 `invalid_request`. A null `next_cursor` ends the list.
 - A successful PR page read in a browser session attempts to update the reader's `last_opened_at`. The page
-  remains available if the update fails. PR page, item list and GitHub refresh handlers read without scheduling
-  assessment. Until C20, the Comments overview requests assessment for browser sessions.
-
-B1 omits uncomputed response fields. Explicit zero counts carry data once the feature handlers are implemented.
+  remains available if the update fails. The PR page, Comments overview, item list and GitHub refresh handlers
+  read without scheduling assessment. C20 requests a pass with a browser session and CSRF.
