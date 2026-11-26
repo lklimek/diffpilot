@@ -1,8 +1,7 @@
 # Deploying diffpilot
 
-> The v1.3 container deployment and in-place 0030 procedure are in the [runbook](runbook.md).
-> This historical release guide predates ADR-025; its runner login, uid/supervisor and credential-volume
-> commands are superseded and must not be used for v1.3.
+> Use the [runbook](runbook.md) for the container deployment, in-place upgrades and v1.4 webhook cutover.
+> The runner login, uid/supervisor and credential-volume instructions in this release guide predate ADR-025.
 
 
 How to run diffpilot with Docker Compose or as a Portainer stack, from the published images or built from source.
@@ -19,7 +18,7 @@ configuration check) and [`deploy/backup.sh`](../deploy/backup.sh) (online backu
 
 | Service | Image | Role | Listens |
 |---|---|---|---|
-| `server` | `lklimek/diffpilot` | Web UI and API, GitHub sign-in, job queue, SQLite database | `3000` (HTTP, published), `3001` (runner protocol, runner network only), `3002` (webhook, public network) |
+| `server` | `lklimek/diffpilot` | Web UI and API, GitHub sign-in, job queue, SQLite database | `3000` (HTTP, published), `3001` (runner protocol, runner network only), `3002` (GitHub webhook, publish only for Traefik) |
 | `runner` | `lklimek/diffpilot-runner` | Root supervisor, runner and the Codex agents (ADR-013) | nothing |
 | `egress-proxy` | `lklimek/diffpilot-egress-proxy` | Squid explicit proxy: the runner's only way out | `3128` (runner network only) |
 
@@ -46,6 +45,9 @@ emptied at every start. `<project>` is the compose project name: `diffpilot` by 
   full-history checkout per running job, without a size limit (a large repository takes a few GB). The runner takes
   no job while less than `SR_RUNNER_DISK_RESERVE_MIB` (default 2048) is free on Docker's data root.
 - A domain name and a TLS-terminating reverse proxy in front of the server (section 7).
+- For GitHub webhooks, Traefik **3.6.4 or newer** on v3 or **2.11.32 or newer** on v2. These releases include
+  fixes for [CVE-2025-47952](https://github.com/traefik/traefik/security/advisories/GHSA-vrch-868g-9jx5) and
+  [CVE-2025-66490](https://github.com/traefik/traefik/security/advisories/GHSA-gm3x-23wp-hc2c).
 - A GitHub account that can create a GitHub App (section 4), and a ChatGPT account for the Codex sign-in (section 8).
 - Outbound HTTPS from the host to GitHub, Docker Hub and the LLM provider (`chatgpt.com`, `openai.com`); with
   `SR_PR_HYGIENE_URL` set, also from the server to that PR Hygiene host; with `SR_THEPASTACLAW_STATUS_URL` set, to
@@ -129,8 +131,8 @@ Create the App under the account or organisation that owns the deployment (GitHu
 | Callback URL | exactly `<public-url>/auth/github/callback` (no wildcard; one callback per deployment) |
 | Expire user authorization tokens | on |
 | Request user authorization (OAuth) during installation | off |
-| Webhook | off (diffpilot uses no webhook) |
-| Repository permissions | Pull requests: read and write; Contents, Checks, Issues, Metadata: read-only |
+| Webhook | Active after the v1.4 [webhook cutover](runbook.md#upgrade-to-v14-and-enable-github-webhooks). Set the public HTTPS URL (for example, `https://webhooks.manago.cloud/diffpilot/github`) and the same secret as the server. Keep SSL verification enabled. |
+| Repository permissions | Pull requests: read and write. Contents, Checks, Issues, Metadata and Commit statuses: read-only. |
 | Account and organisation permissions | none |
 | Where can this App be installed | as you need (only the owner's account, or any account) |
 
@@ -149,6 +151,19 @@ Then:
 
 4. Install the App on the repositories to review. v1 analyses public repositories; without an installation on a
    repository, pull requests can be analysed but comments must be written on GitHub.
+
+In **Permissions & events**, subscribe to `pull_request`, `pull_request_review`, `pull_request_review_comment`,
+`pull_request_review_thread`, `issue_comment`, `issues`, `check_suite`, `check_run` and `status`. GitHub sends
+`installation`, `installation_repositories` and `ping` automatically. The receiver accepts `application/json`.
+It uses completed check suites and completed check runs with conclusion `failure`, `timed_out`, `cancelled` or
+`action_required`. Ask existing installation owners to accept the new **Commit statuses** permission for `status`.
+See [GitHub webhook events and permissions](https://docs.github.com/en/webhooks/webhook-events-and-payloads).
+
+Repository tracking comes from each tenant's Settings, active PR watches, analyses and My work snapshots.
+Settings contribute repository rules and the owners listed under **When GitHub search refuses an account**.
+A repository is live once it is tracked, has a known, active App installation and the server has a webhook secret.
+Remove `SR_MAINTAINER_DELEGATES` when upgrading. Members use [Linked logins](settings.md#linked-logins) and the
+`<!-- maintainer-decision v1 kind=<kind> -->` marker to relay proposals for confirmation.
 
 ## 5. Configuration
 
@@ -185,7 +200,7 @@ Required means compose or the service refuses to start without it. "Secret" valu
 | `SR_GITHUB_CLIENT_SECRET` | yes, secret | | App client secret. |
 | `SR_GITHUB_WEBHOOK_SECRET` | no, secret | | GitHub App webhook secret, at least 32 characters. Leave it unset to disable webhooks. The server starts and returns 503 on the webhook route. |
 | `SR_GITHUB_WEBHOOK_SECRET_PREVIOUS` | no, secret | | Previous webhook secret during rotation, at least 32 characters. |
-| `SR_GITHUB_WEBHOOK_URL` | no | | Public HTTPS webhook URL shown in Settings. |
+| `SR_GITHUB_WEBHOOK_URL` | no | unset | Public HTTPS webhook URL shown in Settings → GitHub sync → GitHub App. Set the delivery URL separately in GitHub. |
 | `SR_GITHUB_APP_PRIVATE_KEY_PATH` | yes | | Host path of the App key (`.pem`, readable by uid 10010); mounted read-only. |
 | `SR_GITHUB_API_URL` | no | `https://api.github.com` | Change only for GitHub Enterprise Server. |
 | `SR_GITHUB_OAUTH_URL` | no | `https://github.com` | Same. |
@@ -234,10 +249,13 @@ The containers fix the rest themselves (data paths, listen ports, the runner's s
 `SR_DATA_DIR`, `SR_LISTEN_ADDR`, `SR_RUNNER_LISTEN_ADDR`, `SR_WEBHOOK_LISTEN_ADDR`, `SR_RUNNER_STATE_DIR`
 or `SR_RUNNER_WORK_DIR`.
 
-A standalone server defaults its webhook listener to `127.0.0.1:3002`. Compose binds it to the server's
-`public` network address (`SR_SERVER_PUBLIC_ADDR`, default `172.29.73.2`) on port 3002. The server image lists this
-port in its container metadata. Publishing it to the host for Traefik is part of B16. Until then, Traefik reaches
-the webhook catch-all on the public HTTP listener. The dev stack assigns a separate loopback port per instance.
+A standalone server defaults `SR_WEBHOOK_LISTEN_ADDR` to `127.0.0.1:3002`. Compose sets it to the server's
+`public` network address (`SR_SERVER_PUBLIC_ADDR`, default `172.29.73.2`) on port 3002. The base Compose file leaves
+port 3002 unpublished. Apply the [port override](runbook.md#upgrade-to-v14-and-enable-github-webhooks) when enabling
+webhooks. The dev stack assigns a separate loopback port per instance.
+
+Settings token-usage windows (Today, Last 7 days and This month) use the server container's time zone. The
+deployment sets no `TZ`, so the windows use UTC. Last 7 days starts at midnight six days ago.
 
 ### Secrets as files (optional)
 
@@ -370,6 +388,13 @@ you run in front of it, for the host name of `SR_PUBLIC_URL`. Requirements:
   buffering (nginx: `proxy_buffering off;`) and keep the read timeout above 15 s.
 - Publish the HTTP port only where the reverse proxy reaches it (loopback when it runs on the host). The runner
   listener (`3001`) is never published.
+
+For GitHub webhooks, publish port `3002` only on a host address reachable by Traefik and restrict access to
+Traefik. After deploying v1.4, configure Traefik to match exactly `/diffpilot/github` and forward it to
+`http://<host>:3002/webhooks/github`. The UI listener on port `3000` returns 404 for `/webhooks/*`. Keep request
+bodies out of both Traefik and cloudflared logs. The server authenticates every processed delivery using
+`X-Hub-Signature-256` over the raw body and the App target headers. Source IPs and WAF rules provide no
+authentication. Follow the [cutover and live checks](runbook.md#upgrade-to-v14-and-enable-github-webhooks).
 
 ## 8. First start
 
