@@ -60,6 +60,7 @@ const NEW: &[&str] = &[
     "comment_decision_origins",
     "comment_visits",
     "comment_linked_account_pins",
+    "comment_item_marks",
     "dashboard_ranking_resets",
     "dashboard_sends",
     "github_deliveries",
