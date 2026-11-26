@@ -600,6 +600,12 @@ const items = (): CommentItem[] => {
         at: at("08:50"),
         evidence_url: `${URL_PR}#discussion_r1041`,
       };
+      seeded.find(({ no }) => no === 18)!.import_proposal = {
+        kind: "resolve",
+        by: "alice-relay",
+        at: at("08:55"),
+        evidence_url: `${URL_PR}#discussion_r1043`,
+      };
       seeded.find(({ no }) => no === 14)!.import_proposal = {
         kind: "resolve",
         by: "alice-relay",

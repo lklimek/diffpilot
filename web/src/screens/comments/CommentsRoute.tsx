@@ -22,6 +22,7 @@ import {
   useCommentItems,
   useCommentsOverview,
   useImportedCommentItems,
+  usePrPage,
   usePrQuestions,
   useReadComments,
   useStartCommentAssessment,
@@ -31,6 +32,8 @@ import {
 } from "../../api/review-loop";
 import { useNow } from "../../app/now";
 import { usePrTabSubject } from "../../app/tabStatus";
+import { busyTip, buttonClass } from "../../components/button/button";
+import { Tooltip } from "../../components/tooltip/Tooltip";
 import { Banner } from "../../components/banner/Banner";
 import { ImportedDecisions } from "../../components/comments/ImportedDecisions";
 import { AssessmentBanner } from "../../components/comments/AssessmentBanner";
@@ -105,7 +108,9 @@ export function CommentsRoute() {
   return <CommentsVisit key={commentsPath(pr)} pr={pr} />;
 }
 
-const visitUnconfirmed = (error: unknown) => error instanceof ApiError && error.status === 0;
+const visitUnavailable = (error: unknown) => error instanceof ApiError && error.status >= 500;
+const visitUnconfirmed = (error: unknown) =>
+  visitUnavailable(error) || (error instanceof ApiError && error.status === 0);
 
 function CommentsVisit({ pr }: { pr: PrRef }) {
   const { pathname } = useLocation();
@@ -113,30 +118,40 @@ function CommentsVisit({ pr }: { pr: PrRef }) {
   const navigate = useNavigate();
   const me = useMe();
   const login = me.data?.user?.login ?? "anonymous";
-  const { mutate: recordVisit, isSuccess: visited, error: visitError } = useVisitComments(pr);
+  const { mutate: recordVisit, isPending: recordingVisit, error: visitError } = useVisitComments(pr);
+  const [canRead, setCanRead] = useState(false);
   const [assessmentIssue, setAssessmentIssue] = useState<AssessmentStartIssue | null>(null);
   const entryAssessment = useStartCommentAssessment(pr);
   const startAssessment = entryAssessment.mutate;
   const entered = useRef(false);
-  useEffect(() => {
-    if (entered.current) return;
-    entered.current = true;
-    const enter = () => startAssessment(undefined, { onSuccess: setAssessmentIssue });
+  const visit = useCallback(() => {
+    const enter = () => {
+      if (canRead) return;
+      setCanRead(true);
+      startAssessment(undefined, { onSuccess: setAssessmentIssue });
+    };
     recordVisit(undefined, {
       onSuccess: enter,
       onError: (error) => {
         if (visitUnconfirmed(error)) enter();
       },
     });
-  }, [recordVisit, startAssessment]);
+  }, [canRead, recordVisit, startAssessment]);
+  useEffect(() => {
+    if (entered.current) return;
+    entered.current = true;
+    visit();
+  }, [visit]);
   const uncertain = visitUnconfirmed(visitError);
-  const ready = (visited || uncertain) && entryAssessment.isSuccess;
+  const retryingVisit = canRead && recordingVisit;
+  const ready = canRead && entryAssessment.isSuccess;
   const overview = useCommentsOverview(pr, ready);
   // Load items after the initial overview identifies the stored PR.
   const overviewRead = ready && overview.isFetchedAfterMount;
   const items = useCommentItems(pr, overviewRead);
   const showImports = search.get("imported_unseen") === "true";
   const imports = useImportedCommentItems(pr, overviewRead && showImports);
+  const page = usePrPage(pr);
   const read = useReadComments(pr, setAssessmentIssue);
   const watch = useWatchPr(pr);
   const statusHost = useRef<HTMLDivElement>(null);
@@ -242,9 +257,31 @@ function CommentsVisit({ pr }: { pr: PrRef }) {
       />
       <main id="main" className="w-full px-3 py-3.5 sm:px-5">
         {!o && <h1 className="sr-only">Comments of {display}</h1>}
-        {uncertain && (
+        {(uncertain || retryingVisit) && (
           <div className="mb-3">
-            <Banner tone="warn" title="Could not confirm this Comments visit.">
+            <Banner
+              tone="warn"
+              title="Could not confirm this Comments visit."
+              actions={
+                (visitUnavailable(visitError) || retryingVisit) && (
+                  <Tooltip
+                    tip={busyTip(
+                      "Records this visit again so diffpilot can count new GitHub imports.",
+                      retryingVisit,
+                    )}
+                  >
+                    <button
+                      type="button"
+                      className={buttonClass("plain", true)}
+                      aria-disabled={retryingVisit || undefined}
+                      onClick={() => !retryingVisit && visit()}
+                    >
+                      {retryingVisit ? "Retrying…" : "Retry"}
+                    </button>
+                  </Tooltip>
+                )
+              }
+            >
               New imports use the visit recorded by the server.
             </Banner>
           </div>
@@ -272,6 +309,8 @@ function CommentsVisit({ pr }: { pr: PrRef }) {
             <StatusPopover
               badge={o.badge}
               rounds={o.rounds.length}
+              notes={page.data?.plugin_notes}
+              ci={page.data?.ci}
               read={o.read}
               now={now}
               itemId={display}
@@ -308,6 +347,11 @@ function CommentsVisit({ pr }: { pr: PrRef }) {
                 <time dateTime={assessmentIssue.resets_at}>{dateTimeText(assessmentIssue.resets_at)}</time>.
               </>
             )}
+          </StatusMessage>
+        )}
+        {assessmentIssue?.code === "busy" && (
+          <StatusMessage kind="empty">
+            A pass is still running. New comments can be assessed on your next visit.
           </StatusMessage>
         )}
         {assessmentIssue?.code === "failed" && (

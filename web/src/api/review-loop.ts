@@ -205,29 +205,35 @@ export function useVisitComments(pr: PrRef) {
     mutationFn: () => api.visitComments(pr),
     // A lost response can follow a committed write. Replaying it would advance the import cutoff.
     retry: false,
-    onSuccess: () => client.resetQueries({ queryKey: overviewKey(pr), exact: true }),
+    onSuccess: () =>
+      Promise.all([
+        client.invalidateQueries({ queryKey: overviewKey(pr), exact: true }),
+        client.invalidateQueries({ queryKey: [...itemsKey(pr), "imported-unseen"], exact: true }),
+        client.invalidateQueries({ queryKey: ["dashboard-items"] }),
+      ]),
   });
 }
 
-export type AssessmentStartIssue = AssessmentAdmissionIssue | { code: "failed"; message: string };
+export type AssessmentStartIssue =
+  AssessmentAdmissionIssue | { code: "failed"; message: string } | { code: "busy" };
 
-async function startCommentAssessment(
-  pr: PrRef,
-  pendingRead?: AbortSignal,
-): Promise<AssessmentStartIssue | null> {
-  while (!pendingRead?.aborted) {
+const ASSESSMENT_CONFLICT_BACKOFF_MS = [2_000, 8_000];
+
+async function startCommentAssessment(pr: PrRef, signal?: AbortSignal): Promise<AssessmentStartIssue | null> {
+  for (let attempt = 0; !signal?.aborted; attempt += 1) {
     try {
-      await api.startCommentAssessment(pr, pendingRead);
+      await api.startCommentAssessment(pr, signal);
       return null;
     } catch (error) {
       if (error instanceof AssessmentAdmissionError) return error.issue;
       if (!(error instanceof ApiError && error.status === 409 && error.code === "conflict")) {
         return { code: "failed", message: errorText(error, "Try again later.") };
       }
-      if (!pendingRead) return null;
+      if (!signal) return null;
     }
-    // An individual assessment or Ask may own the pass and finish without starting another batch.
-    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    const delay = ASSESSMENT_CONFLICT_BACKOFF_MS[attempt];
+    if (delay === undefined) return { code: "busy" };
+    await new Promise((resolve) => setTimeout(resolve, delay));
   }
   return null;
 }
@@ -236,34 +242,37 @@ async function startCommentAssessment(
 export const useStartCommentAssessment = (pr: PrRef) =>
   useMutation({ mutationFn: () => startCommentAssessment(pr) });
 
-/** Read GitHub again (RC3). Only Comments can request a pass for newly read items. */
+/** Read GitHub again (RC3). A follow-up assessment has its own lifetime, separate from the read. */
 export function useReadComments(pr: PrRef, onAssessment?: (issue: AssessmentStartIssue | null) => void) {
   const client = useQueryClient();
   const invalidate = useInvalidatePr(pr);
-  const pendingRead = useRef<AbortController | null>(null);
-  useEffect(() => () => pendingRead.current?.abort(), []);
+  const visit = useRef<{ controller: AbortController; assessing: boolean } | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    visit.current = { controller, assessing: false };
+    return () => controller.abort();
+  }, []);
   return useMutation({
     mutationFn: async () => {
-      pendingRead.current?.abort();
-      const controller = new AbortController();
-      pendingRead.current = controller;
       const before = onAssessment ? client.getQueryData<CommentItem[]>(itemsKey(pr)) : undefined;
       const known = before && new Set(before.map(({ no }) => no));
       await api.readComments(pr);
       await invalidate();
       const fresh = client.getQueryState<CommentItem[]>(itemsKey(pr));
-      if (
-        onAssessment &&
-        !controller.signal.aborted &&
-        known &&
-        fresh?.status === "success" &&
-        fresh.data?.some(({ no }) => !known.has(no))
-      ) {
-        const issue = await startCommentAssessment(pr, controller.signal);
-        if (controller.signal.aborted) return;
+      return known && fresh?.status === "success" && fresh.data?.some(({ no }) => !known.has(no));
+    },
+    onSuccess: (newItems) => {
+      const current = visit.current;
+      if (!newItems || !onAssessment || !current || current.assessing || current.controller.signal.aborted)
+        return;
+      current.assessing = true;
+      onAssessment(null);
+      void startCommentAssessment(pr, current.controller.signal).then((issue) => {
+        current.assessing = false;
+        if (current.controller.signal.aborted) return;
         onAssessment(issue);
-        if (!issue) await invalidate();
-      }
+        if (!issue) void invalidate();
+      });
     },
   });
 }

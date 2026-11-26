@@ -14,6 +14,7 @@ import {
   githubProposal,
   missingInput,
   needOf,
+  NEED_LABEL,
   plannedReply,
   previewFor,
   recommendedValue,
@@ -30,14 +31,6 @@ export const COMMENT_HINT =
   "Saved with the decision and sent to the agent that executes it. Not posted to GitHub: the reply text below is what gets posted.";
 
 const INPUT = "w-full rounded-md border border-muted bg-surface px-2 py-1 text-text";
-
-const NEED_LABEL: Record<NonNullable<ReturnType<typeof needOf>>, string> = {
-  reason: "Reason (posted as the public reply)",
-  pr: "Existing pull request",
-  title: "Title of the new follow-up PR (optional)",
-  upstream: 'Upstream issue or PR URL, or "create"',
-  todo: "TODO title",
-};
 
 interface DecisionFormProps {
   item: CommentItem;

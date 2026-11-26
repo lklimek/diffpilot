@@ -85,6 +85,14 @@ export function githubProposal(item: CommentItem) {
 /** What a choice needs typed in. */
 export type Need = "reason" | "pr" | "title" | "upstream" | "todo" | null;
 
+export const NEED_LABEL: Record<NonNullable<Need>, string> = {
+  reason: "Reason (posted as the public reply)",
+  pr: "Existing pull request",
+  title: "Title of the new follow-up PR (optional)",
+  upstream: 'Upstream issue or PR URL, or "create"',
+  todo: "TODO title",
+};
+
 /** The input a choice needs (D3, D8 reason; D4 PR; D5 optional title; D6 URL or "create"; D7 title). */
 export function needOf(choice: Choice, gate: Gate | null = null): Need {
   switch (choice) {

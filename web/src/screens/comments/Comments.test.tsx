@@ -124,12 +124,27 @@ describe("V1 Questions (US3, US4, US11)", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("This pull request was not found.");
   });
 
-  it("opens Comments directly without recording a PR main-page opening", async () => {
-    const mainPage = vi.fn(() => HttpResponse.json(prPage()));
-    server.use(http.get("/api/v1/prs/acme/node-client/482", mainPage));
+  it("keeps the queue usable after a server error and repeats the visit only on Retry", async () => {
+    let visits = 0;
+    server.use(
+      http.post(
+        "/api/v1/prs/acme/node-client/482/comments/visit",
+        () => new HttpResponse(null, { status: ++visits === 1 ? 503 : 204 }),
+      ),
+      http.get("/api/v1/prs/acme/node-client/482/comments", () => {
+        const data = overview();
+        return HttpResponse.json({
+          ...data,
+          counts: { ...data.counts, imported_unseen: visits === 2 ? 1 : 0 },
+        });
+      }),
+    );
     renderRoute(`${PR}/comments`);
-    expect(await screen.findByRole("heading", { name: /C21 · Retry cap/ })).toBeVisible();
-    expect(mainPage).not.toHaveBeenCalled();
+    expect(await screen.findByRole("navigation", { name: "Queue" })).toBeVisible();
+    expect(visits).toBe(1);
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByRole("link", { name: "1 new decision imported from GitHub" })).toBeVisible();
+    expect(visits).toBe(2);
   });
 
   it.each([200, 502])("reads items after the overview settles with HTTP %i", async (status) => {
@@ -439,20 +454,26 @@ describe("v1.4 review status", () => {
     ).toHaveTextContent(/^11$/);
   });
 
-  it("opens the PR status details and restores focus on Escape", async () => {
-    renderRoute(PR);
-    const trigger = await screen.findByRole("button", { name: "Questions waiting" });
-    expect(screen.queryByText("PR Hygiene")).toBeNull();
-    await userEvent.click(trigger);
-    const panel = within(screen.getByRole("dialog", { name: "Pull request status" }));
-    expect(panel.getByRole("heading", { name: /^PR Hygiene/ })).toBeVisible();
-    expect(panel.getByText(/Bot rounds: 4/)).toBeVisible();
-    await userEvent.tab();
-    expect(panel.getAllByRole("link")[0]).toHaveFocus();
-    await userEvent.keyboard("{Escape}");
-    expect(trigger).toHaveFocus();
-    expect(trigger).toHaveAttribute("aria-expanded", "false");
-  });
+  it.each([PR, `${PR}/comments`])(
+    "shows U22 status details on %s and restores focus on Escape",
+    async (path) => {
+      renderRoute(path);
+      const trigger = await screen.findByRole("button", { name: "Questions waiting" });
+      expect(screen.queryByText("PR Hygiene")).toBeNull();
+      await userEvent.click(trigger);
+      const panel = within(screen.getByRole("dialog", { name: "Pull request status" }));
+      expect(await panel.findByRole("heading", { name: /^PR Hygiene/ })).toBeVisible();
+      expect(await panel.findByRole("heading", { name: /^thepastaclaw status/ })).toBeVisible();
+      expect(panel.getByText(/CI: 2 passed, 1 pending/)).toBeVisible();
+      expect(panel.getAllByText(/data of/)).toHaveLength(2);
+      expect(panel.getByText(/Bot rounds: 4/)).toBeVisible();
+      await userEvent.tab();
+      expect(panel.getAllByRole("link")[0]).toHaveFocus();
+      await userEvent.keyboard("{Escape}");
+      expect(trigger).toHaveFocus();
+      expect(trigger).toHaveAttribute("aria-expanded", "false");
+    },
+  );
 
   it("decides linked duplicate items with their primary and undoes the same decision together", async () => {
     setScenario("comments-v14");

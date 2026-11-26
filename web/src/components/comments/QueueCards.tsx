@@ -23,6 +23,7 @@ import { CollapsibleSection } from "../collapsible/CollapsibleSection";
 import { focusQuestionHeading, useCardKeys } from "./cardKeys";
 import { DuplicateLinks } from "./DuplicateLinks";
 import { GithubCommentText } from "./GithubCommentText";
+import { GithubProposal } from "./GithubDecision";
 import { COMMENT_HINT } from "./DecisionForm";
 import {
   CHOICE_LABEL,
@@ -30,12 +31,16 @@ import {
   decideBlocked,
   digestFor,
   EFFECT_WORD,
+  githubProposal,
   missingInput,
+  needOf,
+  NEED_LABEL,
   previewFor,
   recommendedValue,
   requestOf,
   resolveLocked,
   type Choice,
+  type DecisionInput,
   type EffectsPreviewState,
 } from "./decisions";
 import { itemId, sourceText } from "./parts";
@@ -43,18 +48,51 @@ import { DecideNote, PlannedEffects, useDraft } from "./PlannedEffects";
 
 const INPUT = "w-full rounded-md border border-muted bg-surface px-2 py-1 text-text";
 
-/** A row of a batch from an item's recommendation. */
-function recommendedRow(
-  item: CommentItem,
-  resolve: boolean,
-  comment: string,
-  value?: string,
-): DecisionBatchRow {
-  const kind = item.assessment!.recommendation.kind;
-  return {
-    item_no: item.no,
-    ...requestOf(item, { choice: kind, value: value ?? recommendedValue(item), resolve, comment }, null),
+interface ProposalInput {
+  choice: Choice;
+  value: string;
+  setValue: (value: string) => void;
+}
+
+function useBatchProposals() {
+  const [values, setValues] = useState<Record<string, string>>({});
+  return (item: CommentItem, recommendation: Choice): ProposalInput | null => {
+    const proposal = githubProposal(item);
+    if (!proposal || proposal.kind === recommendation) return null;
+    const key = JSON.stringify([item.id, item.revision, proposal]);
+    return {
+      choice: proposal.kind,
+      value: values[key] ?? "",
+      setValue: (value) => setValues((current) => ({ ...current, [key]: value })),
+    };
   };
+}
+
+function BatchProposal({ item, input }: { item: CommentItem; input: ProposalInput | null }) {
+  const need = input && needOf(input.choice);
+  return (
+    <>
+      <GithubProposal item={item} />
+      {input && need && (
+        <label className="block text-xs font-semibold">
+          {itemId(item)} · {NEED_LABEL[need]}
+          <input
+            type="text"
+            className={INPUT}
+            value={input.value}
+            onChange={(event) => input.setValue(event.target.value)}
+          />
+        </label>
+      )}
+    </>
+  );
+}
+
+function batchRow(item: CommentItem, input: DecisionInput): DecisionBatchRow {
+  const row = { item_no: item.no, ...requestOf(item, input, null) };
+  return input.choice === "fix_here" && item.assessment?.necessity.verdict === "out"
+    ? { ...row, override: { type: "necessity_gate" } }
+    : row;
 }
 
 /** The comment on GitHub, in a new tab. */
@@ -91,7 +129,7 @@ interface GroupCardProps {
 }
 
 /**
- * A group question (US5): one decision for every row, "Discuss individually" per row; never gate items. Keys: Enter
+ * A group question (US5): shared input for the recommendation, with each proposal preselected for its row. Keys: Enter
  * decide, s Skip, i the first "Discuss individually".
  */
 export function GroupCard({
@@ -113,12 +151,19 @@ export function GroupCard({
   const [value, setValue] = useState(() => recommendedValue(first));
   const [resolve, setResolve] = useState(true);
   const [comment, setComment] = useState("");
-  const [problem, setProblem] = useState<string | null>(null);
   const discuss = useRef<HTMLButtonElement>(null);
   const label = CHOICE_LABEL[rec.kind] ?? rec.kind;
   // A group across reason classes (resolved review-body items, plan §2.4) shares no reason: each row shows its own.
   const shared = items.every((item) => item.assessment?.recommendation.reason_class === rec.reason_class);
-  const threads = items.some((item) => item.kind === "thread");
+  const proposalInput = useBatchProposals();
+  const entries = items.map((item) => {
+    const proposal = proposalInput(item, rec.kind);
+    return { item, proposal, input: proposal ?? { choice: rec.kind, value } };
+  });
+  const usesRecommendation = entries.some(({ proposal }) => !proposal);
+  const mixed = entries.some(({ proposal }) => proposal);
+  const threads = entries.filter(({ item }) => item.kind === "thread");
+  const resolveAllLocked = threads.every(({ input }) => resolveLocked(input.choice));
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (
@@ -133,16 +178,17 @@ export function GroupCard({
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, []);
-  const missing = missingInput({ choice: rec.kind, value });
-  const rows = (text: string) => items.map((item) => recommendedRow(item, resolve, text, value));
+  const missing = entries.find(({ input }) => missingInput(input));
+  const rows = (text: string) =>
+    entries.map(({ item, input }) => batchRow(item, { ...input, resolve, comment: text }));
   const draft = missing ? null : rows("");
   useDraft(draft, onDraft);
-  const blocked = decideBlocked(preview, draft);
+  const blocked = missing
+    ? `${itemId(missing.item)}: ${missingInput(missing.input)}`
+    : decideBlocked(preview, draft);
   const submit = (event?: FormEvent) => {
     event?.preventDefault();
-    if (busy) return;
-    if (missing) return setProblem(missing);
-    if (blocked) return;
+    if (busy || blocked) return;
     onDecide(rows(comment));
   };
   useCardKeys({ decide: submit, skip: onSkip });
@@ -193,7 +239,7 @@ export function GroupCard({
             </tr>
           </thead>
           <tbody>
-            {items.map((item, i) => (
+            {entries.map(({ item, proposal }, i) => (
               <tr key={item.id}>
                 <td className="border-b border-border px-2 py-1.5 whitespace-nowrap">
                   {itemId(item)} <OpenItem item={item} />
@@ -205,6 +251,7 @@ export function GroupCard({
                 <td className="border-b border-border px-2 py-1.5">
                   {item.title}
                   <DuplicateLinks primary={item} duplicates={duplicates?.get(item.no) ?? []} />
+                  <BatchProposal item={item} input={proposal} />
                 </td>
                 <td className="border-b border-border px-2 py-1.5">
                   {item.assessment && (
@@ -231,22 +278,30 @@ export function GroupCard({
         </table>
       </div>
       <CollapsibleSection title="Your decision" storageKey={`${storageKey}:group-decision`}>
-        <label htmlFor={`${id}-reason`} className="mb-0.5 block text-xs font-semibold">
-          {rec.kind === "reject" ? "Reason for all (posted as each reply)" : "Reason or target for all"}
-        </label>
-        <input
-          id={`${id}-reason`}
-          type="text"
-          value={value}
-          onChange={(e) => (setValue(e.target.value), setProblem(null))}
-          className={INPUT}
-        />
-        {threads && (
+        {usesRecommendation && (
+          <>
+            <label htmlFor={`${id}-reason`} className="mb-0.5 block text-xs font-semibold">
+              {mixed
+                ? "Reason or target for the remaining items"
+                : rec.kind === "reject"
+                  ? "Reason for all (posted as each reply)"
+                  : "Reason or target for all"}
+            </label>
+            <input
+              id={`${id}-reason`}
+              type="text"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              className={INPUT}
+            />
+          </>
+        )}
+        {threads.length > 0 && (
           <label className="mt-2 flex min-h-6 items-center gap-2 rounded-md border border-border bg-surface-2 px-2.5">
             <input
               type="checkbox"
-              checked={resolveLocked(rec.kind) || resolve}
-              disabled={resolveLocked(rec.kind)}
+              checked={resolveAllLocked || resolve}
+              disabled={resolveAllLocked}
               onChange={(e) => setResolve(e.target.checked)}
             />
             Resolve these threads
@@ -277,9 +332,9 @@ export function GroupCard({
       <p className="mt-2 text-xs text-muted">
         Gate items are never grouped. Each item gets its own decision record.
       </p>
-      {(problem ?? error) && (
+      {error && (
         <p role="alert" className="text-sm text-high">
-          {problem ?? error}
+          {error}
         </p>
       )}
       <DecideNote id={`${id}-blocked`} reason={blocked} preview={preview} />
@@ -291,7 +346,8 @@ export function GroupCard({
             aria-describedby={blocked ? `${id}-blocked` : undefined}
             className={buttonClass("primary")}
           >
-            {label} all {items.length} <Kbd decorative>Enter</Kbd>
+            {mixed ? `Decide ${items.length} items` : `${label} all ${items.length}`}{" "}
+            <Kbd decorative>Enter</Kbd>
           </button>
         </Tooltip>
         {items.every((item) => canMark(item) && !item.gates.length) && (
@@ -374,25 +430,37 @@ export function DecideRestCard({
   const [excluded, setExcluded] = useState<ReadonlySet<number>>(new Set());
   const [unresolved, setUnresolved] = useState<ReadonlySet<number>>(new Set());
   const [comment, setComment] = useState("");
-  const rowOf = ({ row }: DecideRest["rows"][number], text: string): DecisionBatchRow => ({
-    ...row,
-    resolve_ticked: resolveLocked(row.kind) || !unresolved.has(row.item_no),
-    comment: text.trim() || null,
+  const proposalInput = useBatchProposals();
+  const entries = rest.rows.map((entry) => {
+    const item = items.get(entry.row.item_no);
+    const input = item ? proposalInput(item, entry.row.kind) : null;
+    const resolve = !unresolved.has(entry.row.item_no);
+    const row =
+      input && item
+        ? batchRow(item, { ...input, resolve, comment: "" })
+        : { ...entry.row, resolve_ticked: resolveLocked(entry.row.kind) || resolve, comment: null };
+    return { entry, item, input, row };
   });
-  const chosen = rest.rows.filter((r) => !excluded.has(r.row.item_no));
-  const draft = chosen.map((r) => rowOf(r, ""));
+  const chosen = entries.filter(({ row }) => !excluded.has(row.item_no));
+  const incomplete = chosen.find(({ input }) => input && missingInput(input));
+  const draft = incomplete ? null : chosen.map(({ row }) => row);
   useDraft(draft, onDraft);
-  const blocked = chosen.length === 0 ? null : decideBlocked(preview, draft);
+  const blocked = incomplete
+    ? `${itemId(incomplete.item!)}: ${missingInput(incomplete.input!)}`
+    : chosen.length === 0
+      ? null
+      : decideBlocked(preview, draft);
   const toggle = (set: ReadonlySet<number>, no: number) => {
     const next = new Set(set);
     if (!next.delete(no)) next.add(no);
     return next;
   };
   const byKind = new Map<string, number>();
-  for (const r of chosen) {
-    const label = CHOICE_LABEL[r.recommendation.kind as Choice];
+  for (const { row } of chosen) {
+    const label = CHOICE_LABEL[row.kind];
     byKind.set(label, (byKind.get(label) ?? 0) + 1);
   }
+  const currentPlan = preview.state === "ready" && preview.rows === JSON.stringify(draft);
   const leftOut = rest.left_out;
   const gateLeftOut = leftOut.some((l) => l.reason === "gate");
   return (
@@ -426,13 +494,13 @@ export function DecideRestCard({
           </tr>
         </thead>
         <tbody>
-          {rest.rows.map((r) => {
-            const no = r.row.item_no;
-            const item = items.get(no);
+          {entries.map(({ entry, item, input, row }) => {
+            const no = row.item_no;
             const name = item ? itemId(item) : `C${no}`;
-            const rec = r.recommendation;
-            const effects = (!excluded.has(no) && previewFor(preview, no)) || r.effects;
-            const locked = resolveLocked(r.row.kind);
+            const rec = entry.recommendation;
+            const planned = excluded.has(no) ? null : previewFor(preview, no);
+            const effects = input ? (currentPlan ? planned : null) : (planned ?? entry.effects);
+            const locked = resolveLocked(row.kind);
             return (
               <tr key={no}>
                 <td className="border-b border-border px-2 py-1">
@@ -448,10 +516,15 @@ export function DecideRestCard({
                 </td>
                 <td className="border-b border-border px-2 py-1">{item?.title}</td>
                 <td className="border-b border-border px-2 py-1">
-                  {CHOICE_LABEL[rec.kind]}: <CodeText text={rec.reason} />
+                  {!input && (
+                    <>
+                      {CHOICE_LABEL[rec.kind]}: <CodeText text={rec.reason} />
+                    </>
+                  )}
+                  {item && <BatchProposal item={item} input={input} />}
                 </td>
                 <td className="border-b border-border px-2 py-1">
-                  {effects.map((e) => EFFECT_WORD[e.kind] ?? e.kind).join(", ") || "—"}
+                  {effects?.map((e) => EFFECT_WORD[e.kind] ?? e.kind).join(", ") || "—"}
                 </td>
                 <td className="border-b border-border px-2 py-1">
                   {item?.kind === "thread" ? (
@@ -517,7 +590,10 @@ export function DecideRestCard({
             aria-disabled={busy || chosen.length === 0 || blocked !== null || undefined}
             aria-describedby={blocked ? `${id}-blocked` : undefined}
             onClick={() =>
-              !busy && chosen.length > 0 && !blocked && onConfirm(chosen.map((r) => rowOf(r, comment)))
+              !busy &&
+              draft?.length &&
+              !blocked &&
+              onConfirm(draft.map((row) => ({ ...row, comment: comment.trim() || null })))
             }
             className={buttonClass("primary")}
           >

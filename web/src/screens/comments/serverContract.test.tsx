@@ -448,10 +448,47 @@ describe("202 Accepted without a body (RC3 read again, RC6 assess again; review_
     await screen.findByText(/^Asked: diffpilot's LLM assesses this comment again/);
     await userEvent.click(screen.getByRole("button", { name: "Questions waiting" }));
     await userEvent.click(screen.getByRole("button", { name: "Read GitHub again" }));
+    await waitFor(() => {
+      expect(starts).toBe(2);
+      expect(screen.getByRole("button", { name: "Read GitHub again" })).not.toHaveAttribute("aria-disabled");
+    });
     expect(
       await screen.findByRole("button", { name: /C90.*Assessment of newly read item/ }, { timeout: 4000 }),
     ).toBeVisible();
     expect(starts).toBe(3);
+  });
+
+  it("stops asking for a pass after bounded conflicts and lets the read finish", async () => {
+    const start = vi
+      .fn()
+      .mockReturnValueOnce(new HttpResponse(null, { status: 202 }))
+      .mockImplementation(() =>
+        HttpResponse.json({ code: "conflict", message: "Assessment already running." }, { status: 409 }),
+      );
+    server.use(
+      http.post("/api/v1/prs/:owner/:name/:number/comments/assess", start),
+      http.post("/api/v1/prs/:owner/:name/:number/comments/read", () => {
+        listItems().push({ ...byNo(14), no: 90, id: "new-item", title: "New item", llm_title: undefined });
+        return new HttpResponse(null, { status: 202 });
+      }),
+    );
+    renderRoute(`${PR}/comments`);
+    await screen.findByRole("navigation", { name: "Queue" });
+    await userEvent.click(await screen.findByRole("button", { name: "Questions waiting" }));
+    await userEvent.click(screen.getByRole("button", { name: "Read GitHub again" }));
+    try {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      for (const tries of [2, 3, 4]) {
+        await waitFor(() => expect(start).toHaveBeenCalledTimes(tries));
+        await act(() => vi.advanceTimersByTimeAsync(10_000));
+      }
+      expect(
+        await screen.findByText("A pass is still running. New comments can be assessed on your next visit."),
+      ).toBeVisible();
+      expect(start).toHaveBeenCalledTimes(4);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("opens Comments when the visit and assessment routes return 501", async () => {
