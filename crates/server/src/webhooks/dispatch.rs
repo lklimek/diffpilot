@@ -70,6 +70,12 @@ impl Window {
         delay: Duration,
         limit: SignedDuration,
     ) -> DispatchOutcome {
+        if previous.is_some_and(|deadline| deadline <= now) {
+            tracing::warn!(
+                ?destination,
+                "webhook signal held again: its destination is still blocked by a running scan or a GitHub limit; a scan stuck in 'scanning' clears at restart"
+            );
+        }
         let mut work = DispatchTarget::new(destination, 0);
         work.review = self.review;
         for (read, items) in [
