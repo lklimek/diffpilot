@@ -10,7 +10,7 @@ use contracts::common::PrRef;
 use contracts::ids::{CommentItemId, DecisionId};
 use contracts::time::Timestamp;
 use db::repo::review_loop::{
-    DecideOutcome, ImportCandidate, ItemRecord, NewDecision, NewOrigin, StoredDecision,
+    ActiveMark, DecideOutcome, ImportCandidate, ItemRecord, NewDecision, NewOrigin, StoredDecision,
 };
 
 use super::{Loaded, LoopError, PrHandle, effects, new_effects};
@@ -45,6 +45,7 @@ pub(crate) async fn propagate(state: &AppState, tenant: &str, pr: i64) -> Result
 enum Primary<'a> {
     Pending(&'a NewDecision),
     Existing(&'a StoredDecision),
+    Marked(&'a ActiveMark),
 }
 
 struct Choice<'a> {
@@ -59,7 +60,7 @@ struct Choice<'a> {
 impl Primary<'_> {
     fn id(&self) -> Option<DecisionId> {
         match self {
-            Self::Pending(_) => None,
+            Self::Pending(_) | Self::Marked(_) => None,
             Self::Existing(row) => Some(row.decision.id),
         }
     }
@@ -82,6 +83,14 @@ impl Primary<'_> {
                     imported,
                 })
             }
+            Self::Marked(active) => Some(Choice {
+                user: &active.user_id,
+                kind: DecisionKind::NotAReviewPoint,
+                target: None,
+                reason: None,
+                resolve: false,
+                imported: false,
+            }),
             Self::Existing(row)
                 if !row.author_withdrawal
                     && row.primary_decision.is_none()
@@ -108,6 +117,9 @@ impl Primary<'_> {
 
 impl Loaded {
     pub(super) fn current_import<'a>(&self, record: &'a ItemRecord) -> Option<&'a ImportCandidate> {
+        if record.active_mark.is_some() {
+            return None;
+        }
         let import = record.import_candidate.as_ref()?;
         let data = self.snapshot.as_ref()?.pr_data.as_ref()?;
         let version = super::assess::imports::version(
@@ -145,6 +157,10 @@ impl Loaded {
             return;
         };
         let standing = self.standing();
+        let propagate_decisions = from_assessment
+            || rows
+                .iter()
+                .any(|row| row.kind != DecisionKind::NotAReviewPoint);
         let explicit: std::collections::HashSet<_> = rows.iter().map(|r| r.item).collect();
         rows.extend(self.items.iter().filter_map(|item| {
             if !from_assessment
@@ -210,16 +226,24 @@ impl Loaded {
                 {
                     return None;
                 }
+                let source = self.items.iter().find(|i| i.id == primary_id)?;
                 let primary = if let Some(row) = pending.get(&primary_id) {
                     Primary::Pending(row)
                 } else {
-                    let source = self.items.iter().find(|i| i.id == primary_id)?;
-                    if source.gone_at.is_some()
-                        || matches!(source.state, ItemState::Reopened | ItemState::AskedBack)
-                    {
+                    if source.gone_at.is_some() {
                         return None;
                     }
-                    Primary::Existing(standing.get(&primary_id.to_string())?)
+                    if let Some(active) = &source.active_mark {
+                        if active.mark.follows.is_some() {
+                            return None;
+                        }
+                        Primary::Marked(active)
+                    } else {
+                        if matches!(source.state, ItemState::Reopened | ItemState::AskedBack) {
+                            return None;
+                        }
+                        Primary::Existing(standing.get(&primary_id.to_string())?)
+                    }
                 };
                 if let Some(id) = primary.id()
                     && self
@@ -237,6 +261,18 @@ impl Loaded {
                     resolve,
                     imported,
                 } = primary.choice()?;
+                let mark = kind == DecisionKind::NotAReviewPoint;
+                if let Some(active) = &item.active_mark
+                    && (mark
+                        || active.mark.follows != Some(source.no)
+                        || !matches!(primary, Primary::Pending(_)))
+                {
+                    return None;
+                }
+                if (mark && item.state == ItemState::Outside) || (!mark && !propagate_decisions) {
+                    return None;
+                }
+                let reason = if mark { None } else { reason };
                 let request = DecideRequest {
                     kind,
                     reason: reason.clone(),
@@ -260,7 +296,6 @@ impl Loaded {
                     .find(|effect| is_artefact(effect.kind))
                 {
                     let artefact_seq = artefact.seq;
-                    let source = self.items.iter().find(|i| i.id == primary_id)?;
                     let link = source
                         .url
                         .as_deref()

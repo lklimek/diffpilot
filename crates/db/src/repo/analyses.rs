@@ -1029,7 +1029,7 @@ pub mod testing {
             .await?
         {
             PassStart::Started(id) => Ok(id),
-            PassStart::Busy(_) => Err(DbError::Conflict),
+            PassStart::Busy(_) | PassStart::MarkedItem => Err(DbError::Conflict),
         }
     }
 

@@ -31,6 +31,7 @@ export const CHOICE_LABEL: Record<Choice, string> = {
   another_round: "Another round",
   dismiss_stale_reviews: "Dismiss the listed reviews",
   keep_reviews: "Keep them",
+  not_a_review_point: "Not a review point",
 };
 
 /** Thread and body item decisions in their base order (D2, D3, D4, D5, D6, D7, D1). */

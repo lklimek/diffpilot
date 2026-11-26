@@ -35,8 +35,8 @@ use crate::api::review_loop::{
     CodeContext, CommentItem, CommentLog, CommentsOverview, ContextQuery, DecideRequest,
     DecideRest, Decision, DecisionBatchRequest, DecisionFeed, EffectReportRequest, EffectsPreview,
     EffectsPreviewRequest, FeedDecision, FeedEvent, FeedQuery, GateMarkRequest, ItemActionRequest,
-    ItemsQuery, NotificationSettings, PrPage, PushTarget, PutChannelRequest, PutPushTargetRequest,
-    UserStreamEvent, WatchList, WebhookPayload,
+    ItemsQuery, MarkedItems, MarkedItemsQuery, NotificationSettings, PrPage, PushTarget,
+    PutChannelRequest, PutPushTargetRequest, UserStreamEvent, WatchList, WebhookPayload,
 };
 use crate::api::settings::{
     GithubWebhook, RankingUsage, RepoSettings, RepositoryInstallations, SetAskEffortRequest,
@@ -143,6 +143,8 @@ pub const API_SCHEMAS: &[ApiSchema] = &[
     api_schema::<ContextQuery>("context_query", &[]),
     api_schema::<CodeContext>("code_context", &[routes::GET_COMMENT_CONTEXT]),
     api_schema::<CommentLog>("comment_log", &[routes::GET_COMMENT_LOG]),
+    api_schema::<MarkedItems>("marked_items", &[routes::LIST_MARKED_ITEMS]),
+    api_schema::<MarkedItemsQuery>("marked_items_query", &[]),
     api_schema::<DecideRest>("decide_rest", &[routes::GET_DECIDE_REST]),
     api_schema::<CarryOverQuery>("carry_over_query", &[]),
     api_schema::<CarryOverPage>("carry_over_page", &[routes::LIST_CARRY_OVERS]),
@@ -410,6 +412,8 @@ fn typescript_types() -> Result<String, GenerateError> {
     collector.visit::<DecideRest>();
     collector.visit::<Decision>();
     collector.visit::<CommentLog>();
+    collector.visit::<MarkedItems>();
+    collector.visit::<MarkedItemsQuery>();
     collector.visit::<CarryOverQuery>();
     collector.visit::<CarryOverPage>();
     collector.visit::<WatchList>();

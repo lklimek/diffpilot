@@ -217,6 +217,9 @@ fn gate_name(gate: Gate) -> &'static str {
 
 fn offered(item: &EffectItem, kind: DecisionKind) -> bool {
     use DecisionKind as K;
+    if kind == K::NotAReviewPoint {
+        return item.kind != CommentItemKind::PrQuestion;
+    }
     match item.question {
         Some(PrQuestion::Merge) => matches!(kind, K::MergeWithFollowUps | K::AnotherRound),
         Some(PrQuestion::Dismiss) => matches!(kind, K::DismissStaleReviews | K::KeepReviews),
@@ -228,13 +231,14 @@ fn offered(item: &EffectItem, kind: DecisionKind) -> bool {
 }
 
 /// Validates `request` against `item` and plans its effects (plan §2.3 matrix D1–D8, P1–P4).
-pub fn plan(
+pub fn plan<Kind: Copy + Into<DecisionKind>>(
     item: &EffectItem,
-    request: &DecideRequest,
+    request: &DecideRequest<Kind>,
     scope: &PrScope,
 ) -> Result<Planned, DecisionError> {
     use DecisionKind as K;
-    if !offered(item, request.kind) {
+    let kind = request.kind.into();
+    if !offered(item, kind) {
         return Err(DecisionError::KindNotOffered);
     }
     if too_long(request.reason.as_deref())
@@ -245,17 +249,17 @@ pub fn plan(
     }
     let gate = match request.r#override {
         Some(Override::BlockerGate { gate }) => {
-            if request.kind != K::Reject || !item.gates.contains(&gate) {
+            if kind != K::Reject || !item.gates.contains(&gate) {
                 return Err(DecisionError::OverrideInvalid);
             }
             Some(gate)
         }
-        Some(Override::NecessityGate) if request.kind != K::FixHere => {
+        Some(Override::NecessityGate) if kind != K::FixHere => {
             return Err(DecisionError::OverrideInvalid);
         }
         Some(Override::NecessityGate) | None => None,
     };
-    let target_fits = match (&request.target, request.kind) {
+    let target_fits = match (&request.target, kind) {
         (None, K::FollowUpPr) => true,
         (None, kind) => !matches!(kind, K::HandledInPr | K::UpstreamIssue | K::Todo),
         (Some(DecisionTarget::ExistingPr { number }), K::HandledInPr) => {
@@ -294,10 +298,12 @@ pub fn plan(
         return Err(DecisionError::TargetRequired);
     }
     let reason = non_empty(request.reason.as_deref());
-    if request.kind == K::Reject && reason.is_none() {
+    if (kind == K::Reject || (kind == K::NotAReviewPoint && !item.gates.is_empty()))
+        && reason.is_none()
+    {
         return Err(DecisionError::ReasonRequired);
     }
-    let always_resolves = request.kind == K::Resolve || gate.is_some();
+    let always_resolves = kind == K::Resolve || gate.is_some();
     if always_resolves && item.thread_id.is_some() && !request.resolve_ticked {
         return Err(DecisionError::ResolveLocked);
     }
@@ -308,7 +314,7 @@ pub fn plan(
     let mut out = Builder {
         effects: Vec::new(),
     };
-    let reply_text = match request.kind {
+    let reply_text = match kind {
         K::Resolve => {
             let text = (item.author_kind == AuthorKind::Human).then(|| {
                 edited.clone().unwrap_or_else(|| {
@@ -452,7 +458,7 @@ pub fn plan(
             }
             Some(message)
         }
-        K::AnotherRound | K::KeepReviews => None,
+        K::AnotherRound | K::KeepReviews | K::NotAReviewPoint => None,
     };
     Ok(Planned {
         effects: out.effects,

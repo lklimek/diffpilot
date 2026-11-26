@@ -197,6 +197,10 @@ pub enum NotAssessedReason {
 /// A review-loop item with its assessment, decisions and effects (RC4).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct CommentItem {
+    /// Active internal disposition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub not_a_review_point: Option<ItemMark>,
     /// Whether the item is a bot status comment.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[ts(as = "Option<bool>", optional)]
@@ -402,7 +406,7 @@ pub struct AssessmentEvidence {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct Recommendation {
     /// Recommended decision.
-    pub kind: DecisionKind,
+    pub kind: ReviewDecisionKind,
     /// Why.
     pub reason: String,
     /// Target the decision needs (D4–D7).
@@ -480,10 +484,45 @@ pub struct CommentAssessment {
 // ---------------------------------------------------------------------------------------------------------------
 // Decisions and effects (plan §2.3)
 
-/// A decision (D1–D7; D8 is `reject` with a `blocker_gate` override; P1–P4 for PR-level questions). Open enum.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum DecisionKind {
+macro_rules! decision_kinds {
+    ($($(#[$doc:meta])* $kind:ident),+ $(,)?) => {
+        /// A review decision or an internal mark accepted by the decide routes.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
+        #[serde(rename_all = "snake_case")]
+        pub enum DecisionKind {
+            $($(#[$doc])* $kind,)+
+            /// Record an internal mark without effects.
+            NotAReviewPoint,
+        }
+
+        /// A review decision (D1–D7 and P1–P4) eligible for external use.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
+        #[serde(rename_all = "snake_case")]
+        pub enum ReviewDecisionKind {
+            $($(#[$doc])* $kind,)+
+        }
+
+        impl DecisionKind {
+            /// Returns the review decision kind when this is a decision.
+            pub fn review_kind(self) -> Option<ReviewDecisionKind> {
+                match self {
+                    $(Self::$kind => Some(ReviewDecisionKind::$kind),)+
+                    Self::NotAReviewPoint => None,
+                }
+            }
+        }
+
+        impl From<ReviewDecisionKind> for DecisionKind {
+            fn from(kind: ReviewDecisionKind) -> Self {
+                match kind {
+                    $(ReviewDecisionKind::$kind => Self::$kind,)+
+                }
+            }
+        }
+    };
+}
+
+decision_kinds! {
     /// D1: resolve, already fixed.
     Resolve,
     /// D2: fix in this pull request.
@@ -569,7 +608,7 @@ pub enum DecisionVia {
 
 /// A stored decision (append-only) with its effects.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-pub struct Decision {
+pub struct Decision<K = DecisionKind> {
     /// Evidence and authority for a decision imported from GitHub.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -583,7 +622,7 @@ pub struct Decision {
     /// The item (`C<no>`).
     pub item_no: u32,
     /// Decision.
-    pub kind: DecisionKind,
+    pub kind: K,
     /// Reason (D3, D8; posted as the reply).
     pub reason: Option<String>,
     /// Target (D4–D7).
@@ -782,9 +821,9 @@ pub struct Effect {
 
 /// Body of RC8 (`POST …/comments/items/{item}/decisions`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-pub struct DecideRequest {
+pub struct DecideRequest<K = DecisionKind> {
     /// Decision.
-    pub kind: DecisionKind,
+    pub kind: K,
     /// Reason (required for D3 and D8).
     pub reason: Option<String>,
     /// Target (D4, D6, D7; optional title for D5).
@@ -820,13 +859,13 @@ pub enum BatchVia {
 
 /// One row of a decision batch.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-pub struct DecisionBatchRow {
+pub struct DecisionBatchRow<K = DecisionKind> {
     /// The item, `C<no>`.
     pub item_no: u32,
     /// The decision fields.
     #[serde(flatten)]
     #[ts(flatten)]
-    pub decision: DecideRequest,
+    pub decision: DecideRequest<K>,
 }
 
 /// Body of RC9 (`POST …/comments/decision-batches`); 201 `Decision[]`.
@@ -922,7 +961,8 @@ pub struct LeftOutItem {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct DecideRestRow {
     /// The decision submitted on confirmation (RC9 `via: bulk`).
-    pub row: DecisionBatchRow,
+    #[ts(type = "DecisionBatchRow<ReviewDecisionKind>")]
+    pub row: DecisionBatchRow<ReviewDecisionKind>,
     /// The recommendation it follows.
     pub recommendation: Recommendation,
     /// Its effects.
@@ -1030,7 +1070,7 @@ pub struct CarryEvent {
     /// The decision carried or re-asked.
     pub source_decision: DecisionId,
     /// Its kind.
-    pub source_kind: DecisionKind,
+    pub source_kind: ReviewDecisionKind,
     /// Kind.
     pub kind: CarryKind,
     /// Why asked again.
@@ -1153,6 +1193,10 @@ pub struct AssessmentProgress {
 /// Item counts of a PR.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct CommentCounts {
+    /// Items classified as not a review point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub not_a_review_point: Option<u32>,
     /// Items in the Needs you queue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -1409,9 +1453,87 @@ pub struct CodeContext {
     pub notes: Vec<NoteElsewhere>,
 }
 
-/// Response of RC10: decisions with effects, claims and reports; carry events; feed state.
+/// Who marked an item as not a review point and when.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct ItemMark {
+    /// GitHub login of the mark's author.
+    pub by: String,
+    /// When the mark was recorded.
+    pub at: Timestamp,
+    /// Number of the primary item, if this mark follows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub follows: Option<u32>,
+}
+
+/// An internal mark and any subsequent undo, as shown in the decision log.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct MarkLogEntry {
+    /// Mark ID.
+    pub id: DecisionId,
+    /// Item number within the pull request.
+    pub item_no: u32,
+    /// Original mark.
+    #[serde(flatten)]
+    pub mark: ItemMark,
+    /// Reason given by the owner, if any.
+    pub reason: Option<String>,
+    /// When the mark ended, if it has ended.
+    pub undone_at: Option<Timestamp>,
+    /// GitHub login of the user who ended it.
+    pub undone_by: Option<String>,
+}
+
+/// Tenant-wide list of active marks, newest first.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct MarkedItems {
+    /// Up to 100 marked items.
+    pub items: Vec<MarkedItem>,
+    /// Cursor of the next page.
+    pub next_cursor: Option<String>,
+}
+
+/// Facts about an actively marked item for classifier review.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct MarkedItem {
+    /// Pull request containing the item.
+    pub pr: PrRef,
+    /// Item number within the pull request.
+    pub no: u32,
+    /// Source kind.
+    pub kind: CommentItemKind,
+    /// GitHub login of the comment's author.
+    pub author: String,
+    /// Whether the author is a human or a bot.
+    pub author_kind: AuthorKind,
+    /// Plain-text item title.
+    pub title: String,
+    /// Link to the original item on GitHub, if any.
+    pub url: Option<String>,
+    /// GitHub login of the mark's author.
+    pub by: String,
+    /// When the mark was recorded.
+    pub at: Timestamp,
+    /// Whether the classifier recognised a status comment.
+    pub status_comment: bool,
+}
+
+/// Pagination query for the tenant's marked items.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct MarkedItemsQuery {
+    /// Cursor from the previous page.
+    #[serde(default)]
+    #[ts(optional)]
+    pub cursor: Option<String>,
+}
+
+/// Response of RC10: decisions, marks, carry events and feed state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct CommentLog {
+    /// Marks and their undo history, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<MarkLogEntry>>", optional)]
+    pub marks: Vec<MarkLogEntry>,
     /// Agents subscribed now.
     pub subscribers: Vec<FeedSubscriber>,
     /// Open or claimed effects.
@@ -1799,7 +1921,8 @@ pub struct FeedDecision {
     /// The item.
     pub item: FeedItem,
     /// The decision with its effects; `comment` carries the owner's instructions for the executor.
-    pub decision: Decision,
+    #[ts(type = "Decision<ReviewDecisionKind>")]
+    pub decision: Decision<ReviewDecisionKind>,
 }
 
 /// Response of RF1: claimable decisions within the capabilities, oldest first.

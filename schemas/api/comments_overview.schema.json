@@ -402,6 +402,15 @@
       "description": "Item counts of a PR.",
       "type": "object",
       "properties": {
+        "not_a_review_point": {
+          "description": "Items classified as not a review point.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
         "needs_you": {
           "description": "Items in the Needs you queue.",
           "type": [
@@ -582,7 +591,7 @@
       ]
     },
     "DecisionKind": {
-      "description": "A decision (D1–D7; D8 is `reject` with a `blocker_gate` override; P1–P4 for PR-level questions). Open enum.",
+      "description": "A review decision or an internal mark accepted by the decide routes.",
       "oneOf": [
         {
           "description": "D1: resolve, already fixed.",
@@ -638,6 +647,11 @@
           "description": "P4: keep the reviews.",
           "type": "string",
           "const": "keep_reviews"
+        },
+        {
+          "description": "Record an internal mark without effects.",
+          "type": "string",
+          "const": "not_a_review_point"
         }
       ]
     },

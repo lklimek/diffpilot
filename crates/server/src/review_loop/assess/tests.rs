@@ -448,7 +448,7 @@ async fn paired_pass_freezes_head_config_and_primary_effects() {
     assert_eq!(stored.head.0, HEAD);
     assert_eq!(
         stored.recommendation.kind,
-        contracts::api::review_loop::DecisionKind::FixHere
+        contracts::api::review_loop::ReviewDecisionKind::FixHere
     );
     assert_eq!(f.state.db.review_loop().items(PR).await.unwrap().len(), 1);
     assert_eq!(
@@ -1246,11 +1246,11 @@ async fn paired_body_points_allocate_ids_only_for_the_primary_and_keep_direct_du
         assert_eq!(owner_after.revision, 2);
         assert_eq!(
             owner_before.kind,
-            contracts::api::review_loop::DecisionKind::FixHere
+            contracts::api::review_loop::ReviewDecisionKind::FixHere
         );
         assert_eq!(
             owner_after.kind,
-            contracts::api::review_loop::DecisionKind::Reject
+            contracts::api::review_loop::ReviewDecisionKind::Reject
         );
         after.summarize();
         assert!(

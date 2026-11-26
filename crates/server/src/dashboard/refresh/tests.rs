@@ -1951,6 +1951,7 @@ async fn dashboard_tally_equals_comments_count() {
         };
         if kind == CommentItemKind::PrQuestion || key == "dedupe-c" {
             rl.set_gates(
+                (DEFAULT_TENANT, "u1"),
                 item.id,
                 item.revision,
                 &[GateMark {

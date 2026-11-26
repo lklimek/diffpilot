@@ -205,6 +205,12 @@ pub(super) async fn admit(
                 AssessmentError::Admission(AssessmentAdmissionFailure::AssessmentDailyLimit {
                     ..
                 }) => Ok(super::PassQueued::DailyLimit),
+                AssessmentError::MarkedItem
+                    if review.cause == db::repo::review_loop::PassCause::AssessAgain =>
+                {
+                    Err(AssessError::MarkedItem)
+                }
+                AssessmentError::MarkedItem => Ok(super::PassQueued::Skipped),
                 AssessmentError::Database(db::error::DbError::Conflict) => {
                     Ok(super::PassQueued::AlreadyRunning)
                 }

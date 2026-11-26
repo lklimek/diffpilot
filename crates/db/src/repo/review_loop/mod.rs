@@ -18,6 +18,7 @@ pub(crate) use origins::reopen_with_followers;
 mod carry;
 mod decisions;
 mod items;
+mod marks;
 mod origins;
 pub(crate) use items::{add_assessment_in, upsert_item_in};
 mod notify;
@@ -34,6 +35,9 @@ pub use items::{
     PassState, PrCommentTally, PrTallyView, PrView, ReadResult, SentItem, StoredAssessment,
     UpsertOutcome,
 };
+pub(super) use items::{SourcePointExclusion, source_point_exclusion_in};
+pub use marks::ActiveMark;
+pub(super) use marks::active_in_pass;
 pub use notify::{
     ChannelInput, ChannelRecord, DeliveryRecord, DeliveryTarget, FailureTransition, PushInput,
     SecretUpdate, SubscriptionRecord,

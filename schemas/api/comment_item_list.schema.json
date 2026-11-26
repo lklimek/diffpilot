@@ -10,6 +10,17 @@
       "description": "A review-loop item with its assessment, decisions and effects (RC4).",
       "type": "object",
       "properties": {
+        "not_a_review_point": {
+          "description": "Active internal disposition.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ItemMark"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "status_comment": {
           "description": "Whether the item is a bot status comment.",
           "type": "boolean"
@@ -249,6 +260,34 @@
         "ask_answers"
       ]
     },
+    "ItemMark": {
+      "description": "Who marked an item as not a review point and when.",
+      "type": "object",
+      "properties": {
+        "by": {
+          "description": "GitHub login of the mark's author.",
+          "type": "string"
+        },
+        "at": {
+          "description": "When the mark was recorded.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "follows": {
+          "description": "Number of the primary item, if this mark follows it.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "by",
+        "at"
+      ]
+    },
     "ImportedGithubDecision": {
       "description": "Decision evidence shown on a comment item.",
       "type": "object",
@@ -279,7 +318,7 @@
       ]
     },
     "DecisionKind": {
-      "description": "A decision (D1–D7; D8 is `reject` with a `blocker_gate` override; P1–P4 for PR-level questions). Open enum.",
+      "description": "A review decision or an internal mark accepted by the decide routes.",
       "oneOf": [
         {
           "description": "D1: resolve, already fixed.",
@@ -335,6 +374,11 @@
           "description": "P4: keep the reviews.",
           "type": "string",
           "const": "keep_reviews"
+        },
+        {
+          "description": "Record an internal mark without effects.",
+          "type": "string",
+          "const": "not_a_review_point"
         }
       ]
     },
@@ -1299,7 +1343,7 @@
       "properties": {
         "kind": {
           "description": "Recommended decision.",
-          "$ref": "#/$defs/DecisionKind"
+          "$ref": "#/$defs/ReviewDecisionKind"
         },
         "reason": {
           "description": "Why.",
@@ -1325,6 +1369,66 @@
         "kind",
         "reason",
         "reason_class"
+      ]
+    },
+    "ReviewDecisionKind": {
+      "description": "A review decision (D1–D7 and P1–P4) eligible for external use.",
+      "oneOf": [
+        {
+          "description": "D1: resolve, already fixed.",
+          "type": "string",
+          "const": "resolve"
+        },
+        {
+          "description": "D2: fix in this pull request.",
+          "type": "string",
+          "const": "fix_here"
+        },
+        {
+          "description": "D3: reject (with a reason); D8 with a `blocker_gate` override.",
+          "type": "string",
+          "const": "reject"
+        },
+        {
+          "description": "D4: handled in an existing pull request.",
+          "type": "string",
+          "const": "handled_in_pr"
+        },
+        {
+          "description": "D5: create a follow-up pull request.",
+          "type": "string",
+          "const": "follow_up_pr"
+        },
+        {
+          "description": "D6: upstream issue (link or create).",
+          "type": "string",
+          "const": "upstream_issue"
+        },
+        {
+          "description": "D7: TODO, out of scope for this pull request.",
+          "type": "string",
+          "const": "todo"
+        },
+        {
+          "description": "P1: merge now, remaining items become follow-ups.",
+          "type": "string",
+          "const": "merge_with_follow_ups"
+        },
+        {
+          "description": "P2: another round.",
+          "type": "string",
+          "const": "another_round"
+        },
+        {
+          "description": "P3: dismiss the listed stale bot reviews.",
+          "type": "string",
+          "const": "dismiss_stale_reviews"
+        },
+        {
+          "description": "P4: keep the reviews.",
+          "type": "string",
+          "const": "keep_reviews"
+        }
       ]
     },
     "DecisionTarget": {

@@ -863,12 +863,13 @@ Fixtures: `fixtures/review-loop/` (spike S13-1).
 | RC9 | POST | `…/comments/decision-batches` | session_csrf | `DecisionBatchRequest` | 201 `Decision[]`; 400 `invalid_request` for a gate row under `bulk`/`group`, an item asked again or no longer read (`gone_at`) under `bulk`, or, under `table`, a batch that leaves out a waiting gate item; 409 `item_changed` naming the changed items; 409 `conflict` naming the rows whose `plan_digest` no longer matches the plan |
 | RC10 | GET | `…/comments/log` | read | – | `CommentLog`; subscribers of the tenant's live tokens; a push target of another user's token shows only its kind and delivery state (`url`, `topic`, `secret_last4`, `last_error` null) |
 | RC11 | GET | `/api/v1/comments/carry-overs` | read | `CarryOverQuery` | `CarryOverPage` |
-| RC12 | POST | `…/comments/items/{item}/undo` | session_csrf | `ItemActionRequest` | `CommentItem` (asked again; the undone decision keeps `undone_at`); 409 `conflict` without a standing decision or once an effect is claimed; 409 `item_changed` |
+| RC12 | POST | `…/comments/items/{item}/undo` | session_csrf | `ItemActionRequest` | `CommentItem`. An active mark ends first, along with its follow-marks. Otherwise undo the standing decision and record `undone_at`. 409 `conflict` without an active mark or a decision eligible for undo. 409 `item_changed`. |
 | RC13 | POST | `…/comments/items/{item}/reopen` | session_csrf | `ItemActionRequest` | `CommentItem` (state `reopened`; effects not yet claimed are cancelled); 409 `conflict` without a standing decision; 409 `item_changed` |
 | RC14 | POST | `…/comments/items/{item}/skip` | session_csrf | `ItemActionRequest` | 204; the item comes last in the caller's queue while it stays at that revision |
 | RC15 | POST | `…/comments/items/{item}/gates` | session_csrf | `GateMarkRequest` | `CommentItem`; marks or clears the owner's mark of one gate (assessment gates stay); 409 `item_changed` |
 | RC16 | POST | `…/comments/effects-preview` | session_csrf | `EffectsPreviewRequest` | `EffectsPreview[]` (the effects the rows would get, with a `plan_digest` for PR-level rows; nothing stored); 400 `invalid_request` as RC8/RC9 |
 | RC17 | GET | `…/comments/decide-rest` | read | – | `DecideRest` (the confirmation list of "Decide the rest per recommendation"; gate items and items without a complete recommendation are left out with their reason) |
+| C19 | GET | `/api/v1/review-loop/not-a-review-point` | read | `MarkedItemsQuery` | `MarkedItems` lists active marks for the caller’s tenant, newest first, up to 100 per page. Send `next_cursor` as `cursor` for the next page. 400 `invalid_request` for an invalid cursor. |
 | RW1 | PUT / DELETE | `…/watch` | session_csrf | – | 204; 409 `watch_limit_reached` |
 | RW2 | GET | `/api/v1/watches` | read | – | `WatchList` (with the reader's assessment passes of the last 24 h and the daily limit) |
 | RW3 | GET | `/api/v1/events` | read | – | SSE `UserStreamEvent`: `user_event`, `heartbeat`, `llm_activity` (`sse-events.md`) |
@@ -898,6 +899,10 @@ Fixtures: `fixtures/review-loop/` (spike S13-1).
 - **Revisions.** Every `CommentItem` carries `revision`; a decision names `item_revision` and gets 409
   `item_changed` when the item changed meanwhile (a read, an assessment, another user's decision). Decisions are
   append-only: a new decision supersedes the current one and cancels its effects not yet claimed.
+- **Not a review point (C19).** RC8 and RC9 accept `not_a_review_point` for comment items awaiting a decision.
+  RC9 accepts it in group and table requests. Mark a gate item individually and include a reason. The mark is
+  internal and has no effects. RC4 exposes the active mark on `CommentItem.not_a_review_point`. RC10 lists the
+  mark and any undo in `CommentLog.marks`.
 - **D8** is `reject` with `override: {type: "blocker_gate", gate}`; gate ids are `G-FUNDS`, `G-SECRET`,
   `G-CRYPTO`, `G-DATA`. The owner's `comment` is stored and sent to the executor, never posted; `reply_text` is
   what gets posted.

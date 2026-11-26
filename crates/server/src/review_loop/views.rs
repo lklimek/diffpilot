@@ -142,6 +142,10 @@ fn item_status(
         assessment_state: assessment_state(loaded, record, pass, limited),
         status_comment: record.status_comment,
         imported_decision,
+        not_a_review_point: record
+            .active_mark
+            .as_ref()
+            .map(|active| active.mark.clone()),
         duplicate_of: record.duplicate_of.and_then(|id| loaded.number_of(id)),
         decision_follows_primary: loaded.follower_link(record).is_some_and(|primary| {
             standing
@@ -171,6 +175,7 @@ fn item_view(
         .filter(|_| !record.status_comment);
     let repeat_of = record.repeat_of.and_then(|id| loaded.number_of(id));
     CommentItem {
+        not_a_review_point: status.not_a_review_point,
         status_comment: status.status_comment,
         imported_decision: status.imported_decision,
         import_proposal: (!standing.contains_key(&record.id.to_string()))
@@ -370,9 +375,9 @@ fn needs_you(
     entries: &[QueueEntry],
     pass: Option<&PassRecord>,
     limited: bool,
-) -> (u32, u32) {
+) -> (u32, u32, u32) {
     let standing = loaded.standing();
-    let items = loaded
+    let items: HashMap<_, _> = loaded
         .items
         .iter()
         .map(|record| {
@@ -382,7 +387,14 @@ fn needs_you(
             )
         })
         .collect();
-    queue::needs_you(entries, &items)
+    let (needs_you, gates) = queue::needs_you(entries, &items);
+    let marked = count(
+        items
+            .values()
+            .filter(|item| queue::comment_status(item) == queue::CommentStatus::NotAReviewPoint)
+            .count(),
+    );
+    (needs_you, gates, marked)
 }
 
 /// The Needs you count from one dashboard PR's batched data.
@@ -398,10 +410,11 @@ pub(crate) fn dashboard_needs_you(
 fn counts(
     loaded: &Loaded,
     waiting: usize,
-    (needs_you, needs_you_gates): (u32, u32),
+    (needs_you, needs_you_gates, marked): (u32, u32, u32),
 ) -> CommentCounts {
     let standing = loaded.standing();
     CommentCounts {
+        not_a_review_point: Some(marked),
         needs_you: Some(needs_you),
         needs_you_gates: Some(needs_you_gates),
         imported_unseen: None,
@@ -414,7 +427,7 @@ fn counts(
             loaded
                 .items
                 .iter()
-                .filter(|item| item.state == ItemState::Reopened && item.gone_at.is_none())
+                .filter(|item| item.state == ItemState::Reopened && waits(item))
                 .count(),
         ),
         waiting_for_agents: count(standing.values().filter(|s| effects_open(s)).count()),
@@ -440,6 +453,7 @@ fn progress(loaded: &Loaded, pass: Option<&PassRecord>, limited: bool) -> Assess
             item.kind != contracts::api::review_loop::CommentItemKind::PrQuestion
                 && item.state != ItemState::Outside
                 && !item.status_comment
+                && item.active_mark.is_none()
                 && item.gone_at.is_none()
         })
         .collect();
@@ -481,7 +495,10 @@ fn progress(loaded: &Loaded, pass: Option<&PassRecord>, limited: bool) -> Assess
 
 /// Open and still produced by the read: an item marked `gone_at` (such as a superseded body finding) waits for nobody.
 fn waits(item: &ItemRecord) -> bool {
-    queue::is_open(item.state) && item.gone_at.is_none() && !item.status_comment
+    queue::is_open(item.state)
+        && item.gone_at.is_none()
+        && !item.status_comment
+        && item.active_mark.is_none()
 }
 
 fn rounds(loaded: &Loaded, events: &[contracts::api::review_loop::CarryEvent]) -> Vec<Round> {
@@ -837,6 +854,7 @@ pub async fn log(
         })
         .collect();
     Ok(CommentLog {
+        marks: rl.mark_log(&session.tenant_id, handle.id).await?,
         subscribers,
         open_effects: count(
             standing
@@ -955,7 +973,7 @@ pub async fn decide_rest(state: &AppState, handle: PrHandle) -> Result<DecideRes
     let (proposed, left_out) = queue::decide_rest(&queue_items);
     let mut rows = Vec::new();
     let mut left_out = left_out;
-    let batch: Vec<DecisionBatchRow> = proposed
+    let batch: Vec<_> = proposed
         .iter()
         .map(|(item, request)| DecisionBatchRow {
             item_no: item.no,

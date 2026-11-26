@@ -66,7 +66,7 @@ const at = (hhmm: string, day = "18") => `2026-11-${day}T${hhmm}:00Z`;
 const READ_AT = at("09:20");
 
 const rec = (
-  kind: DecisionKind,
+  kind: Recommendation["kind"],
   reason: string,
   reason_class: string,
   target: Recommendation["target"] = null,
@@ -1320,7 +1320,7 @@ function carryEvents(): CarryEvent[] {
     n: number,
     item_no: number,
     source_item_no: number,
-    source_kind: DecisionKind,
+    source_kind: CarryEvent["source_kind"],
     kind: CarryEvent["kind"],
     reason: CarryEvent["reason"],
     when: string,

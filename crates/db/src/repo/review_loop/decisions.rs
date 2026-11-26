@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use jiff::SignedDuration;
+use serde::de::DeserializeOwned;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, Sqlite, Transaction};
 
@@ -10,7 +11,7 @@ use contracts::api::access_tokens::AccessTokenId;
 use contracts::api::review_loop::{
     ClaimInfo, Decision, DecisionKind, DecisionTarget, DecisionVia, Effect, EffectKind,
     EffectParams, EffectReport, EffectState, Executor, FeedDecision, FeedItem, ImportedDecision,
-    ItemState, Override, Recommendation, ReportOutcome,
+    ItemState, Override, Recommendation, ReportOutcome, ReviewDecisionKind,
 };
 use contracts::common::{LineRange, PrRef, RepoRef};
 use contracts::ids::{CommentItemId, CommitSha, DecisionId, EffectId};
@@ -19,6 +20,7 @@ use contracts::time::Timestamp;
 use super::super::jobs::ts;
 use super::super::{read_tx, write_tx};
 use super::items::{PrView, item_in, pr_view_in, set_state_in};
+use super::marks::{MarkChange, end_marks, log_changes, store_mark};
 use super::{
     ReviewLoop, json, json_col, opt_json_col, opt_ts_col, opt_wire_col, ts_col, u32_col, wire,
     wire_col,
@@ -90,7 +92,7 @@ pub enum DecideOutcome {
 
 /// A decision with the item facts the carry-over rules compare.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StoredDecision {
+pub struct StoredDecision<K = DecisionKind> {
     /// Server user who owns this decision.
     pub user_id: String,
     /// Exact decision this follower depends on.
@@ -98,7 +100,7 @@ pub struct StoredDecision {
     /// A withdrawal has authority over its own point only.
     pub author_withdrawal: bool,
     /// The decision.
-    pub decision: Decision,
+    pub decision: Decision<K>,
     /// Its item.
     pub item: CommentItemId,
     /// The item's normalised text hash at decision time.
@@ -185,7 +187,9 @@ pub(super) const ORIGIN_JOIN: &str = "LEFT JOIN comment_decision_origins o ON o.
      LEFT JOIN comment_decisions pd ON pd.id = o.primary_decision_id
      LEFT JOIN comment_items pi ON pi.id = pd.item_id";
 
-pub(super) fn decision_from_row(row: &SqliteRow) -> Result<StoredDecision, DbError> {
+pub(super) fn decision_from_row<K: DeserializeOwned>(
+    row: &SqliteRow,
+) -> Result<StoredDecision<K>, DbError> {
     let start: Option<i64> = row.try_get("start_line")?;
     let end: Option<i64> = row.try_get("end_line")?;
     let lines = match (start, end) {
@@ -290,9 +294,9 @@ pub(super) fn effect_from_row(row: &SqliteRow) -> Result<Effect, DbError> {
 }
 
 /// Fills the effects (with reports) of `decisions` inside `tx`.
-async fn with_effects(
+async fn with_effects<K>(
     tx: &mut Transaction<'static, Sqlite>,
-    decisions: &mut [StoredDecision],
+    decisions: &mut [StoredDecision<K>],
 ) -> Result<(), DbError> {
     for stored in decisions.iter_mut() {
         let rows = sqlx::query(
@@ -335,11 +339,11 @@ async fn with_effects(
 }
 
 /// Decisions matching `filter` (a SQL condition on `d`/`i` with one `?`), oldest first, with effects.
-pub(super) async fn decisions_where(
+pub(super) async fn decisions_where<K: DeserializeOwned>(
     tx: &mut Transaction<'static, Sqlite>,
     filter: &str,
     value: String,
-) -> Result<Vec<StoredDecision>, DbError> {
+) -> Result<Vec<StoredDecision<K>>, DbError> {
     let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT {DECISION_COLUMNS} FROM comment_decisions d
          JOIN comment_items i ON i.id = d.item_id JOIN users u ON u.id = d.user_id {ORIGIN_JOIN}
@@ -510,8 +514,10 @@ impl ReviewLoop<'_> {
         now: Timestamp,
     ) -> Result<DecideOutcome, DbError> {
         let mut tx = write_tx(self.pool).await?;
-        let outcome = store(&mut tx, tenant_id, decisions, now).await?;
+        let mut marks = Vec::new();
+        let outcome = store(&mut tx, tenant_id, decisions, now, &mut marks).await?;
         tx.commit().await?;
+        log_changes(marks);
         Ok(outcome)
     }
 
@@ -526,8 +532,10 @@ impl ReviewLoop<'_> {
     ) -> Result<DecideOutcome, E> {
         let mut tx = write_tx(self.pool).await?;
         let decisions = plan(pr_view_in(&mut tx, pull_request_id).await?)?;
-        let outcome = store(&mut tx, tenant_id, &decisions, now).await?;
+        let mut marks = Vec::new();
+        let outcome = store(&mut tx, tenant_id, &decisions, now, &mut marks).await?;
         tx.commit().await.map_err(DbError::from)?;
+        log_changes(marks);
         Ok(outcome)
     }
 
@@ -1011,6 +1019,7 @@ async fn store(
     tenant_id: &str,
     decisions: &[NewDecision],
     now: Timestamp,
+    marks: &mut Vec<MarkChange>,
 ) -> Result<DecideOutcome, DbError> {
     // Import visibility and Comments visits share the writer lock.
     let now = if decisions
@@ -1034,7 +1043,8 @@ async fn store(
         return Ok(DecideOutcome::ItemChanged(changed));
     }
     for new in decisions {
-        if let Some(previous) = current_id(tx, new.item).await?
+        if new.kind != DecisionKind::NotAReviewPoint
+            && let Some(previous) = current_id(tx, new.item).await?
             && let Some(no) = super::origins::claimed_follower(tx, &previous, now).await?
         {
             return Ok(DecideOutcome::FollowerClaimed(no));
@@ -1043,6 +1053,15 @@ async fn store(
     let mut ids = Vec::new();
     let mut superseded = Vec::new();
     for (new, item) in decisions.iter().zip(items) {
+        if new.kind == DecisionKind::NotAReviewPoint {
+            if let Some(mark) = store_mark(tx, tenant_id, &item, new, now, marks).await? {
+                ids.push((mark.id, Some(mark)));
+            }
+            continue;
+        }
+        if new.origin.is_none() && new.via != DecisionVia::Carried {
+            marks.extend(end_marks(tx, tenant_id, new.item, &new.user_id, now).await?);
+        }
         let supersedes = current_id(tx, new.item).await?;
         if let Some(previous) = &supersedes {
             super::actions::cancel_unclaimed(tx, previous, now).await?;
@@ -1120,7 +1139,7 @@ async fn store(
         };
         set_state_in(tx, new.item, state, now).await?;
         settle(tx, &id.to_string(), true, now).await?;
-        ids.push(id);
+        ids.push((id, None));
     }
     for (primary, user) in superseded {
         for (decision, item) in super::origins::followers(tx, &primary).await? {
@@ -1128,12 +1147,14 @@ async fn store(
         }
     }
     let mut stored = Vec::new();
-    for id in ids {
-        let mut found = decisions_where(tx, "d.id = ?", id.to_string()).await?;
-        stored.push(found.pop().ok_or(DbError::NotFound)?.decision);
-    }
-    for decision in &stored {
-        super::super::assessment_primary::capture_owner(tx, tenant_id, decision.id).await?;
+    for (id, mark) in ids {
+        if let Some(mark) = mark {
+            stored.push(mark);
+        } else {
+            let mut found = decisions_where(tx, "d.id = ?", id.to_string()).await?;
+            stored.push(found.pop().ok_or(DbError::NotFound)?.decision);
+            super::super::assessment_primary::capture_owner(tx, tenant_id, id).await?;
+        }
     }
     Ok(DecideOutcome::Stored(stored))
 }
@@ -1144,7 +1165,7 @@ async fn feed_decisions_where(
     filter: &str,
     value: String,
 ) -> Result<Vec<FeedDecision>, DbError> {
-    let decisions = decisions_where(tx, filter, value).await?;
+    let decisions = decisions_where::<ReviewDecisionKind>(tx, filter, value).await?;
     let mut items: BTreeMap<String, (PrRef, FeedItem)> = BTreeMap::new();
     let mut feed = Vec::new();
     for stored in decisions {

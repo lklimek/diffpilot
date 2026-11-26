@@ -1539,6 +1539,15 @@
       "description": "Item counts of a PR.",
       "type": "object",
       "properties": {
+        "not_a_review_point": {
+          "description": "Items classified as not a review point.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
         "needs_you": {
           "description": "Items in the Needs you queue.",
           "type": [

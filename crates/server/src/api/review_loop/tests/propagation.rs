@@ -5,7 +5,7 @@ const THREAD_2: &str = "PRRT_fixture482_l2";
 const THREAD_6: &str = "PRRT_fixture482_l6";
 const THREAD_7: &str = "PRRT_fixture482_l7";
 
-async fn link(w: &World, follower_key: &str) {
+pub(super) async fn link(w: &World, follower_key: &str) {
     let primary = w.item(L2).await;
     let follower = w.item(follower_key).await;
     let id = w.pr_id().await;
@@ -267,7 +267,7 @@ async fn later_linked_duplicate_follows() {
     assert_eq!(follower["decisions"][0]["via"], "follows_primary");
 }
 
-async fn assess_recorded(
+pub(super) async fn assess_recorded(
     w: &World,
     kind: &str,
     text: &str,
@@ -277,7 +277,7 @@ async fn assess_recorded(
     assess_recorded_with_owner_decision(w, kind, text, writer, writer_id, None).await
 }
 
-async fn assess_recorded_with_owner_decision(
+pub(super) async fn assess_recorded_with_owner_decision(
     w: &World,
     kind: &str,
     text: &str,

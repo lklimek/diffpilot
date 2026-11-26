@@ -6,6 +6,7 @@ export const QUEUE_STATUS = {
   waiting: "Waiting for assessment",
   not_assessed: "Not assessed",
   decided: "Decided",
+  not_a_review_point: "Not a review point",
   duplicates: "Duplicates",
   status_comments: "Status comments",
   all: "All",
@@ -40,6 +41,7 @@ export const awaitsDecision = (item: CommentItem) =>
 export function commentStatus(item: CommentItem): QueueStatus {
   if (item.status_comment) return "status_comments";
   if (item.imported_decision || item.state === "outside") return "decided";
+  if (item.not_a_review_point) return "not_a_review_point";
   if (followsPrimary(item)) return "duplicates";
   if (["decided", "executing", "done", "repeat"].includes(item.state)) return "decided";
   if (item.gone_at) return "all";

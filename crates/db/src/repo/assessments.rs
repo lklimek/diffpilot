@@ -20,6 +20,9 @@ pub enum AssessmentError {
     /// No slot was consumed.
     #[error(transparent)]
     Admission(#[from] AssessmentAdmissionFailure),
+    /// A comment was marked while the pass input was being prepared.
+    #[error("an assessment item is marked as not a review point")]
+    MarkedItem,
     /// Storage or contract validation failed; the transaction is rolled back.
     #[error(transparent)]
     Database(#[from] DbError),
@@ -224,6 +227,9 @@ impl Assessments<'_> {
                 || review.question.is_some()
             {
                 return Err(DbError::Conflict.into());
+            }
+            if super::review_loop::active_in_pass(&mut tx, tenant, &review.sent).await? {
+                return Err(AssessmentError::MarkedItem);
             }
             let busy: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM comment_passes WHERE pull_request_id=? AND state IN ('queued','running'))")
                 .bind(input.pull_request_id).fetch_one(&mut *tx).await.map_err(DbError::from)?;
@@ -447,7 +453,8 @@ impl Assessments<'_> {
             .bind(wire_name(result.status)?).bind(accepted).bind(result.failure.map(wire_name).transpose()?)
             .bind(result.reported_head.as_ref().map(|head| &head.0)).bind(run.pass_id.to_string()).bind(wire_name(run.method)?).bind(tenant).bind(&user.0).bind(attempt).execute(&mut *tx).await?;
         let mut items = result.items.clone();
-        super::assessment_primary::apply(&mut tx, tenant, &pass, primary, &mut items).await?;
+        let suppressed =
+            super::assessment_primary::apply(&mut tx, tenant, &pass, primary, &mut items).await?;
         if run.method != pass.config.primary_method {
             for item in &mut items {
                 let aligned: Option<(Option<String>,Option<String>,String)> = sqlx::query_as("SELECT primary_item_id,primary_item_hash,source FROM assessment_comparison_items WHERE pass_id=? AND method=? AND comparison_key=? AND status='matched'")
@@ -521,7 +528,9 @@ impl Assessments<'_> {
                     sqlx::query("UPDATE comment_sources SET read_at=coalesce(read_at,?) WHERE tenant_id=? AND pull_request_id=? AND url=? AND body_hash=?")
                         .bind(ts(Timestamp::now())).bind(tenant).bind(pass.input.pull_request_id).bind(url).bind(version).execute(&mut *tx).await?;
                     if run.method == AssessmentMethod::ClaudiusHost {
-                        sqlx::query("UPDATE comment_items SET gone_at=?,revision=revision+1 WHERE tenant_id=? AND pull_request_id=? AND url=? AND kind IN ('review_body','pr_comment') AND source_id IS NULL AND gone_at IS NULL AND state IN ('assessing','undecided','asked_back','reopened') AND NOT EXISTS(SELECT 1 FROM assessment_comparison_items c WHERE c.pass_id=? AND c.method=? AND c.primary_item_id=comment_items.id AND c.status NOT IN ('missing_row','context','head_mismatch'))")
+                        sqlx::query("UPDATE comment_items SET gone_at=?,revision=revision+1 WHERE tenant_id=? AND pull_request_id=? AND url=? AND kind IN ('review_body','pr_comment') AND source_id IS NULL AND gone_at IS NULL AND state IN ('assessing','undecided','asked_back','reopened')
+                                     AND NOT EXISTS(SELECT 1 FROM comment_item_marks m WHERE m.item_id=comment_items.id AND m.undone_at IS NULL)
+                                     AND NOT EXISTS(SELECT 1 FROM assessment_comparison_items c WHERE c.pass_id=? AND c.method=? AND c.primary_item_id=comment_items.id AND c.status NOT IN ('missing_row','context','head_mismatch'))")
                             .bind(ts(Timestamp::now())).bind(tenant).bind(pass.input.pull_request_id).bind(url).bind(pass.id.to_string()).bind(wire_name(run.method)?).execute(&mut *tx).await?;
                     }
                 }
@@ -531,7 +540,9 @@ impl Assessments<'_> {
                     && let AssessmentSource::Body { url, quote, .. } = &row.source
                     && quote.is_empty()
                 {
-                    sqlx::query("UPDATE comment_items SET gone_at=?,revision=revision+1 WHERE tenant_id=? AND pull_request_id=? AND url=? AND kind IN ('review_body','pr_comment') AND source_id IS NULL AND NOT EXISTS(SELECT 1 FROM comment_assessments a WHERE a.item_id=comment_items.id)")
+                    sqlx::query("UPDATE comment_items SET gone_at=?,revision=revision+1 WHERE tenant_id=? AND pull_request_id=? AND url=? AND kind IN ('review_body','pr_comment') AND source_id IS NULL
+                                 AND NOT EXISTS(SELECT 1 FROM comment_item_marks m WHERE m.item_id=comment_items.id AND m.undone_at IS NULL)
+                                 AND NOT EXISTS(SELECT 1 FROM comment_assessments a WHERE a.item_id=comment_items.id)")
                         .bind(ts(Timestamp::now())).bind(tenant).bind(pass.input.pull_request_id).bind(url).execute(&mut *tx).await?;
                 }
             }
@@ -540,6 +551,14 @@ impl Assessments<'_> {
                 .bind(ts(Timestamp::now())).bind(tenant).bind(pass.input.pull_request_id).execute(&mut *tx).await?;
         }
         tx.commit().await?;
+        for (item, source) in suppressed {
+            tracing::info!(
+                pr = pass.input.pull_request_id,
+                item,
+                source,
+                "fresh assessment point suppressed by an internal mark"
+            );
+        }
         Ok(true)
     }
 

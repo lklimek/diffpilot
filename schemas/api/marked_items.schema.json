@@ -1,0 +1,173 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MarkedItems",
+  "description": "Tenant-wide list of active marks, newest first.",
+  "type": "object",
+  "properties": {
+    "items": {
+      "description": "Up to 100 marked items.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/MarkedItem"
+      }
+    },
+    "next_cursor": {
+      "description": "Cursor of the next page.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "items"
+  ],
+  "$defs": {
+    "MarkedItem": {
+      "description": "Facts about an actively marked item for classifier review.",
+      "type": "object",
+      "properties": {
+        "pr": {
+          "description": "Pull request containing the item.",
+          "$ref": "#/$defs/PrRef"
+        },
+        "no": {
+          "description": "Item number within the pull request.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "kind": {
+          "description": "Source kind.",
+          "$ref": "#/$defs/CommentItemKind"
+        },
+        "author": {
+          "description": "GitHub login of the comment's author.",
+          "type": "string"
+        },
+        "author_kind": {
+          "description": "Whether the author is a human or a bot.",
+          "$ref": "#/$defs/AuthorKind"
+        },
+        "title": {
+          "description": "Plain-text item title.",
+          "type": "string"
+        },
+        "url": {
+          "description": "Link to the original item on GitHub, if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "by": {
+          "description": "GitHub login of the mark's author.",
+          "type": "string"
+        },
+        "at": {
+          "description": "When the mark was recorded.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "status_comment": {
+          "description": "Whether the classifier recognised a status comment.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "pr",
+        "no",
+        "kind",
+        "author",
+        "author_kind",
+        "title",
+        "by",
+        "at",
+        "status_comment"
+      ]
+    },
+    "PrRef": {
+      "description": "A pull request of a repository.",
+      "type": "object",
+      "properties": {
+        "repo": {
+          "description": "The repository.",
+          "$ref": "#/$defs/RepoRef"
+        },
+        "number": {
+          "description": "The pull request number.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "repo",
+        "number"
+      ]
+    },
+    "RepoRef": {
+      "description": "A GitHub repository.",
+      "type": "object",
+      "properties": {
+        "owner": {
+          "description": "Owner (user or organisation) login.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Repository name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "name"
+      ]
+    },
+    "CommentItemKind": {
+      "description": "Where an item comes from (plan §2.1 I1–I4). Open enum.",
+      "oneOf": [
+        {
+          "description": "I1: a review thread.",
+          "type": "string",
+          "const": "thread"
+        },
+        {
+          "description": "I2: an item of a review body (no thread).",
+          "type": "string",
+          "const": "review_body"
+        },
+        {
+          "description": "I3: an item of a human PR-level comment.",
+          "type": "string",
+          "const": "pr_comment"
+        },
+        {
+          "description": "I4: a PR-level question built by the server from rounds (merge now, dismiss stale reviews).",
+          "type": "string",
+          "const": "pr_question"
+        }
+      ]
+    },
+    "AuthorKind": {
+      "description": "Who wrote the item: the bot rule (`Bot` type, `[bot]` login or Settings `known_bots`, RQ17).",
+      "oneOf": [
+        {
+          "description": "A person (also `claude` unless listed as a bot).",
+          "type": "string",
+          "const": "human"
+        },
+        {
+          "description": "A bot by the bot rule.",
+          "type": "string",
+          "const": "bot"
+        },
+        {
+          "description": "The server (PR-level questions).",
+          "type": "string",
+          "const": "diffpilot"
+        }
+      ]
+    }
+  }
+}

@@ -332,6 +332,7 @@ mod tests {
     fn raised_again_by_a_bot_repeat_or_reopened_by_a_person() {
         let item = ItemRecord {
             import_candidate: None,
+            active_mark: None,
             source_id: None,
             quote: None,
             duplicate_of: None,

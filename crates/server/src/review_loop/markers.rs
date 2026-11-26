@@ -389,6 +389,7 @@ pub(super) fn relay_kind(line: &str) -> Option<DecisionKind> {
     match kind {
         "withdrawn" => Some(DecisionKind::Reject),
         "deferred" => Some(DecisionKind::Todo),
+        "not_a_review_point" => None,
         _ => serde_json::from_value(serde_json::Value::String(kind.into())).ok(),
     }
 }
@@ -443,6 +444,18 @@ fn negation(word: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relay_cannot_record_internal_marks() {
+        assert_eq!(
+            relay_kind("<!-- maintainer-decision v1 kind=fix_here -->"),
+            Some(DecisionKind::FixHere)
+        );
+        assert_eq!(
+            relay_kind("<!-- maintainer-decision v1 kind=not_a_review_point -->"),
+            None
+        );
+    }
 
     const THREAD: &str = "<!-- thepastaclaw-review v1 finding=8db55065c705 dedupe=821d7cdc93fec6e1 -->\n\
 <!-- thepastaclaw-thread-status v1 -->\n> ✅ **Resolved** at `9f3c2e1a`; see the replies below.\n\n\

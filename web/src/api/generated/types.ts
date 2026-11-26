@@ -810,7 +810,7 @@ at: string,
 /**
  * Actual chosen kind.
  */
-kind: DecisionKind,
+kind: ReviewDecisionKind,
 /**
  * Actual target.
  */
@@ -1216,7 +1216,7 @@ source_decision: DecisionId,
 /**
  * Its kind.
  */
-source_kind: DecisionKind,
+source_kind: ReviewDecisionKind,
 /**
  * Kind.
  */
@@ -1632,6 +1632,10 @@ skills_commit: string | null, };
  */
 export type CommentCounts = {
 /**
+ * Items classified as not a review point.
+ */
+not_a_review_point?: number,
+/**
  * Items in the Needs you queue.
  */
 needs_you?: number,
@@ -1676,6 +1680,10 @@ total: number, };
  * A review-loop item with its assessment, decisions and effects (RC4).
  */
 export type CommentItem = {
+/**
+ * Active internal disposition.
+ */
+not_a_review_point?: ItemMark,
 /**
  * Whether the item is a bot status comment.
  */
@@ -1803,7 +1811,7 @@ assessment: CommentAssessment | null,
 /**
  * Decisions, oldest first; the last is current.
  */
-decisions: Array<Decision>,
+decisions: Array<Decision<DecisionKind>>,
 /**
  * Answers in the Ask chat about this item.
  */
@@ -1825,9 +1833,13 @@ export type CommentItemKind = "thread" | "review_body" | "pr_comment" | "pr_ques
 export type CommentKind = "line" | "file";
 
 /**
- * Response of RC10: decisions with effects, claims and reports; carry events; feed state.
+ * Response of RC10: decisions, marks, carry events and feed state.
  */
 export type CommentLog = {
+/**
+ * Marks and their undo history, oldest first.
+ */
+marks?: Array<MarkLogEntry>,
 /**
  * Agents subscribed now.
  */
@@ -1843,7 +1855,7 @@ failed_effects: number,
 /**
  * Decisions, oldest first.
  */
-decisions: Array<Decision>,
+decisions: Array<Decision<DecisionKind>>,
 /**
  * Carry events of this PR, oldest first.
  */
@@ -2564,11 +2576,11 @@ plugins?: Array<PluginStatus>, };
 /**
  * Body of RC8 (`POST …/comments/items/{item}/decisions`).
  */
-export type DecideRequest = {
+export type DecideRequest<K = DecisionKind> = {
 /**
  * Decision.
  */
-kind: DecisionKind,
+kind: K,
 /**
  * Reason (required for D3 and D8).
  */
@@ -2623,7 +2635,7 @@ export type DecideRestRow = {
 /**
  * The decision submitted on confirmation (RC9 `via: bulk`).
  */
-row: DecisionBatchRow,
+row: DecisionBatchRow<ReviewDecisionKind>,
 /**
  * The recommendation it follows.
  */
@@ -2636,7 +2648,7 @@ effects: Array<PlannedEffect>, };
 /**
  * A stored decision (append-only) with its effects.
  */
-export type Decision = {
+export type Decision<K = DecisionKind> = {
 /**
  * Evidence and authority for a decision imported from GitHub.
  */
@@ -2656,7 +2668,7 @@ item_no: number,
 /**
  * Decision.
  */
-kind: DecisionKind,
+kind: K,
 /**
  * Reason (D3, D8; posted as the reply).
  */
@@ -2730,12 +2742,12 @@ via: BatchVia,
 /**
  * One row per item.
  */
-rows: Array<DecisionBatchRow>, };
+rows: Array<DecisionBatchRow<DecisionKind>>, };
 
 /**
  * One row of a decision batch.
  */
-export type DecisionBatchRow = {
+export type DecisionBatchRow<K = DecisionKind> = {
 /**
  * The item, `C<no>`.
  */
@@ -2743,7 +2755,7 @@ item_no: number,
 /**
  * Decision.
  */
-kind: DecisionKind,
+kind: K,
 /**
  * Reason (required for D3 and D8).
  */
@@ -2797,9 +2809,9 @@ next_cursor: string | null, };
 export type DecisionId = string;
 
 /**
- * A decision (D1–D7; D8 is `reject` with a `blocker_gate` override; P1–P4 for PR-level questions). Open enum.
+ * A review decision or an internal mark accepted by the decide routes.
  */
-export type DecisionKind = "resolve" | "fix_here" | "reject" | "handled_in_pr" | "follow_up_pr" | "upstream_issue" | "todo" | "merge_with_follow_ups" | "another_round" | "dismiss_stale_reviews" | "keep_reviews";
+export type DecisionKind = "resolve" | "fix_here" | "reject" | "handled_in_pr" | "follow_up_pr" | "upstream_issue" | "todo" | "merge_with_follow_ups" | "another_round" | "dismiss_stale_reviews" | "keep_reviews" | "not_a_review_point";
 
 /**
  * The target a decision needs.
@@ -3276,7 +3288,7 @@ export type EffectsPreviewRequest = {
 /**
  * One row per item.
  */
-rows: Array<DecisionBatchRow>, };
+rows: Array<DecisionBatchRow<DecisionKind>>, };
 
 /**
  * A place where the matter is handled already.
@@ -3470,7 +3482,7 @@ item: FeedItem,
 /**
  * The decision with its effects; `comment` carries the owner's instructions for the executor.
  */
-decision: Decision, };
+decision: Decision<ReviewDecisionKind>, };
 
 /**
  * SSE data of RF2.
@@ -4493,6 +4505,23 @@ path: string,
 lines: LineRange | null, };
 
 /**
+ * Who marked an item as not a review point and when.
+ */
+export type ItemMark = {
+/**
+ * GitHub login of the mark's author.
+ */
+by: string,
+/**
+ * When the mark was recorded.
+ */
+at: string,
+/**
+ * Number of the primary item, if this mark follows it.
+ */
+follows?: number, };
+
+/**
  * Response of `GET /api/v1/dashboard/items`: ranked items of the latest snapshot, in rank order.
  */
 export type ItemPage = {
@@ -5049,6 +5078,110 @@ maintainers: Array<string>,
  * Known bot logins.
  */
 bots: Array<string>, };
+
+/**
+ * An internal mark and any subsequent undo, as shown in the decision log.
+ */
+export type MarkLogEntry = {
+/**
+ * Mark ID.
+ */
+id: DecisionId,
+/**
+ * Item number within the pull request.
+ */
+item_no: number,
+/**
+ * Reason given by the owner, if any.
+ */
+reason: string | null,
+/**
+ * When the mark ended, if it has ended.
+ */
+undone_at: string | null,
+/**
+ * GitHub login of the user who ended it.
+ */
+undone_by: string | null,
+/**
+ * GitHub login of the mark's author.
+ */
+by: string,
+/**
+ * When the mark was recorded.
+ */
+at: string,
+/**
+ * Number of the primary item, if this mark follows it.
+ */
+follows?: number, };
+
+/**
+ * Facts about an actively marked item for classifier review.
+ */
+export type MarkedItem = {
+/**
+ * Pull request containing the item.
+ */
+pr: PrRef,
+/**
+ * Item number within the pull request.
+ */
+no: number,
+/**
+ * Source kind.
+ */
+kind: CommentItemKind,
+/**
+ * GitHub login of the comment's author.
+ */
+author: string,
+/**
+ * Whether the author is a human or a bot.
+ */
+author_kind: AuthorKind,
+/**
+ * Plain-text item title.
+ */
+title: string,
+/**
+ * Link to the original item on GitHub, if any.
+ */
+url: string | null,
+/**
+ * GitHub login of the mark's author.
+ */
+by: string,
+/**
+ * When the mark was recorded.
+ */
+at: string,
+/**
+ * Whether the classifier recognised a status comment.
+ */
+status_comment: boolean, };
+
+/**
+ * Tenant-wide list of active marks, newest first.
+ */
+export type MarkedItems = {
+/**
+ * Up to 100 marked items.
+ */
+items: Array<MarkedItem>,
+/**
+ * Cursor of the next page.
+ */
+next_cursor: string | null, };
+
+/**
+ * Pagination query for the tenant's marked items.
+ */
+export type MarkedItemsQuery = {
+/**
+ * Cursor from the previous page.
+ */
+cursor?: string, };
 
 /**
  * A signed-in user.
@@ -6670,7 +6803,7 @@ export type Recommendation = {
 /**
  * Recommended decision.
  */
-kind: DecisionKind,
+kind: ReviewDecisionKind,
 /**
  * Why.
  */
@@ -7163,6 +7296,11 @@ analysis: AnalysisSummary | null,
  * The analysis is for an older head than the pull request now has.
  */
 head_moved: boolean, };
+
+/**
+ * A review decision (D1–D7 and P1–P4) eligible for external use.
+ */
+export type ReviewDecisionKind = "resolve" | "fix_here" | "reject" | "handled_in_pr" | "follow_up_pr" | "upstream_issue" | "todo" | "merge_with_follow_ups" | "another_round" | "dismiss_stale_reviews" | "keep_reviews";
 
 /**
  * The user's diffpilot analysis of a pull request item.
