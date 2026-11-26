@@ -5,14 +5,15 @@
 use std::collections::{BTreeMap, HashSet};
 
 use contracts::api::dashboard::{RefreshFailureCode, RefreshState};
+use contracts::time::Timestamp;
 use db::error::DbError;
 use serde_json::Value;
 
-use super::Scope;
 use super::facts::{self, PrContext};
+use super::{Scope, history};
 use crate::dashboard::plugin::PrKey;
 use crate::dashboard::score::ScoreRules;
-use crate::dashboard::snapshot::{self, StoredPr};
+use crate::dashboard::snapshot::{self, Snapshot, StoredPr};
 use crate::dashboard::snooze;
 use crate::github::work::{
     ItemRef, PR_BATCH, PrCandidate, PullDetail, UserTokens, WorkClient, WorkError,
@@ -126,7 +127,7 @@ async fn read_locked(
         });
     }
     let rules = ScoreRules::new(&stored.own_login, &stored.settings);
-    let (updated, closed) = apply(&rules, &mut stored.pull_requests, &fetched.found);
+    let (updated, closed, _) = apply(&rules, &mut stored, &fetched.found, now);
     stored.prs_reread_at = Some(now);
     match dashboard
         .replace_current_snapshot(&scope.tenant_id, &scope.user_id, record.id, &stored)
@@ -193,13 +194,16 @@ pub(super) async fn read_current(
 }
 
 /// Replaces the pull requests read again with their new facts, keeping what only the scan's other reads know
-/// (relations, stack relations, ownership verdict, milestone catalogue); drops those no longer open. A pull request
-/// GitHub did not answer for keeps its facts. Returns (updated, closed).
+/// (relations, stack relations, ownership verdict, milestone catalogue). From those same reads, drop closed
+/// entries from the ranking and reconcile the chart's lifecycle events, including unranked pull requests.
+/// Returns (updated ranked items, closed ranked items, history changed).
 pub(super) fn apply(
     rules: &ScoreRules,
-    pulls: &mut Vec<StoredPr>,
+    stored: &mut Snapshot,
     found: &BTreeMap<ItemRef, PullDetail>,
-) -> (usize, usize) {
+    now: Timestamp,
+) -> (usize, usize, bool) {
+    let history_changed = history::apply(rules, stored, found, now);
     let mut updated = 0;
     let mut closed = 0;
     let candidate = PrCandidate {
@@ -208,7 +212,7 @@ pub(super) fn apply(
         updated_at: None,
         relations: BTreeMap::new(),
     };
-    pulls.retain_mut(|pr| {
+    stored.pull_requests.retain_mut(|pr| {
         let item = ItemRef {
             repo: pr.facts.repo.clone(),
             number: pr.facts.number,
@@ -239,5 +243,5 @@ pub(super) fn apply(
         updated += 1;
         true
     });
-    (updated, closed)
+    (updated, closed, history_changed)
 }

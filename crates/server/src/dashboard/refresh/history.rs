@@ -12,10 +12,11 @@ use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Span};
 
 use crate::dashboard::score::ScoreRules;
+use crate::dashboard::snapshot::Snapshot;
 use crate::dashboard::zone;
 use crate::github::work::{
-    AUTHORED_PAGES, AuthoredPulls, Fetched, HistoryPr, ItemRef, TokenSource, WorkClient, WorkError,
-    repo_name,
+    AUTHORED_PAGES, AuthoredPulls, Fetched, HistoryPr, ItemRef, PullDetail, TokenSource,
+    WorkClient, WorkError, repo_name,
 };
 
 /// The chart window.
@@ -67,12 +68,127 @@ impl Events {
             .into_iter()
             .map(|((item_id, kind), at)| HistoryEvent { kind, at, item_id })
             .collect();
-        let rank = |kind: HistoryKind| kind as u8;
-        events.sort_by(|a, b| {
-            (a.at, &a.item_id, rank(a.kind)).cmp(&(b.at, &b.item_id, rank(b.kind)))
-        });
+        sort_events(&mut events);
         events
     }
+}
+
+fn sort_events(events: &mut [HistoryEvent]) {
+    events.sort_by(|a, b| (a.at, &a.item_id, a.kind as u8).cmp(&(b.at, &b.item_id, b.kind as u8)));
+}
+
+struct Lifecycle<'a> {
+    author: Option<&'a str>,
+    state: &'a str,
+    created_at: Timestamp,
+    closed_at: Option<Timestamp>,
+    merged_at: Option<Timestamp>,
+}
+
+impl<'a> From<&'a HistoryPr> for Lifecycle<'a> {
+    fn from(pr: &'a HistoryPr) -> Self {
+        Self {
+            author: pr.author.as_deref(),
+            state: &pr.state,
+            created_at: pr.created_at,
+            closed_at: pr.closed_at,
+            merged_at: pr.merged_at,
+        }
+    }
+}
+
+impl<'a> From<&'a PullDetail> for Lifecycle<'a> {
+    fn from(pr: &'a PullDetail) -> Self {
+        Self {
+            author: pr.author.as_ref().and_then(|a| a.login.as_deref()),
+            state: &pr.state,
+            created_at: pr.created_at,
+            closed_at: pr.closed_at,
+            merged_at: pr.merged_at,
+        }
+    }
+}
+
+impl Lifecycle<'_> {
+    fn authored_by_scanned_login(&self, rules: &ScoreRules) -> bool {
+        self.author.is_some_and(|login| rules.is_scanned(login))
+    }
+
+    fn events(&self) -> impl Iterator<Item = (HistoryKind, Timestamp)> {
+        let terminal = match self.state {
+            "MERGED" => self.merged_at.map(|at| (HistoryKind::PrMerged, at)),
+            "CLOSED" => self.closed_at.map(|at| (HistoryKind::PrClosedUnmerged, at)),
+            _ => None,
+        };
+        std::iter::once((HistoryKind::PrOpened, self.created_at)).chain(terminal)
+    }
+}
+
+/// Replaces authored lifecycle events from the same pull details used to update open items.
+pub(super) fn apply(
+    rules: &ScoreRules,
+    stored: &mut Snapshot,
+    found: &BTreeMap<ItemRef, PullDetail>,
+    now: Timestamp,
+) -> bool {
+    if found.is_empty() {
+        return false;
+    }
+    let zone = stored
+        .settings
+        .time_zone
+        .as_deref()
+        .and_then(zone::parse)
+        .unwrap_or(TimeZone::UTC);
+    let (_, start) = window_start(now, &zone);
+    let mut updates: HashMap<_, Vec<_>> = found
+        .iter()
+        .map(|(item, detail)| {
+            let repo = repo_name(&item.repo);
+            let name = detail
+                .base_repository
+                .as_ref()
+                .map(|base| base.name_with_owner.as_str())
+                .filter(|name| name.eq_ignore_ascii_case(&repo))
+                .unwrap_or(&repo);
+            let item_id = format!("{name}#{}", item.number);
+            let lifecycle = Lifecycle::from(detail);
+            let authored = lifecycle.authored_by_scanned_login(rules);
+            let events = lifecycle
+                .events()
+                .filter(|(_, at)| authored && *at >= start)
+                .map(|(kind, at)| HistoryEvent {
+                    kind,
+                    at,
+                    item_id: item_id.clone(),
+                })
+                .collect();
+            (item_id.to_ascii_lowercase(), events)
+        })
+        .collect();
+    let mut changed = false;
+    stored.history.retain(|event| {
+        if event.kind == HistoryKind::ReviewGiven {
+            return true;
+        }
+        let Some(events) = updates.get_mut(&event.item_id.to_ascii_lowercase()) else {
+            return true;
+        };
+        if let Some(index) = events.iter().position(|next| next == event) {
+            events.swap_remove(index);
+            true
+        } else {
+            changed = true;
+            false
+        }
+    });
+    let kept = stored.history.len();
+    stored.history.extend(updates.into_values().flatten());
+    changed |= stored.history.len() != kept;
+    if changed {
+        sort_events(&mut stored.history);
+    }
+    changed
 }
 
 /// Events of pull requests read by search and Q13.
@@ -83,15 +199,10 @@ fn from_details(
     events: &mut Events,
 ) {
     for (item, pr) in details {
-        let own = pr.author.as_deref().is_some_and(|a| rules.is_scanned(a));
-        if own {
-            events.add(HistoryKind::PrOpened, item, pr.created_at, start);
-            match (pr.merged_at, pr.closed_at) {
-                (Some(merged), _) => events.add(HistoryKind::PrMerged, item, merged, start),
-                (None, Some(closed)) => {
-                    events.add(HistoryKind::PrClosedUnmerged, item, closed, start);
-                }
-                (None, None) => {}
+        let lifecycle = Lifecycle::from(pr);
+        if lifecycle.authored_by_scanned_login(rules) {
+            for (kind, at) in lifecycle.events() {
+                events.add(kind, item, at, start);
             }
             // Reviews count on other people's pull requests only: GitHub lists an author's thread replies as
             // reviews, and a scanned login reviewing another's pull request is the user reviewing their own work.
@@ -331,6 +442,7 @@ mod tests {
             (
                 item(1190),
                 HistoryPr {
+                    state: "MERGED".to_owned(),
                     created_at: at("2026-11-02T10:00:00Z"),
                     closed_at: Some(at("2026-11-10T10:00:00Z")),
                     merged_at: Some(at("2026-11-10T10:00:00Z")),
@@ -341,6 +453,7 @@ mod tests {
             (
                 item(1195),
                 HistoryPr {
+                    state: "OPEN".to_owned(),
                     created_at: at("2026-11-01T10:00:00Z"),
                     closed_at: None,
                     merged_at: None,
@@ -357,6 +470,7 @@ mod tests {
             (
                 item(1100),
                 HistoryPr {
+                    state: "CLOSED".to_owned(),
                     created_at: at("2026-07-01T10:00:00Z"),
                     closed_at: Some(at("2026-07-02T10:00:00Z")),
                     merged_at: None,
@@ -407,6 +521,7 @@ mod tests {
         let rules = ScoreRules::new("alice", &settings);
         let start = at("2026-08-25T22:00:00Z");
         let own = |author: &str, reviewer: &str| HistoryPr {
+            state: "OPEN".to_owned(),
             created_at: at("2026-11-02T10:00:00Z"),
             closed_at: None,
             merged_at: None,

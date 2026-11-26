@@ -123,6 +123,7 @@ fn settings() -> DashboardSettings {
 #[derive(Default)]
 struct Gate {
     missing: std::sync::Mutex<Option<(bool, usize)>>,
+    pull_updates: std::sync::Mutex<HashMap<u64, Value>>,
     closed: AtomicBool,
     requests: AtomicUsize,
     arrived: Notify,
@@ -168,15 +169,32 @@ async fn github_gate(State(gate): State<Arc<Gate>>, request: Request, next: Next
     }
     let response = next.run(request).await;
     let missing = *gate.missing.lock().expect("missing responses");
-    let Some((details, count)) = missing else {
+    let updates = gate.pull_updates.lock().expect("pull updates").clone();
+    if missing.is_none() && updates.is_empty() {
         return response;
-    };
+    }
     let (parts, body) = response.into_parts();
     let bytes = body.collect().await.expect("GitHub response").to_bytes();
     let Ok(mut value) = serde_json::from_slice::<Value>(&bytes) else {
         return Response::from_parts(parts, axum::body::Body::from(bytes));
     };
     if let Some(data) = value["data"].as_object_mut() {
+        for pull in data
+            .values_mut()
+            .filter_map(|entry| entry.get_mut("pullRequest"))
+        {
+            if let Some(update) = pull["number"]
+                .as_u64()
+                .and_then(|number| updates.get(&number))
+                && let Some(fields) = update.as_object()
+            {
+                for (field, value) in fields {
+                    pull[field] = value.clone();
+                }
+            }
+        }
+    }
+    if let (Some(data), Some((details, count))) = (value["data"].as_object_mut(), missing) {
         let mut left = count;
         for entry in data.values_mut() {
             if left > 0

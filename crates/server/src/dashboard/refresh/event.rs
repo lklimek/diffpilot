@@ -94,11 +94,10 @@ pub(crate) async fn reread_items(
         }
         existing.insert(key);
     }
-    let candidates: BTreeSet<_> = items
+    let candidates: Vec<_> = items
         .candidates
         .iter()
         .filter(|(key, _)| !existing.contains(*key))
-        .map(|(_, item)| item.clone())
         .collect();
     let issues: Vec<_> = stored
         .issues
@@ -140,20 +139,38 @@ pub(crate) async fn reread_items(
     };
     let pull_limit = pulls.len().min(reread::REREAD_LIMIT);
     let issue_limit = issues.len().min(reread::REREAD_LIMIT - pull_limit);
-    let new_limit = candidate_limit.min(reread::REREAD_LIMIT - pull_limit - issue_limit);
+    let remaining = reread::REREAD_LIMIT - pull_limit - issue_limit;
+    let new_limit = candidates.len().min(candidate_limit).min(remaining);
+    let admitting: BTreeSet<_> = candidates[..new_limit]
+        .iter()
+        .map(|(key, _)| *key)
+        .collect();
+    let unranked: Vec<_> = items
+        .pulls
+        .iter()
+        .filter(|(key, _)| !existing.contains(*key) && !admitting.contains(*key))
+        .map(|(_, item)| item)
+        .collect();
+    let history_limit = unranked.len().min(remaining - new_limit);
     log_skipped(
         scope,
         "event item or re-read limit",
         pulls[pull_limit..]
             .iter()
             .chain(issues[issue_limit..].iter())
-            .chain(candidates.iter().skip(new_limit)),
+            .chain(candidates[new_limit..].iter().map(|(_, item)| *item))
+            .chain(unranked[history_limit..].iter().copied()),
     );
 
     let wanted: Vec<_> = pulls
         .into_iter()
         .take(pull_limit)
-        .chain(candidates.iter().take(new_limit).cloned())
+        .chain(
+            candidates[..new_limit]
+                .iter()
+                .map(|(_, item)| (*item).clone()),
+        )
+        .chain(unranked[..history_limit].iter().map(|item| (*item).clone()))
         .collect();
     let mut dirty = false;
     let mut retry = None;
@@ -165,14 +182,16 @@ pub(crate) async fn reread_items(
                 break;
             }
         };
-        let (updated, closed) = reread::apply(&rules, &mut stored.pull_requests, &fetched.found);
+        let (updated, closed, history_changed) =
+            reread::apply(&rules, &mut stored, &fetched.found, now);
+        dirty |= history_changed;
         if updated + closed > 0 {
             stored.prs_reread_at = Some(now);
             dirty = true;
         }
         if let Some((rules, policies)) = &candidate_rules {
             for (item, detail) in &fetched.found {
-                if candidates.contains(item)
+                if admitting.contains(&PrKey::new(&item.repo, item.number))
                     && stored.event_additions.len() < DAILY_ADDITIONS
                     && add_candidate(&mut stored, item, detail, rules, policies, now)
                 {
@@ -180,10 +199,11 @@ pub(crate) async fn reread_items(
                 }
             }
         }
-        if batch
-            .iter()
-            .any(|item| !candidates.contains(item) && !fetched.found.contains_key(item))
-        {
+        if batch.iter().any(|item| {
+            let key = PrKey::new(&item.repo, item.number);
+            (!admitting.contains(&key) || items.pulls.contains_key(&key))
+                && !fetched.found.contains_key(item)
+        }) {
             retry = Some(EventReadError::Github(WorkError::ExecutionFailed));
         }
     }

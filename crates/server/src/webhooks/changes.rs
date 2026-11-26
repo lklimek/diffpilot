@@ -240,7 +240,7 @@ pub(super) fn extract(
             .or_else(|| number(&body["issue"]["number"]))
             .ok_or(InvalidPayload)?;
         let candidate_login = match (event, action_name) {
-            ("pull_request", "opened") => pr["user"]["login"].as_str(),
+            ("pull_request", "opened" | "closed" | "reopened") => pr["user"]["login"].as_str(),
             ("pull_request", "assigned") => body["assignee"]["login"].as_str(),
             ("pull_request", "review_requested") => body["requested_reviewer"]["login"].as_str(),
             _ => None,

@@ -31,7 +31,7 @@ pub enum Destination {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DashboardRead {
-    /// Existing pull request.
+    /// Pull request in the ranking or eligible for a history update.
     Pull,
     /// Existing issue.
     Issue,
