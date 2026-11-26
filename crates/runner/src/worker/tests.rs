@@ -19,7 +19,7 @@ use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 use super::*;
 use crate::execute::Executor;
-use crate::provider::{LlmProvider, ProviderCall, ProviderError, ProviderOutcome};
+use crate::provider::{AttemptId, LlmProvider, ProviderCall, ProviderError, ProviderOutcome};
 use crate::test_support::{dirs, shared_repo, spec};
 
 const UNIT: Duration = Duration::from_millis(40);
@@ -154,7 +154,7 @@ impl LlmProvider for Scripted {
         Box::pin(async { Err(ProviderError::SessionUnavailable) })
     }
 
-    fn cancel(&self, _job: JobId) -> BoxFuture<'_, Result<(), ProviderError>> {
+    fn cancel(&self, _attempt: AttemptId) -> BoxFuture<'_, Result<(), ProviderError>> {
         self.cancel_called.store(true, Ordering::SeqCst);
         self.cancel_at
             .lock()
@@ -908,18 +908,28 @@ async fn claim_failing_with_github_unavailable_is_polled_again() {
 struct ParallelProvider {
     started: mpsc::UnboundedSender<JobId>,
     cancel: tokio::sync::watch::Sender<Vec<JobId>>,
+    finish_attempt_one: bool,
 }
 
 impl LlmProvider for ParallelProvider {
     fn run<'a>(
         &'a self,
         call: &'a ProviderCall,
-        _events: mpsc::Sender<ProviderEvent>,
+        events: mpsc::Sender<ProviderEvent>,
     ) -> BoxFuture<'a, Result<ProviderOutcome, ProviderError>> {
         Box::pin(async move {
             let job = call.job_spec.job_id;
             let mut cancelled = self.cancel.subscribe();
             self.started.send(job).unwrap();
+            if self.finish_attempt_one && call.job_spec.attempt == 1 {
+                events
+                    .send(ProviderEvent::OutputReady(json!({"answer": 42})))
+                    .await
+                    .unwrap();
+                return Err(ProviderError::Failed {
+                    message: "fixture completed".into(),
+                });
+            }
             cancelled
                 .wait_for(|jobs| jobs.contains(&job))
                 .await
@@ -937,8 +947,8 @@ impl LlmProvider for ParallelProvider {
         self.run(call, events)
     }
 
-    fn cancel(&self, job: JobId) -> BoxFuture<'_, Result<(), ProviderError>> {
-        self.cancel.send_modify(|jobs| jobs.push(job));
+    fn cancel(&self, attempt: AttemptId) -> BoxFuture<'_, Result<(), ProviderError>> {
+        self.cancel.send_modify(|jobs| jobs.push(attempt.job));
         Box::pin(async { Ok(()) })
     }
 }
@@ -951,7 +961,11 @@ async fn three_pr_jobs_run_before_any_finishes_and_a_fourth_waits_for_a_slot() {
     let root = TempDir::new().unwrap();
     let (started, mut active) = mpsc::unbounded_channel();
     let (cancel, cancelled) = tokio::sync::watch::channel(Vec::new());
-    let provider = Arc::new(ParallelProvider { started, cancel });
+    let provider = Arc::new(ParallelProvider {
+        started,
+        cancel,
+        finish_attempt_one: false,
+    });
     let mut specs = Vec::new();
     let stop_first = Arc::new(AtomicBool::new(false));
     for index in 1..=4 {
@@ -1058,4 +1072,116 @@ async fn three_pr_jobs_run_before_any_finishes_and_a_fourth_waits_for_a_slot() {
     for spec in specs.iter().skip(1) {
         assert!(cancelled.borrow().contains(&spec.job_id));
     }
+}
+
+#[tokio::test]
+async fn stale_output_reply_cannot_cancel_a_new_lease_of_the_same_job() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let root = TempDir::new().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let (respond, wait_to_reply) = tokio::sync::oneshot::channel();
+    let (requested, output_pending) = tokio::sync::oneshot::channel();
+    let mut spec = spec(JobKind::Plan, shared_repo());
+    spec.attempt = 1;
+    let output_path = job_path(&spec, "output");
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut headers = Vec::new();
+        while !headers.ends_with(b"\r\n\r\n") {
+            headers.push(stream.read_u8().await.unwrap());
+        }
+        let headers = std::str::from_utf8(&headers).unwrap();
+        assert!(headers.starts_with(&format!("POST {output_path} ")));
+        let length = headers
+            .lines()
+            .find_map(|line| {
+                line.to_ascii_lowercase()
+                    .strip_prefix("content-length:")?
+                    .trim()
+                    .parse::<usize>()
+                    .ok()
+            })
+            .unwrap();
+        stream.read_exact(&mut vec![0; length]).await.unwrap();
+        requested.send(()).unwrap();
+        wait_to_reply.await.unwrap();
+        stream
+            .write_all(b"HTTP/1.1 409 Conflict\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+    });
+
+    let (started, mut active) = mpsc::unbounded_channel();
+    let (cancel, _) = tokio::sync::watch::channel(Vec::new());
+    let executor = Arc::new(Executor::new(
+        Arc::new(ParallelProvider {
+            started,
+            cancel,
+            finish_attempt_one: true,
+        }),
+        dirs(root.path()),
+    ));
+    let job_runner = Arc::new(JobRunner {
+        client: ServerClient::new(&url, Secret::new(RUNNER_SECRET), Duration::from_secs(5))
+            .unwrap(),
+        executor: Arc::clone(&executor),
+        runner_secret: Secret::new(RUNNER_SECRET),
+        timing: Timing::v1(),
+    });
+    let old_claim = Claim {
+        job_token: Secret::new(JOB_TOKEN),
+        lease_expires_at: Timestamp::now(),
+        spec: spec.clone(),
+    };
+    let old_runner = Arc::clone(&job_runner);
+    let old = tokio::spawn(async move { old_runner.run_job(old_claim, Instant::now()).await });
+    output_pending.await.unwrap();
+    assert_eq!(active.recv().await, Some(spec.job_id));
+    executor.settled().await;
+
+    spec.attempt += 1;
+    let duplicate = spec.clone();
+    let next_executor = Arc::clone(&executor);
+    let (events, _received) = mpsc::channel(16);
+    let next_id = spec.job_id;
+    let mut next = tokio::spawn(async move {
+        next_executor
+            .execute(spec, EventSink::new(events, Scrubber::new([])))
+            .await
+    });
+    assert_eq!(active.recv().await, Some(next_id));
+    let (events, _received) = mpsc::channel(16);
+    let rejected = executor
+        .execute(duplicate.clone(), EventSink::new(events, Scrubber::new([])))
+        .await;
+    assert!(matches!(
+        rejected.outcome,
+        JobOutcome::Failed {
+            kind: contracts::job::result::JobFailureKind::WorkerUnavailable,
+            ..
+        }
+    ));
+    let duplicate_claim = Claim {
+        job_token: Secret::new(JOB_TOKEN),
+        lease_expires_at: Timestamp::now(),
+        spec: duplicate,
+    };
+    assert_eq!(
+        job_runner.run_job(duplicate_claim, Instant::now()).await,
+        JobEnd::LocallyOccupied
+    );
+    respond.send(()).unwrap();
+    assert_eq!(old.await.unwrap(), JobEnd::Stale(StatusCode::CONFLICT));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut next)
+            .await
+            .is_err(),
+        "the current execution must survive the old lease's 409"
+    );
+    next.abort();
+    assert!(next.await.unwrap_err().is_cancelled());
+    executor.settled().await;
+    server.await.unwrap();
 }

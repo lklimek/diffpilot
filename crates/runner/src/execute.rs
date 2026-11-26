@@ -22,7 +22,9 @@ use tokio::task::AbortHandle;
 
 use crate::git;
 use crate::phases::PhaseLog;
-use crate::provider::{LlmProvider, ProviderCall, ProviderError, ProviderEvent, ProviderOutcome};
+use crate::provider::{
+    AttemptId, LlmProvider, ProviderCall, ProviderError, ProviderEvent, ProviderOutcome,
+};
 use crate::scrub::{SUMMARY_MAX_CHARS, Scrubber, clip};
 
 /// Where `execute` sends a job's normalised events and its ready output, in order, together with the secrets
@@ -59,13 +61,33 @@ pub struct Executor {
     provider: Arc<dyn LlmProvider>,
     dirs: RunnerDirs,
     mirrors: Arc<Mutex<HashMap<PathBuf, Weak<tokio::sync::Mutex<()>>>>>,
-    active: Arc<Mutex<HashMap<JobId, ActiveAttempt>>>,
+    active: Arc<Mutex<HashMap<JobId, AttemptControl>>>,
 }
 
-struct ActiveAttempt {
+#[derive(Clone)]
+pub(crate) struct AttemptControl {
+    id: AttemptId,
     abort: AbortHandle,
     cancel: watch::Sender<bool>,
     finished: watch::Receiver<()>,
+}
+
+impl AttemptControl {
+    pub(crate) fn id(&self) -> AttemptId {
+        self.id
+    }
+
+    pub(crate) fn cancel(&self) {
+        self.cancel.send_replace(true);
+    }
+
+    pub(crate) fn abort(&self) {
+        self.abort.abort();
+    }
+
+    pub(crate) async fn settled(&self) {
+        let _ = self.finished.clone().changed().await;
+    }
 }
 
 struct AttemptRegistration {
@@ -99,7 +121,7 @@ impl Executor {
         }
     }
 
-    fn active(&self) -> MutexGuard<'_, HashMap<JobId, ActiveAttempt>> {
+    fn active(&self) -> MutexGuard<'_, HashMap<JobId, AttemptControl>> {
         self.active
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -107,46 +129,18 @@ impl Executor {
 
     /// Waits for the retained executions after the job monitors have stopped.
     pub async fn settled(&self) {
-        let completions: Vec<_> = self
-            .active()
-            .values()
-            .map(|active| active.finished.clone())
-            .collect();
-        for mut done in completions {
-            let _ = done.changed().await;
+        let attempts: Vec<_> = self.active().values().cloned().collect();
+        for attempt in attempts {
+            attempt.settled().await;
         }
     }
 
-    pub(crate) async fn settled_attempt(&self, job: JobId) {
-        let completion = self
-            .active()
-            .get(&job)
-            .map(|active| active.finished.clone());
-        if let Some(mut done) = completion {
-            let _ = done.changed().await;
+    pub(crate) fn abort_all(&self) -> Vec<AttemptControl> {
+        let active: Vec<_> = self.active().values().cloned().collect();
+        for attempt in &active {
+            attempt.abort();
         }
-    }
-
-    pub(crate) fn cancel_attempt(&self, job: JobId) {
-        if let Some(active) = self.active().get(&job) {
-            active.cancel.send_replace(true);
-        }
-    }
-
-    pub(crate) fn abort_attempt(&self, job: JobId) {
-        if let Some(active) = self.active().get(&job) {
-            active.abort.abort();
-        }
-    }
-
-    pub(crate) fn abort_all(&self) -> Vec<JobId> {
-        self.active()
-            .iter()
-            .map(|(job, active)| {
-                active.abort.abort();
-                *job
-            })
-            .collect()
+        active
     }
 
     /// The provider, for runner housekeeping and fencing stopped workers.
@@ -156,28 +150,32 @@ impl Executor {
 
     /// Runs a job to a result, with ordered events and ready output on `sink`.
     pub async fn execute(&self, spec: JobSpec, sink: EventSink) -> JobResult {
-        self.start(spec, sink).await
+        self.start(spec, sink).1.await
     }
 
     pub(crate) fn start(
         &self,
         spec: JobSpec,
         sink: EventSink,
-    ) -> impl Future<Output = JobResult> + use<> {
-        let job = spec.job_id;
+    ) -> (
+        Option<AttemptControl>,
+        impl Future<Output = JobResult> + use<>,
+    ) {
+        let id = AttemptId::from(&spec);
+        let job = id.job;
         let mut fallback = failed(
             &spec,
             JobFailureKind::Internal,
             "the runner failed while running the job",
         );
         let mut active = self.active();
-        let execution = match active.entry(job) {
+        let (control, execution) = match active.entry(job) {
             std::collections::hash_map::Entry::Occupied(_) => {
                 fallback.outcome = failure(
                     JobFailureKind::WorkerUnavailable,
                     "the job already has a local attempt",
                 );
-                None
+                (None, None)
             }
             std::collections::hash_map::Entry::Vacant(entry) => {
                 let (cancel, cancelled) = watch::channel(false);
@@ -191,15 +189,17 @@ impl Executor {
                     let held = registration;
                     held.executor.execute_here(spec, sink, cancelled).await
                 });
-                entry.insert(ActiveAttempt {
+                let control = AttemptControl {
+                    id,
                     abort: task.abort_handle(),
                     cancel: cancel.clone(),
                     finished,
-                });
-                Some((task, CancelOnDrop(cancel)))
+                };
+                entry.insert(control.clone());
+                (Some(control), Some((task, CancelOnDrop(cancel))))
             }
         };
-        async move {
+        (control, async move {
             let Some((task, _cancel)) = execution else {
                 return fallback;
             };
@@ -214,7 +214,7 @@ impl Executor {
                     fallback
                 }
             }
-        }
+        })
     }
 
     async fn execute_here(
@@ -293,7 +293,7 @@ impl Executor {
                 () = tokio::time::sleep_until(deadline) => ProviderError::Timeout,
             };
             let (cancelled, settled) =
-                tokio::join!(self.provider.cancel(spec.job_id), &mut session);
+                tokio::join!(self.provider.cancel(spec.into()), &mut session);
             if let Err(error) = cancelled {
                 tracing::warn!(job = %spec.job_id, %error, "cannot stop the worker after cancellation");
             }

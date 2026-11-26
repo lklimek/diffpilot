@@ -6,11 +6,10 @@ mod workspace;
 
 pub use gateway::GatewayClient;
 
-use super::{LlmProvider, ProviderCall, ProviderError, ProviderEvent, ProviderOutcome};
+use super::{AttemptId, LlmProvider, ProviderCall, ProviderError, ProviderEvent, ProviderOutcome};
 use contracts::{
     agent::JobKind,
     assessment::AssessmentMethod,
-    ids::JobId,
     job::{
         result::{JobFailureKind, SessionOutcome, SessionReport, Usage},
         spec::{JobSpec, JobTarget},
@@ -36,12 +35,12 @@ pub struct AppserverProvider {
     reconciled: Arc<std::sync::atomic::AtomicBool>,
     reconcile_gate: Arc<Mutex<()>>,
     lifecycle: Arc<SyncMutex<Lifecycle>>,
-    cancellations: Arc<SyncMutex<HashMap<JobId, watch::Sender<bool>>>>,
+    cancellations: Arc<SyncMutex<HashMap<AttemptId, watch::Sender<bool>>>>,
 }
 
 #[derive(Default)]
 struct Lifecycle {
-    active: HashMap<JobId, Active>,
+    active: HashMap<AttemptId, Active>,
     retiring: HashSet<i64>,
 }
 
@@ -76,8 +75,8 @@ impl Active {
 }
 
 struct CancellationRegistration<'a> {
-    registry: &'a SyncMutex<HashMap<JobId, watch::Sender<bool>>>,
-    job: JobId,
+    registry: &'a SyncMutex<HashMap<AttemptId, watch::Sender<bool>>>,
+    job: AttemptId,
 }
 
 impl Drop for CancellationRegistration<'_> {
@@ -277,35 +276,36 @@ impl AppserverProvider {
         spec: &JobSpec,
         events: mpsc::Sender<ProviderEvent>,
     ) -> Result<ProviderOutcome, ProviderError> {
+        let attempt = AttemptId::from(spec);
         let (cancel, mut cancelled) = watch::channel(false);
         {
             let mut registry = self
                 .cancellations
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if registry.contains_key(&spec.job_id) {
+            if registry.keys().any(|id| id.job == attempt.job) {
                 return Err(fault(
                     JobFailureKind::Configuration,
                     "execute_job",
                     "duplicate job registration",
                 ));
             }
-            registry.insert(spec.job_id, cancel);
+            registry.insert(attempt, cancel);
         }
         let _registration = CancellationRegistration {
             registry: &self.cancellations,
-            job: spec.job_id,
+            job: attempt,
         };
         let worker = container(spec)?;
         let owner = Arc::new(());
-        self.admit(spec.job_id, worker, Arc::downgrade(&owner), &cancelled)
+        self.admit(attempt, worker, Arc::downgrade(&owner), &cancelled)
             .await?;
         let mut clean = true;
         let outcome = self
             .execute_attempts(spec, events, &mut cancelled, &mut clean)
             .await;
         if clean {
-            self.lifecycle().active.remove(&spec.job_id);
+            self.lifecycle().active.remove(&attempt);
         }
         drop(owner);
         outcome
@@ -313,7 +313,7 @@ impl AppserverProvider {
 
     async fn admit(
         &self,
-        job: JobId,
+        job: AttemptId,
         worker: ContainerId,
         owner: Weak<()>,
         cancelled: &watch::Receiver<bool>,
@@ -332,7 +332,7 @@ impl AppserverProvider {
         futures::future::join_all(orphans.into_iter().map(|job| async move {
             let result = tokio::time::timeout(Duration::from_secs(5), self.reap(job, false)).await;
             if !matches!(result, Ok(Ok(()))) {
-                tracing::warn!(%job, "could not fence an orphaned worker before admission");
+                tracing::warn!(job = %job.job, attempt = job.number, "could not fence an orphaned worker before admission");
             }
         }))
         .await;
@@ -341,11 +341,10 @@ impl AppserverProvider {
         }
         let mut lifecycle = self.lifecycle();
         if matches!(&worker, ContainerId::Pr { pull_request_id, .. } if lifecycle.retiring.contains(pull_request_id))
-            || lifecycle.active.contains_key(&job)
             || lifecycle
                 .active
-                .values()
-                .any(|attempt| attempt.container == worker)
+                .iter()
+                .any(|(id, active)| id.job == job.job || active.container == worker)
         {
             return Err(fault(
                 JobFailureKind::WorkerUnavailable,
@@ -363,7 +362,7 @@ impl AppserverProvider {
         Ok(())
     }
 
-    async fn reap(&self, job: JobId, retirement: bool) -> Result<(), ProviderError> {
+    async fn reap(&self, job: AttemptId, retirement: bool) -> Result<(), ProviderError> {
         let (worker, owner) = {
             let mut lifecycle = self.lifecycle();
             let Lifecycle { active, retiring } = &mut *lifecycle;
@@ -383,7 +382,7 @@ impl AppserverProvider {
         let stop = async {
             self.launcher
                 .call(LauncherRequest {
-                    id: format!("orphan-{}", job.0),
+                    id: format!("orphan-{}-{}", job.job, job.number),
                     action: LauncherAction::Stop {
                         container: worker.clone(),
                     },
@@ -1172,7 +1171,7 @@ impl LlmProvider for AppserverProvider {
             Ok(())
         })
     }
-    fn cancel(&self, job: JobId) -> BoxFuture<'_, Result<(), ProviderError>> {
+    fn cancel(&self, job: AttemptId) -> BoxFuture<'_, Result<(), ProviderError>> {
         Box::pin(async move {
             if let Some(cancel) = self
                 .cancellations
@@ -1186,7 +1185,7 @@ impl LlmProvider for AppserverProvider {
         })
     }
 
-    fn reap_abandoned(&self, job: JobId) -> BoxFuture<'_, Result<(), ProviderError>> {
+    fn reap_abandoned(&self, job: AttemptId) -> BoxFuture<'_, Result<(), ProviderError>> {
         Box::pin(self.reap(job, false))
     }
 }

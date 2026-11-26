@@ -1,5 +1,8 @@
 use super::*;
-use contracts::{ids::UserId, job::spec::WorkingSession};
+use contracts::{
+    ids::{JobId, UserId},
+    job::spec::WorkingSession,
+};
 use serde_json::json;
 
 fn job(kind: JobKind) -> JobSpec {
@@ -714,7 +717,7 @@ async fn cancel_interrupts_subscribed_turn_then_stops_and_retires_key() {
             }
             tokio::task::yield_now().await;
         }
-        harness.provider.cancel(spec.job_id).await.unwrap();
+        harness.provider.cancel((&spec).into()).await.unwrap();
     };
     let (result, ()) =
         tokio::time::timeout(Duration::from_secs(20), async { tokio::join!(run, cancel) })
@@ -1139,7 +1142,7 @@ async fn cancellation_between_lost_session_attempts_prevents_fallback_turn() {
             }
             tokio::task::yield_now().await;
         }
-        harness.provider.cancel(spec.job_id).await.unwrap();
+        harness.provider.cancel((&spec).into()).await.unwrap();
     };
     let (result, ()) =
         tokio::time::timeout(Duration::from_secs(20), async { tokio::join!(run, cancel) })
@@ -1577,10 +1580,17 @@ async fn distinct_pr_workers_run_concurrently_and_only_the_orphan_is_fenced() {
 
     one.abort();
     assert!(one.await.unwrap_err().is_cancelled());
+    let retry_id = (&retry).into();
     let replacement = spawn(retry);
     wait_for_turns(3).await;
     // A delayed cleanup for the first lease must leave its active same-ID retry alone.
-    harness.provider.reap_abandoned(first.job_id).await.unwrap();
+    harness
+        .provider
+        .reap_abandoned((&first).into())
+        .await
+        .unwrap();
+    harness.provider.cancel((&first).into()).await.unwrap();
+    assert!(!*harness.provider.cancellations.lock().unwrap()[&retry_id].borrow());
     assert!(!replacement.is_finished());
     let seen = harness.seen.lock().await;
     let stops: Vec<_> = seen
@@ -1610,8 +1620,8 @@ async fn distinct_pr_workers_run_concurrently_and_only_the_orphan_is_fenced() {
         json!(container(&first).unwrap())
     );
 
-    harness.provider.cancel(first.job_id).await.unwrap();
-    harness.provider.cancel(second.job_id).await.unwrap();
+    harness.provider.cancel(retry_id).await.unwrap();
+    harness.provider.cancel((&second).into()).await.unwrap();
     for task in [replacement, two] {
         assert!(matches!(task.await.unwrap(), Err(ProviderError::Cancelled)));
     }

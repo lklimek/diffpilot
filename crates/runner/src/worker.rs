@@ -22,7 +22,7 @@ use tokio::task::JoinSet;
 use tokio::time::{Instant, sleep, sleep_until, timeout_at};
 
 use crate::client::{ClientError, ServerClient};
-use crate::execute::{EventSink, Executor};
+use crate::execute::{AttemptControl, EventSink, Executor};
 use crate::provider::ProviderEvent;
 use crate::scrub::{SUMMARY_MAX_CHARS, Scrubber, clip};
 
@@ -123,6 +123,8 @@ pub enum JobEnd {
     ResultRejected(StatusCode),
     /// The result could not be delivered before the lease must have ended; dropped.
     ResultUndelivered,
+    /// Another local execution already owns the job, so the claim was dropped.
+    LocallyOccupied,
     /// The local deadline passed: the agent was stopped, no result posted.
     Fenced,
     /// The server rejected the attempt (409 or another 4xx on events or output): stopped, no result posted.
@@ -239,12 +241,11 @@ impl Worker {
                 "some attempts did not finish stopping before the runner shutdown deadline"
             );
             let aborted = executor.abort_all();
+            let runner = &self.job_runner;
             let _ = tokio::time::timeout(timing.kill_and_cleanup, async {
-                futures::future::join_all(
-                    aborted
-                        .into_iter()
-                        .map(|job| self.job_runner.fence_orphan(job)),
-                )
+                futures::future::join_all(aborted.into_iter().map(|attempt| async move {
+                    runner.fence_orphan(&attempt).await;
+                }))
                 .await;
             })
             .await;
@@ -357,7 +358,11 @@ impl JobRunner {
         }
         let (sink, mut events) = mpsc::channel(EVENT_BUFFER);
         let sink = EventSink::new(sink, scrubber);
-        let task = self.executor.start(spec, sink);
+        let (control, task) = self.executor.start(spec, sink);
+        let Some(control) = control else {
+            // A duplicate claim must not publish a result for its existing owner.
+            return JobEnd::LocallyOccupied;
+        };
         tokio::pin!(task);
         let mut abort_at: Option<Instant> = None;
         let mut killed = false;
@@ -394,14 +399,14 @@ impl JobRunner {
                 Step::Finished => break None,
                 Step::KillAfterCancel => {
                     tracing::warn!(%job, "the provider did not stop after the cancel request; killing the agent call");
-                    self.executor.abort_attempt(job);
+                    control.abort();
                     killed = true;
                     break None;
                 }
             }
             if run.cancel_requested && abort_at.is_none() {
                 tracing::info!(%job, "cancel requested; stopping the agent");
-                self.executor.cancel_attempt(job);
+                control.cancel();
                 abort_at = Some(Instant::now() + self.timing.term_grace);
             }
         };
@@ -410,13 +415,13 @@ impl JobRunner {
         // so back-pressure never holds up an attempt's stop and clean-up.
         events.close();
         if let Some(stop) = stopped {
-            self.stop_agent(job, task).await;
+            self.stop_agent(&control, task).await;
             return stopped_end(stop, job, attempt);
         }
 
         let result = task.await;
         if killed {
-            self.fence_orphan(job).await;
+            self.fence_orphan(&control).await;
         }
         while let Ok(event) = events.try_recv() {
             if let ProviderEvent::Activity(event) = event
@@ -433,21 +438,27 @@ impl JobRunner {
     }
 
     /// Stops the agent within `term_grace + kill_and_cleanup`: cancel, then drop (kill) the call.
-    async fn stop_agent(&self, job: JobId, task: Pin<&mut impl Future<Output = JobResult>>) {
-        self.executor.cancel_attempt(job);
+    async fn stop_agent(
+        &self,
+        control: &AttemptControl,
+        task: Pin<&mut impl Future<Output = JobResult>>,
+    ) {
+        control.cancel();
         if tokio::time::timeout(self.timing.term_grace, task)
             .await
             .is_err()
         {
-            self.executor.abort_attempt(job);
-            self.fence_orphan(job).await;
+            control.abort();
+            self.fence_orphan(control).await;
         }
     }
 
-    async fn fence_orphan(&self, job: JobId) {
+    async fn fence_orphan(&self, control: &AttemptControl) {
+        let attempt = control.id();
+        let job = attempt.job;
         let cleanup = async {
-            self.executor.settled_attempt(job).await;
-            self.executor.provider().reap_abandoned(job).await
+            control.settled().await;
+            self.executor.provider().reap_abandoned(attempt).await
         };
         match tokio::time::timeout(self.timing.kill_and_cleanup, cleanup).await {
             Ok(Ok(())) => {}
