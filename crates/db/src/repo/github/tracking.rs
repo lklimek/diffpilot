@@ -9,7 +9,9 @@ use sqlx::{SqliteConnection, SqlitePool};
 use super::Repository;
 use crate::error::DbError;
 
-// Used for both webhook admission and the read/sync projections.
+// Used for both webhook admission and the read/sync projections. The history bound covers the
+// 84-day chart window plus local-midnight and DST shifts. Authored events keep the repository
+// tracked after its last ranked PR closes, even when GitHub sends a later reopen.
 macro_rules! tracking_query {
     ($suffix:literal) => {
         concat!("WITH owners AS (
@@ -24,19 +26,32 @@ macro_rules! tracking_query {
               OR EXISTS (SELECT 1 FROM analyses a JOIN memberships m
                          ON m.tenant_id = a.tenant_id AND m.user_id = a.created_by
                          WHERE a.pull_request_id = pr.id AND a.tenant_id = r.tenant_id)
+         ), snapshots AS MATERIALIZED (
+           SELECT m.tenant_id, d.snapshot
+           FROM memberships m JOIN dashboard_refreshes d ON d.id = (
+             SELECT id FROM dashboard_refreshes
+             WHERE tenant_id = m.tenant_id AND user_id = m.user_id AND state IN ('ranking', 'finished')
+             ORDER BY started_at DESC, rowid DESC LIMIT 1
+           )
+         ), recent_authored AS (
+           SELECT d.tenant_id, event.value ->> '$.item_id' AS item_id
+           FROM snapshots d, json_each(d.snapshot -> '$.history') event
+           WHERE event.value ->> '$.kind' IN ('pr_opened', 'pr_merged', 'pr_closed_unmerged')
+             AND julianday(event.value ->> '$.at') BETWEEN julianday('now', '-86 days') AND julianday('now', '+1 day')
          ), named_tracking AS (
            SELECT ds.tenant_id,
                   rule.value ->> '$.repo.owner' AS owner, rule.value ->> '$.repo.name' AS name
            FROM dashboard_settings ds JOIN memberships m USING (tenant_id, user_id),
                 json_each(ds.repositories) rule
            UNION ALL
-           SELECT m.tenant_id, item.value ->> '$.facts.repo.owner', item.value ->> '$.facts.repo.name'
-           FROM memberships m JOIN dashboard_refreshes d ON d.id = (
-             SELECT id FROM dashboard_refreshes
-             WHERE tenant_id = m.tenant_id AND user_id = m.user_id AND state IN ('ranking', 'finished')
-             ORDER BY started_at DESC, rowid DESC LIMIT 1
-           ), json_each(json_array(d.snapshot -> '$.pull_requests', d.snapshot -> '$.issues')) items,
-              json_each(items.value) item
+           SELECT d.tenant_id, item.value ->> '$.facts.repo.owner', item.value ->> '$.facts.repo.name'
+           FROM snapshots d, json_each(json_array(d.snapshot -> '$.pull_requests', d.snapshot -> '$.issues')) items,
+                json_each(items.value) item
+           UNION ALL
+           SELECT tenant_id, substr(item_id, 1, instr(item_id, '/') - 1),
+                  substr(item_id, instr(item_id, '/') + 1, instr(item_id, '#') - instr(item_id, '/') - 1)
+           FROM recent_authored
+           WHERE instr(item_id, '/') > 1 AND instr(item_id, '#') > instr(item_id, '/') + 1
          ), names AS MATERIALIZED (
            SELECT DISTINCT t.tenant_id, t.owner, t.name, r.github_id
            FROM named_tracking t LEFT JOIN repos r

@@ -277,13 +277,24 @@ const HOOK_SECRET: &str = "synthetic-dashboard-webhook-secret";
 const LOCAL_MORNING: &str = "2026-11-17T23:15:00Z";
 
 async fn pull_delivery(w: &World, action: &str, repo: &str, number: u64, author: &str) -> Uuid {
-    let id = Uuid::new_v4();
     let repo_id = match repo {
         "acme/wallet-ui" => 42,
         "acme/platform" => 43,
         "acme/consensus" => 44,
         _ => panic!("unknown fixture repository"),
     };
+    pull_delivery_with_repo_id(w, action, repo, repo_id, number, author).await
+}
+
+async fn pull_delivery_with_repo_id(
+    w: &World,
+    action: &str,
+    repo: &str,
+    repo_id: i64,
+    number: u64,
+    author: &str,
+) -> Uuid {
+    let id = Uuid::new_v4();
     let body = json!({
         "action": action,
         "repository": {"id": repo_id, "full_name": repo},
@@ -544,4 +555,132 @@ async fn pull_webhook_during_first_scan_reconciles_the_new_snapshot() {
         HistoryKind::PrClosedUnmerged,
         LOCAL_MORNING.parse().unwrap()
     )));
+}
+
+#[tokio::test]
+async fn full_scan_reconciles_rankings_with_newer_history_and_falls_back_to_q2() {
+    let w = world().await;
+    // The Q2 answer for #311 still says OPEN. Its later Q13 answer observes a merge.
+    let merged = json!({"state":"MERGED", "closedAt": LOCAL_MORNING, "mergedAt": LOCAL_MORNING});
+    let mut history = w.gate.history_updates.lock().unwrap();
+    history.insert("2026-11-10T10:00:00Z".to_owned(), merged);
+    // For #476, only Q2 sees the merge; Q13 cannot read the PR.
+    history.insert("2026-11-13T12:00:00Z".to_owned(), Value::Null);
+    drop(history);
+    pull_state(&w, 476, "MERGED", Some(LOCAL_MORNING), Some(LOCAL_MORNING));
+
+    assert_eq!(w.refreshed().await.state, RefreshState::Finished);
+    let (_, stored) = super::plugin::stored(&w).await;
+    let merge = (HistoryKind::PrMerged, LOCAL_MORNING.parse().unwrap());
+    assert!(
+        item_history(&w, "acme/wallet-ui#311")
+            .await
+            .contains(&merge)
+    );
+    assert!(stored.pull_requests.iter().all(|pr| pr.facts.number != 311));
+    assert!(
+        item_history(&w, "acme/node-client#476")
+            .await
+            .contains(&merge)
+    );
+    assert!(stored.pull_requests.iter().all(|pr| pr.facts.number != 476));
+}
+
+#[tokio::test]
+async fn last_ranked_pull_close_keeps_its_repository_live_for_reopening() {
+    use contracts::api::dashboard::HistoryEvent;
+
+    let mut w = world().await;
+    Arc::get_mut(&mut w.state.config)
+        .unwrap()
+        .github_webhook_secret = Some(HOOK_SECRET.into());
+    let wallet = repo("acme", "wallet-ui");
+    let mut configured = settings();
+    configured.repositories.retain(|row| row.repo != wallet);
+    configured.enumerate_owners.clear();
+    let github = w.state.db.github();
+    let wall = Timestamp::now();
+    w.state
+        .db
+        .dashboard()
+        .save_settings(DEFAULT_TENANT, "u1", &configured, wall)
+        .await
+        .expect("settings");
+    w.refreshed().await;
+    let (id, mut snapshot) = super::plugin::stored(&w).await;
+    assert!(
+        snapshot
+            .pull_requests
+            .iter()
+            .any(|pr| pr.facts.number == 311)
+    );
+    snapshot
+        .pull_requests
+        .retain(|pr| pr.facts.repo != wallet || pr.facts.number == 311);
+    snapshot
+        .history
+        .retain(|event| !event.item_id.starts_with("acme/wallet-ui#"));
+    snapshot.history.extend([
+        HistoryEvent {
+            kind: HistoryKind::ReviewGiven,
+            at: wall,
+            item_id: "review-only/code#33".to_owned(),
+        },
+        HistoryEvent {
+            kind: HistoryKind::PrClosedUnmerged,
+            at: wall - SignedDuration::from_hours(24 * 90),
+            item_id: "expired/code#42".to_owned(),
+        },
+    ]);
+    super::plugin::write(&w, id, &snapshot).await;
+    installed(&w.state.db, wallet.clone(), 42, wall).await;
+
+    let at = Timestamp::now();
+    pull_state(&w, 311, "CLOSED", Some(&at.to_string()), None);
+    pull_delivery(&w, "closed", "acme/wallet-ui", 311, "alice").await;
+    flush_webhooks(&w, Timestamp::now()).await;
+    let closure = (HistoryKind::PrClosedUnmerged, at);
+    let item = "acme/wallet-ui#311";
+    assert!(item_history(&w, item).await.contains(&closure));
+    assert!(
+        super::plugin::stored(&w)
+            .await
+            .1
+            .pull_requests
+            .iter()
+            .all(|pr| pr.facts.repo != wallet)
+    );
+
+    github
+        .prune_installations()
+        .await
+        .expect("prune installations");
+    let tracked = github
+        .repository_installations(Some(DEFAULT_TENANT))
+        .await
+        .expect("tracking");
+    let still_live = tracked
+        .iter()
+        .any(|entry| entry.repo == wallet && entry.live);
+
+    pull_state(&w, 311, "OPEN", None, None);
+    pull_delivery_with_repo_id(&w, "reopened", "acme/wallet-ui", 99, 311, "alice").await;
+    flush_webhooks(&w, Timestamp::now()).await;
+    assert!(
+        item_history(&w, item).await.contains(&closure),
+        "a different repository ID must not update the chart"
+    );
+
+    pull_delivery(&w, "reopened", "acme/wallet-ui", 311, "alice").await;
+    flush_webhooks(&w, Timestamp::now()).await;
+    assert!(!item_history(&w, item).await.contains(&closure));
+    assert!(
+        still_live,
+        "pruning must retain the App installation for recent authored history"
+    );
+    assert!(
+        tracked
+            .iter()
+            .all(|entry| !["review-only", "expired"].contains(&entry.repo.owner.as_str()))
+    );
 }

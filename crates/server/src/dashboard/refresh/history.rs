@@ -11,6 +11,7 @@ use jiff::civil::{Date, Time};
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Span};
 
+use crate::dashboard::plugin::PrKey;
 use crate::dashboard::score::ScoreRules;
 use crate::dashboard::snapshot::Snapshot;
 use crate::dashboard::zone;
@@ -191,6 +192,34 @@ pub(super) fn apply(
     changed
 }
 
+/// Reconciles the scan's open membership and chart against the same latest observed state.
+pub(super) fn reconcile(
+    rules: &ScoreRules,
+    pulls: &mut BTreeMap<ItemRef, PullDetail>,
+    history: &BTreeMap<ItemRef, HistoryPr>,
+    start: Timestamp,
+) -> Vec<HistoryEvent> {
+    let mut events = Events::default();
+    from_details(rules, history, start, &mut events);
+    let states: HashMap<_, _> = history
+        .iter()
+        .map(|(item, detail)| (PrKey::new(&item.repo, item.number), detail.state.as_str()))
+        .collect();
+    pulls.retain(|item, detail| {
+        if let Some(state) = states.get(&PrKey::new(&item.repo, item.number)) {
+            return *state == "OPEN";
+        }
+        let lifecycle = Lifecycle::from(&*detail);
+        if lifecycle.authored_by_scanned_login(rules) {
+            for (kind, at) in lifecycle.events() {
+                events.add(kind, item, at, start);
+            }
+        }
+        lifecycle.state == "OPEN"
+    });
+    events.into_events()
+}
+
 /// Events of pull requests read by search and Q13.
 fn from_details(
     rules: &ScoreRules,
@@ -236,16 +265,14 @@ pub(super) struct Refused<'a> {
 /// Reads the history of `logins` since `first` (local date) / `start`. A login search refuses is read from the
 /// pull requests of the configured and enumerated repositories (whoever merged them; Q16) plus the pull requests
 /// its public events name (its reviews elsewhere; Q14). Errors that end the refresh are returned; others become
-/// notes.
+/// notes. Lifecycle facts read in Q13 take precedence over Q16.
 pub(super) async fn collect<T: TokenSource>(
     client: &WorkClient<T>,
-    rules: &ScoreRules,
     logins: &[String],
     refused_from: &Refused<'_>,
     first: Date,
     start: Timestamp,
-) -> Result<(Vec<HistoryEvent>, Vec<ScanNote>), WorkError> {
-    let mut events = Events::default();
+) -> Result<Fetched<HistoryPr>, WorkError> {
     let mut notes = Vec::new();
     let mut searched: BTreeSet<ItemRef> = BTreeSet::new();
     let mut from_feeds: BTreeSet<ItemRef> = BTreeSet::new();
@@ -321,16 +348,16 @@ pub(super) async fn collect<T: TokenSource>(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    let Fetched {
-        mut found,
-        notes: detail_notes,
-    } = client.history_details(&pulls, logins).await?;
-    notes.extend(detail_notes);
-    for (item, pr) in listed {
-        found.entry(item).or_insert(pr);
-    }
-    from_details(rules, &found, start, &mut events);
-    Ok((events.into_events(), notes))
+    let fetched = client.history_details(&pulls, logins).await?;
+    notes.extend(fetched.notes);
+    let mut seen = BTreeSet::new();
+    let found = fetched
+        .found
+        .into_iter()
+        .chain(listed)
+        .filter(|(item, _)| seen.insert(PrKey::new(&item.repo, item.number)))
+        .collect();
+    Ok(Fetched { found, notes })
 }
 
 /// The UTC date of `at` (scan notes name days, not instants).
