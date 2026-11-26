@@ -1,6 +1,6 @@
 # ADR-026: GitHub App webhooks drive item refresh; no automatic scans; judgements go outdated instead of re-run
 
-- Status: proposed (2026-11-25). Owner decisions P1–P4 and the infrastructure of MemCan TODO `dea64a94`
+- Status: accepted for v1.4. Owner decisions P1–P4 and the infrastructure of MemCan TODO `dea64a94`
   (2026-11-24/25); owner answers OQ1–OQ4 of 2026-11-25 in `docs/v1.4-phase-b-plan.md` §11. Plan: `docs/v1.4-phase-b-plan.md`
   §2, §4, §5. Security review SEC-001…013 (Smythe, 2026-11-25,
   `/data/artifacts/diffpilot/2026-11-25/v14-phase-b-sec/sec-findings.md`) adopted.
@@ -22,33 +22,33 @@ Automatic re-judging of changed items spent the daily cap (120) on items whose r
    `check_run` (failing conclusions only; the rest ignored at receipt), `status` (App permission "Commit statuses:
    read"); `installation*` and `ping` arrive automatically. `workflow_run` is not subscribed (owner OQ2): it
    repeats `check_suite` for GitHub Actions and would need "Actions: read".
-2. **Endpoint:** a **separate listener** (`Listener::Webhook`, `SR_WEBHOOK_LISTEN_ADDR`, default port 3002) serves
+2. **Endpoint:** a **separate listener** (`Listener::Webhook`, `SR_WEBHOOK_LISTEN_ADDR`, default `127.0.0.1:3002`) serves
    only `POST /webhooks/github`; the UI/API listener answers 404 for `/webhooks/*`, and traefik forwards
    `/diffpilot/github` to the webhook port only. Infrastructure requirement: traefik ≥ 3.6.4 (or 2.11.32), which fixes
    the 2025 matcher bypasses (CVE-2025-47952, CVE-2025-66490). Own auth kind (`GithubSignature`): headers and
    `Content-Length` checked before the body is read, body ≤ 4 MiB (route-level limit), load shedding at 8 concurrent
    requests with an 8 s timeout, exactly one `X-Hub-Signature-256` (`sha256=` + 64 hex), HMAC-SHA256 over the raw
    body in constant time **before** parsing, then the hook target must be this App; 401 without detail on failure.
-   Every answer sent before the body is consumed (404, 4xx header checks, 503) first reads and discards the body up
-   to 4 MiB within the body timeout; otherwise the reverse proxy sees a reset and returns 502 (observed 2026-11-25).
-3. **Trust:** **the WAF and source IPs are not authentication** (GitHub's hook ranges deliver any user's webhooks to
-   any URL). The App `claudbot` is public, so a valid signature proves only "GitHub, our App"; deliveries are
-   processed only when its repository is **tracked by at least one tenant** (owner 2026-11-25): its owner is in a
-   tenant user's "Owners to list", it is in a tenant user's repository rules, a PR of it is watched or analysed by a
-   tenant user, or the item is in a tenant user's snapshot — matched by numeric ids where the event has them. Others
-   are acknowledged (2xx), recorded `not_allowed`, counted and do nothing. No environment allow-list: per-tenant
-   policy never lives in environment variables (it would break multi-tenant).
+   Early responses drain the unread body up to 4 MiB within the body timeout. An oversized `Content-Length`
+   gets 413 and closes the connection. A body that exceeds the size or time limit during draining also closes
+   the connection.
+3. **Trust:** Authentication always requires the signature and App target checks. The WAF and source IPs provide
+   traffic filtering. The App `claudbot` is public. A repository event is processed only when its repository is
+   **tracked by at least one tenant** (owner 2026-11-25). Tracking comes from the owners listed under **When GitHub
+   search refuses an account**, repository rules, active PR watches, analyses and My work snapshots. The server
+   matches numeric repository IDs when available. Untracked deliveries are acknowledged (202) and counted as
+   `not_allowed` without storing a delivery row.
 4. **Delivery handling:** dedupe by `X-GitHub-Delivery` in `github_deliveries`, and by body SHA-256 for 14 days (the
    GUID is not signed, so a captured body replayed under new GUIDs is a duplicate); a failed processing stays
    retryable (GitHub redelivery reuses the id). The handler stores only typed change keys (repo, number, kind, head
-   SHA, action), answers 202 and an in-process worker processes them; rows kept 14 days.
+   SHA, action), answers 202 and an in-process worker processes them. Rows are kept for 14 days. The receiver
+   answers 200 for a valid ping or a duplicate delivery.
 5. **Events are signals, not state:** processing re-reads GitHub with the affected user's token through the
    targeted re-read (ADR-022 §5, extended to issues), in a fixed 10 s window per user that a stream cannot extend,
-   within a per-user hourly budget of event-driven reads, so order and duplicates are harmless. Check and status
-   events match by (repository, head SHA). Watched PRs in live repositories are probed only on
-   events (at most once a minute; no periodic probe, owner OQ3); watched PRs in repositories without the App are
-   probed once an hour. A new item's
-   relation comes from the re-read, never from the event.
+   within a per-user hourly budget of event-driven reads. A check can name a PR by base repository and number
+   with a matching base or head repository. SHA-only hints match by repository and head SHA. Watched PRs in live
+   repositories are probed only on events (at most once a minute, owner OQ3). The hourly probe covers other
+   watched PRs. The re-read determines a new item's relation.
 6. **Facts only:** an event never re-judges an existing judgement. A judgement whose inputs (facts) or prompt changed
    is *outdated*; the owner re-judges one item by a click or all by "Refresh and re-judge outdated". Never-judged
    items are judged automatically within the daily cap (event-added items at most 20 per user and day; no job at
@@ -56,12 +56,12 @@ Automatic re-judging of changed items spent the daily cap (120) on items whose r
 7. **No automatic refresh:** `dashboard::fresh` (F2, F3) is removed; manual Refresh and the nightly scheduled scan
    (ADR-020) stay. Repositories without the App (or a server without the webhook secret) are refreshed only by those
    and are marked "not live".
-8. **Missed events:** our own processing failures retry (3×, then `failed`, resumed at start-up). Deliveries GitHub
-   could not hand over (server, tunnel or traefik down) are **not** fetched or redelivered automatically (owner OQ1,
-   2026-11-25): the nightly scan and manual Refresh recover the facts; the owner may redeliver by hand in the App
-   settings.
-9. **Configuration:** deployment facts only: `SR_GITHUB_WEBHOOK_SECRET` (secrets.env), optional
-   `SR_GITHUB_WEBHOOK_SECRET_PREVIOUS` for rotation, `SR_WEBHOOK_LISTEN_ADDR`; content type `application/json`.
+8. **Missed events:** internal processing failures get up to three retries. On startup the worker resumes failed
+   deliveries received in the last three days. Diffpilot runs no redelivery sweep. For failed handoffs during
+   a server, tunnel or Traefik outage, the nightly scan and manual Refresh recover the facts. The owner can
+   redeliver by hand in the App settings (owner OQ1, 2026-11-25).
+9. **Configuration:** `SR_GITHUB_WEBHOOK_SECRET`, optional `SR_GITHUB_WEBHOOK_SECRET_PREVIOUS` for rotation
+   (both support `_FILE`), and `SR_WEBHOOK_LISTEN_ADDR`. The receiver accepts `application/json`.
    Tenant policy (tracked repositories; relays = members' linked logins) comes from Settings. Without the
    secret the server starts, logs once, answers 503 on the route and marks nothing live.
    `SR_GITHUB_WEBHOOK_URL` is optional and only shown in Settings. Logs carry no body, signature or payload text;
@@ -91,11 +91,11 @@ Automatic re-judging of changed items spent the daily cap (120) on items whose r
 ## Consequences
 - Contract changes: `RouteAuth::GithubSignature`, `Listener::Webhook`, route `githubWebhook`, C1–C3 and C13 of the
   phase B plan; migration `0031_github_webhooks.sql`; App settings change (webhook on, events, "Commit statuses:
-  read" accepted by each installation); a third published port that only traefik reaches; `docs/deployment.md`,
+  read" accepted by each installation); a webhook port published only for Traefik; `docs/deployment.md`,
   runbook (traefik version, rotation order) and threat model (T40) are updated.
 - Facts of live repositories are minutes fresh without an open page; non-live ones are as fresh as the last
   manual or nightly scan, and the UI says so.
 - Rankings show more *outdated* judgements; the owner's clicks, not a timer, spend the daily cap.
-- A public inbound endpoint exists; its safety rests on the separate listener, the HMAC secret, the installation
-  allow-list and the fact that events only trigger bounded reads. The WAF only reduces noise. Residual risk: a party
-  holding a captured signed body can replay it after the 14-day dedupe window (cost only, T40).
+- A public inbound endpoint relies on the separate listener, HMAC verification, the App target check,
+  tracked-repository admission and bounded reads. The WAF reduces traffic. The 14-day dedupe window limits
+  replay protection (T40).

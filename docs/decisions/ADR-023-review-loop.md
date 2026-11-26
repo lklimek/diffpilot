@@ -185,12 +185,12 @@ read with tokens (ADR-019).
   checkout already holds the base commit, so the input carries nothing more.
 
 
-## Amendment (2026-11-25, proposed; v1.4 phase B, `docs/v1.4-phase-b-plan.md` §2, §6, §7)
+## Amendment (2026-11-25, accepted; v1.4 phase B, `docs/v1.4-phase-b-plan.md` §2, §6, §7)
 - **Webhooks no longer rejected.** The alternative "GitHub webhooks for watched PRs" (Alternatives considered) is
   reversed by [ADR-026](ADR-026-github-webhooks.md): the public endpoint now exists (Cloudflare WAF, atlas tunnel,
   HMAC-verified `POST /webhooks/github`). A webhook event on a watched PR runs the watch probe (at most once a minute);
-  watched PRs in repositories with the App get no periodic probe, those without it are probed once an hour instead of
-  every 5 minutes (owner OQ3, 2026-11-25).
+  watched PRs in live repositories get no periodic probe. The hourly probe covers other watched PRs (owner OQ3,
+  2026-11-25).
 - **Status comments.** A bot's PR comment without finding markers is stored as a status comment: listed, never
   queued, assessed or counted (owner TODO `07b69073` F1/F2).
 - **Needs you** has one server definition (plan §6 N1–N2), shared with the web through a checked-in fixture.
@@ -202,7 +202,8 @@ read with tokens (ADR-019).
   decision becomes a local decision (`DecisionVia::ImportedGithub`, attribution and evidence link) only for an item
   without a decision and only from the item's own thread or a later comment referring to it. Authority: a tenant
   member's own statement matched by numeric GitHub id. An account from Linked logins can propose a decision
-  with a matching structured marker and a pinned numeric id. That proposal requires the member's confirmation.
+  with a matching `<!-- maintainer-decision v1 kind=<kind> -->` marker and a pinned numeric id. That proposal
+  requires the member's confirmation.
   An author's withdrawal can bind for their own item by numeric GitHub id, including for an author outside the
   tenant. The withdrawal never propagates. A binding import requires a whole-sentence cue outside negation. A proposal stays in Needs you with the recorded decision pre-filled (`import_proposal`, OQ7).
   **Invariant: an imported decision never has effects**; only a
