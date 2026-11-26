@@ -57,6 +57,14 @@ the same attempt; 400 malformed body.
   the code-mode `exec` isolate has no network; any tool item (command, MCP, web search, file change, sub-agent) fails
   the job.
 
+## Runner capacity
+
+A runner process keeps at most `SR_WORKER_MAX_RUNNING` jobs in flight (default 3). Compose gives the runner
+and launcher the same limit. Claims and retirement acknowledgements are sent in order. Each job owns its
+lease, events, cancellation and cleanup until its slot is free. A retirement request for a PR with a local
+container still in use is retried. The launcher reserves a worker through the gap between Ensure and
+Attach. Shutdown stops claiming, cancels all local attempts and waits for cleanup within the stop grace.
+
 ## State machine
 `JobState::transition` is the single source (`crates/contracts/src/job/state.rs`):
 

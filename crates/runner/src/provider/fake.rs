@@ -17,7 +17,6 @@ use contracts::agent::JobKind;
 use contracts::agent::judge_work::{JudgeWorkInput, part_values};
 use contracts::agent::verify_comments::VerifyCommentsInput;
 use contracts::api::dashboard::ScoreComponent;
-use contracts::ids::JobId;
 use contracts::job::event::JobEvent;
 use contracts::job::result::Usage;
 use futures::future::BoxFuture;
@@ -34,7 +33,9 @@ use jiff::SignedDuration;
 
 mod host;
 mod recording;
-use crate::provider::{LlmProvider, ProviderCall, ProviderError, ProviderEvent, ProviderOutcome};
+use crate::provider::{
+    AttemptId, LlmProvider, ProviderCall, ProviderError, ProviderEvent, ProviderOutcome,
+};
 use recording::{Recording, usage_delta};
 
 /// Every recording of the fixture session, for the cumulative usage before a job.
@@ -84,7 +85,7 @@ pub const SCRIPT_ENV: &str = "SR_RUNNER_FAKE_SCRIPT";
 #[derive(Debug, Default)]
 pub struct FakeProvider {
     step_delay: Duration,
-    running: Mutex<HashMap<JobId, Arc<Notify>>>,
+    running: Mutex<HashMap<AttemptId, Arc<Notify>>>,
     script: Option<PathBuf>,
     /// Applications per script rule id.
     uses: Mutex<HashMap<String, u32>>,
@@ -218,7 +219,8 @@ impl FakeProvider {
             }
         };
         let cancelled = Arc::new(Notify::new());
-        let _registration = Registration::new(self, call.job_spec.job_id, Arc::clone(&cancelled));
+        let _registration =
+            Registration::new(self, call.job_spec.as_ref().into(), Arc::clone(&cancelled));
         let mut stream = Recording::default();
         for line in jsonl.lines() {
             if !step_delay.is_zero() {
@@ -327,7 +329,7 @@ impl LlmProvider for FakeProvider {
         Box::pin(async move { self.replay(call, &events).await })
     }
 
-    fn cancel(&self, job: JobId) -> BoxFuture<'_, Result<(), ProviderError>> {
+    fn cancel(&self, job: AttemptId) -> BoxFuture<'_, Result<(), ProviderError>> {
         let running = self
             .running
             .lock()
@@ -345,11 +347,11 @@ impl LlmProvider for FakeProvider {
 /// Removes the job from the running set when the replay ends or is dropped.
 struct Registration<'a> {
     provider: &'a FakeProvider,
-    job: JobId,
+    job: AttemptId,
 }
 
 impl<'a> Registration<'a> {
-    fn new(provider: &'a FakeProvider, job: JobId, cancelled: Arc<Notify>) -> Self {
+    fn new(provider: &'a FakeProvider, job: AttemptId, cancelled: Arc<Notify>) -> Self {
         provider
             .running
             .lock()
@@ -651,7 +653,7 @@ mod tests {
             &json!({"rules": [{"id": "slow", "job": "plan", "action": {"replay": {"step_delay_ms": 200}}}]}),
         ));
         let job = call(JobKind::Plan, "Job: plan.");
-        let id = job.job_spec.job_id;
+        let id = job.job_spec.as_ref().into();
         let running = tokio::spawn({
             let provider = Arc::clone(&provider);
             async move {

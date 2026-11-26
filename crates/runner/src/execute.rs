@@ -2,8 +2,10 @@
 //! mirror, delegates checkout and persistent threads to the worker provider, streams scrubbed events and
 //! maps the outcome to a `JobResult`. Cancellation settles before another claim.
 
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
 use contracts::agent::{JobKind, verify_comments};
@@ -15,11 +17,14 @@ use contracts::job::result::{
 };
 use contracts::job::spec::{JobSpec, JobTarget};
 use contracts::time::Timestamp;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
+use tokio::task::AbortHandle;
 
 use crate::git;
 use crate::phases::PhaseLog;
-use crate::provider::{LlmProvider, ProviderCall, ProviderError, ProviderEvent, ProviderOutcome};
+use crate::provider::{
+    AttemptId, LlmProvider, ProviderCall, ProviderError, ProviderEvent, ProviderOutcome,
+};
 use crate::scrub::{SUMMARY_MAX_CHARS, Scrubber, clip};
 
 /// Where `execute` sends a job's normalised events and its ready output, in order, together with the secrets
@@ -51,12 +56,50 @@ pub struct RunnerDirs {
 }
 
 /// Runs claimed container jobs with one provider.
+#[derive(Clone)]
 pub struct Executor {
     provider: Arc<dyn LlmProvider>,
     dirs: RunnerDirs,
-    /// Held until the attempt has stopped and cleaned up, including cancellation.
-    gate: Arc<tokio::sync::Mutex<()>>,
-    active: Arc<std::sync::Mutex<Option<(JobId, tokio::task::AbortHandle)>>>,
+    mirrors: Arc<Mutex<HashMap<PathBuf, Weak<tokio::sync::Mutex<()>>>>>,
+    active: Arc<Mutex<HashMap<JobId, AttemptControl>>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct AttemptControl {
+    id: AttemptId,
+    abort: AbortHandle,
+    cancel: watch::Sender<bool>,
+    finished: watch::Receiver<()>,
+}
+
+impl AttemptControl {
+    pub(crate) fn id(&self) -> AttemptId {
+        self.id
+    }
+
+    pub(crate) fn cancel(&self) {
+        self.cancel.send_replace(true);
+    }
+
+    pub(crate) fn abort(&self) {
+        self.abort.abort();
+    }
+
+    pub(crate) async fn settled(&self) {
+        let _ = self.finished.clone().changed().await;
+    }
+}
+
+struct AttemptRegistration {
+    executor: Executor,
+    job: JobId,
+    _finished: watch::Sender<()>,
+}
+
+impl Drop for AttemptRegistration {
+    fn drop(&mut self) {
+        self.executor.active().remove(&self.job);
+    }
 }
 
 impl std::fmt::Debug for Executor {
@@ -73,80 +116,116 @@ impl Executor {
         Self {
             provider,
             dirs,
-            gate: Arc::default(),
+            mirrors: Arc::default(),
             active: Arc::default(),
         }
     }
 
-    /// Waits until no detached attempt is still finishing (stop and cleanup); call before a
-    /// terminal result is posted and before the next claim.
-    pub async fn settled(&self) {
-        drop(self.gate.lock().await);
-    }
-
-    /// Drops an unresponsive call after provider cancellation; app-server fences any orphan before reuse.
-    pub(crate) fn abort_attempt(&self) {
-        if let Some((_, active)) = self
-            .active
+    fn active(&self) -> MutexGuard<'_, HashMap<JobId, AttemptControl>> {
+        self.active
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-        {
-            active.abort();
+    }
+
+    /// Waits for the retained executions after the job monitors have stopped.
+    pub async fn settled(&self) {
+        let attempts: Vec<_> = self.active().values().cloned().collect();
+        for attempt in attempts {
+            attempt.settled().await;
         }
     }
 
-    /// The provider, for cancelling a running call.
+    pub(crate) fn abort_all(&self) -> Vec<AttemptControl> {
+        let active: Vec<_> = self.active().values().cloned().collect();
+        for attempt in &active {
+            attempt.abort();
+        }
+        active
+    }
+
+    /// The provider, for runner housekeeping and fencing stopped workers.
     pub fn provider(&self) -> &Arc<dyn LlmProvider> {
         &self.provider
     }
 
-    /// Runs `spec` to its result. Events and the ready output go to `sink`; a closed sink does not stop the
-    /// job. Worker cleanup settles before the next claim.
+    /// Runs a job to a result, with ordered events and ready output on `sink`.
     pub async fn execute(&self, spec: JobSpec, sink: EventSink) -> JobResult {
-        let attempt = Self {
-            provider: Arc::clone(&self.provider),
-            dirs: self.dirs.clone(),
-            gate: Arc::clone(&self.gate),
-            active: Arc::clone(&self.active),
-        };
-        // Taken before the task starts, so `settled` never passes an attempt that has not begun.
-        let held = Arc::clone(&self.gate).lock_owned().await;
-        let mut cancel = CancelOnDrop {
-            provider: Arc::clone(&self.provider),
-            job: Some(spec.job_id),
-        };
-        let job = spec.job_id;
-        let task = tokio::spawn(async move {
-            let result = attempt.execute_here(spec, sink).await;
-            drop(held);
-            result
-        });
-        *self
-            .active
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((job, task.abort_handle()));
-        let joined = task.await;
-        {
-            let mut active = self
-                .active
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if active.as_ref().is_some_and(|(id, _)| *id == job) {
-                active.take();
-            }
-        }
-        cancel.job = None;
-        match joined {
-            Ok(result) => result,
-            Err(error) => std::panic::resume_unwind(error.into_panic()),
-        }
+        self.start(spec, sink).1.await
     }
 
-    async fn execute_here(&self, spec: JobSpec, sink: EventSink) -> JobResult {
+    pub(crate) fn start(
+        &self,
+        spec: JobSpec,
+        sink: EventSink,
+    ) -> (
+        Option<AttemptControl>,
+        impl Future<Output = JobResult> + use<>,
+    ) {
+        let id = AttemptId::from(&spec);
+        let job = id.job;
+        let mut fallback = failed(
+            &spec,
+            JobFailureKind::Internal,
+            "the runner failed while running the job",
+        );
+        let mut active = self.active();
+        let (control, execution) = match active.entry(job) {
+            std::collections::hash_map::Entry::Occupied(_) => {
+                fallback.outcome = failure(
+                    JobFailureKind::WorkerUnavailable,
+                    "the job already has a local attempt",
+                );
+                (None, None)
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let (cancel, cancelled) = watch::channel(false);
+                let (finish, finished) = watch::channel(());
+                let registration = AttemptRegistration {
+                    executor: self.clone(),
+                    job,
+                    _finished: finish,
+                };
+                let task = tokio::spawn(async move {
+                    let held = registration;
+                    held.executor.execute_here(spec, sink, cancelled).await
+                });
+                let control = AttemptControl {
+                    id,
+                    abort: task.abort_handle(),
+                    cancel: cancel.clone(),
+                    finished,
+                };
+                entry.insert(control.clone());
+                (Some(control), Some((task, CancelOnDrop(cancel))))
+            }
+        };
+        (control, async move {
+            let Some((task, _cancel)) = execution else {
+                return fallback;
+            };
+            match task.await {
+                Ok(result) => result,
+                Err(error) if error.is_cancelled() => {
+                    fallback.outcome = JobOutcome::Cancelled;
+                    fallback
+                }
+                Err(error) => {
+                    tracing::error!(%job, %error, "the job task panicked");
+                    fallback
+                }
+            }
+        })
+    }
+
+    async fn execute_here(
+        &self,
+        spec: JobSpec,
+        sink: EventSink,
+        mut cancelled: watch::Receiver<bool>,
+    ) -> JobResult {
         let phases = PhaseLog::default();
         let started = tokio::time::Instant::now();
-        let result = self.attempt(&spec, &sink, &phases).await;
+        let result = self.attempt(&spec, &sink, &phases, &mut cancelled).await;
         phases.since("total", started);
         tracing::info!(job = %spec.job_id, attempt = spec.attempt, kind = ?spec.kind,
             phases = %phases.summary(), "job phase timings");
@@ -154,7 +233,13 @@ impl Executor {
         result
     }
 
-    async fn attempt(&self, spec: &JobSpec, sink: &EventSink, phases: &PhaseLog) -> JobResult {
+    async fn attempt(
+        &self,
+        spec: &JobSpec,
+        sink: &EventSink,
+        phases: &PhaseLog,
+        cancelled: &mut watch::Receiver<bool>,
+    ) -> JobResult {
         // The runtime limit counts from the start of the attempt: a hanging fetch must not hold the lease.
         let deadline = tokio::time::Instant::now()
             + Duration::from_secs(u64::from(spec.limits.max_runtime_secs));
@@ -162,7 +247,14 @@ impl Executor {
             tracing::error!(job = %spec.job_id, problem, "refusing a job whose kind, target and access do not fit");
             return failed(spec, JobFailureKind::Internal, problem);
         }
-        match tokio::time::timeout_at(deadline, self.prepare(spec, phases)).await {
+        let prepared = tokio::select! {
+            biased;
+            () = wait_for_cancel(cancelled) => {
+                return to_result(spec, Err(ProviderError::Cancelled), SessionOutcome::Started, &sink.secrets);
+            }
+            prepared = tokio::time::timeout_at(deadline, self.prepare(spec, phases)) => prepared,
+        };
+        match prepared {
             Ok(Ok(())) => {}
             Ok(Err((kind, message))) => return failed(spec, kind, message),
             Err(_) => {
@@ -194,37 +286,37 @@ impl Executor {
         let run = async {
             let session = self.provider.run(&call, tx);
             tokio::pin!(session);
-            match tokio::time::timeout_at(deadline, &mut session).await {
-                Ok(done) => done,
-                Err(_) => {
-                    let (cancelled, settled) =
-                        tokio::join!(self.provider.cancel(spec.job_id), &mut session);
-                    if let Err(error) = cancelled {
-                        tracing::warn!(job = %spec.job_id, %error, "cannot stop the worker at the runtime cap");
-                    }
-                    let (usage, checkpoint) = match settled {
-                        Ok(done) => (Some(done.usage), done.runtime_session),
-                        Err(error) => {
-                            let (_, usage, checkpoint) = error.into_details();
-                            (usage, checkpoint)
-                        }
-                    };
-                    let mut error = ProviderError::Timeout;
-                    if let Some(usage) = usage {
-                        error = ProviderError::Metered {
-                            error: Box::new(error),
-                            usage,
-                        };
-                    }
-                    if let Some(checkpoint) = checkpoint {
-                        error = ProviderError::Checkpoint {
-                            error: Box::new(error),
-                            session: Box::new(checkpoint),
-                        };
-                    }
-                    Err(error)
-                }
+            let mut error = tokio::select! {
+                biased;
+                done = &mut session => return done,
+                () = wait_for_cancel(cancelled) => ProviderError::Cancelled,
+                () = tokio::time::sleep_until(deadline) => ProviderError::Timeout,
+            };
+            let (cancelled, settled) =
+                tokio::join!(self.provider.cancel(spec.into()), &mut session);
+            if let Err(error) = cancelled {
+                tracing::warn!(job = %spec.job_id, %error, "cannot stop the worker after cancellation");
             }
+            let (usage, checkpoint) = match settled {
+                Ok(done) => (Some(done.usage), done.runtime_session),
+                Err(error) => {
+                    let (_, usage, checkpoint) = error.into_details();
+                    (usage, checkpoint)
+                }
+            };
+            if let Some(usage) = usage {
+                error = ProviderError::Metered {
+                    error: Box::new(error),
+                    usage,
+                };
+            }
+            if let Some(checkpoint) = checkpoint {
+                error = ProviderError::Checkpoint {
+                    error: Box::new(error),
+                    session: Box::new(checkpoint),
+                };
+            }
+            Err(error)
         };
         let (outcome, ()) = tokio::join!(run, pump(rx, sink, &scrubber));
         let session_outcome = outcome
@@ -260,6 +352,8 @@ impl Executor {
             return Ok(());
         };
         let mirror = git::mirror_path(&self.dirs.mirrors, &repo.clone_url);
+        let lock = self.mirror_lock(&mirror);
+        let _guard = lock.lock().await;
         let commits = [repo.head_sha.0.as_str(), repo.base_sha.0.as_str()];
         if let Err(error) = git::prepare_mirror(&mirror, &repo.clone_url, &commits, phases).await {
             tracing::warn!(job = %spec.job_id, %error, "repository mirror fetch failed");
@@ -269,6 +363,20 @@ impl Executor {
             ));
         }
         Ok(())
+    }
+
+    fn mirror_lock(&self, mirror: &Path) -> Arc<tokio::sync::Mutex<()>> {
+        let mut mirrors = self
+            .mirrors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        mirrors.retain(|_, lock| lock.strong_count() != 0);
+        if let Some(lock) = mirrors.get(mirror).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::default();
+        mirrors.insert(mirror.to_owned(), Arc::downgrade(&lock));
+        lock
     }
 }
 
@@ -428,24 +536,16 @@ fn outcome_name(outcome: &JobOutcome) -> &'static str {
     }
 }
 
-/// Cancels a detached attempt's provider call when `execute` is dropped before it finished.
-struct CancelOnDrop {
-    provider: Arc<dyn LlmProvider>,
-    job: Option<JobId>,
+async fn wait_for_cancel(cancelled: &mut watch::Receiver<bool>) {
+    let _ = cancelled.wait_for(|value| *value).await;
 }
+
+/// Retained execution cleans up when its monitor is dropped.
+struct CancelOnDrop(watch::Sender<bool>);
 
 impl Drop for CancelOnDrop {
     fn drop(&mut self) {
-        if let Some(job) = self.job
-            && let Ok(runtime) = tokio::runtime::Handle::try_current()
-        {
-            let provider = Arc::clone(&self.provider);
-            runtime.spawn(async move {
-                if let Err(error) = provider.cancel(job).await {
-                    tracing::warn!(%job, %error, "cannot cancel a dropped attempt");
-                }
-            });
-        }
+        self.0.send_replace(true);
     }
 }
 
