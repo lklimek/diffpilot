@@ -69,7 +69,6 @@ ERROR_PATTERN='Result<.*,[[:space:]]*String[[:space:]]*>|Box<dyn [A-Za-z_:]*Erro
 # TODO: temporary allow-list of existing String errors, to be replaced by thiserror enums; remove each entry with
 # its fix. Entries: "path|trimmed line".
 ERROR_ALLOW=(
-  'tools/fake-github/src/app.rs|fn scope(&self, body: &[u8]) -> Result<BTreeMap<String, String>, String> {'
 )
 
 # source_violations ROOT: one line per non-allow-listed match in non-test Rust code below ROOT.
