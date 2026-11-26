@@ -904,3 +904,158 @@ async fn claim_failing_with_github_unavailable_is_polled_again() {
     let end = setup.worker.poll_once().await.unwrap();
     assert!(matches!(end, Some(JobEnd::ResultPosted(_))), "{end:?}");
 }
+
+struct ParallelProvider {
+    started: mpsc::UnboundedSender<JobId>,
+    cancel: tokio::sync::watch::Sender<Vec<JobId>>,
+}
+
+impl LlmProvider for ParallelProvider {
+    fn run<'a>(
+        &'a self,
+        call: &'a ProviderCall,
+        _events: mpsc::Sender<ProviderEvent>,
+    ) -> BoxFuture<'a, Result<ProviderOutcome, ProviderError>> {
+        Box::pin(async move {
+            let job = call.job_spec.job_id;
+            let mut cancelled = self.cancel.subscribe();
+            self.started.send(job).unwrap();
+            cancelled
+                .wait_for(|jobs| jobs.contains(&job))
+                .await
+                .unwrap();
+            Err(ProviderError::Cancelled)
+        })
+    }
+
+    fn resume<'a>(
+        &'a self,
+        _: &'a str,
+        call: &'a ProviderCall,
+        events: mpsc::Sender<ProviderEvent>,
+    ) -> BoxFuture<'a, Result<ProviderOutcome, ProviderError>> {
+        self.run(call, events)
+    }
+
+    fn cancel(&self, job: JobId) -> BoxFuture<'_, Result<(), ProviderError>> {
+        self.cancel.send_modify(|jobs| jobs.push(job));
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[tokio::test]
+async fn three_pr_jobs_run_before_any_finishes_and_a_fourth_waits_for_a_slot() {
+    use contracts::job::spec::JobTarget;
+
+    let server = MockServer::start().await;
+    let root = TempDir::new().unwrap();
+    let (started, mut active) = mpsc::unbounded_channel();
+    let (cancel, cancelled) = tokio::sync::watch::channel(Vec::new());
+    let provider = Arc::new(ParallelProvider { started, cancel });
+    let mut specs = Vec::new();
+    let stop_first = Arc::new(AtomicBool::new(false));
+    for index in 1..=4 {
+        let mut spec = spec(JobKind::Plan, shared_repo());
+        spec.job_id = JobId::new_random();
+        let JobTarget::PullRequest(target) = &mut spec.target else {
+            panic!("expected a pull request");
+        };
+        target.pull_request_id = index;
+        Mock::given(method("POST"))
+            .and(path("/runner/v1/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ClaimResponse {
+                retire: vec![],
+                claim: Some(Claim {
+                    job_token: Secret::new(JOB_TOKEN),
+                    lease_expires_at: Timestamp::now(),
+                    spec: spec.clone(),
+                }),
+            }))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        let flag = Arc::clone(&stop_first);
+        Mock::given(method("POST"))
+            .and(path(job_path(&spec, "events")))
+            .respond_with(move |_: &Request| ack(index == 1 && flag.load(Ordering::SeqCst)))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(job_path(&spec, "result")))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+        specs.push(spec);
+    }
+    let worker = Worker::new(
+        ServerClient::new(
+            &server.uri(),
+            Secret::new(RUNNER_SECRET),
+            Duration::from_secs(2),
+        )
+        .unwrap(),
+        Arc::new(Executor::new(provider, dirs(root.path()))),
+        "runner-test".into(),
+        Secret::new(RUNNER_SECRET),
+        timing(),
+    );
+    let (stop, shutdown) = tokio::sync::oneshot::channel();
+    let runner = tokio::spawn(worker.run(async {
+        let _ = shutdown.await;
+    }));
+
+    let mut first = Vec::new();
+    for _ in 0..3 {
+        first.push(
+            tokio::time::timeout(Duration::from_secs(2), active.recv())
+                .await
+                .expect("all three PR jobs start before any is cancelled or finished")
+                .unwrap(),
+        );
+    }
+    let expected: std::collections::HashSet<_> =
+        specs.iter().take(3).map(|spec| spec.job_id).collect();
+    assert_eq!(
+        first.into_iter().collect::<std::collections::HashSet<_>>(),
+        expected
+    );
+    assert!(
+        tokio::time::timeout(timing().idle_poll * 3, active.recv())
+            .await
+            .is_err()
+    );
+    let initial = server.received_requests().await.unwrap();
+    assert_eq!(
+        initial
+            .iter()
+            .filter(|r| r.url.path() == "/runner/v1/claim")
+            .count(),
+        3
+    );
+    assert!(cancelled.borrow().is_empty());
+
+    stop_first.store(true, Ordering::SeqCst);
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), active.recv())
+            .await
+            .unwrap(),
+        Some(specs[3].job_id),
+    );
+    assert_eq!(&*cancelled.borrow(), &[specs[0].job_id]);
+    let requests = server.received_requests().await.unwrap();
+    let result: JobResult = body(
+        requests
+            .iter()
+            .find(|r| r.url.path() == job_path(&specs[0], "result"))
+            .unwrap(),
+    );
+    assert_eq!(result.outcome, JobOutcome::Cancelled);
+    stop.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), runner)
+        .await
+        .unwrap()
+        .unwrap();
+    for spec in specs.iter().skip(1) {
+        assert!(cancelled.borrow().contains(&spec.job_id));
+    }
+}

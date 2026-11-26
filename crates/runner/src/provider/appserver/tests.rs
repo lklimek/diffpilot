@@ -1139,9 +1139,7 @@ async fn cancellation_between_lost_session_attempts_prevents_fallback_turn() {
             }
             tokio::task::yield_now().await;
         }
-        let guard = harness.provider.gate.lock().await;
         harness.provider.cancel(spec.job_id).await.unwrap();
-        drop(guard);
     };
     let (result, ()) =
         tokio::time::timeout(Duration::from_secs(20), async { tokio::join!(run, cancel) })
@@ -1517,4 +1515,105 @@ async fn failed_key_retirement_keeps_the_worker_for_a_retry() {
     assert!(harness.provider.retire(&[1]).await.is_err());
     let seen = harness.finish().await;
     assert!(!seen.iter().any(|r| r["action"]["operation"] == "remove"));
+}
+
+#[tokio::test]
+async fn distinct_pr_workers_run_concurrently_and_only_the_orphan_is_fenced() {
+    let harness = Harness::new(Mode::Hang).await;
+    let first = secret_job(JobKind::Plan);
+    let mut second = first.clone();
+    second.job_id = JobId::new_random();
+    let JobTarget::PullRequest(target) = &mut second.target else {
+        panic!("expected a pull request");
+    };
+    target.pull_request_id += 1;
+    let first_pr = first.target.pull_request().unwrap().pull_request_id;
+    let second_container = container(&second).unwrap();
+    let mut retry = first.clone();
+    retry.attempt += 1;
+    let mut duplicate = first.clone();
+    duplicate.job_id = JobId::new_random();
+
+    let spawn = |spec: JobSpec| {
+        let provider = harness.provider.clone();
+        tokio::spawn(async move {
+            let (tx, _rx) = mpsc::channel(64);
+            provider.execute_job(&spec, tx).await
+        })
+    };
+    let seen = &harness.seen;
+    let wait_for_turns = |expected| async move {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if seen
+                    .lock()
+                    .await
+                    .iter()
+                    .filter(|r| r["method"] == "turn/start")
+                    .count()
+                    >= expected
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("independent app-server turns start without waiting for completion");
+    };
+    let one = spawn(first.clone());
+    let two = spawn(second.clone());
+    wait_for_turns(2).await;
+
+    let mut same_container = spawn(duplicate);
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), &mut same_container)
+            .await
+            .expect("the duplicate is rejected before its turn starts")
+            .unwrap()
+            .is_err()
+    );
+    assert!(harness.provider.retire(&[first_pr]).await.is_err());
+
+    one.abort();
+    assert!(one.await.unwrap_err().is_cancelled());
+    let replacement = spawn(retry);
+    wait_for_turns(3).await;
+    // A delayed cleanup for the first lease must leave its active same-ID retry alone.
+    harness.provider.reap_abandoned(first.job_id).await.unwrap();
+    assert!(!replacement.is_finished());
+    let seen = harness.seen.lock().await;
+    let stops: Vec<_> = seen
+        .iter()
+        .filter(|r| r["action"]["operation"] == "stop")
+        .collect();
+    assert_eq!(stops.len(), 1);
+    assert_eq!(
+        stops[0]["action"]["container"],
+        json!(container(&first).unwrap())
+    );
+    assert!(!seen.iter().any(|r| r["action"]["operation"] == "remove"));
+    assert!(seen.iter().any(|r| r["action"]["operation"] == "attach"
+        && r["action"]["container"] == json!(second_container)));
+    drop(seen);
+    let revocations: Vec<_> = harness
+        .gateway
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.url.path() == "/admin/keys/revoke")
+        .collect();
+    assert_eq!(revocations.len(), 1);
+    assert_eq!(
+        revocations[0].body_json::<Value>().unwrap()["container"],
+        json!(container(&first).unwrap())
+    );
+
+    harness.provider.cancel(first.job_id).await.unwrap();
+    harness.provider.cancel(second.job_id).await.unwrap();
+    for task in [replacement, two] {
+        assert!(matches!(task.await.unwrap(), Err(ProviderError::Cancelled)));
+    }
+    harness.finish().await;
 }

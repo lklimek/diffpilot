@@ -5,6 +5,7 @@ mod template;
 
 use std::{
     collections::{HashMap, HashSet},
+    sync::Arc,
     time::Instant,
 };
 
@@ -54,7 +55,7 @@ pub enum Error {
     #[error("invalid launcher message")]
     Protocol,
     /// No idle worker can be evicted.
-    #[error("all worker slots have active attachments")]
+    #[error("all worker slots are in use")]
     Busy,
     /// Dependency fetching failed; caller continues without dependency sources.
     #[error("dependency fetch failed or exceeded its deadline")]
@@ -70,7 +71,8 @@ struct Launcher {
     docker: Docker,
     settings: Settings,
     used: HashMap<String, Instant>,
-    attached: HashSet<String>,
+    ensured: HashMap<String, Instant>,
+    attached: HashMap<String, Arc<()>>,
     fetching: HashSet<String>,
 }
 
@@ -126,7 +128,48 @@ async fn validate_runtime(docker: &Docker, settings: &Settings) -> Result<(), Er
     Ok(())
 }
 
+// A caller that disappears before Attach cannot pin capacity beyond the maximum job and shutdown window.
+const ENSURE_RESERVATION: std::time::Duration =
+    std::time::Duration::from_secs(contracts::job::spec::JobLimits::MAX_RUNTIME_SECS as u64 + 60);
+
 impl Launcher {
+    fn occupied(&self, name: &str) -> bool {
+        self.attached.contains_key(name)
+            || self.fetching.contains(name)
+            || self
+                .ensured
+                .get(name)
+                .is_some_and(|at| at.elapsed() < ENSURE_RESERVATION)
+    }
+
+    fn begin_attachment(&mut self, name: &str) -> Option<Arc<()>> {
+        if self.fetching.contains(name)
+            || self.attached.contains_key(name)
+            || self
+                .ensured
+                .remove(name)
+                .is_none_or(|at| at.elapsed() >= ENSURE_RESERVATION)
+        {
+            return None;
+        }
+        let relay = Arc::new(());
+        self.attached.insert(name.to_owned(), relay.clone());
+        Some(relay)
+    }
+
+    fn has_attachment(&self, name: &str, relay: &Arc<()>) -> bool {
+        self.attached
+            .get(name)
+            .is_some_and(|current| Arc::ptr_eq(current, relay))
+    }
+
+    fn finish_attachment(&mut self, name: String, relay: &Arc<()>) {
+        if self.has_attachment(&name, relay) {
+            self.attached.remove(&name);
+            self.used.insert(name, Instant::now());
+        }
+    }
+
     async fn objects(&self) -> Result<Vec<ContainerSummary>, Error> {
         let filters = HashMap::from([(
             "label".to_owned(),
@@ -252,11 +295,13 @@ impl Launcher {
             }
         }
         self.used.remove(&name);
+        self.ensured.remove(&name);
+        self.attached.remove(&name);
         Ok(())
     }
 
     async fn remove(&mut self, id: &ContainerId) -> Result<(), Error> {
-        if self.fetching.contains(&self.settings.name(id, false)) {
+        if self.occupied(&self.settings.name(id, false)) {
             return Err(Error::Busy);
         }
         self.stop(id).await?;
@@ -372,7 +417,7 @@ impl Launcher {
     ) -> Result<bool, Error> {
         let config = self.settings.template(id, false, memcan)?;
         let name = self.settings.name(id, false);
-        if self.attached.contains(&name) || self.fetching.contains(&name) {
+        if self.occupied(&name) {
             return Err(Error::Busy);
         }
         let mut existing = self.inspect(id, false).await?;
@@ -415,7 +460,7 @@ impl Launcher {
                 let needed = candidates.len() - self.settings.max_running + 1;
                 candidates.retain(|w| {
                     let name = self.settings.name(&w.container, false);
-                    !self.attached.contains(&name) && !self.fetching.contains(&name)
+                    !self.occupied(&name)
                 });
                 candidates.sort_by_key(|w| {
                     self.used
@@ -448,7 +493,9 @@ impl Launcher {
             self.stop(id).await?;
             return Err(error);
         }
-        self.used.insert(name, Instant::now());
+        let now = Instant::now();
+        self.used.insert(name.clone(), now);
+        self.ensured.insert(name, now);
         Ok(started && matches!(id, ContainerId::Pr { .. }))
     }
 
@@ -529,10 +576,11 @@ impl Launcher {
 
     // The provider retires local keys before releasing a job attachment.
     async fn sweep(&mut self) -> Result<(), Error> {
+        self.ensured
+            .retain(|_, at| at.elapsed() < ENSURE_RESERVATION);
         for worker in self.list().await?.into_iter().filter(|w| w.running) {
             let name = self.settings.name(&worker.container, false);
-            if !self.attached.contains(&name)
-                && !self.fetching.contains(&name)
+            if !self.occupied(&name)
                 && self
                     .used
                     .get(&name)

@@ -3,6 +3,8 @@
 //! the last acked request (`docs/contracts/runner-protocol.md` "Liveness and fencing", threat model T1d).
 
 use std::future::Future;
+use std::num::NonZeroUsize;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,7 +18,7 @@ use contracts::job::result::{JobOutcome, JobResult, LlmCallOutcome, LlmCallStatu
 use reqwest::StatusCode;
 use serde_json::Value;
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
+use tokio::task::JoinSet;
 use tokio::time::{Instant, sleep, sleep_until, timeout_at};
 
 use crate::client::{ClientError, ServerClient};
@@ -152,24 +154,30 @@ impl From<Result<(), Stop>> for Step {
     }
 }
 
-/// Claims and runs jobs, one at a time.
+/// Claims work up to the local runtime capacity.
 pub struct Worker {
-    client: ServerClient,
-    executor: Arc<Executor>,
     runner_id: String,
-    runner_secret: Secret,
-    timing: Timing,
+    job_runner: Arc<JobRunner>,
+    max_running: usize,
     /// Completed PR retirements, acknowledged with the next claim.
     retired: Vec<i64>,
     /// Free space the scratch filesystem must keep for a claim.
     disk_reserve: Option<crate::scratch::Reserve>,
 }
 
+struct JobRunner {
+    client: ServerClient,
+    executor: Arc<Executor>,
+    runner_secret: Secret,
+    timing: Timing,
+}
+
 impl std::fmt::Debug for Worker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Worker")
             .field("runner_id", &self.runner_id)
-            .field("timing", &self.timing)
+            .field("timing", &self.job_runner.timing)
+            .field("max_running", &self.max_running)
             .finish_non_exhaustive()
     }
 }
@@ -184,14 +192,23 @@ impl Worker {
         timing: Timing,
     ) -> Self {
         Self {
-            client,
-            executor,
             runner_id,
-            runner_secret,
-            timing,
+            job_runner: Arc::new(JobRunner {
+                client,
+                executor,
+                runner_secret,
+                timing,
+            }),
+            max_running: crate::config::DEFAULT_MAX_RUNNING,
             retired: Vec::new(),
             disk_reserve: None,
         }
+    }
+
+    /// Use the operator's physical worker limit when claiming jobs.
+    pub fn with_max_running(mut self, limit: NonZeroUsize) -> Self {
+        self.max_running = limit.get();
+        self
     }
 
     /// Takes no job while the scratch filesystem has less free space than `reserve` asks.
@@ -200,47 +217,68 @@ impl Worker {
         self
     }
 
-    /// Claims and runs jobs until `shutdown` completes; a running job is then cancelled, and its stop and
-    /// worker cleanup end before this returns (waited for at most three stop sequences, which stays below
-    /// the container's stop grace of 60 s).
+    /// Stops taking work on shutdown and cancels and drains local attempts within the stop grace.
     pub async fn run(mut self, shutdown: impl Future<Output = ()>) {
+        let mut jobs = JoinSet::new();
         tokio::select! {
+            biased;
             () = shutdown => {}
-            () = self.serve() => {}
+            () = self.serve(&mut jobs) => {}
         }
-        // Dropping the loop cancelled its attempt; the retained provider future is still finishing.
-        let wait = (self.timing.term_grace + self.timing.kill_and_cleanup) * 3;
-        if tokio::time::timeout(wait, self.executor.settled())
+        // Dropping the job monitors cancels their retained executions.
+        jobs.shutdown().await;
+        let JobRunner {
+            executor, timing, ..
+        } = &*self.job_runner;
+        let graceful_wait = timing.term_grace * 3 + timing.kill_and_cleanup * 2;
+        if tokio::time::timeout(graceful_wait, executor.settled())
             .await
             .is_err()
         {
-            tracing::error!(
-                "the running job did not finish stopping before the runner exits; managed workers are stopped by startup reconciliation"
+            tracing::warn!(
+                "some attempts did not finish stopping before the runner shutdown deadline"
             );
-            self.executor.abort_attempt();
-            self.executor.settled().await;
+            let aborted = executor.abort_all();
+            let _ = tokio::time::timeout(timing.kill_and_cleanup, async {
+                futures::future::join_all(
+                    aborted
+                        .into_iter()
+                        .map(|job| self.job_runner.fence_orphan(job)),
+                )
+                .await;
+            })
+            .await;
         }
     }
 
-    /// Claims and runs jobs, forever.
-    async fn serve(&mut self) {
+    async fn serve(&mut self, jobs: &mut JoinSet<JobEnd>) {
+        let timing = self.job_runner.timing;
         loop {
-            let polled = self.poll_once().await;
-            let pause = match polled {
-                Ok(Some(end)) => {
-                    tracing::trace!(?end, "claiming the next job at once");
+            while let Some(result) = jobs.try_join_next() {
+                log_job_end(result);
+            }
+            if jobs.len() >= self.max_running {
+                if let Some(result) = jobs.join_next().await {
+                    log_job_end(result);
+                }
+                continue;
+            }
+            let pause = match self.claim_once().await {
+                Ok(Some((claim, sent))) => {
+                    let worker = Arc::clone(&self.job_runner);
+                    jobs.spawn(async move { worker.run_job(claim, sent).await });
                     continue;
                 }
-                Ok(None) => self.timing.idle_poll,
+                Ok(None) => timing.idle_poll,
                 Err(ClientError::Rejected(StatusCode::UNAUTHORIZED)) => {
                     tracing::error!(
                         "the server rejected the runner secret; check SR_RUNNER_SECRET"
                     );
-                    self.timing.error_poll
+                    timing.error_poll
                 }
                 Err(error) => {
                     tracing::warn!(%error, "claim failed; retrying");
-                    self.timing.error_poll
+                    timing.error_poll
                 }
             };
             sleep(pause).await;
@@ -250,8 +288,13 @@ impl Worker {
     /// One claim; runs the claimed job to its end. `None` when nothing was runnable. Below the scratch
     /// filesystem's reserve it requests housekeeping and retirement without taking new work.
     pub async fn poll_once(&mut self) -> Result<Option<JobEnd>, ClientError> {
-        // The previous attempt (and its worker cleanup) is over before the next claim.
-        self.executor.settled().await;
+        match self.claim_once().await? {
+            Some((claim, sent)) => Ok(Some(self.job_runner.run_job(claim, sent).await)),
+            None => Ok(None),
+        }
+    }
+
+    async fn claim_once(&mut self) -> Result<Option<(Claim, Instant)>, ClientError> {
         let accept_job = self
             .disk_reserve
             .as_mut()
@@ -262,19 +305,31 @@ impl Worker {
             retired: self.retired.clone(),
         };
         let sent = Instant::now();
-        let response = self.client.claim(&request).await?;
+        let response = self.job_runner.client.claim(&request).await?;
         self.retired.clear();
-        if let Err(error) = self.executor.provider().retire(&response.retire).await {
+        if let Err(error) = self
+            .job_runner
+            .executor
+            .provider()
+            .retire(&response.retire)
+            .await
+        {
             tracing::warn!(%error, "cannot retire PR workers; retrying on the next claim");
         } else {
             self.retired = response.retire;
         }
-        let Some(claim) = response.claim else {
-            return Ok(None);
-        };
-        Ok(Some(self.run_job(claim, sent).await))
+        Ok(response.claim.map(|claim| (claim, sent)))
     }
+}
 
+fn log_job_end(result: Result<JobEnd, tokio::task::JoinError>) {
+    match result {
+        Ok(end) => tracing::trace!(?end, "job monitor finished"),
+        Err(error) => tracing::error!(%error, "job monitor failed"),
+    }
+}
+
+impl JobRunner {
     async fn run_job(&self, claim: Claim, claim_sent: Instant) -> JobEnd {
         let Claim {
             job_token, spec, ..
@@ -297,13 +352,15 @@ impl Worker {
             pending_bytes: 0,
             cancel_requested: false,
         };
+        if Instant::now() >= run.fence.deadline() {
+            return stopped_end(Stop::Fenced, job, attempt);
+        }
         let (sink, mut events) = mpsc::channel(EVENT_BUFFER);
-        let executor = Arc::clone(&self.executor);
         let sink = EventSink::new(sink, scrubber);
-        let mut task = AbortOnDrop(tokio::spawn(
-            async move { executor.execute(spec, sink).await },
-        ));
+        let task = self.executor.start(spec, sink);
+        tokio::pin!(task);
         let mut abort_at: Option<Instant> = None;
+        let mut killed = false;
 
         let stopped = loop {
             let post_at = if run.pending.is_empty() {
@@ -337,16 +394,14 @@ impl Worker {
                 Step::Finished => break None,
                 Step::KillAfterCancel => {
                     tracing::warn!(%job, "the provider did not stop after the cancel request; killing the agent call");
-                    task.0.abort();
-                    self.executor.abort_attempt();
+                    self.executor.abort_attempt(job);
+                    killed = true;
                     break None;
                 }
             }
             if run.cancel_requested && abort_at.is_none() {
                 tracing::info!(%job, "cancel requested; stopping the agent");
-                if let Err(error) = self.executor.provider().cancel(job).await {
-                    tracing::debug!(%job, %error, "provider cancel failed; the call is killed after the grace period");
-                }
+                self.executor.cancel_attempt(job);
                 abort_at = Some(Instant::now() + self.timing.term_grace);
             }
         };
@@ -355,20 +410,14 @@ impl Worker {
         // so back-pressure never holds up an attempt's stop and clean-up.
         events.close();
         if let Some(stop) = stopped {
-            self.stop_agent(job, &mut task).await;
+            self.stop_agent(job, task).await;
             return stopped_end(stop, job, attempt);
         }
 
-        let result = match (&mut task.0).await {
-            Ok(result) => result,
-            Err(error) if error.is_cancelled() => cancelled_result(job, attempt),
-            Err(error) => {
-                tracing::error!(%job, %error, "the job task panicked");
-                internal_result(job, attempt)
-            }
-        };
-        // A detached attempt finishes its stop and cleanup before anything terminal is posted.
-        self.executor.settled().await;
+        let result = task.await;
+        if killed {
+            self.fence_orphan(job).await;
+        }
         while let Ok(event) = events.try_recv() {
             if let ProviderEvent::Activity(event) = event
                 && !run.pending_full()
@@ -384,18 +433,26 @@ impl Worker {
     }
 
     /// Stops the agent within `term_grace + kill_and_cleanup`: cancel, then drop (kill) the call.
-    async fn stop_agent(&self, job: JobId, task: &mut AbortOnDrop<JobResult>) {
-        if let Err(error) = self.executor.provider().cancel(job).await {
-            tracing::debug!(%job, %error, "provider cancel failed; killing the agent call");
-        }
-        if tokio::time::timeout(self.timing.term_grace, &mut task.0)
+    async fn stop_agent(&self, job: JobId, task: Pin<&mut impl Future<Output = JobResult>>) {
+        self.executor.cancel_attempt(job);
+        if tokio::time::timeout(self.timing.term_grace, task)
             .await
             .is_err()
         {
-            task.0.abort();
-            self.executor.abort_attempt();
-            // The provider fences a worker whose asynchronous cleanup was interrupted before reuse.
-            let _ = tokio::time::timeout(self.timing.kill_and_cleanup, &mut task.0).await;
+            self.executor.abort_attempt(job);
+            self.fence_orphan(job).await;
+        }
+    }
+
+    async fn fence_orphan(&self, job: JobId) {
+        let cleanup = async {
+            self.executor.settled_attempt(job).await;
+            self.executor.provider().reap_abandoned(job).await
+        };
+        match tokio::time::timeout(self.timing.kill_and_cleanup, cleanup).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => tracing::warn!(%job, %error, "cannot clean up a dropped attempt"),
+            Err(_) => tracing::warn!(%job, "dropped attempt cleanup exceeded its time budget"),
         }
     }
 }
@@ -606,39 +663,6 @@ fn scrub_result(mut result: JobResult, scrubber: &Scrubber) -> JobResult {
         *message = scrubber.text(message);
     }
     result
-}
-
-fn cancelled_result(job: JobId, attempt: u32) -> JobResult {
-    JobResult {
-        assessment: None,
-        report: None,
-        job_id: job,
-        attempt,
-        outcome: JobOutcome::Cancelled,
-        session: None,
-        usage: None,
-        skills_commit: None,
-        llm_call: None,
-    }
-}
-
-fn internal_result(job: JobId, attempt: u32) -> JobResult {
-    JobResult {
-        outcome: JobOutcome::Failed {
-            kind: contracts::job::result::JobFailureKind::Internal,
-            message: "the runner failed while running the job".to_owned(),
-        },
-        ..cancelled_result(job, attempt)
-    }
-}
-
-/// Aborts the job task when the loop is dropped (shutdown), so the agent is killed and directories removed.
-struct AbortOnDrop<T>(JoinHandle<T>);
-
-impl<T> Drop for AbortOnDrop<T> {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
 }
 
 #[cfg(test)]

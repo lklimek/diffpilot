@@ -95,6 +95,13 @@ async fn handle(
     upgraded: &mut bool,
 ) -> Result<(), Error> {
     let mut launcher = shared.lock().await;
+    // A timed-out control request may have waited behind a different worker's setup.
+    // Only a live caller may begin a mutation; in-progress mutations retain the lifecycle lock.
+    match socket.try_read(&mut [0]) {
+        Ok(_) => return Err(Error::Protocol),
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+        Err(error) => return Err(error.into()),
+    }
     let mut response = LauncherResponse {
         id: request.id,
         error: None,
@@ -121,12 +128,16 @@ async fn handle(
         }
         LauncherAction::Attach { container } => {
             let name = launcher.settings.name(&container, false);
-            if launcher.inspect(&container, false).await?.is_none()
-                || launcher.fetching.contains(&name)
-                || !launcher.attached.insert(name.clone())
-            {
+            let running = launcher
+                .inspect(&container, false)
+                .await?
+                .and_then(|worker| worker.state)
+                .and_then(|state| state.running)
+                == Some(true);
+            if !running {
                 return Err(Error::Busy);
             }
+            let relay = launcher.begin_attachment(&name).ok_or(Error::Busy)?;
             let docker = launcher.docker.clone();
             drop(launcher);
             let result = async {
@@ -134,7 +145,15 @@ async fn handle(
                     attach_stdin: Some(true), attach_stdout: Some(true), attach_stderr: Some(true), tty: Some(false),
                     cmd: Some(vec!["codex".into(), "app-server".into(), "proxy".into(), "--sock".into(), "/run/dp/app.sock".into()]), ..Default::default()
                 }).await?;
-                let StartExecResults::Attached { mut output, mut input } = docker.start_exec(&exec.id, None).await? else { return Err(Error::Protocol); };
+                let started = {
+                    let launcher = shared.lock().await;
+                    if !launcher.has_attachment(&name, &relay) {
+                        return Err(Error::Busy);
+                    }
+                    // Start the proxy under the same lock that acknowledges Stop.
+                    docker.start_exec(&exec.id, None).await?
+                };
+                let StartExecResults::Attached { mut output, mut input } = started else { return Err(Error::Protocol); };
                 write_message(socket, &response).await?;
                 *upgraded = true;
                 let (mut reader, mut writer) = socket.split();
@@ -155,9 +174,7 @@ async fn handle(
                 Ok::<(), Error>(())
             }.await;
             // W4 stops an interrupted turn explicitly; clean detach begins the idle interval.
-            let mut launcher = shared.lock().await;
-            launcher.attached.remove(&name);
-            launcher.used.insert(name, std::time::Instant::now());
+            shared.lock().await.finish_attachment(name, &relay);
             return result;
         }
     };
@@ -212,7 +229,8 @@ pub async fn serve(path: &Path, settings: Settings) -> Result<(), Error> {
         docker,
         settings,
         used: HashMap::new(),
-        attached: HashSet::new(),
+        ensured: HashMap::new(),
+        attached: HashMap::new(),
         fetching: HashSet::new(),
     };
     if path.exists() {
@@ -227,8 +245,10 @@ pub async fn serve(path: &Path, settings: Settings) -> Result<(), Error> {
         std::fs::remove_file(path)?;
         return Err(error);
     }
+    let permits = Arc::new(Semaphore::new(
+        launcher.settings.max_running * 2 + crate::config::CONTROL_CONNECTIONS,
+    ));
     let shared = Arc::new(Mutex::new(launcher));
-    let permits = Arc::new(Semaphore::new(16));
     let mut tasks = JoinSet::new();
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let sweep = tokio::spawn(housekeeping(Arc::clone(&shared), Duration::from_secs(30)));

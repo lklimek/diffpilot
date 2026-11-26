@@ -39,6 +39,11 @@ pub trait LlmProvider: Send + Sync {
     /// Stops the running call of `job` (stop the worker turn); the call then ends with
     /// [`ProviderError::Cancelled`].
     fn cancel(&self, job: JobId) -> BoxFuture<'_, Result<(), ProviderError>>;
+
+    /// Fences a dropped call's resources if they are still abandoned.
+    fn reap_abandoned(&self, _job: JobId) -> BoxFuture<'_, Result<(), ProviderError>> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 /// What a provider reports while a call runs.

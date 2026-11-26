@@ -20,7 +20,11 @@ use contracts::{
 };
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{Arc, Mutex as SyncMutex, MutexGuard, Weak},
+    time::Duration,
+};
 use tokio::sync::{Mutex, mpsc, watch};
 
 /// App-server provider; trait calls use the self-contained JobSpec routing, including Ask recovery.
@@ -30,18 +34,49 @@ pub struct AppserverProvider {
     gateway: GatewayClient,
     skills_commit: String,
     reconciled: Arc<std::sync::atomic::AtomicBool>,
-    gate: Arc<Mutex<()>>,
-    active: Arc<Mutex<HashMap<JobId, Active>>>,
-    cancellations: Arc<std::sync::Mutex<HashMap<JobId, watch::Sender<bool>>>>,
+    reconcile_gate: Arc<Mutex<()>>,
+    lifecycle: Arc<SyncMutex<Lifecycle>>,
+    cancellations: Arc<SyncMutex<HashMap<JobId, watch::Sender<bool>>>>,
+}
+
+#[derive(Default)]
+struct Lifecycle {
+    active: HashMap<JobId, Active>,
+    retiring: HashSet<i64>,
+}
+
+struct Retirement<'a> {
+    provider: &'a AppserverProvider,
+    prs: &'a [i64],
+}
+
+impl Drop for Retirement<'_> {
+    fn drop(&mut self) {
+        self.provider
+            .lifecycle()
+            .retiring
+            .retain(|pr| !self.prs.contains(pr));
+    }
 }
 
 struct Active {
     container: ContainerId,
-    done: watch::Receiver<bool>,
+    // This marker is owned across all fallback attempts and dropped with their future.
+    owner: Weak<()>,
+}
+
+impl Active {
+    fn is_live(&self) -> bool {
+        self.owner.strong_count() != 0
+    }
+
+    fn matches_pr(&self, pull_requests: &[i64]) -> bool {
+        matches!(self.container, ContainerId::Pr { pull_request_id, .. } if pull_requests.contains(&pull_request_id))
+    }
 }
 
 struct CancellationRegistration<'a> {
-    registry: &'a std::sync::Mutex<HashMap<JobId, watch::Sender<bool>>>,
+    registry: &'a SyncMutex<HashMap<JobId, watch::Sender<bool>>>,
     job: JobId,
 }
 
@@ -131,15 +166,24 @@ impl AppserverProvider {
             gateway,
             skills_commit,
             reconciled: Arc::default(),
-            gate: Arc::default(),
-            active: Arc::default(),
+            reconcile_gate: Arc::default(),
+            lifecycle: Arc::default(),
             cancellations: Arc::default(),
         }
     }
 
+    fn lifecycle(&self) -> MutexGuard<'_, Lifecycle> {
+        self.lifecycle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// Startup gate: stop managed workers and retire their local virtual keys before accepting jobs.
     pub async fn reconcile(&self, retired_prs: &[i64]) -> Result<(), ProviderError> {
-        let _guard = self.gate.lock().await;
+        let _guard = self.reconcile_gate.lock().await;
+        if self.reconciled.load(std::sync::atomic::Ordering::Acquire) {
+            return Ok(());
+        }
         self.reconcile_locked(retired_prs).await
     }
 
@@ -252,7 +296,107 @@ impl AppserverProvider {
             registry: &self.cancellations,
             job: spec.job_id,
         };
-        self.execute_attempts(spec, events, &mut cancelled).await
+        let worker = container(spec)?;
+        let owner = Arc::new(());
+        self.admit(spec.job_id, worker, Arc::downgrade(&owner), &cancelled)
+            .await?;
+        let mut clean = true;
+        let outcome = self
+            .execute_attempts(spec, events, &mut cancelled, &mut clean)
+            .await;
+        if clean {
+            self.lifecycle().active.remove(&spec.job_id);
+        }
+        drop(owner);
+        outcome
+    }
+
+    async fn admit(
+        &self,
+        job: JobId,
+        worker: ContainerId,
+        owner: Weak<()>,
+        cancelled: &watch::Receiver<bool>,
+    ) -> Result<(), ProviderError> {
+        if !self.reconciled.load(std::sync::atomic::Ordering::Acquire) {
+            self.reconcile(&[]).await?;
+        }
+        let orphans: Vec<_> = self
+            .lifecycle()
+            .active
+            .iter()
+            .filter(|(_, active)| !active.is_live())
+            .map(|(job, _)| *job)
+            .collect();
+        // Fencing one abandoned container leaves the other admission and cancellation paths free.
+        futures::future::join_all(orphans.into_iter().map(|job| async move {
+            let result = tokio::time::timeout(Duration::from_secs(5), self.reap(job, false)).await;
+            if !matches!(result, Ok(Ok(()))) {
+                tracing::warn!(%job, "could not fence an orphaned worker before admission");
+            }
+        }))
+        .await;
+        if *cancelled.borrow() {
+            return Err(ProviderError::Cancelled);
+        }
+        let mut lifecycle = self.lifecycle();
+        if matches!(&worker, ContainerId::Pr { pull_request_id, .. } if lifecycle.retiring.contains(pull_request_id))
+            || lifecycle.active.contains_key(&job)
+            || lifecycle
+                .active
+                .values()
+                .any(|attempt| attempt.container == worker)
+        {
+            return Err(fault(
+                JobFailureKind::WorkerUnavailable,
+                "execute_job",
+                "container already owned by an attempt",
+            ));
+        }
+        lifecycle.active.insert(
+            job,
+            Active {
+                container: worker,
+                owner,
+            },
+        );
+        Ok(())
+    }
+
+    async fn reap(&self, job: JobId, retirement: bool) -> Result<(), ProviderError> {
+        let (worker, owner) = {
+            let mut lifecycle = self.lifecycle();
+            let Lifecycle { active, retiring } = &mut *lifecycle;
+            let Some(attempt) = active.get_mut(&job) else {
+                return Ok(());
+            };
+            if attempt.is_live()
+                || (!retirement
+                    && matches!(&attempt.container, ContainerId::Pr { pull_request_id, .. } if retiring.contains(pull_request_id)))
+            {
+                return Ok(());
+            }
+            let owner = Arc::new(());
+            attempt.owner = Arc::downgrade(&owner);
+            (attempt.container.clone(), owner)
+        };
+        let stop = async {
+            self.launcher
+                .call(LauncherRequest {
+                    id: format!("orphan-{}", job.0),
+                    action: LauncherAction::Stop {
+                        container: worker.clone(),
+                    },
+                })
+                .await
+                .map_err(|error| launcher_failure(error, "orphan stop"))
+        };
+        let (stopped, revoked) = tokio::join!(stop, self.gateway.revoke(&worker));
+        stopped?;
+        revoked?;
+        self.lifecycle().active.remove(&job);
+        drop(owner);
+        Ok(())
     }
 
     async fn execute_attempts(
@@ -260,6 +404,7 @@ impl AppserverProvider {
         spec: &JobSpec,
         events: mpsc::Sender<ProviderEvent>,
         cancelled: &mut watch::Receiver<bool>,
+        clean: &mut bool,
     ) -> Result<ProviderOutcome, ProviderError> {
         let session = match spec.kind {
             JobKind::VerifyComments | JobKind::JudgeWork => None,
@@ -280,7 +425,7 @@ impl AppserverProvider {
             effective.prompt = format!("{pack}\n\n{}", spec.prompt);
         }
         match self
-            .perform(&effective, session, events.clone(), cancelled)
+            .perform(&effective, session, events.clone(), cancelled, clean)
             .await
         {
             Err(ProviderError::SessionUnavailable) => {
@@ -299,7 +444,13 @@ impl AppserverProvider {
                     && let Some(parent) = &spec.session
                 {
                     match self
-                        .perform(&fresh, Some(&parent.thread_id), events.clone(), cancelled)
+                        .perform(
+                            &fresh,
+                            Some(&parent.thread_id),
+                            events.clone(),
+                            cancelled,
+                            clean,
+                        )
                         .await
                     {
                         Err(ProviderError::SessionUnavailable) => {}
@@ -307,7 +458,7 @@ impl AppserverProvider {
                     }
                 }
                 fresh.session = None;
-                let mut outcome = self.perform(&fresh, None, events, cancelled).await?;
+                let mut outcome = self.perform(&fresh, None, events, cancelled, clean).await?;
                 if let Some(session) = &mut outcome.runtime_session {
                     session.outcome = SessionOutcome::StartedAfterLoss;
                 }
@@ -323,36 +474,12 @@ impl AppserverProvider {
         session: Option<&str>,
         events: mpsc::Sender<ProviderEvent>,
         cancelled: &mut watch::Receiver<bool>,
+        clean: &mut bool,
     ) -> Result<ProviderOutcome, ProviderError> {
-        let _guard = self.gate.lock().await;
         if *cancelled.borrow() {
             return Err(ProviderError::Cancelled);
         }
-        if !self.reconciled.load(std::sync::atomic::Ordering::Acquire) {
-            self.reconcile_locked(&[]).await?;
-        }
-        // A dropped caller cannot run asynchronous cleanup: fence that orphan before accepting another job.
-        let orphans: Vec<_> = self
-            .active
-            .lock()
-            .await
-            .iter()
-            .map(|(job, active)| (*job, active.container.clone()))
-            .collect();
-        for (job, worker) in orphans {
-            self.stop(spec, &worker).await?;
-            self.gateway.revoke(&worker).await?;
-            self.active.lock().await.remove(&job);
-        }
         let worker = container(spec)?;
-        let (finished, done) = watch::channel(false);
-        self.active.lock().await.insert(
-            spec.job_id,
-            Active {
-                container: worker.clone(),
-                done,
-            },
-        );
         let mut rpc = None;
         let mut key = None;
         let mut checkpoint = None;
@@ -484,10 +611,7 @@ impl AppserverProvider {
             }
         }
         drop(rpc);
-        if cleanup.is_ok() {
-            self.active.lock().await.remove(&spec.job_id);
-        }
-        let _ = finished.send(true);
+        *clean = cleanup.is_ok();
         match cleanup.and(result) {
             Ok(outcome) => {
                 let _ = tokio::time::timeout(
@@ -990,7 +1114,37 @@ impl LlmProvider for AppserverProvider {
             if pull_requests.is_empty() {
                 return Ok(());
             }
-            let _guard = self.gate.lock().await;
+            let (_retirement, orphans) = {
+                let mut lifecycle = self.lifecycle();
+                if pull_requests
+                    .iter()
+                    .any(|pr| lifecycle.retiring.contains(pr))
+                {
+                    return Err(runtime(JobFailureKind::WorkerUnavailable));
+                }
+                let mut orphans = Vec::new();
+                for (job, worker) in lifecycle
+                    .active
+                    .iter()
+                    .filter(|(_, worker)| worker.matches_pr(pull_requests))
+                {
+                    if worker.is_live() {
+                        return Err(runtime(JobFailureKind::WorkerUnavailable));
+                    }
+                    orphans.push(*job);
+                }
+                lifecycle.retiring.extend(pull_requests.iter().copied());
+                (
+                    Retirement {
+                        provider: self,
+                        prs: pull_requests,
+                    },
+                    orphans,
+                )
+            };
+            for job in orphans {
+                self.reap(job, true).await?;
+            }
             let response = self
                 .launcher
                 .call(LauncherRequest {
@@ -1028,38 +1182,12 @@ impl LlmProvider for AppserverProvider {
             {
                 cancel.send_replace(true);
             }
-            let (mut done, container) = {
-                let registry = self.active.lock().await;
-                let Some(active) = registry.get(&job) else {
-                    return Ok(());
-                };
-                (active.done.clone(), active.container.clone())
-            };
-            // Copy the state before waiting; never hold the registry lock through cleanup.
-            let finished = tokio::time::timeout(Duration::from_secs(10), async {
-                while !*done.borrow_and_update() {
-                    if done.changed().await.is_err() {
-                        return false;
-                    }
-                }
-                true
-            })
-            .await
-            .unwrap_or(false);
-            if !finished {
-                self.launcher
-                    .call(LauncherRequest {
-                        id: format!("cancel-{}", job.0),
-                        action: LauncherAction::Stop {
-                            container: container.clone(),
-                        },
-                    })
-                    .await
-                    .map_err(|error| launcher_failure(error, "cancel stop"))?;
-                self.gateway.revoke(&container).await?;
-            }
             Ok(())
         })
+    }
+
+    fn reap_abandoned(&self, job: JobId) -> BoxFuture<'_, Result<(), ProviderError>> {
+        Box::pin(self.reap(job, false))
     }
 }
 

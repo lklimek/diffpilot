@@ -113,6 +113,7 @@ async fn run() -> Result<(), StartError> {
         config.runner_secret,
         Timing::v1(),
     )
+    .with_max_running(config.max_running)
     .with_disk_reserve(
         scratch::Reserve::new(config.work_dir.clone(), config.disk_reserve)
             .with_marker(config.state_dir.join(DISK_RESERVE_MARKER)),
@@ -160,7 +161,7 @@ async fn shutdown_signal() {
         () = interrupt => {}
         () = terminate => {}
     }
-    tracing::info!("shutdown signal received, stopping the running job");
+    tracing::info!("shutdown signal received, stopping running jobs");
 }
 
 fn error_chain(error: &dyn Error) -> String {
