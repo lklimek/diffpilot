@@ -36,7 +36,7 @@ test("the group and bulk confirmation use the visible GitHub proposals", async (
   await expect(page.getByText(/@alice-relay proposes: Resolve/)).toBeVisible();
   await page.getByRole("button", { name: "Decide 2 items" }).click();
   await expect(page.getByText(/2 items: decision recorded/)).toBeVisible();
-  await page.getByRole("button", { name: /^Decide the rest per recommendation/ }).click();
+  await page.getByRole("button", { name: /^Decide the rest \(/ }).click();
   await expect(page.getByText(/@alice proposes: Reject/)).toBeVisible();
   const apply = page.getByRole("button", { name: /^Apply \d+ decisions$/ });
   await expect(apply).toHaveAttribute("aria-disabled", "true");

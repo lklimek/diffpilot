@@ -366,8 +366,8 @@ describe("PR-level plans follow the PR: a P1 plan is made again when the items c
 describe("Decide the rest per recommendation (plan §2.4; queue.rs decide_rest)", () => {
   it("a repeat asked again (C21) is left out like the server's list, not decided in bulk", async () => {
     renderRoute(`${PR}/comments`);
-    await userEvent.click(await screen.findByRole("button", { name: /^Decide the rest per recommendation/ }));
-    await screen.findByRole("heading", { name: /^Decide the rest per recommendation/ });
+    await userEvent.click(await screen.findByRole("button", { name: /^Decide the rest \(/ }));
+    await screen.findByRole("heading", { name: /^Decide the rest — confirm/ });
     expect(screen.queryByRole("checkbox", { name: "Include C21" })).toBeNull();
   });
 });

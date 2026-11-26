@@ -257,10 +257,8 @@ describe("V1 Questions (US3, US4, US11)", () => {
   it("a group can be split; Decide the rest leaves gate items out", async () => {
     renderRoute(`${PR}/comments?item=C18`);
     expect(await screen.findByRole("heading", { name: /Same recommendation: Reject/ })).toBeVisible();
-    await userEvent.click(await screen.findByRole("button", { name: /Decide the rest per recommendation/ }));
-    expect(
-      await screen.findByRole("heading", { name: /Decide the rest per recommendation — confirm/ }),
-    ).toBeVisible();
+    await userEvent.click(await screen.findByRole("button", { name: /^Decide the rest \(/ }));
+    expect(await screen.findByRole("heading", { name: /Decide the rest — confirm/ })).toBeVisible();
     expect(screen.getByRole("alert")).toHaveTextContent(
       /C14 \(gate item G-FUNDS\), C15 \(gate item G-SECRET\)/,
     );

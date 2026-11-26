@@ -465,10 +465,7 @@ export function DecideRestCard({
   const gateLeftOut = leftOut.some((l) => l.reason === "gate");
   return (
     <section aria-labelledby={`${id}-h`} className="rounded-lg border border-border bg-surface px-4 py-3.5">
-      <Heading
-        id={`${id}-h`}
-        text={`Decide the rest per recommendation — confirm ${chosen.length} decisions`}
-      />
+      <Heading id={`${id}-h`} text={`Decide the rest — confirm ${chosen.length} decisions`} />
       <p>
         Each row becomes its own decision, marked &quot;via decide the rest&quot;. Untick &quot;Include&quot;
         to keep a row as a question. Nothing is stored until you confirm.
