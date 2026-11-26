@@ -562,11 +562,12 @@ async fn full_scan_reconciles_rankings_with_newer_history_and_falls_back_to_q2()
     let w = world().await;
     // The Q2 answer for #311 still says OPEN. Its later Q13 answer observes a merge.
     let merged = json!({"state":"MERGED", "closedAt": LOCAL_MORNING, "mergedAt": LOCAL_MORNING});
-    let mut history = w.gate.history_updates.lock().unwrap();
-    history.insert("2026-11-10T10:00:00Z".to_owned(), merged);
-    // For #476, only Q2 sees the merge; Q13 cannot read the PR.
-    history.insert("2026-11-13T12:00:00Z".to_owned(), Value::Null);
-    drop(history);
+    {
+        let mut history = w.gate.history_updates.lock().unwrap();
+        history.insert("2026-11-10T10:00:00Z".to_owned(), merged);
+        // For #476, only Q2 sees the merge; Q13 cannot read the PR.
+        history.insert("2026-11-13T12:00:00Z".to_owned(), Value::Null);
+    }
     pull_state(&w, 476, "MERGED", Some(LOCAL_MORNING), Some(LOCAL_MORNING));
 
     assert_eq!(w.refreshed().await.state, RefreshState::Finished);
