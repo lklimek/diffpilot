@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LlmJobSlots",
+  "description": "Request and response of `PUT /api/v1/settings/llm/job-slots`.",
+  "type": "object",
+  "properties": {
+    "slots": {
+      "description": "Maximum concurrent jobs using the authenticated payer's plan.",
+      "type": "integer",
+      "format": "uint16",
+      "minimum": 1,
+      "maximum": 65535
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "slots"
+  ]
+}

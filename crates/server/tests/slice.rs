@@ -3621,11 +3621,11 @@ async fn user_pause_keeps_the_running_result_and_next_job_uses_the_new_model() {
         .db
         .settings()
         .set_llm_selection(
-            &contracts::job::spec::ModelChoice {
+            "u-alice",
+            db::repo::settings::LlmSelectionUpdate::Model(contracts::job::spec::ModelChoice {
                 model: "gpt-6-astra".into(),
                 reasoning_effort: contracts::job::spec::ReasoningEffort::Low,
-            },
-            "alice",
+            }),
             Timestamp::now(),
         )
         .await

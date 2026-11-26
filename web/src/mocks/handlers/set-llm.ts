@@ -1,13 +1,15 @@
 import { HttpResponse } from "msw";
-import type { LlmSelection, ModelChoice, SetAskEffortRequest } from "../../api/generated/types";
+import type { LlmJobSlots, LlmSelection, ModelChoice, SetAskEffortRequest } from "../../api/generated/types";
 import { SETTINGS, scenario } from "../scenarios";
 import { apiError, route } from "./common";
 export let savedSelection: LlmSelection | undefined;
-/** Clears the installation choice between mock tests. */
+export let savedJobSlots: number | undefined;
+/** Clears the signed-in user's choices between mock tests. */
 export function resetSelection() {
   savedSelection = undefined;
+  savedJobSlots = undefined;
 }
-/** Shared mock installation selection. */
+/** The signed-in user's model selection. */
 export const setLlm = route("setLlm", async ({ request }) => {
   if (scenario().llmSaveFails) return apiError(503, "unavailable", "Try again later.");
   const choice = (await request.json()) as ModelChoice;
@@ -25,7 +27,7 @@ export const setLlm = route("setLlm", async ({ request }) => {
   };
   return HttpResponse.json(savedSelection);
 });
-/** `PUT /api/v1/settings/llm/ask-effort`: kept with the shared mock selection. */
+/** `PUT /api/v1/settings/llm/ask-effort`: kept with the signed-in user's selection. */
 const saveEffort = (name: "setAskEffort" | "setJudgeEffort", field: "ask_effort" | "judge_effort") =>
   route(name, async ({ request }) => {
     if (scenario().llmSaveFails) return apiError(503, "unavailable", "Try again later.");
@@ -44,3 +46,12 @@ const saveEffort = (name: "setAskEffort" | "setJudgeEffort", field: "ask_effort"
 
 export const setAskEffort = saveEffort("setAskEffort", "ask_effort");
 export const setJudgeEffort = saveEffort("setJudgeEffort", "judge_effort");
+
+export const setLlmJobSlots = route("setLlmJobSlots", async ({ request }) => {
+  if (scenario().llmSaveFails) return apiError(503, "unavailable", "Try again later.");
+  const { slots } = (await request.json()) as LlmJobSlots;
+  if (!Number.isInteger(slots) || slots < 1 || slots > 65_535)
+    return apiError(400, "invalid_request", "Enter a whole number from 1 to 65,535.");
+  savedJobSlots = slots;
+  return HttpResponse.json({ slots });
+});

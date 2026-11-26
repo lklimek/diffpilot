@@ -155,7 +155,7 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The schema migrations in order, as `(version, description, SQL)`: the initial schema, then additive
 /// changes that upgrade an existing database in place.
-const MIGRATIONS: [(i64, &str, &str); 35] = [
+const MIGRATIONS: [(i64, &str, &str); 37] = [
     (1, "init", include_str!("../../migrations/0001_init.sql")),
     (
         2,
@@ -326,6 +326,16 @@ const MIGRATIONS: [(i64, &str, &str); 35] = [
         38,
         "comment_item_marks",
         include_str!("../../migrations/0038_comment_item_marks.sql"),
+    ),
+    (
+        39,
+        "user_llm_selection",
+        include_str!("../../migrations/0039_user_llm_selection.sql"),
+    ),
+    (
+        40,
+        "llm_job_slots",
+        include_str!("../../migrations/0040_llm_job_slots.sql"),
     ),
 ];
 

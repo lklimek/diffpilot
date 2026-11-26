@@ -1,4 +1,4 @@
-import { savedSelection, resetSelection } from "./set-llm";
+import { savedJobSlots, savedSelection, resetSelection } from "./set-llm";
 import { resetControlledOwners, savedControlledOwners } from "./set-controlled-owners";
 import { HttpResponse } from "msw";
 import type { LlmLanguage, Settings } from "../../api/generated/types";
@@ -36,6 +36,7 @@ export const getSettings = route("getSettings", () => {
       },
     }),
     llm_selection: savedSelection ?? settings.llm_selection,
+    llm_job_slots: savedJobSlots ?? settings.llm_job_slots ?? 1,
     language: language ?? settings.language,
     controlled_owners: savedControlledOwners() ??
       settings.controlled_owners ?? { owners: [], changed_by: null, changed_at: null },

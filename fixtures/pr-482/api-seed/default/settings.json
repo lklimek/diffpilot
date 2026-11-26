@@ -26,6 +26,7 @@
     "today": null,
     "last_7_days": null
   },
+  "llm_job_slots": 1,
   "llm_selection": {
     "models": [
       {

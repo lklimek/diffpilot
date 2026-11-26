@@ -109,11 +109,13 @@ pub(super) async fn admit(
         .await?;
     let id = PassId::new_random();
     let hash = frozen.write(state, id).await?;
-    let model = crate::model::select_model(
+    let model = crate::model::select_model_for_payer(
+        &state.db,
+        &user,
         JobKind::VerifyComments,
         &Default::default(),
-        state.db.settings().llm_selection().await?.as_ref(),
-    );
+    )
+    .await?;
     let input = AssessmentInput {
         pr: native.pull_request.clone(),
         pull_request_id: review.pull_request_id,

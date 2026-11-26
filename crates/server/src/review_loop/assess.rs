@@ -57,7 +57,7 @@ use super::context::{self, ItemContext};
 use crate::github::mirror::{self, MirrorError};
 use crate::github::oauth::endpoint;
 use crate::jobs::executor::{ExecutorError, JobHandle, JobRequest, JobUpdate};
-use crate::model::{ModelContext, select_model};
+use crate::model::{ModelContext, select_model_for_payer};
 use crate::prompts;
 use crate::state::AppState;
 
@@ -949,6 +949,15 @@ async fn submit(
     input: &VerifyCommentsInput,
     language: LlmLanguage,
 ) -> Result<JobHandle, AssessError> {
+    let payer = contracts::ids::UserId(
+        state
+            .db
+            .review_loop()
+            .pass(pass)
+            .await?
+            .user_id
+            .ok_or(DbError::NotFound)?,
+    );
     let spec = JobSpec {
         job_id: JobId::new_random(),
         attempt: 0,
@@ -971,21 +980,15 @@ async fn submit(
         flow_file: None,
         assessment: None,
         pr_data: None,
-        model: select_model(
+        model: select_model_for_payer(
+            &state.db,
+            &payer,
             JobKind::VerifyComments,
             &ModelContext::default(),
-            state.db.settings().llm_selection().await?.as_ref(),
-        ),
+        )
+        .await?,
         limits: JobLimits::default(),
-        payer: contracts::ids::UserId(
-            state
-                .db
-                .review_loop()
-                .pass(pass)
-                .await?
-                .user_id
-                .ok_or(DbError::NotFound)?,
-        ),
+        payer,
         session: None,
         working_session: None,
         context_pack: None,

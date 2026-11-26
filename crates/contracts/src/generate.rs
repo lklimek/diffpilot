@@ -39,8 +39,9 @@ use crate::api::review_loop::{
     PutChannelRequest, PutPushTargetRequest, UserStreamEvent, WatchList, WebhookPayload,
 };
 use crate::api::settings::{
-    GithubWebhook, RankingUsage, RepoSettings, RepositoryInstallations, SetAskEffortRequest,
-    SetControlledOwnersRequest, SetJudgeEffortRequest, SetLanguageRequest, Settings,
+    GithubWebhook, LlmJobSlots, RankingUsage, RepoSettings, RepositoryInstallations,
+    SetAskEffortRequest, SetControlledOwnersRequest, SetJudgeEffortRequest, SetLanguageRequest,
+    Settings,
 };
 use crate::api::tour::Tour;
 use crate::routes::{self, Listener, ROUTES, Route};
@@ -135,6 +136,7 @@ pub const API_SCHEMAS: &[ApiSchema] = &[
     api_schema::<Vec<Feedback>>("feedback_list", &[routes::LIST_FEEDBACK]),
     api_schema::<PendingReview>("pending_review", &[routes::GET_PENDING_REVIEW]),
     api_schema::<Settings>("settings", &[routes::GET_SETTINGS]),
+    api_schema::<LlmJobSlots>("llm_job_slots", &[]),
     api_schema::<RepoSettings>("repo_settings", &[routes::GET_REPO_SETTINGS]),
     api_schema::<PrPage>("pr_page", &[routes::GET_PR_PAGE]),
     api_schema::<CommentsOverview>("comments_overview", &[routes::GET_COMMENTS]),
@@ -372,6 +374,7 @@ fn typescript_types() -> Result<String, GenerateError> {
     collector.visit::<CreateCommentResponse>();
     collector.visit::<UpdateCommentRequest>();
     collector.visit::<Settings>();
+    collector.visit::<LlmJobSlots>();
     collector.visit::<SetLanguageRequest>();
     collector.visit::<SetControlledOwnersRequest>();
     collector.visit::<RepoSettings>();

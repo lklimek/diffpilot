@@ -151,11 +151,18 @@ pub(crate) mod tests {
             if !populated {
                 continue;
             }
-            let selection = state.db.settings().llm_selection().await.unwrap().unwrap();
-            assert_eq!(selection.choice.model, "gpt-6.2-sol");
-            assert_eq!(selection.choice.reasoning_effort, ReasoningEffort::Low);
-            assert_eq!(selection.ask_effort, ReasoningEffort::High);
-            assert_eq!(selection.judge_effort, ReasoningEffort::High);
+            let selection = state
+                .db
+                .settings()
+                .llm_selection("u1")
+                .await
+                .unwrap()
+                .unwrap();
+            let choice = selection.choice.unwrap();
+            assert_eq!(choice.model, "gpt-6.2-sol");
+            assert_eq!(choice.reasoning_effort, ReasoningEffort::Low);
+            assert_eq!(selection.ask_effort, Some(ReasoningEffort::High));
+            assert_eq!(selection.judge_effort, Some(ReasoningEffort::High));
             for path in [
                 "/api/v1/me",
                 "/api/v1/settings",
@@ -174,6 +181,10 @@ pub(crate) mod tests {
                 assert_eq!(response.status(), StatusCode::OK, "{path}");
                 let body = response.into_body().collect().await.unwrap().to_bytes();
                 let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                if path == "/api/v1/settings" {
+                    assert_eq!(json["llm_job_slots"], 1);
+                    assert!(json["llm_selection"]["changed_by"].is_null());
+                }
                 if path == "/api/v1/settings/dashboard" {
                     assert_eq!(json["settings"]["time_zone"], "Europe/Warsaw");
                     assert_eq!(

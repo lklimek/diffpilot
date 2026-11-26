@@ -937,6 +937,7 @@ fn stored_question_projects_to_a_flag_of_unknown_level() {
 fn settings_lists_known_repositories() {
     let settings = Settings {
         llm_selection: None,
+        llm_job_slots: None,
         llm_usage: None,
         memcan_status: None,
         llm_status: None,
@@ -969,6 +970,7 @@ fn flow_facts_have_no_changed_line_counter() {
 fn settings_installations_not_checked_is_null_not_empty() {
     let mut settings = Settings {
         llm_selection: None,
+        llm_job_slots: None,
         llm_usage: None,
         memcan_status: None,
         llm_status: None,

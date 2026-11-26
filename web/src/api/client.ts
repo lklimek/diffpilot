@@ -155,6 +155,7 @@ interface CallOptions {
   query?: Record<string, string | number>;
   body?: unknown;
   headers?: Record<string, string>;
+  sessionScope?: number;
 }
 
 /** A conditional read (`If-None-Match`): `unchanged` on 304, else the body with its `ETag`. */
@@ -263,6 +264,8 @@ export interface AnalysisStreamHandlers {
 /** Creates a client for the API at `baseUrl` (empty = same origin); holds the session's CSRF token. */
 export function createApiClient(baseUrl = "") {
   let csrfToken: string | null | undefined;
+  // Settings forms and cache keys use this local identifier instead of the session token.
+  let sessionScope = 0;
 
   async function send(name: RouteName, options: CallOptions, csrf: string | null): Promise<Response> {
     const route = routes[name];
@@ -307,19 +310,26 @@ export function createApiClient(baseUrl = "") {
   async function call<T>(name: RouteName, options: CallOptions = {}, allowAbsent = false): Promise<T | null> {
     const route = routes[name];
     const needsCsrf = route.auth === "session_csrf";
-    if (needsCsrf && csrfToken === undefined) await getMe();
-    let response = await send(name, options, needsCsrf ? (csrfToken ?? null) : null);
-    if (needsCsrf && response.status === 403) {
+    const scoped = options.sessionScope !== undefined;
+    const requestCsrf = () => {
+      if (scoped && (options.sessionScope !== sessionScope || !csrfToken)) {
+        throw new ApiError(403, "csrf_rejected", "Your sign-in changed. Reopen Settings and try again.");
+      }
+      return needsCsrf || scoped ? (csrfToken ?? null) : null;
+    };
+    if (!scoped && needsCsrf && csrfToken === undefined) await getMe();
+    let response = await send(name, options, requestCsrf());
+    if ((needsCsrf || scoped) && response.status === 403) {
       const error = await errorOf(response);
       if (error.code !== "csrf_rejected") throw error;
       await getMe();
-      response = await send(name, options, csrfToken ?? null);
+      response = await send(name, options, requestCsrf());
     }
     if (response.status === 503 && IDEMPOTENT_METHODS.has(route.method)) {
       const error = await errorOf(response.clone());
       if (error.code !== "unavailable") throw error;
       await new Promise((resolve) => setTimeout(resolve, retryAfterMs(response)));
-      response = await send(name, options, needsCsrf ? (csrfToken ?? null) : null);
+      response = await send(name, options, requestCsrf());
     }
     if (allowAbsent && response.status === 501) return null;
     if (!response.ok) throw await errorOf(response);
@@ -343,20 +353,28 @@ export function createApiClient(baseUrl = "") {
     return { unchanged: false, body: (await response.json()) as T, etag: response.headers.get("ETag") };
   }
 
-  async function getMe(): Promise<MeResponse> {
+  async function getBrowserSession() {
     const me = await call<MeResponse>("getMe");
+    if (csrfToken !== me.csrf_token) sessionScope++;
     csrfToken = me.csrf_token;
-    return me;
+    return { ...me, sessionScope };
+  }
+
+  async function getMe(): Promise<MeResponse> {
+    const { user, csrf_token } = await getBrowserSession();
+    return { user, csrf_token };
   }
 
   return {
     getMe,
+    getBrowserSession,
     listMyPrs: (query: PrHistoryQuery, signal?: AbortSignal) =>
       optional<PrHistory>("listMyPrs", { query: definedParams(query), signal }),
     /** Ends the session (`POST /auth/logout`); the CSRF token of the old session is dropped. */
     logout: async (body: LogoutRequest) => {
       await call<void>("authLogout", { body });
       csrfToken = undefined;
+      sessionScope++;
     },
     resolvePr: (body: ResolvePrRequest) => call<ResolvePrResponse>("resolvePr", { body }),
     createAnalysis: (body: CreateAnalysisRequest) => call<AnalysisSummary>("createAnalysis", { body }),
@@ -409,22 +427,26 @@ export function createApiClient(baseUrl = "") {
         throw error;
       }
     },
-    getSettings: () => call<Settings>("getSettings"),
+    getSettings: (sessionScope?: number, signal?: AbortSignal) =>
+      call<Settings>("getSettings", { sessionScope, signal }),
     getGithubWebhook: (signal?: AbortSignal) => optional<GithubWebhook>("getGithubWebhook", { signal }),
     getRepositoryInstallations: (signal?: AbortSignal) =>
       optional<RepositoryInstallations>("getRepositoryInstallations", { signal }),
     getLlmActivity: (signal?: AbortSignal) => optional<LlmActivity>("getLlmActivity", { signal }),
     getRankingUsage: (signal?: AbortSignal) => optional<RankingUsage>("getRankingUsage", { signal }),
     resetRankingUsage: () => call<RankingUsage>("resetRankingUsage"),
-    setLlm: (body: import("./generated/types").ModelChoice) =>
-      call<import("./generated/types").LlmSelection>("setLlm", { body }),
+    setLlm: (body: import("./generated/types").ModelChoice, sessionScope: number) =>
+      call<import("./generated/types").LlmSelection>("setLlm", { body, sessionScope }),
+    setLlmJobSlots: (slots: number, sessionScope: number) =>
+      call<import("./generated/types").LlmJobSlots>("setLlmJobSlots", { body: { slots }, sessionScope }),
     requestFlow: (id: AnalysisId, flow: string) =>
       call<AnalysisSummary>("requestFlow", { params: { id, flow } }),
     setBackgroundAnalysis: (id: AnalysisId, enabled: boolean) =>
       call<AnalysisSummary>("setBackgroundAnalysis", { params: { id }, body: { enabled } }),
     pauseAnalysis: (id: AnalysisId) => call<AnalysisSummary>("pauseAnalysis", { params: { id } }),
     resumeAnalysis: (id: AnalysisId) => call<AnalysisSummary>("resumeAnalysis", { params: { id } }),
-    setLanguage: (body: SetLanguageRequest) => call<void>("setLanguage", { body }),
+    setLanguage: (body: SetLanguageRequest, sessionScope: number) =>
+      call<void>("setLanguage", { body, sessionScope }),
     setControlledOwners: (body: SetControlledOwnersRequest) =>
       call<import("./generated/types").ControlledOwners>("setControlledOwners", { body }),
     getRepoSettings: (repo: RepoRef) =>
@@ -432,10 +454,16 @@ export function createApiClient(baseUrl = "") {
     getDashboardSettings: () => call<DashboardSettingsView>("getDashboardSettings"),
     setDashboardSettings: (body: DashboardSettings) =>
       call<DashboardSettingsView>("setDashboardSettings", { body }),
-    setAskEffort: (reasoning_effort: ReasoningEffort) =>
-      call<import("./generated/types").LlmSelection>("setAskEffort", { body: { reasoning_effort } }),
-    setJudgeEffort: (reasoning_effort: ReasoningEffort) =>
-      call<import("./generated/types").LlmSelection>("setJudgeEffort", { body: { reasoning_effort } }),
+    setAskEffort: (reasoning_effort: ReasoningEffort, sessionScope: number) =>
+      call<import("./generated/types").LlmSelection>("setAskEffort", {
+        body: { reasoning_effort },
+        sessionScope,
+      }),
+    setJudgeEffort: (reasoning_effort: ReasoningEffort, sessionScope: number) =>
+      call<import("./generated/types").LlmSelection>("setJudgeEffort", {
+        body: { reasoning_effort },
+        sessionScope,
+      }),
     listAccessTokens: () => call<AccessToken[]>("listAccessTokens"),
     /** The only call whose answer carries a token secret (ADR-019); callers must not cache or store it. */
     createAccessToken: (body: CreateAccessToken) => call<CreatedAccessToken>("createAccessToken", { body }),

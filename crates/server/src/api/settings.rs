@@ -7,28 +7,30 @@ use std::borrow::Cow;
 
 use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, put};
 use axum::{Json, Router};
 use contracts::api::error::ApiErrorCode;
 use contracts::api::settings::AppInstallation;
 use contracts::api::settings::{
-    ControlledOwners, RepoSettings, SetAskEffortRequest, SetControlledOwnersRequest,
-    SetJudgeEffortRequest, SetLanguageRequest, Settings,
+    ControlledOwners, LlmJobSlots, LlmSelection, RepoSettings, SetAskEffortRequest,
+    SetControlledOwnersRequest, SetJudgeEffortRequest, SetLanguageRequest, Settings,
 };
 use contracts::common::RepoRef;
 use contracts::job::result::{JobFailureKind, LlmCallOutcome, LlmCallStatus};
 use contracts::routes::{
     GET_REPO_SETTINGS, GET_SETTINGS, SET_ASK_EFFORT, SET_CONTROLLED_OWNERS, SET_JUDGE_EFFORT,
-    SET_LANGUAGE, SET_LLM,
+    SET_LANGUAGE, SET_LLM, SET_LLM_JOB_SLOTS,
 };
 use contracts::time::Timestamp;
 use db::error::DbError;
-use db::repo::settings::{AnalysedRepo, CallFailure, LastCall};
+use db::repo::settings::{AnalysedRepo, CallFailure, LastCall, LlmSelectionUpdate};
 
 use crate::api::error::{ApiErrorSource, ApiFailure};
 use crate::auth::access_tokens::github_read;
-use crate::auth::{Session, SessionCsrf, user_access_token, user_token_rejected};
+use crate::auth::{
+    AuthError, CSRF_HEADER, Session, SessionCsrf, user_access_token, user_token_rejected,
+};
 use crate::github::rest::{self, GithubError, is_valid_repo};
 use crate::memcan::profile;
 use crate::pipeline;
@@ -52,6 +54,9 @@ pub enum SettingsApiError {
     /// The gateway did not return a common status or challenge.
     #[error("the Codex gateway is unavailable")]
     Gateway(#[from] crate::gateway::client::Error),
+    /// A session-bound settings read could not verify the session.
+    #[error(transparent)]
+    Auth(#[from] AuthError),
     /// Malformed JSON body, or a value outside the allowed list.
     #[error("the request body is not valid")]
     Json(#[from] JsonRejection),
@@ -79,6 +84,7 @@ impl ApiErrorSource for SettingsApiError {
     fn code(&self) -> ApiErrorCode {
         match self {
             Self::GatewayNotConfigured | Self::Gateway(_) => ApiErrorCode::Unavailable,
+            Self::Auth(error) => error.code(),
             Self::Json(rejection) => rejection.code(),
             Self::Path(rejection) => rejection.code(),
             Self::InvalidRepository | Self::InvalidModel | Self::InvalidOwners => {
@@ -94,6 +100,7 @@ impl ApiErrorSource for SettingsApiError {
             Self::GatewayNotConfigured | Self::Gateway(_) => {
                 Cow::Borrowed("The Codex connection is unavailable. Try again later.")
             }
+            Self::Auth(error) => error.public_message(),
             Self::Json(rejection) => rejection.public_message(),
             Self::Path(rejection) => rejection.public_message(),
             Self::Db(error) => error.public_message(),
@@ -124,12 +131,20 @@ pub fn routes() -> Router<AppState> {
         .route(SET_LANGUAGE.path, put(set_language))
         .route(SET_CONTROLLED_OWNERS.path, put(set_controlled_owners))
         .route(SET_LLM.path, put(set_llm))
+        .route(SET_LLM_JOB_SLOTS.path, put(set_llm_job_slots))
         .route(SET_ASK_EFFORT.path, put(set_ask_effort))
         .route(SET_JUDGE_EFFORT.path, put(set_judge_effort))
         .route(GET_REPO_SETTINGS.path, get(read_repo))
 }
 
-async fn read(State(state): State<AppState>, session: Session) -> SettingsResult<Json<Settings>> {
+async fn read(
+    State(state): State<AppState>,
+    session: Session,
+    headers: HeaderMap,
+) -> SettingsResult<Json<Settings>> {
+    if headers.contains_key(CSRF_HEADER) && !session.is_access_token() {
+        session.check_csrf(&headers).map_err(failure)?;
+    }
     Ok(Json(settings(&state, &session).await.map_err(failure)?))
 }
 
@@ -194,84 +209,81 @@ async fn set_llm(
     State(state): State<AppState>,
     SessionCsrf(session): SessionCsrf,
     body: Result<Json<contracts::job::spec::ModelChoice>, JsonRejection>,
-) -> SettingsResult<Json<contracts::api::settings::LlmSelection>> {
+) -> SettingsResult<Json<LlmSelection>> {
     let Json(choice) = body.map_err(failure)?;
     if !crate::model::allowed(&choice) {
         return Err(failure(SettingsApiError::InvalidModel));
     }
-    let user = state
-        .db
-        .users()
-        .get(&session.user_id)
-        .await
-        .map_err(failure)?;
     let (old, saved) = state
         .db
         .settings()
-        .set_llm_selection(&choice, &user.profile.login, Timestamp::now())
+        .set_llm_selection(
+            &session.user_id,
+            LlmSelectionUpdate::Model(choice.clone()),
+            Timestamp::now(),
+        )
         .await
         .map_err(failure)?;
     let old = crate::model::selection(old).current;
-    tracing::info!(login = %user.profile.login, old_model = %old.model, old_effort = ?old.reasoning_effort, new_model = %choice.model, new_effort = ?choice.reasoning_effort, "installation LLM selection changed");
+    tracing::info!(user = %session.user_id, old_model = %old.model, old_effort = ?old.reasoning_effort, new_model = %choice.model, new_effort = ?choice.reasoning_effort, "payer LLM selection changed");
     Ok(Json(crate::model::selection(Some(saved))))
+}
+
+async fn set_llm_job_slots(
+    State(state): State<AppState>,
+    SessionCsrf(session): SessionCsrf,
+    body: Result<Json<LlmJobSlots>, JsonRejection>,
+) -> SettingsResult<Json<LlmJobSlots>> {
+    let Json(request) = body.map_err(failure)?;
+    state
+        .db
+        .settings()
+        .set_llm_job_slots(&session.user_id, request.slots)
+        .await
+        .map_err(failure)?;
+    tracing::info!(user = %session.user_id, slots = request.slots.get(), "payer LLM job slots changed");
+    Ok(Json(request))
 }
 
 async fn set_ask_effort(
     State(state): State<AppState>,
     SessionCsrf(session): SessionCsrf,
     body: Result<Json<SetAskEffortRequest>, JsonRejection>,
-) -> SettingsResult<Json<contracts::api::settings::LlmSelection>> {
+) -> SettingsResult<Json<LlmSelection>> {
     let Json(request) = body.map_err(failure)?;
-    let user = state
-        .db
-        .users()
-        .get(&session.user_id)
-        .await
-        .map_err(failure)?;
-    let default_choice = crate::model::selection(None).current;
     let (old, saved) = state
         .db
         .settings()
-        .set_ask_effort(
-            request.reasoning_effort,
-            &default_choice,
-            &user.profile.login,
+        .set_llm_selection(
+            &session.user_id,
+            LlmSelectionUpdate::AskEffort(request.reasoning_effort),
             Timestamp::now(),
         )
         .await
         .map_err(failure)?;
     let old = crate::model::selection(old).ask_effort;
-    tracing::info!(login = %user.profile.login, ?old, new = ?request.reasoning_effort, "installation Ask effort changed");
+    tracing::info!(user = %session.user_id, ?old, new = ?request.reasoning_effort, "payer Ask effort changed");
     Ok(Json(crate::model::selection(Some(saved))))
 }
 
-/// R7: the installation-wide dashboard ranking effort; the model choice and other efforts are kept.
 async fn set_judge_effort(
     State(state): State<AppState>,
     SessionCsrf(session): SessionCsrf,
     body: Result<Json<SetJudgeEffortRequest>, JsonRejection>,
-) -> SettingsResult<Json<contracts::api::settings::LlmSelection>> {
+) -> SettingsResult<Json<LlmSelection>> {
     let Json(request) = body.map_err(failure)?;
-    let user = state
-        .db
-        .users()
-        .get(&session.user_id)
-        .await
-        .map_err(failure)?;
-    let default_choice = crate::model::selection(None).current;
     let (old, saved) = state
         .db
         .settings()
-        .set_judge_effort(
-            request.reasoning_effort,
-            &default_choice,
-            &user.profile.login,
+        .set_llm_selection(
+            &session.user_id,
+            LlmSelectionUpdate::JudgeEffort(request.reasoning_effort),
             Timestamp::now(),
         )
         .await
         .map_err(failure)?;
     let old = crate::model::selection(old).judge_effort;
-    tracing::info!(login = %user.profile.login, ?old, new = ?request.reasoning_effort, "installation dashboard ranking effort changed");
+    tracing::info!(user = %session.user_id, ?old, new = ?request.reasoning_effort, "payer dashboard ranking effort changed");
     Ok(Json(crate::model::selection(Some(saved))))
 }
 
@@ -314,8 +326,9 @@ async fn settings(state: &AppState, session: &Session) -> Result<Settings, Setti
         .await?;
     Ok(Settings {
         llm_selection: Some(crate::model::selection(
-            state.db.settings().llm_selection().await?,
+            state.db.settings().llm_selection(&session.user_id).await?,
         )),
+        llm_job_slots: Some(state.db.settings().llm_job_slots(&session.user_id).await?),
         llm_usage: Some(
             state
                 .db
@@ -511,9 +524,6 @@ pub(super) mod tests {
 
         let state = AppState::with_queue(config, db);
         seed_analysis(&state.db).await.expect("analysis");
-        db::repo::analyses::testing::seed_payer(&state.db, "codex-1")
-            .await
-            .unwrap();
         let lock = lock_user("u1").await;
         let grant = TokenGrant {
             access_token: SecretString::from(ACCESS),
@@ -634,6 +644,9 @@ pub(super) mod tests {
     #[tokio::test]
     async fn llm_status_is_private_to_the_signed_in_payer() {
         let h = harness().await;
+        db::repo::analyses::testing::seed_payer(&h.state.db, "codex-1")
+            .await
+            .unwrap();
         let credentials = h.state.db.llm_credentials();
         crate::test_support::link_payer(&h.state.db, DEFAULT_TENANT, "codex-1").await;
         credentials
@@ -1171,7 +1184,120 @@ pub(super) mod tests {
         }
     }
     #[tokio::test]
-    async fn installation_model_choice_validates_csrf_and_records_the_changer() {
+    async fn llm_preferences_are_private_to_the_authenticated_payer() {
+        let h = harness().await;
+        let colleague = crate::test_support::other_user_cookie(&h.state).await;
+        let choice = json!({"model": "gpt-6-astra", "reasoning_effort": "low"});
+        let (status, saved) = h
+            .send(
+                "PUT",
+                SET_LLM.path,
+                Some(&h.cookie),
+                true,
+                Some(choice.clone()),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{saved}");
+
+        let (status, saved) = h
+            .send(
+                "PUT",
+                SET_ASK_EFFORT.path,
+                Some(&colleague),
+                true,
+                Some(json!({"reasoning_effort": "high"})),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{saved}");
+        assert_eq!(
+            saved["current"],
+            json!({"model": "gpt-6.1-sol", "reasoning_effort": "high"})
+        );
+        assert_eq!(saved["ask_effort"], "high");
+        assert_eq!(saved["changed_by"], "colleague");
+
+        let (_, settings) = h.get(GET_SETTINGS.path).await;
+        assert_eq!(settings["llm_selection"]["current"], choice);
+        assert_eq!(settings["llm_selection"]["ask_effort"], "medium");
+        assert_eq!(settings["llm_selection"]["changed_by"], "lklimek");
+    }
+
+    #[tokio::test]
+    async fn settings_read_can_require_the_expected_browser_session() {
+        let h = harness().await;
+        for (token, expected) in [
+            ("stale-token", StatusCode::FORBIDDEN),
+            ("csrf", StatusCode::OK),
+        ] {
+            let request = Request::get(GET_SETTINGS.path)
+                .header("cookie", &h.cookie)
+                .header(CSRF_HEADER, token)
+                .body(Body::empty())
+                .unwrap();
+            let response = api::router(h.state.clone()).oneshot(request).await.unwrap();
+            assert_eq!(response.status(), expected);
+        }
+        assert_eq!(h.get(GET_SETTINGS.path).await.0, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn llm_job_slots_validate_csrf_bounds_and_payer_isolation() {
+        let h = harness().await;
+        let other = crate::test_support::other_user_cookie(&h.state).await;
+        let (_, initial) = h.get(GET_SETTINGS.path).await;
+        assert_eq!(initial["llm_job_slots"], 1);
+
+        for (cookie, csrf, expected) in [
+            (None, true, StatusCode::UNAUTHORIZED),
+            (Some(h.cookie.as_str()), false, StatusCode::FORBIDDEN),
+        ] {
+            let (status, _) = h
+                .send(
+                    "PUT",
+                    SET_LLM_JOB_SLOTS.path,
+                    cookie,
+                    csrf,
+                    Some(json!({"slots": 3})),
+                )
+                .await;
+            assert_eq!(status, expected);
+        }
+        for slots in [json!(0), json!(-1), json!(2.5), json!(65536), json!("3")] {
+            let (status, _) = h
+                .send(
+                    "PUT",
+                    SET_LLM_JOB_SLOTS.path,
+                    Some(&h.cookie),
+                    true,
+                    Some(json!({"slots": slots})),
+                )
+                .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+        }
+        for slots in [3, 4, 3] {
+            let (status, saved) = h
+                .send(
+                    "PUT",
+                    SET_LLM_JOB_SLOTS.path,
+                    Some(&h.cookie),
+                    true,
+                    Some(json!({"slots": slots})),
+                )
+                .await;
+            assert_eq!(status, StatusCode::OK, "{saved}");
+            assert_eq!(saved, json!({"slots": slots}));
+        }
+
+        let (_, reader) = h.get(GET_SETTINGS.path).await;
+        assert_eq!(reader["llm_job_slots"], 3);
+        let (_, colleague) = h
+            .send("GET", GET_SETTINGS.path, Some(&other), false, None)
+            .await;
+        assert_eq!(colleague["llm_job_slots"], 1);
+    }
+
+    #[tokio::test]
+    async fn payer_model_choice_validates_csrf_and_records_the_changer() {
         let h = harness().await;
         let (_, initial) = h.get(GET_SETTINGS.path).await;
         assert_eq!(initial["llm_selection"]["current"]["model"], "gpt-6.1-sol");
@@ -1204,7 +1330,7 @@ pub(super) mod tests {
         assert!(saved["changed_at"].is_string());
         let (_, read) = h.get(GET_SETTINGS.path).await;
         assert_eq!(read["llm_selection"], saved);
-        assert!(logs.text().contains("installation LLM selection changed"));
+        assert!(logs.text().contains("payer LLM selection changed"));
     }
 
     #[tokio::test]
@@ -1244,7 +1370,7 @@ pub(super) mod tests {
         assert_eq!(saved["changed_by"], "lklimek");
         let (_, read) = h.get(GET_SETTINGS.path).await;
         assert_eq!(read["llm_selection"], saved);
-        assert!(logs.text().contains("installation Ask effort changed"));
+        assert!(logs.text().contains("payer Ask effort changed"));
     }
 
     #[tokio::test]
@@ -1287,7 +1413,7 @@ pub(super) mod tests {
         assert_eq!(read["llm_selection"], saved);
         assert!(
             logs.text()
-                .contains("installation dashboard ranking effort changed")
+                .contains("payer dashboard ranking effort changed")
         );
     }
 }

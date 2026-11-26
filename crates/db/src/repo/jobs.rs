@@ -12,8 +12,8 @@ use contracts::job::spec::{JobPriority, JobSpec, JobTarget};
 use contracts::job::state::{JobState, JobTransition};
 use contracts::time::Timestamp;
 use jiff::SignedDuration;
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{QueryBuilder, Row, Sqlite, SqliteConnection, SqlitePool, Transaction};
@@ -21,6 +21,22 @@ use sqlx::{QueryBuilder, Row, Sqlite, SqliteConnection, SqlitePool, Transaction}
 use super::dashboard::{log_refund, refund_finished_send};
 use crate::error::DbError;
 use crate::repo::settings::CallFailure;
+
+macro_rules! judge_capacity_sql {
+    ($payer:literal) => {
+        concat!(
+            "SELECT CASE
+                 WHEN COUNT(*) FILTER (WHERE j.kind = 'judge_work') > 0 THEN 'occupied'
+                 WHEN COUNT(j.id) < u.llm_job_slots THEN 'available'
+                 WHEN COUNT(*) FILTER (WHERE j.kind NOT IN ('plan', 'pr_context', 'analyse_flow'))
+                      < u.llm_job_slots THEN 'waiting_for_analysis'
+                 ELSE 'occupied'
+             END
+             FROM users u LEFT JOIN jobs j ON j.payer_id = u.id AND j.state IN ('claimed', 'running')
+             WHERE u.id = ", $payer, " GROUP BY u.llm_job_slots"
+        )
+    };
+}
 
 mod activity;
 
@@ -32,6 +48,18 @@ pub use activity::{ActiveJob, Activity, OwnJob};
 pub struct Jobs<'a> {
     pub(crate) pool: &'a SqlitePool,
     pub(crate) changes: &'a JobChanges,
+}
+
+/// Whether a judge job has payer capacity and a free judge container.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum JudgeCapacity {
+    /// Both constraints allow a claim.
+    Available,
+    /// Active analysis jobs fill the payer's available slots.
+    WaitingForAnalysis,
+    /// An active judge owns the container or other LLM jobs fill the payer's slots.
+    Occupied,
 }
 
 /// Repair runs allowed after a first run whose output verification rejected (brief §5 Pipeline 6).
@@ -773,10 +801,10 @@ impl Jobs<'_> {
         self.get(spec.job_id).await
     }
 
-    /// Claims the next runnable job: `queued`, credential usable and idle, no other running job of the same
-    /// analysis, a dashboard job only while its refresh is ranking in the job's attempt, a `verify_comments` job only
-    /// while its pass is live; interactive before batch, Ask first and `verify_comments` second within interactive,
-    /// then oldest first. Never pre-empts a claimed or running job. Increments the attempt.
+    /// Claims the next eligible job with a usable credential, a free payer slot and a free container.
+    /// Dashboard jobs need a current ranking attempt and assessment jobs need a live pass. Interactive
+    /// jobs precede batch work, with Ask first and comment assessments second, then oldest first.
+    /// The claim increments the attempt and keeps existing jobs running.
     pub async fn claim(&self, params: ClaimParams<'_>) -> Result<Option<JobRecord>, DbError> {
         self.claim_inner(params, false).await
     }
@@ -824,6 +852,8 @@ impl Jobs<'_> {
             ") AND NOT EXISTS (SELECT 1 FROM jobs r WHERE r.state IN ('claimed', 'running')
                    AND r.payer_id = j.payer_id AND (r.pull_request_id = j.pull_request_id
                        OR (r.kind = 'judge_work' AND j.kind = 'judge_work')))
+               AND (SELECT COUNT(*) FROM jobs r WHERE r.payer_id = j.payer_id AND r.state IN ('claimed', 'running'))
+                   < (SELECT llm_job_slots FROM users WHERE id = j.payer_id)
                AND NOT EXISTS (SELECT 1 FROM llm_credentials c WHERE c.user_id = j.payer_id
                    AND (c.state <> 'linked' OR c.paused_until > ",
         );
@@ -1419,17 +1449,16 @@ impl Jobs<'_> {
         job_from_row(&row)
     }
 
-    /// Whether the payer's answer-only container is occupied.
-    pub async fn judge_busy(&self, payer: &str) -> Result<bool, DbError> {
-        let mut tx = super::read_tx(self.pool).await?;
-        let busy = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM jobs WHERE payer_id = ? AND kind = 'judge_work' AND state IN ('claimed', 'running'))",
-        )
-        .bind(payer)
-        .fetch_one(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        Ok(busy)
+    /// Reads the payer's current database capacity for a judge claim.
+    pub async fn judge_capacity(&self, payer: &str) -> Result<JudgeCapacity, DbError> {
+        let capacity: Option<String> = sqlx::query_scalar(judge_capacity_sql!("?"))
+            .bind(payer)
+            .fetch_optional(self.pool)
+            .await?;
+        match capacity {
+            Some(capacity) => parse_wire(&capacity, "judge capacity"),
+            None => Err(DbError::NotFound),
+        }
     }
 
     /// Jobs of an analysis, oldest first; only those in `states` unless `states` is empty.
@@ -2026,6 +2055,124 @@ mod tests {
             .await
             .expect("complete");
         assert_eq!(claim(&db, 13).await.map(|job| job.id), Some(oldest));
+    }
+
+    async fn enqueue_for_pr(db: &Db, pr: i64, payer: &str, flow: &str, second: i64) -> JobId {
+        let analysis = seed_analysis(db).await.unwrap();
+        if pr != 1 {
+            sqlx::query(
+                "INSERT OR IGNORE INTO pull_requests
+                    (id, tenant_id, repo_id, number, title, author, html_url, base_sha, head_sha, fetched_at)
+                 SELECT ?1, tenant_id, repo_id, 482 + ?1, title, author,
+                        html_url || '/' || ?1, base_sha, head_sha, fetched_at
+                 FROM pull_requests WHERE id = 1",
+            )
+            .bind(pr)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+            sqlx::query("UPDATE analyses SET pull_request_id = ? WHERE id = ?")
+                .bind(pr)
+                .bind(analysis.to_string())
+                .execute(&db.pool)
+                .await
+                .unwrap();
+        }
+        let mut job = new_job(analysis, flow, JobPriority::Batch);
+        let JobTarget::PullRequest(target) = &mut job.spec.target else {
+            panic!("PR target");
+        };
+        target.pull_request_id = pr;
+        job.spec.payer.0 = payer.to_owned();
+        enqueue_new(db, job, second).await
+    }
+
+    #[tokio::test]
+    async fn default_payer_slot_applies_across_pull_requests() {
+        let db = db().await;
+        let first = enqueue_for_pr(&db, 1, CREDENTIAL, "f1", 0).await;
+        let second = enqueue_for_pr(&db, 2, CREDENTIAL, "f1", 1).await;
+
+        assert_eq!(claim(&db, 10).await.unwrap().id, first);
+        assert!(claim(&db, 11).await.is_none());
+        db.jobs()
+            .complete(&succeeded(first, 1), at(12))
+            .await
+            .unwrap();
+        assert_eq!(claim(&db, 13).await.unwrap().id, second);
+    }
+
+    #[tokio::test]
+    async fn payer_slots_serialize_each_pr_and_drain_after_a_limit_decrease() {
+        use std::num::NonZeroU16;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::repo::testing::file_backed(dir.path()).await.unwrap();
+        let first = enqueue_for_pr(&db, 1, CREDENTIAL, "f1", 0).await;
+        let same_pr = enqueue_for_pr(&db, 1, CREDENTIAL, "f2", 1).await;
+        let second = enqueue_for_pr(&db, 2, CREDENTIAL, "f1", 2).await;
+        let third = enqueue_for_pr(&db, 3, CREDENTIAL, "f1", 3).await;
+        let fourth = enqueue_for_pr(&db, 4, CREDENTIAL, "f1", 4).await;
+        super::super::analyses::testing::seed_payer(&db, "spare")
+            .await
+            .unwrap();
+        let other_payer = enqueue_for_pr(&db, 1, "spare", "f3", 5).await;
+        let settings = db.settings();
+        settings
+            .set_llm_job_slots(CREDENTIAL, NonZeroU16::new(3).unwrap())
+            .await
+            .unwrap();
+
+        let jobs = db.jobs();
+        let payers = [CREDENTIAL.to_owned(), "spare".to_owned()];
+        let claim_any = || {
+            jobs.claim(ClaimParams {
+                payer_ids: &payers,
+                job_token_hash: b"fake",
+                lease_until: at(100),
+                now: at(10),
+            })
+        };
+        let (a, b, c, d) = tokio::join!(claim_any(), claim_any(), claim_any(), claim_any());
+        let claimed: Vec<_> = [a, b, c, d]
+            .into_iter()
+            .map(|job| job.unwrap().unwrap().id)
+            .collect();
+        for eligible in [first, second, third, other_payer] {
+            assert!(claimed.contains(&eligible), "eligible job {eligible}");
+        }
+        assert!(claim_any().await.unwrap().is_none());
+
+        settings
+            .set_llm_job_slots(CREDENTIAL, NonZeroU16::MIN)
+            .await
+            .unwrap();
+        assert_eq!(jobs.get(first).await.unwrap().state, JobState::Claimed);
+        jobs.complete(&succeeded(first, 1), at(11)).await.unwrap();
+        assert_eq!(
+            jobs.request_cancel(second, at(12)).await.unwrap(),
+            JobState::Claimed
+        );
+        assert!(
+            claim(&db, 13).await.is_none(),
+            "cancellation awaits worker acknowledgement"
+        );
+        jobs.complete(&result(second, 1, JobOutcome::Cancelled), at(14))
+            .await
+            .unwrap();
+        assert!(
+            claim(&db, 15).await.is_none(),
+            "the payer is still at the lowered limit"
+        );
+        assert_eq!(
+            jobs.release_claim(third, 1, at(16)).await.unwrap(),
+            Some(JobState::Queued)
+        );
+        assert_eq!(claim(&db, 17).await.unwrap().id, same_pr);
+        jobs.complete(&succeeded(same_pr, 1), at(18)).await.unwrap();
+        let retried = claim(&db, 19).await.unwrap();
+        assert_eq!((retried.id, retried.attempt), (third, 2));
+        assert_eq!(jobs.get(fourth).await.unwrap().state, JobState::Queued);
     }
 
     #[tokio::test]
@@ -3104,6 +3251,10 @@ mod tests {
     async fn judge_and_pr_containers_can_run_for_the_same_payer() {
         let db = db().await;
         let analysis = seed_analysis(&db).await.expect("seed");
+        db.settings()
+            .set_llm_job_slots(CREDENTIAL, std::num::NonZeroU16::new(2).unwrap())
+            .await
+            .unwrap();
         let refresh = seed_ranking_refresh(&db).await.expect("refresh");
         enqueue(&db, analysis, "f1", 0).await;
         db.jobs()
@@ -3112,7 +3263,10 @@ mod tests {
             .expect("enqueue");
         let first = claim(&db, 2).await.expect("interactive judge job first");
         assert_eq!(first.kind, JobKind::JudgeWork);
-        assert!(db.jobs().judge_busy(CREDENTIAL).await.unwrap());
+        assert_eq!(
+            db.jobs().judge_capacity(CREDENTIAL).await.unwrap(),
+            JudgeCapacity::Occupied
+        );
         assert_eq!(
             claim(&db, 3).await.unwrap().kind,
             JobKind::AnalyseFlow,
@@ -3168,6 +3322,10 @@ mod tests {
     async fn ask_runs_on_its_pr_container_without_preempting_the_judge() {
         let db = db().await;
         let analysis = seed_analysis(&db).await.expect("seed");
+        db.settings()
+            .set_llm_job_slots(CREDENTIAL, std::num::NonZeroU16::new(2).unwrap())
+            .await
+            .unwrap();
         let refresh = seed_ranking_refresh(&db).await.expect("refresh");
         let ranking = enqueue_new(&db, judge_job(refresh, 1), 0).await;
         assert_eq!(claim(&db, 1).await.map(|job| job.id), Some(ranking));
@@ -3202,30 +3360,50 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pr_jobs_do_not_occupy_the_judge_container() {
+    async fn pr_job_only_blocks_judge_when_it_uses_the_last_payer_slot() {
         let db = db().await;
         let analysis = seed_analysis(&db).await.expect("seed");
         let jobs = db.jobs();
         let ask = enqueue_new(&db, ask_job(analysis), 0).await;
-        assert!(
-            !jobs.judge_busy(CREDENTIAL).await.expect("busy"),
+        assert_eq!(
+            jobs.judge_capacity(CREDENTIAL).await.unwrap(),
+            JudgeCapacity::Available,
             "queued only"
         );
         assert_eq!(claim(&db, 1).await.map(|job| job.id), Some(ask));
-        assert!(!jobs.judge_busy(CREDENTIAL).await.expect("busy"), "claimed");
-        assert!(
-            !jobs.judge_busy("other").await.expect("busy"),
-            "per credential"
+        assert_eq!(
+            jobs.judge_capacity(CREDENTIAL).await.unwrap(),
+            JudgeCapacity::Occupied,
+            "claimed"
+        );
+        db.settings()
+            .set_llm_job_slots(CREDENTIAL, std::num::NonZeroU16::new(2).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            jobs.judge_capacity(CREDENTIAL).await.unwrap(),
+            JudgeCapacity::Available,
+            "free slot"
+        );
+        assert_eq!(
+            jobs.judge_capacity("spare").await.unwrap(),
+            JudgeCapacity::Available,
+            "per payer"
         );
         jobs.record_events(ask, 1, &[event(1)], at(61))
             .await
             .expect("running");
-        assert!(!jobs.judge_busy(CREDENTIAL).await.expect("busy"), "running");
+        assert_eq!(
+            jobs.judge_capacity(CREDENTIAL).await.unwrap(),
+            JudgeCapacity::Available,
+            "running"
+        );
         jobs.complete(&succeeded(ask, 1), at(2))
             .await
             .expect("complete");
-        assert!(
-            !jobs.judge_busy(CREDENTIAL).await.expect("busy"),
+        assert_eq!(
+            jobs.judge_capacity(CREDENTIAL).await.unwrap(),
+            JudgeCapacity::Available,
             "finished"
         );
     }
