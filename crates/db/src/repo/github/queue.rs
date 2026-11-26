@@ -48,6 +48,9 @@ pub struct DashboardItem {
     pub number: u32,
     /// The read requested for this item.
     pub read: DashboardRead,
+    /// Signed GitHub identity for a pull request lifecycle re-read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository_id: Option<i64>,
 }
 
 /// The unfinished work for one destination of a delivery.

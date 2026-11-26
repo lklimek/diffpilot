@@ -11,6 +11,7 @@ use jiff::civil::{Date, Time};
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Span};
 
+use super::reread::PullRenames;
 use crate::dashboard::plugin::PrKey;
 use crate::dashboard::score::ScoreRules;
 use crate::dashboard::snapshot::Snapshot;
@@ -130,6 +131,7 @@ pub(super) fn apply(
     rules: &ScoreRules,
     stored: &mut Snapshot,
     found: &BTreeMap<ItemRef, PullDetail>,
+    renames: &PullRenames,
     now: Timestamp,
 ) -> bool {
     if found.is_empty() {
@@ -146,13 +148,17 @@ pub(super) fn apply(
         .iter()
         .map(|(item, detail)| {
             let repo = repo_name(&item.repo);
-            let name = detail
-                .base_repository
-                .as_ref()
-                .map(|base| base.name_with_owner.as_str())
-                .filter(|name| name.eq_ignore_ascii_case(&repo))
-                .unwrap_or(&repo);
-            let item_id = format!("{name}#{}", item.number);
+            let item_id = if let Some(rename) = renames.get(item) {
+                rename.current.to_string()
+            } else {
+                let name = detail
+                    .base_repository
+                    .as_ref()
+                    .map(|base| base.name_with_owner.as_str())
+                    .filter(|name| name.eq_ignore_ascii_case(&repo))
+                    .unwrap_or(&repo);
+                format!("{name}#{}", item.number)
+            };
             let lifecycle = Lifecycle::from(detail);
             let authored = lifecycle.authored_by_scanned_login(rules);
             let events = lifecycle
@@ -167,6 +173,11 @@ pub(super) fn apply(
             (item_id.to_ascii_lowercase(), events)
         })
         .collect();
+    for old in renames.values().flat_map(|rename| &rename.previous) {
+        updates
+            .entry(old.to_string().to_ascii_lowercase())
+            .or_default();
+    }
     let mut changed = false;
     stored.history.retain(|event| {
         if event.kind == HistoryKind::ReviewGiven {
@@ -196,6 +207,7 @@ pub(super) fn apply(
 pub(super) fn reconcile(
     rules: &ScoreRules,
     pulls: &mut BTreeMap<ItemRef, PullDetail>,
+    terminal: &BTreeMap<ItemRef, PullDetail>,
     history: &BTreeMap<ItemRef, HistoryPr>,
     start: Timestamp,
 ) -> Vec<HistoryEvent> {
@@ -205,18 +217,23 @@ pub(super) fn reconcile(
         .iter()
         .map(|(item, detail)| (PrKey::new(&item.repo, item.number), detail.state.as_str()))
         .collect();
-    pulls.retain(|item, detail| {
+    let mut reconcile = |item: &ItemRef, detail: &PullDetail| {
         if let Some(state) = states.get(&PrKey::new(&item.repo, item.number)) {
             return *state == "OPEN";
         }
-        let lifecycle = Lifecycle::from(&*detail);
+        let lifecycle = Lifecycle::from(detail);
         if lifecycle.authored_by_scanned_login(rules) {
             for (kind, at) in lifecycle.events() {
                 events.add(kind, item, at, start);
             }
         }
         lifecycle.state == "OPEN"
-    });
+    };
+    for (item, detail) in terminal {
+        // Terminal Q2 answers can supply chart facts but do not carry open ranking context.
+        reconcile(item, detail);
+    }
+    pulls.retain(|item, detail| reconcile(item, detail));
     events.into_events()
 }
 

@@ -110,7 +110,10 @@ impl Github<'_> {
                   d.snapshot -> '$.pull_requests', d.snapshot -> '$.issues')) lists,
                   json_each(lists.value) item
              )
-             SELECT s.position AS change, i.tenant_id, i.user_id, i.owner, i.name, i.number, 0 AS candidate
+             SELECT s.position AS change, i.tenant_id, i.user_id,
+                    CASE WHEN s.kind = 'pull_request' AND s.lifecycle THEN s.owner ELSE i.owner END AS owner,
+                    CASE WHEN s.kind = 'pull_request' AND s.lifecycle THEN s.name ELSE i.name END AS name,
+                    i.number, 0 AS candidate
              FROM signals s JOIN items i
              LEFT JOIN repos r ON r.tenant_id = i.tenant_id AND r.owner = i.owner AND r.name = i.name
              WHERE (

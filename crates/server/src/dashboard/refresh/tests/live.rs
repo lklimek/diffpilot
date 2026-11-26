@@ -684,3 +684,132 @@ async fn last_ranked_pull_close_keeps_its_repository_live_for_reopening() {
             .all(|entry| !["review-only", "expired"].contains(&entry.repo.owner.as_str()))
     );
 }
+
+#[tokio::test]
+async fn renamed_repo_reopen_replaces_only_the_same_id_history_after_retry() {
+    use contracts::api::dashboard::HistoryEvent;
+
+    let mut w = world().await;
+    Arc::get_mut(&mut w.state.config)
+        .unwrap()
+        .github_webhook_secret = Some(HOOK_SECRET.into());
+    let wallet = repo("acme", "wallet-ui");
+    let old = repo("acme", "wallet-old");
+    let wall = Timestamp::now();
+    let mut configured = settings();
+    configured.repositories.retain(|row| row.repo != wallet);
+    configured.enumerate_owners.clear();
+    w.state
+        .db
+        .dashboard()
+        .save_settings(DEFAULT_TENANT, "u1", &configured, wall)
+        .await
+        .expect("settings");
+    w.refreshed().await;
+    let (id, mut snapshot) = super::plugin::stored(&w).await;
+    snapshot.pull_requests.retain(|pr| pr.facts.repo != wallet);
+    snapshot
+        .history
+        .retain(|event| !event.item_id.starts_with("acme/wallet-ui#"));
+    let closed = HistoryKind::PrClosedUnmerged;
+    for name in ["wallet-old", "other-wallet"] {
+        snapshot.history.push(HistoryEvent {
+            kind: closed,
+            at: wall,
+            item_id: format!("acme/{name}#311"),
+        });
+    }
+    super::plugin::write(&w, id, &snapshot).await;
+    w.state
+        .db
+        .repos()
+        .upsert(DEFAULT_TENANT, &old, Some(42))
+        .await
+        .expect("old repo identity");
+    w.state
+        .db
+        .repos()
+        .upsert(DEFAULT_TENANT, &repo("acme", "other-wallet"), Some(99))
+        .await
+        .expect("unrelated repo identity");
+    installed(&w.state.db, old, 42, wall).await;
+
+    let set_answer = |answer_id: &str| {
+        w.gate.pull_updates.lock().unwrap().insert(
+            311,
+            json!({
+                "state": "OPEN", "closedAt": null, "mergedAt": null,
+                "baseRepository": {
+                    "nameWithOwner": "acme/wallet-ui", "isPrivate": false,
+                    "defaultBranchRef": {"name": "main"}, "fullDatabaseId": answer_id
+                },
+            }),
+        );
+    };
+    // A queued hint can resolve to a reused name with a different identity before a retry.
+    let receipt = Timestamp::now();
+    set_answer("99");
+    pull_delivery(&w, "reopened", "acme/wallet-ui", 311, "alice").await;
+    flush_webhooks(&w, Timestamp::now()).await;
+    assert!(
+        item_history(&w, "acme/wallet-ui#311").await.is_empty(),
+        "an unrelated answer cannot update history"
+    );
+    assert_eq!(
+        item_history(&w, "acme/wallet-old#311").await,
+        [(closed, wall)]
+    );
+
+    set_answer("42");
+    flush_webhooks(&w, receipt + SignedDuration::from_secs(30)).await;
+    assert!(item_history(&w, "acme/wallet-old#311").await.is_empty());
+    let current = item_history(&w, "acme/wallet-ui#311").await;
+    assert_eq!(current.len(), 1);
+    assert_eq!(current[0].0, HistoryKind::PrOpened);
+    assert_eq!(
+        item_history(&w, "acme/other-wallet#311").await,
+        [(closed, wall)]
+    );
+    let github = w.state.db.github();
+    github
+        .prune_installations()
+        .await
+        .expect("prune renamed repository");
+    let live = github
+        .repository_installations(Some(DEFAULT_TENANT))
+        .await
+        .expect("tracking");
+    assert!(live.iter().any(|entry| entry.repo == wallet && entry.live));
+}
+
+#[tokio::test]
+async fn terminal_q2_is_used_for_history_without_reading_ownership_files() {
+    let w = world().await;
+    let merged = Some(LOCAL_MORNING);
+    pull_state(&w, 1176, "MERGED", merged, merged);
+    w.gate
+        .history_updates
+        .lock()
+        .unwrap()
+        .insert("2026-11-06T09:00:00Z".to_owned(), Value::Null);
+    w.faults(json!([{
+        "on": "rest",
+        "matching": "/repos/acme/platform/pulls/1176/files",
+        "answer": {"kind": "primary_rate_limit",
+            "reset": (Timestamp::now() + SignedDuration::from_hours(1)).as_second()}
+    }]))
+    .await;
+
+    assert_eq!(w.refreshed().await.state, RefreshState::Finished);
+    assert!(
+        item_history(&w, "acme/platform#1176")
+            .await
+            .contains(&(HistoryKind::PrMerged, LOCAL_MORNING.parse().unwrap()))
+    );
+    assert!(
+        super::plugin::github_log(&w)
+            .await
+            .iter()
+            .all(|entry| { entry["path"] != "/repos/acme/platform/pulls/1176/files" })
+    );
+}

@@ -25,7 +25,7 @@ isCrossRepository body additions deletions createdAt closedAt mergedAt updatedAt
 baseRefName baseRefOid headRefName headRefOid milestone { title number state } \
 stackEntry { position stack { id baseRefName size entries(first: 100) { pageInfo { hasNextPage endCursor } \
 nodes { position pullRequest { number state } } } } } \
-baseRepository { nameWithOwner isPrivate viewerPermission defaultBranchRef { name } } \
+baseRepository { nameWithOwner fullDatabaseId isPrivate viewerPermission defaultBranchRef { name } } \
 headRepository { nameWithOwner } author { __typename login } \
 labels(first: 20) { nodes { name } } participants { totalCount } \
 closingIssuesReferences(first: 5) { nodes { number title labels(first: 10) { nodes { name } } } } \
@@ -101,6 +101,7 @@ pub struct Count {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PullRepository {
+    full_database_id: Option<Value>,
     /// `owner/name`.
     pub name_with_owner: String,
     /// Private repository (OD11: shown to this user only).
@@ -110,6 +111,14 @@ pub struct PullRepository {
     /// The signed-in user's permission (`ADMIN`, `MAINTAIN`, `WRITE`, `TRIAGE`, `READ`); null when unknown.
     #[serde(default)]
     pub viewer_permission: Option<String>,
+}
+
+impl PullRepository {
+    /// Stable GitHub repository identity from the details read.
+    pub(crate) fn github_id(&self) -> Option<i64> {
+        let id = self.full_database_id.as_ref()?;
+        id.as_i64().or_else(|| id.as_str()?.parse().ok())
+    }
 }
 
 /// An issue a pull request closes.

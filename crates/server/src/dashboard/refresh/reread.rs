@@ -127,7 +127,13 @@ async fn read_locked(
         });
     }
     let rules = ScoreRules::new(&stored.own_login, &stored.settings);
-    let (updated, closed, _) = apply(&rules, &mut stored, &fetched.found, now);
+    let (updated, closed, _) = apply(
+        &rules,
+        &mut stored,
+        &fetched.found,
+        &PullRenames::new(),
+        now,
+    );
     stored.prs_reread_at = Some(now);
     match dashboard
         .replace_current_snapshot(&scope.tenant_id, &scope.user_id, record.id, &stored)
@@ -193,6 +199,13 @@ pub(super) async fn read_current(
     Ok(Ok((record, stored)))
 }
 
+pub(super) struct PullRename {
+    pub(super) current: ItemRef,
+    pub(super) previous: Vec<ItemRef>,
+}
+
+pub(super) type PullRenames = BTreeMap<ItemRef, PullRename>;
+
 /// Replaces the pull requests read again with their new facts, keeping what only the scan's other reads know
 /// (relations, stack relations, ownership verdict, milestone catalogue). From those same reads, drop closed
 /// entries from the ranking and reconcile the chart's lifecycle events, including unranked pull requests.
@@ -201,9 +214,20 @@ pub(super) fn apply(
     rules: &ScoreRules,
     stored: &mut Snapshot,
     found: &BTreeMap<ItemRef, PullDetail>,
+    renames: &PullRenames,
     now: Timestamp,
 ) -> (usize, usize, bool) {
-    let history_changed = history::apply(rules, stored, found, now);
+    let history_changed = history::apply(rules, stored, found, renames, now);
+    let aliases: BTreeMap<_, _> = renames
+        .iter()
+        .flat_map(|(read, rename)| {
+            rename
+                .previous
+                .iter()
+                .map(move |item| (PrKey::new(&item.repo, item.number), read))
+        })
+        .collect();
+    let mut renamed = HashSet::new();
     let mut updated = 0;
     let mut closed = 0;
     let candidate = PrCandidate {
@@ -217,17 +241,23 @@ pub(super) fn apply(
             repo: pr.facts.repo.clone(),
             number: pr.facts.number,
         };
-        let Some(detail) = found.get(&item) else {
+        let key = PrKey::new(&item.repo, item.number);
+        let read = aliases.get(&key).copied().unwrap_or(&item);
+        let Some(detail) = found.get(read) else {
             return true;
         };
         if detail.state != "OPEN" {
             closed += 1;
             return false;
         }
+        let item = renames.get(read).map_or(read, |rename| &rename.current);
+        if renames.contains_key(read) && !renamed.insert(PrKey::new(&item.repo, item.number)) {
+            return false;
+        }
         let old = &pr.facts;
         let mut new = facts::pr(
             rules,
-            &item,
+            item,
             detail,
             PrContext {
                 candidate: &candidate,

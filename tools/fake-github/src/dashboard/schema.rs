@@ -157,6 +157,7 @@ impl Schema {
         add("Query", "repositoryOwner", object("Organization"));
         add("Query", "repositoryOwner", object("User"));
         add("Query", "rateLimit", object("RateLimit"));
+        add("Repository", "fullDatabaseId", scalar());
         add("Repository", "pullRequest", object("PullRequest"));
         add("PullRequest", "headRepository", object("Repository"));
         add("Repository", "issue", object("Issue"));

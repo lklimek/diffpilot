@@ -191,11 +191,11 @@ pub(super) async fn scan<T: TokenSource>(
     let details_read = Instant::now();
     notes.append(&mut details.notes);
     notes.extend(listing.notes.iter().cloned());
-    let open_read = details
+    let terminal = details
         .found
-        .values()
-        .filter(|detail| detail.state == "OPEN")
-        .count();
+        .extract_if(.., |_, detail| detail.state != "OPEN")
+        .collect();
+    let open_read = details.found.len();
     progress.log(format!("PR details: {open_read} of {total} read"));
     progress
         .step(
@@ -282,7 +282,13 @@ pub(super) async fn scan<T: TokenSource>(
     };
     let history_read = history::collect(client, &logins, &refused_from, first, start).await?;
     notes.extend(history_read.notes);
-    let history = history::reconcile(input.rules, &mut details.found, &history_read.found, start);
+    let history = history::reconcile(
+        input.rules,
+        &mut details.found,
+        &terminal,
+        &history_read.found,
+        start,
+    );
     progress.log(format!("history: {} events since {first}", history.len()));
     let events = count(history.len());
     progress

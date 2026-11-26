@@ -76,8 +76,8 @@ pub(super) async fn list(
          )
          SELECT MIN(t.owner), MIN(t.name), MAX(COALESCE(ar.suspended = 0, 0))
          FROM tracked t LEFT JOIN app_repositories ar
-           ON ar.owner = t.owner AND ar.name = t.name
-          AND (ar.repository_id IS NULL OR t.github_id IS NULL OR ar.repository_id = t.github_id)
+           ON ar.repository_id = t.github_id
+           OR (ar.owner = t.owner AND ar.name = t.name AND (ar.repository_id IS NULL OR t.github_id IS NULL))
          WHERE (?1 IS NULL OR t.tenant_id = ?1)
          GROUP BY t.owner COLLATE NOCASE, t.name COLLATE NOCASE
          ORDER BY t.owner COLLATE NOCASE, t.name COLLATE NOCASE"
@@ -150,6 +150,11 @@ pub(super) async fn resolve<'a>(
              ON r.owner = o.owner COLLATE NOCASE AND r.name = o.name COLLATE NOCASE WHERE o.id IS NULL
            UNION
            SELECT o.position, NULL, NULL, NULL FROM offered o JOIN names n ON n.github_id = o.id
+           UNION
+           SELECT o.position, n.tenant_id, o.owner, o.name FROM offered o JOIN names n ON n.github_id = o.id
+           WHERE NOT (n.owner = o.owner COLLATE NOCASE AND n.name = o.name COLLATE NOCASE)
+             AND NOT EXISTS (SELECT 1 FROM repos r WHERE r.tenant_id = n.tenant_id
+                             AND r.owner = o.owner AND r.name = o.name AND r.github_id IS NOT NULL)
            UNION
            SELECT o.position, NULL, NULL, NULL FROM offered o JOIN names n
              ON n.owner = o.owner COLLATE NOCASE AND n.name = o.name COLLATE NOCASE WHERE o.id IS NULL
