@@ -445,7 +445,8 @@ export function createApiClient(baseUrl = "") {
       call<AnalysisSummary>("setBackgroundAnalysis", { params: { id }, body: { enabled } }),
     pauseAnalysis: (id: AnalysisId) => call<AnalysisSummary>("pauseAnalysis", { params: { id } }),
     resumeAnalysis: (id: AnalysisId) => call<AnalysisSummary>("resumeAnalysis", { params: { id } }),
-    setLanguage: (body: SetLanguageRequest) => call<void>("setLanguage", { body }),
+    setLanguage: (body: SetLanguageRequest, sessionScope: number) =>
+      call<void>("setLanguage", { body, sessionScope }),
     setControlledOwners: (body: SetControlledOwnersRequest) =>
       call<import("./generated/types").ControlledOwners>("setControlledOwners", { body }),
     getRepoSettings: (repo: RepoRef) =>

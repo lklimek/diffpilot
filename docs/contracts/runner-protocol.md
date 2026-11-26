@@ -177,7 +177,8 @@ The existing Ask tests cover early publication and reconciliation with cancellat
   An effective analytic checkpoint increments that generation. Successful output without an archive clears
   the analytic reference and invalidates forks. Ask results update only the authenticated question's user row;
   repeated/stale results have no effect. Cancelled checkpoints invalidate forks without accepting their thread.
-- Claim serialises work on each (PR, payer) volume.
+- At most one active job owns each (PR, payer) volume and each payer's judge container. All active
+  jobs count toward that payer's Settings job-slot limit.
 - Every claim carries a bounded context pack. Analytic packs contain only public PR data and analysis
   documents, including repairs. Ask packs include only that user's latest 20 final Q&A across the PR, fenced
   as untrusted data. The runner supplies this pack on every lazy/re-fork and lost-session fallback, including

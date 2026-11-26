@@ -143,6 +143,7 @@ describe("api client", () => {
     ["llm/ask-effort", (api, scope) => api.setAskEffort("low", scope)],
     ["llm/judge-effort", (api, scope) => api.setJudgeEffort("low", scope)],
     ["llm/job-slots", (api, scope) => api.setLlmJobSlots(3, scope)],
+    ["language", (api, scope) => api.setLanguage({ language: "pl" }, scope)],
   ] satisfies [string, (api: ReturnType<typeof createApiClient>, scope: number) => Promise<unknown>][])(
     "keeps an open %s form bound to its original session",
     async (route, save) => {

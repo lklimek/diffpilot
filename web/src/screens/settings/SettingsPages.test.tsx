@@ -89,59 +89,83 @@ it("saves three concurrent LLM job slots without changing the model", async () =
   expect(writes).toEqual([{ slots: 3 }]);
 });
 
-it("drops a settings draft and its cache when the browser changes accounts", async () => {
-  const original = { login: "alice", csrf: "alice-session", model: "gpt-6.1-sol" };
-  const colleague = { login: "bob", csrf: "bob-session", model: "gpt-6-sol" };
-  let signedIn = original;
-  const reads: (string | null)[] = [];
-  const writes: (string | null)[] = [];
-  const changedAccounts = () =>
-    HttpResponse.json({ code: "csrf_rejected", message: "Reload the page." }, { status: 403 });
-  server.use(
-    http.get("/api/v1/me", () =>
-      HttpResponse.json({
-        user: { login: signedIn.login, name: null, avatar_url: null, language: "en" },
-        csrf_token: signedIn.csrf,
+it.each(["model", "language"] as const)(
+  "drops a stale %s edit and its settings cache when the browser changes accounts",
+  async (field) => {
+    const original = { login: "alice", csrf: "alice-session", model: "gpt-6.1-sol", language: "en" };
+    const colleague = { login: "bob", csrf: "bob-session", model: "gpt-6-sol", language: "ru" };
+    let signedIn = original;
+    const reads: (string | null)[] = [];
+    const writes: (string | null)[] = [];
+    const changedAccounts = () =>
+      HttpResponse.json({ code: "csrf_rejected", message: "Reload the page." }, { status: 403 });
+    server.use(
+      http.get("/api/v1/me", () =>
+        HttpResponse.json({
+          user: { login: signedIn.login, name: null, avatar_url: null, language: signedIn.language },
+          csrf_token: signedIn.csrf,
+        }),
+      ),
+      http.get("/api/v1/settings", ({ request }) => {
+        const token = request.headers.get("X-CSRF-Token");
+        reads.push(token);
+        if (token !== null && token !== signedIn.csrf) return changedAccounts();
+        return HttpResponse.json({
+          ...SETTINGS,
+          language: signedIn.language,
+          llm_selection: {
+            ...SETTINGS.llm_selection!,
+            current: { model: signedIn.model, reasoning_effort: "high" },
+          },
+        });
       }),
-    ),
-    http.get("/api/v1/settings", ({ request }) => {
-      const token = request.headers.get("X-CSRF-Token");
-      reads.push(token);
-      if (token !== null && token !== signedIn.csrf) return changedAccounts();
-      return HttpResponse.json({
-        ...SETTINGS,
-        llm_selection: {
-          ...SETTINGS.llm_selection!,
-          current: { model: signedIn.model, reasoning_effort: "high" },
-        },
-      });
-    }),
-    http.put("/api/v1/settings/llm", async ({ request }) => {
-      const token = request.headers.get("X-CSRF-Token");
-      writes.push(token);
-      if (token !== signedIn.csrf) return changedAccounts();
-      return HttpResponse.json({ ...SETTINGS.llm_selection!, current: await request.json() });
-    }),
-  );
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  renderRoute("/settings/llm", queryClient);
-  const card = within(await screen.findByRole("region", { name: "Model and effort" }));
-  expect(card.getByLabelText("Model")).toHaveValue(original.model);
-  await userEvent.selectOptions(card.getByLabelText("Model"), "gpt-6-astra");
+      http.put(`/api/v1/settings/${field === "model" ? "llm" : "language"}`, async ({ request }) => {
+        const token = request.headers.get("X-CSRF-Token");
+        writes.push(token);
+        if (token !== signedIn.csrf) return changedAccounts();
+        if (field === "language") {
+          signedIn.language = ((await request.json()) as { language: string }).language;
+          return new HttpResponse(null, { status: 204 });
+        }
+        return HttpResponse.json({ ...SETTINGS.llm_selection!, current: await request.json() });
+      }),
+    );
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    renderRoute("/settings/llm", queryClient);
+    const card = within(await screen.findByRole("region", { name: "Model and effort" }));
+    expect(card.getByLabelText("Model")).toHaveValue(original.model);
+    if (field === "model") {
+      await userEvent.selectOptions(card.getByLabelText("Model"), "gpt-6-astra");
+      signedIn = colleague;
+      await userEvent.click(card.getByRole("button", { name: "Save" }));
+    } else {
+      const language = screen.getByLabelText("Explanations, questions and assessments are written in");
+      expect(language).toHaveValue(original.language);
+      signedIn = colleague;
+      await userEvent.selectOptions(language, "pl");
+    }
 
-  signedIn = colleague;
-  await userEvent.click(card.getByRole("button", { name: "Save" }));
-
-  await waitFor(() => expect(screen.getByLabelText("Model")).toHaveValue(colleague.model));
-  expect(writes).toEqual([original.csrf]);
-  expect(reads).toEqual(expect.arrayContaining([original.csrf, colleague.csrf]));
-  expect(reads).not.toContain(null);
-  const entries = queryClient.getQueriesData<typeof SETTINGS>({ queryKey: ["settings", "session"] });
-  expect(entries.map(([, data]) => data?.llm_selection?.current.model)).toEqual([colleague.model]);
-  const cacheKeys = JSON.stringify(entries.map(([key]) => key));
-  expect(cacheKeys).not.toContain(original.csrf);
-  expect(cacheKeys).not.toContain(colleague.csrf);
-});
+    await waitFor(() => expect(screen.getByLabelText("Model")).toHaveValue(colleague.model));
+    expect(writes).toEqual([original.csrf]);
+    expect(reads).toEqual(expect.arrayContaining([original.csrf, colleague.csrf]));
+    expect(reads).not.toContain(null);
+    const entries = queryClient.getQueriesData<typeof SETTINGS>({ queryKey: ["settings", "session"] });
+    expect(entries.map(([, data]) => data?.llm_selection?.current.model)).toEqual([colleague.model]);
+    const cacheKeys = JSON.stringify(entries.map(([key]) => key));
+    expect(cacheKeys).not.toContain(original.csrf);
+    expect(cacheKeys).not.toContain(colleague.csrf);
+    expect(colleague.language).toBe("ru");
+    if (field === "language") {
+      const readCount = reads.length;
+      const language = screen.getByLabelText("Explanations, questions and assessments are written in");
+      expect(language).toHaveValue("ru");
+      await userEvent.selectOptions(language, "pl");
+      await waitFor(() => expect(language).toHaveValue("pl"));
+      expect(reads).toHaveLength(readCount);
+      expect(writes).toEqual([original.csrf, colleague.csrf]);
+    }
+  },
+);
 
 it("retries the failed effort without repeating a successful edit from the same Save", async () => {
   const writes: string[] = [];

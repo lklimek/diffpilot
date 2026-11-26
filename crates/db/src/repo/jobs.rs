@@ -12,8 +12,8 @@ use contracts::job::spec::{JobPriority, JobSpec, JobTarget};
 use contracts::job::state::{JobState, JobTransition};
 use contracts::time::Timestamp;
 use jiff::SignedDuration;
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{QueryBuilder, Row, Sqlite, SqliteConnection, SqlitePool, Transaction};
@@ -21,6 +21,22 @@ use sqlx::{QueryBuilder, Row, Sqlite, SqliteConnection, SqlitePool, Transaction}
 use super::dashboard::{log_refund, refund_finished_send};
 use crate::error::DbError;
 use crate::repo::settings::CallFailure;
+
+macro_rules! judge_capacity_sql {
+    ($payer:literal) => {
+        concat!(
+            "SELECT CASE
+                 WHEN COUNT(*) FILTER (WHERE j.kind = 'judge_work') > 0 THEN 'occupied'
+                 WHEN COUNT(j.id) < u.llm_job_slots THEN 'available'
+                 WHEN COUNT(*) FILTER (WHERE j.kind NOT IN ('plan', 'pr_context', 'analyse_flow'))
+                      < u.llm_job_slots THEN 'waiting_for_analysis'
+                 ELSE 'occupied'
+             END
+             FROM users u LEFT JOIN jobs j ON j.payer_id = u.id AND j.state IN ('claimed', 'running')
+             WHERE u.id = ", $payer, " GROUP BY u.llm_job_slots"
+        )
+    };
+}
 
 mod activity;
 
@@ -32,6 +48,18 @@ pub use activity::{ActiveJob, Activity, OwnJob};
 pub struct Jobs<'a> {
     pub(crate) pool: &'a SqlitePool,
     pub(crate) changes: &'a JobChanges,
+}
+
+/// Whether a judge job has payer capacity and a free judge container.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum JudgeCapacity {
+    /// Both constraints allow a claim.
+    Available,
+    /// Active analysis jobs fill the payer's available slots.
+    WaitingForAnalysis,
+    /// An active judge owns the container or other LLM jobs fill the payer's slots.
+    Occupied,
 }
 
 /// Repair runs allowed after a first run whose output verification rejected (brief §5 Pipeline 6).
@@ -1421,22 +1449,16 @@ impl Jobs<'_> {
         job_from_row(&row)
     }
 
-    /// Whether a judge job must wait for payer capacity or its answer-only container.
-    pub async fn judge_busy(&self, payer: &str) -> Result<bool, DbError> {
-        let mut tx = super::read_tx(self.pool).await?;
-        let busy = sqlx::query_scalar(
-            "SELECT EXISTS(
-                 SELECT 1 FROM users u WHERE u.id = ? AND (
-                     SELECT COUNT(*) >= u.llm_job_slots OR COUNT(*) FILTER (WHERE kind = 'judge_work') > 0
-                     FROM jobs WHERE payer_id = u.id AND state IN ('claimed', 'running')
-                 )
-             )",
-        )
-        .bind(payer)
-        .fetch_one(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        Ok(busy)
+    /// Reads the payer's current database capacity for a judge claim.
+    pub async fn judge_capacity(&self, payer: &str) -> Result<JudgeCapacity, DbError> {
+        let capacity: Option<String> = sqlx::query_scalar(judge_capacity_sql!("?"))
+            .bind(payer)
+            .fetch_optional(self.pool)
+            .await?;
+        match capacity {
+            Some(capacity) => parse_wire(&capacity, "judge capacity"),
+            None => Err(DbError::NotFound),
+        }
     }
 
     /// Jobs of an analysis, oldest first; only those in `states` unless `states` is empty.
@@ -3241,7 +3263,10 @@ mod tests {
             .expect("enqueue");
         let first = claim(&db, 2).await.expect("interactive judge job first");
         assert_eq!(first.kind, JobKind::JudgeWork);
-        assert!(db.jobs().judge_busy(CREDENTIAL).await.unwrap());
+        assert_eq!(
+            db.jobs().judge_capacity(CREDENTIAL).await.unwrap(),
+            JudgeCapacity::Occupied
+        );
         assert_eq!(
             claim(&db, 3).await.unwrap().kind,
             JobKind::AnalyseFlow,
@@ -3340,33 +3365,45 @@ mod tests {
         let analysis = seed_analysis(&db).await.expect("seed");
         let jobs = db.jobs();
         let ask = enqueue_new(&db, ask_job(analysis), 0).await;
-        assert!(
-            !jobs.judge_busy(CREDENTIAL).await.expect("busy"),
+        assert_eq!(
+            jobs.judge_capacity(CREDENTIAL).await.unwrap(),
+            JudgeCapacity::Available,
             "queued only"
         );
         assert_eq!(claim(&db, 1).await.map(|job| job.id), Some(ask));
-        assert!(jobs.judge_busy(CREDENTIAL).await.expect("busy"), "claimed");
+        assert_eq!(
+            jobs.judge_capacity(CREDENTIAL).await.unwrap(),
+            JudgeCapacity::Occupied,
+            "claimed"
+        );
         db.settings()
             .set_llm_job_slots(CREDENTIAL, std::num::NonZeroU16::new(2).unwrap())
             .await
             .unwrap();
-        assert!(
-            !jobs.judge_busy(CREDENTIAL).await.expect("busy"),
+        assert_eq!(
+            jobs.judge_capacity(CREDENTIAL).await.unwrap(),
+            JudgeCapacity::Available,
             "free slot"
         );
-        assert!(
-            !jobs.judge_busy("other").await.expect("busy"),
-            "per credential"
+        assert_eq!(
+            jobs.judge_capacity("spare").await.unwrap(),
+            JudgeCapacity::Available,
+            "per payer"
         );
         jobs.record_events(ask, 1, &[event(1)], at(61))
             .await
             .expect("running");
-        assert!(!jobs.judge_busy(CREDENTIAL).await.expect("busy"), "running");
+        assert_eq!(
+            jobs.judge_capacity(CREDENTIAL).await.unwrap(),
+            JudgeCapacity::Available,
+            "running"
+        );
         jobs.complete(&succeeded(ask, 1), at(2))
             .await
             .expect("complete");
-        assert!(
-            !jobs.judge_busy(CREDENTIAL).await.expect("busy"),
+        assert_eq!(
+            jobs.judge_capacity(CREDENTIAL).await.unwrap(),
+            JudgeCapacity::Available,
             "finished"
         );
     }

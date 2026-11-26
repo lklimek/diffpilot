@@ -88,6 +88,7 @@ export function LlmPage({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => 
   const setLanguage = useSetLanguage();
   const setSlots = useSetLlmJobSlots();
   const sessionScope = settings.sessionScope;
+  const languageMutationIsCurrent = setLanguage.variables?.sessionScope === sessionScope;
   const save = async (sessionScope: number, { model, ask, ranking, slots }: LlmChoiceChanges) => {
     if (model) await setLlm.mutateAsync({ value: model, sessionScope });
     if (ask) await setAskEffort.mutateAsync({ value: ask, sessionScope });
@@ -124,12 +125,12 @@ export function LlmPage({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => 
           onDirtyChange={onDirtyChange}
         />
       )}
-      {settings.data && (
+      {settings.data && sessionScope !== undefined && (
         <LanguageCard
           language={settings.data.language}
-          busy={setLanguage.isPending}
-          onChange={(language) => setLanguage.mutate(language)}
-          error={setLanguage.isError ? errorText(setLanguage.error) : undefined}
+          busy={languageMutationIsCurrent && setLanguage.isPending}
+          onChange={(language) => setLanguage.mutate({ language, sessionScope })}
+          error={languageMutationIsCurrent && setLanguage.isError ? errorText(setLanguage.error) : undefined}
         />
       )}
     </>

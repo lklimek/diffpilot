@@ -2529,6 +2529,88 @@ async fn unclaimed_judge_timeout_starts_when_the_payer_has_a_slot() {
 }
 
 #[tokio::test]
+async fn unclaimed_judge_timeout_counts_while_analysis_leaves_its_payer_a_slot() {
+    for (analyse_as, slots) in [(CREDENTIAL_ID, 2), ("u2", 1)] {
+        let h = harness().await;
+        h.db()
+            .settings()
+            .set_llm_job_slots(CREDENTIAL_ID, std::num::NonZeroU16::new(slots).unwrap())
+            .await
+            .unwrap();
+        let analysis = db::repo::analyses::testing::seed_analysis(h.db())
+            .await
+            .unwrap();
+        let mut spec = db::repo::analyses::testing::job_spec(analysis, JobKind::Plan);
+        spec.payer.0 = analyse_as.to_owned();
+        let queued = h
+            .db()
+            .jobs()
+            .enqueue(
+                db::repo::jobs::NewJob {
+                    spec,
+                    priority: JobPriority::Batch,
+                    stage: JobStage::Plan { batch: 1 },
+                    generation: 0,
+                },
+                Timestamp::now(),
+            )
+            .await
+            .unwrap();
+        let now = Timestamp::now();
+        let analysis_job = h
+            .db()
+            .jobs()
+            .claim(ClaimParams {
+                payer_ids: &[analyse_as.to_owned()],
+                job_token_hash: b"fake",
+                lease_until: now + SignedDuration::from_mins(20),
+                now,
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(analysis_job.id, queued.id);
+
+        let snap = snapshot(prs(1), vec![], vec![]);
+        let run = RankRun {
+            scope: scope("u1"),
+            refresh_id: h.stored("u1", &snap).await,
+            mode: RankMode::Scan,
+            attempt: 0,
+        };
+        let long_ago = tokio::time::Instant::now()
+            .checked_sub(UNCLAIMED_LIMIT)
+            .unwrap();
+        let mut ranking = Ranking {
+            state: &h.state,
+            run: &run,
+            counts: JudgeCounts::default(),
+            live: RankingState::Running,
+            zone: jiff::tz::TimeZone::UTC,
+            language: LlmLanguage::En,
+            left_provisional_keys: Vec::new(),
+            bulk_rejudge_keys: Vec::new(),
+            unclaimed_since: Some(long_ago),
+            provisional: None,
+            left_provisional_by: None,
+        };
+        let input = JudgeWorkInput {
+            items: vec![candidates(&snap, LlmLanguage::En)[0].item.clone()],
+        };
+        let judge = ranking
+            .submit(JobId::new_random(), 1, 0, &input)
+            .await
+            .unwrap()
+            .job_id;
+        assert!(
+            matches!(ranking.observe(judge).await, Err(RankError::Unclaimed)),
+            "running payer {analyse_as}, judgment payer {CREDENTIAL_ID}, slots {slots}"
+        );
+        assert_eq!(ranking.live, RankingState::Running);
+    }
+}
+
+#[tokio::test]
 async fn ranking_waits_for_running_analysis_job() {
     let h = harness().await;
     let analysis = db::repo::analyses::testing::seed_analysis(h.db())

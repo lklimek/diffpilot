@@ -756,7 +756,7 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
   (ADR-020). Historical v1.3 refreshes may have `automatic`, the trigger used while My work was open.
   Transitions: "Refresh states" below. `failure.retry_at` is GitHub's
   rate-limit reset. `ranking` is null until the snapshot is stored; its `state` follows plan §B.3
-  (`waiting_for_analysis` while a review analysis holds the LLM credential). `log` holds at most 200 plain lines
+  (`waiting_for_analysis` while the payer’s active analysis jobs occupy the slots ranking needs). `log` holds at most 200 plain lines
   without tokens or query strings. The newest 10 refreshes per user are kept, plus the one holding the current
   snapshot and every one started in the last 24 hours whose ranking judged items.
 - **Schedule.** `ScheduleStatus.time` is the local `HH:MM`; `next_run_at` is null when off or without a time zone;

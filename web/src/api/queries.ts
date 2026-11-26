@@ -348,16 +348,25 @@ export const useRepoSettings = (repo: RepoRef | undefined) =>
     enabled: repo !== undefined,
   });
 
-/** Sets the language of LLM texts; refreshes the settings and the user. */
+/** Saves the language and updates the initiating browser session's cached views. */
 export const useSetLanguage = () => {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (language: LlmLanguage) => api.setLanguage({ language }),
-    onSuccess: () =>
-      Promise.all([
-        client.invalidateQueries({ queryKey: ["settings"] }),
-        client.invalidateQueries({ queryKey: ["me"] }),
-      ]),
+    mutationFn: ({ language, sessionScope }: { language: LlmLanguage; sessionScope: number }) =>
+      api.setLanguage({ language }, sessionScope),
+    onSuccess: async (_, { language, sessionScope }) => {
+      const key = settingsKey(sessionScope);
+      await client.cancelQueries({ queryKey: key, exact: true });
+      client.setQueryData<Settings>(key, (settings) => settings && { ...settings, language });
+      const meKey = ["me"];
+      const me = client.getQueryData<Awaited<ReturnType<typeof api.getBrowserSession>>>(meKey);
+      if (me?.sessionScope === sessionScope && me.user) {
+        client.setQueryData(meKey, { ...me, user: { ...me.user, language } });
+      }
+    },
+    onError: (error) => {
+      if (sessionRejected(error)) void client.invalidateQueries({ queryKey: ["me"] });
+    },
   });
 };
 
