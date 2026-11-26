@@ -1,6 +1,5 @@
 import type { Ref } from "react";
 import type { TodosState, WorkItem } from "../../../api/generated/types";
-import type { DashboardItem } from "../../../api/provisional/dashboard";
 import { clockText } from "../../format/time";
 import { Tooltip } from "../../tooltip/Tooltip";
 import { scoreText } from "../common/format";
@@ -20,7 +19,7 @@ import type { OnFilter } from "../filter-chips/FilterChips";
 import { ItemAction } from "./ItemAction";
 
 interface WorkItemRowProps extends RowActions, WorkJudgementProps {
-  item: DashboardItem;
+  item: WorkItem;
   onFilter?: OnFilter;
   snapshotAt?: string | null;
   /** Score breakdown and facts shown. */

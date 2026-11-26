@@ -5,14 +5,7 @@ import itemsJson from "../../../../fixtures/dashboard/api/items.json";
 import scanningJson from "../../../../fixtures/dashboard/api/refresh-scanning.json";
 import failedJson from "../../../../fixtures/dashboard/api/refresh-failed.json";
 import { ApiError } from "../../api/client";
-import {
-  dashboardView,
-  rankingFeedback,
-  withLegacyDailyCap,
-  railText,
-  reviewHref,
-  watchErrorText,
-} from "./state";
+import { dashboardView, rankingFeedback, railText, reviewHref, watchErrorText } from "./state";
 
 const SUMMARY = summaryJson as unknown as DashboardSummary;
 const FINISHED = SUMMARY.latest_refresh!;
@@ -59,37 +52,10 @@ describe("ranking feedback from the stored snapshot", () => {
     expect(daily.notices.map(({ detail }) => detail)).toContain(
       "2 items were judged with an older ranking prompt.",
     );
-    expect(daily.legacyDailyCap).toBe(true);
     const perRefresh = rankingFeedback(
       withLatest(limited("3 items left provisional: this refresh's ranking limit (48)")),
     );
     expect(perRefresh.notices.map((notice) => notice.label)).toContain("Per-refresh ranking limit");
-    expect(perRefresh.legacyDailyCap).toBe(false);
-  });
-
-  it("marks legacy unjudged candidates after a completed daily-limited ranking, preserving explicit states", () => {
-    const item = ITEMS.find((row) => row.id === "NC-482")!;
-    const candidate = {
-      ...item,
-      llm: null,
-      score: {
-        ...item.score,
-        state: "unjudged" as const,
-        parts: item.score.parts.map((part) =>
-          part.source === "llm" ? { ...part, status: "estimated" as const } : part,
-        ),
-      },
-    };
-    expect(withLegacyDailyCap(candidate).judgement?.state).toBe("capped");
-    expect(
-      withLegacyDailyCap({ ...candidate, score: { ...candidate.score, parts: [] } }).judgement,
-    ).toBeUndefined();
-    expect(withLegacyDailyCap(item).judgement).toBeUndefined();
-    const queued = {
-      ...candidate,
-      judgement: { state: "queued" as const, judged_at: null, outdated_because: null },
-    };
-    expect(withLegacyDailyCap(queued)).toBe(queued);
   });
 });
 

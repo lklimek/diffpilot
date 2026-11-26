@@ -1,6 +1,6 @@
-import { http, HttpResponse } from "msw";
-import { PR_HISTORY_PATH, type PrHistoryEntry, type PrHistoryPage } from "../../api/provisional/prHistory";
-import type { PrRef } from "../../api/generated/types";
+import { HttpResponse } from "msw";
+import { route } from "./common";
+import type { PrHistory, PrHistoryItem, PrRef } from "../../api/generated/types";
 import { scenario } from "../scenarios";
 import { watches } from "../review-loop";
 import { resolvedPr } from "./resolve-pr";
@@ -8,7 +8,7 @@ import { liveAnalysis } from "../live-analysis";
 import { myAnalyses } from "./list-my-analyses";
 
 const key = ({ repo, number }: PrRef) => `${repo.owner}/${repo.name}#${number}`.toLowerCase();
-const opened = new Map<string, PrHistoryEntry>();
+const opened = new Map<string, PrHistoryItem>();
 
 export function recordPrOpened(pr: PrRef, title: string) {
   const at = new Date().toISOString();
@@ -17,14 +17,14 @@ export function recordPrOpened(pr: PrRef, title: string) {
 
 export const resetPrHistory = () => opened.clear();
 
-export const getPrHistory = http.get(PR_HISTORY_PATH, ({ request }) => {
+export const getPrHistory = route("listMyPrs", ({ request }) => {
   if (scenario().legacyPrHistory) return new HttpResponse(null, { status: 501 });
   const query = new URL(request.url).searchParams;
   const limit = Number(query.get("limit") ?? 50);
   const offset = Number(query.get("cursor") ?? 0);
   const visits = new Map(opened);
   if (scenario().emptyPrHistory)
-    return HttpResponse.json<PrHistoryPage>({ prs: [...visits.values()], next_cursor: null });
+    return HttpResponse.json<PrHistory>({ prs: [...visits.values()], next_cursor: null });
   const analysis = liveAnalysis();
   const { head_moved } = resolvedPr();
   for (const row of myAnalyses().analyses) {
@@ -58,7 +58,7 @@ export const getPrHistory = http.get(PR_HISTORY_PATH, ({ request }) => {
     (a, b) => Date.parse(b.last_activity_at) - Date.parse(a.last_activity_at),
   );
   const next = offset + limit;
-  return HttpResponse.json<PrHistoryPage>({
+  return HttpResponse.json<PrHistory>({
     prs: prs.slice(offset, next),
     next_cursor: next < prs.length ? String(next) : null,
   });

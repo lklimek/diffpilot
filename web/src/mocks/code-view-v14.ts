@@ -1,12 +1,11 @@
-import type { LinesResponse, Tour } from "../api/generated/types";
-import type { StepFactsWithLeadingContext } from "../api/provisional/stepFacts";
+import type { LinesResponse, Tour, StepFacts } from "../api/generated/types";
 
 export function codeViewTour(seed: Tour): Tour {
   const tour = structuredClone(seed);
   tour.analysis.pr.repo.name = "rust-dashcore-platform-integration";
   const step = tour.flows.flatMap((f) => f.steps).find((s) => s.id === "f1.2");
   if (!step) return tour;
-  const facts: StepFactsWithLeadingContext = {
+  const facts: StepFacts = {
     ...step.facts,
     leading_context: { start_line: 85, end_line: 87 },
   };

@@ -1,6 +1,3 @@
-import { useQueryClient } from "@tanstack/react-query";
-import { cachedCommentsReview } from "../../api/review-loop";
-import { commentsByNo, needsYouCount } from "../../components/comments/queueStatus";
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router";
 import { useDashboardTabStatus } from "../../app/tabStatus";
@@ -37,14 +34,7 @@ import {
 } from "./history";
 import { GITHUB_SYNC_SETTINGS_PATH, LLM_USAGE_PATH, PRS_PATH } from "../shell/paths";
 import { ShellActions, useShellSlots } from "../shell/ShellRoute";
-import {
-  commentsHref,
-  railText,
-  rankingFeedback,
-  reviewHref,
-  watchErrorText,
-  withLegacyDailyCap,
-} from "./state";
+import { commentsHref, railText, rankingFeedback, reviewHref, watchErrorText } from "./state";
 import { useDashboardPage } from "./useDashboardPage";
 
 const errorText = (error: unknown) =>
@@ -59,7 +49,6 @@ const snoozeErrorText = (error: unknown) =>
 /** My work (plan §F, ADR-016): refresh state, headline and charts, the ranked list and the side panel. */
 export function DashboardScreen() {
   const page = useDashboardPage();
-  const client = useQueryClient();
   const navigate = useNavigate();
   const { pathname, search, hash } = useLocation();
   const [params, setParams] = useSearchParams();
@@ -122,10 +111,7 @@ export function DashboardScreen() {
     (error): error is string => error !== null,
   );
   const ranking = summary && rankingFeedback(summary, page.snapshotRefresh);
-  const allItems =
-    ranking?.legacyDailyCap && page.items.data?.revision === summary?.revision
-      ? page.allItems?.map(withLegacyDailyCap)
-      : page.allItems;
+  const allItems = page.allItems;
   const retryId = ranking?.retryId;
   const retryRanking = retryId ? () => page.retryRanking.run(retryId) : undefined;
   const counts =
@@ -138,19 +124,9 @@ export function DashboardScreen() {
       ? {
           live_repositories: summary.live_repositories,
           not_live_repositories: summary.not_live_repositories,
-          last_event_at: summary.last_event_at ?? null,
+          last_event_at: summary.last_event_at,
         }
       : undefined;
-
-  // The dashboard can reuse a review already opened in this session without fetching every PR.
-  const workItems = allItems?.map((item) => {
-    if (!item.comments || !item.repo || item.number == null) return item;
-    const { overview, items } = cachedCommentsReview(client, { repo: item.repo, number: item.number });
-    const needs_you = needsYouCount(item.comments.needs_you, overview?.queue, commentsByNo(items));
-    return needs_you === item.comments.needs_you
-      ? item
-      : { ...item, comments: { ...item.comments, needs_you } };
-  });
 
   const main = view && summary && (
     <div className="grid content-start gap-3.5">
@@ -277,7 +253,7 @@ export function DashboardScreen() {
       {snapshot && (view.empty || allItems) && (
         <WorkList
           guideOrigin={pathname + search + hash}
-          items={view.empty ? [] : (workItems ?? [])}
+          items={view.empty ? [] : (allItems ?? [])}
           kinds={page.filter}
           onKindsChange={page.setFilter}
           filters={filters}

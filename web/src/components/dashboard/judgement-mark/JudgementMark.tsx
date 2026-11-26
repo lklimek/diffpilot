@@ -1,4 +1,4 @@
-import { RANKING_DAILY_LIMIT, type Judgement } from "../../../api/provisional/dashboardJudgement";
+import type { Judgement } from "../../../api/generated/types";
 import { Tooltip } from "../../tooltip/Tooltip";
 import { dayText } from "../common/format";
 import { navigateOnClick, type Navigate } from "../common/navigate";
@@ -28,7 +28,7 @@ export function JudgementMark({
           : "Judgement inputs changed";
     const tip = `${reason} after the LLM judged this${date ? ` on ${date}` : ""}. ${
       onRejudge
-        ? `Click to judge this item again; uses 1 of today’s ${RANKING_DAILY_LIMIT}.`
+        ? `Click to judge this item again; uses one judgement from today’s limit.`
         : "Re-judging individual items is unavailable."
     }`;
     return (
@@ -57,7 +57,9 @@ export function JudgementMark({
         ? ["◌ not judged yet · queued", "This item is queued for LLM judgement."]
         : state === "capped"
           ? ["◌ not judged · daily limit", "The daily LLM ranking limit has been reached."]
-          : ["◌ not judged yet", "Scored from computed parts and fixed estimates until the LLM judges it."];
+          : state === "not_judged"
+            ? ["◌ not judged yet", "Scored from computed parts and fixed estimates until the LLM judges it."]
+            : ["Judgement status unavailable", "The current judgement status could not be displayed."];
   return (
     <>
       <Tooltip tip={tip}>

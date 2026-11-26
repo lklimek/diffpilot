@@ -579,6 +579,14 @@ describe("WorkList: comments of a pull request (owner 2026-11-23)", () => {
     expect(issueRow.querySelector("[data-comments-link]")).toBeNull();
   });
 
+  it("links a nonzero server count of new GitHub decisions to the imports filter", () => {
+    render(list({ items: [{ ...counted, imported_unseen: 2 }] }));
+    expect(screen.getByRole("link", { name: "2 new GitHub decisions" })).toHaveAttribute(
+      "href",
+      "/pr/acme/node-client/482/comments?imported_unseen=true",
+    );
+  });
+
   it("one comment reads in the singular; a Watch being saved waits, a saved one reads Watching", async () => {
     const onWatch = vi.fn();
     const one: WorkItem = { ...counted, comments: { total: 1, needs_you: 1 } };

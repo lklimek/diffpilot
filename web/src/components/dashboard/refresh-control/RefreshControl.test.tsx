@@ -31,7 +31,7 @@ describe("RefreshControl", () => {
     render(
       <RefreshControl
         {...defaults}
-        live={{ live_repositories: 0, not_live_repositories: 3, last_event_at: null }}
+        live={{ live_repositories: 0, not_live_repositories: 3 }}
         schedule={{
           ...SUMMARY.schedule,
           last_run: { at: NOW.toISOString(), outcome: "failed", reason: "GitHub unavailable" },
@@ -82,7 +82,7 @@ describe("RefreshControl", () => {
     await userEvent.click(more);
     const rejudge = screen.getByRole("menuitem", { name: "Refresh and re-judge outdated (2)" });
     expect(rejudge).toHaveAccessibleDescription(
-      /uses up to 2 of today’s 120 judgements.*caps may leave.*outdated/i,
+      /uses up to 2 judgements from today’s limit.*caps may leave.*outdated/i,
     );
     await userEvent.click(rejudge);
     expect(onRejudgeOutdated).toHaveBeenCalledOnce();

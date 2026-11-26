@@ -3,21 +3,21 @@ import { useCallback, useSyncExternalStore } from "react";
 import { useLocation } from "react-router";
 import { api } from "../../api/client";
 import type { DashboardSummary, LlmCallOutcome } from "../../api/generated/types";
-import { fetchLlmActivity } from "../../api/provisional/llmActivity";
 import { useNow } from "../../app/now";
 import { SUMMARY_KEY } from "../dashboard/queries";
 import { MY_WORK_PATH } from "./paths";
 
 const POLL_MS = 30_000;
 
-/** Phase A polls job activity and reads status independently while the provisional endpoint is unavailable. */
+/** Read job activity, with Settings and Codex status on older servers. */
 export function useLlmActivity(login: string) {
   const now = new Date(useNow());
   const { pathname } = useLocation();
   const jobs = useQuery({
     queryKey: ["llm-activity", login],
-    queryFn: ({ signal }) => fetchLlmActivity(signal),
+    queryFn: ({ signal }) => api.getLlmActivity(signal),
     retry: false,
+    staleTime: (query) => (query.state.data === null ? Infinity : 0),
     refetchInterval: (query) => (query.state.data === null ? false : POLL_MS),
   });
   const activity = jobs.isError ? null : jobs.data;

@@ -1,5 +1,4 @@
-import type { DashboardItem } from "../../../api/provisional/dashboard";
-import type { DashboardFactTag } from "../../../api/provisional/dashboardFactFilter";
+import type { WorkItem, FactTag } from "../../../api/generated/types";
 import { clockText } from "../../format/time";
 import { isGithubUrl } from "../../github/links";
 import { Tooltip } from "../../tooltip/Tooltip";
@@ -8,7 +7,7 @@ import { FactTags } from "../common/Tags";
 import { FilterButton, type OnFilter } from "../filter-chips/FilterChips";
 import { authorFilter, repoFilter } from "../filter-chips/filters";
 
-export function workTags(item: DashboardItem): DashboardFactTag[] {
+export function workTags(item: WorkItem): FactTag[] {
   const tags = [...item.tags];
   if (item.private) tags.unshift({ text: "private", tip: "From a private repository; shown only to you." });
   if (item.stack?.position === "bottom" && item.stack.dependents.length > 0) {
@@ -32,7 +31,7 @@ export function workTags(item: DashboardItem): DashboardFactTag[] {
   return tags;
 }
 
-export function WorkTitle({ item }: { item: DashboardItem }) {
+export function WorkTitle({ item }: { item: WorkItem }) {
   return (
     <>
       {item.title}
@@ -52,7 +51,7 @@ export function WorkFacts({
   snapshotAt,
   now,
 }: {
-  item: DashboardItem;
+  item: WorkItem;
   onFilter?: OnFilter;
   snapshotAt?: string | null;
   now: Date;

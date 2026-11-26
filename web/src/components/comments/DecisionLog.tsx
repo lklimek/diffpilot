@@ -1,7 +1,5 @@
-import type { ReviewComment } from "../../api/provisional/comments";
-import { GithubDecision } from "./GithubDecision";
-import { GithubCommentText } from "./GithubCommentText";
 import type {
+  CommentItem,
   CommentLog,
   Decision,
   DecisionKind,
@@ -10,6 +8,8 @@ import type {
   FeedSubscriber,
   PrRef,
 } from "../../api/generated/types";
+import { GithubDecision } from "./GithubDecision";
+import { GithubCommentText } from "./GithubCommentText";
 import { OpenExternal } from "../dashboard/common/OpenExternal";
 import { clockText, dateTimeText } from "../format/time";
 import { commitGithubUrl, isGithubUrl } from "../github/links";
@@ -167,7 +167,7 @@ function Agents({ subscribers, now }: { subscribers: FeedSubscriber[]; now: Date
 
 interface DecisionLogProps {
   log: CommentLog;
-  githubDecisions?: ReviewComment[];
+  githubDecisions?: CommentItem[];
   /** The pull request (commit links of agent reports, the agent prompt). */
   pr: PrRef;
   /** This diffpilot's origin, named in the agent prompt. */

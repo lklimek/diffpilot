@@ -1,13 +1,11 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import type { Exclusions, Tier, TodosState, WorkItem } from "../../../api/generated/types";
+import type { Exclusions, Tier, TodosState, WorkItem, StatusCounts } from "../../../api/generated/types";
 import { AlarmRow } from "../alarm-row/AlarmRow";
 import { TIER_RULE, tierName } from "../common/format";
 import type { Navigate } from "../common/navigate";
 import { httpUrl } from "../common/OpenExternal";
 import { ToggleGroup } from "../common/ToggleGroup";
 import { WorkItemRow } from "../work-item/WorkItemRow";
-import type { DashboardItem, DashboardStatusCounts } from "../../../api/provisional/dashboard";
-import { itemJudgement } from "../../../api/provisional/dashboardJudgement";
 import { ExcludedItems, exclusionDescription } from "../excluded-items/ExcludedItems";
 import { FilterChips } from "../filter-chips/FilterChips";
 import {
@@ -30,13 +28,13 @@ export const ALL_KINDS: ItemKind[] = ["pr", "issue", "todo"];
 
 interface WorkListProps {
   /** Ranked items in rank order (R1b). */
-  items: DashboardItem[];
+  items: WorkItem[];
   /** Kinds shown (independent toggles; all on by default). */
   kinds: ItemKind[];
   onKindsChange: (kinds: ItemKind[]) => void;
   filters?: Filter[];
   onFiltersChange?: (filters: Filter[]) => void;
-  statusCounts?: DashboardStatusCounts;
+  statusCounts?: StatusCounts;
   statusDescriptions?: Partial<Record<WorkStatus, string>>;
   exclusions?: Exclusions | null;
   guideOrigin?: string;
@@ -90,16 +88,15 @@ const todosPossible = (items: WorkItem[], todos?: TodosState) =>
   todos?.status === "read" || todos?.status === "not_refreshed" || items.some((item) => item.kind === "todo");
 
 /** Groups of the list: P0 alarms, the tiers P1–P3, then "Not judged yet"; each keeps the server's rank order. */
-export function groupItems(items: DashboardItem[]) {
+export function groupItems(items: WorkItem[]) {
   const alarms = items.filter((item) => item.score.tier === "p0");
   const ranked = items.filter((item) => item.score.tier !== "p0");
-  const judged = (item: DashboardItem) =>
-    itemJudgement(item).judged_at !== null || item.score.state === "final";
+  const notJudged = (item: WorkItem) => matchesStatus(item, "not_judged");
   const tiers = (["p1", "p2", "p3"] as Exclude<Tier, "p0">[]).map((tier) => ({
     tier,
-    items: ranked.filter((item) => judged(item) && item.score.tier === tier),
+    items: ranked.filter((item) => !notJudged(item) && item.score.tier === tier),
   }));
-  return { alarms, tiers, notJudged: ranked.filter((item) => !judged(item)) };
+  return { alarms, tiers, notJudged: ranked.filter(notJudged) };
 }
 
 /**
@@ -149,7 +146,7 @@ export function WorkList({
   // Kinds on among those offered; none (TODOs only, now hidden) shows every offered kind.
   const chosen = offered.filter((kind) => kinds.includes(kind));
   const active = chosen.length > 0 ? chosen : offered;
-  const tags = (item: DashboardItem) => workTags(item).map(tagFilter);
+  const tags = (item: WorkItem) => workTags(item).map(tagFilter);
   const shown = items.filter(
     (item) =>
       active.includes(item.kind) &&
@@ -224,7 +221,7 @@ export function WorkList({
     if (element) targets.current.set(key, element);
     else targets.current.delete(key);
   };
-  const rowProps = (item: DashboardItem) => ({
+  const rowProps = (item: WorkItem) => ({
     commentsHref: item.kind === "pr" ? commentsHref?.(item) : undefined,
     onWatch: onWatch && ((watching: boolean) => onWatch(item, watching)),
     watched: Boolean(item.watched),
@@ -235,7 +232,7 @@ export function WorkList({
     rejudging: rejudgingKeys.includes(item.key),
     usageHref,
   });
-  const row = (item: DashboardItem) => (
+  const row = (item: WorkItem) => (
     <WorkItemRow
       key={item.key}
       item={item}
@@ -252,7 +249,7 @@ export function WorkList({
       now={now}
     />
   );
-  const group = (title: string, rule: string, list: DashboardItem[]) => (
+  const group = (title: string, rule: string, list: WorkItem[]) => (
     <div key={title} className="mt-1.5">
       <h3 className="flex items-baseline gap-2.5 px-0.5 pt-1 pb-1.5 text-xs font-bold tracking-wide text-muted uppercase">
         <span className="text-sm tracking-normal text-text">{title}</span>

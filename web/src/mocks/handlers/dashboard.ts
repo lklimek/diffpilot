@@ -1,4 +1,4 @@
-import { http, HttpResponse } from "msw";
+import { HttpResponse } from "msw";
 import type {
   DashboardEvent,
   ExcludedItem,
@@ -17,7 +17,6 @@ import provisionalJson from "../../../../fixtures/dashboard/api/items-provisiona
 import scanningJson from "../../../../fixtures/dashboard/api/refresh-scanning.json";
 import rankingJson from "../../../../fixtures/dashboard/api/refresh-ranking.json";
 import failedJson from "../../../../fixtures/dashboard/api/refresh-failed.json";
-import { REJUDGE_ITEM_PATH, type DashboardItem, type MyWorkSummary } from "../../api/provisional/dashboard";
 import { dashboardCoverage, withDashboardFacts } from "../dashboard-v14";
 import { seedNow, setFixtureState } from "../fixtures";
 import { commentTally } from "../review-loop";
@@ -57,8 +56,8 @@ export const SCRIPT_STEP_MS = 500;
 
 /** The state of a scenario before any R2–R4: summary and items. */
 interface Base {
-  summary: MyWorkSummary;
-  items: Omit<ItemPage, "items"> & { items: DashboardItem[] };
+  summary: DashboardSummary;
+  items: Omit<ItemPage, "items"> & { items: WorkItem[] };
 }
 
 /** Snapshot of the ranking refresh: scanned 09:24, not ranked yet, one item not judged. */
@@ -179,6 +178,14 @@ const SCENARIOS = {
     const finished = { ...refresh.ranking!, total: refresh.judged };
     return {
       ...capped,
+      items: {
+        ...capped.items,
+        items: capped.items.items.map((item) =>
+          item.id === "WUI-320"
+            ? { ...item, judgement: { state: "capped", judged_at: null, outdated_because: null } }
+            : item,
+        ),
+      },
       summary: {
         ...capped.summary,
         older_prompt_judgements: 2,
@@ -663,7 +670,7 @@ export const unwatchDashboardPr = route("unwatchPr", ({ params }) => {
   return new HttpResponse(null, { status: 204 });
 });
 
-export const rejudgeItem = http.post(REJUDGE_ITEM_PATH, ({ params, request }) => {
+export const rejudgeItem = route("rejudgeDashboardItem", ({ params, request }) => {
   if (request.headers.get("X-CSRF-Token") !== (seedNow("me") as MeResponse).csrf_token) {
     return apiError(403, "csrf_rejected", "The page is out of date. Reload it and try again.");
   }

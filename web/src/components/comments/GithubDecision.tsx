@@ -1,4 +1,4 @@
-import type { ReviewComment } from "../../api/provisional/comments";
+import type { CommentItem } from "../../api/generated/types";
 import { OpenExternal } from "../dashboard/common/OpenExternal";
 import { dateTimeText } from "../format/time";
 import { isGithubUrl } from "../github/links";
@@ -6,7 +6,7 @@ import { ProvenanceTag } from "../section/ProvenanceTag";
 import { CHOICE_LABEL } from "./decisions";
 import { itemId } from "./parts";
 
-export function githubDecisionEvidence(item: ReviewComment): string | null {
+export function githubDecisionEvidence(item: CommentItem): string | null {
   const url = item.imported_decision ? item.imported_decision.evidence_url : item.url;
   return url && isGithubUrl(url) ? url : null;
 }
@@ -16,7 +16,7 @@ export function GithubDecision({
   showEvidence = true,
   tip = true,
 }: {
-  item: ReviewComment;
+  item: CommentItem;
   showEvidence?: boolean;
   tip?: boolean;
 }) {

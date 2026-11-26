@@ -1,6 +1,12 @@
 import { useId, useState, type ReactNode } from "react";
-import type { LlmCallOutcome, RankingStatus } from "../../api/generated/types";
-import type { LlmActivity, LlmJobKind, QueuedLlmJob, RunningLlmJob } from "../../api/provisional/llmActivity";
+import type {
+  LlmActivity,
+  LlmCallOutcome,
+  LlmJob,
+  LlmJobKind,
+  RankingStatus,
+  WaitReason,
+} from "../../api/generated/types";
 import { navigateOnClick, type Navigate } from "../dashboard/common/navigate";
 import { clockText } from "../format/time";
 import { Tooltip } from "../tooltip/Tooltip";
@@ -11,7 +17,6 @@ const KIND: Record<LlmJobKind, string> = {
   analysis: "Analysis",
   flow_analysis: "Flow analysis",
   ranking: "Ranking",
-  rejudge: "Re-judge",
   comment_assessment: "Comment assessment",
   ask: "Ask",
 };
@@ -25,9 +30,18 @@ function subjectHref(href: string): string | null {
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
-type Job = RunningLlmJob | QueuedLlmJob;
-
-const jobTime = (job: Job) => ("since" in job ? job.since : job.queued_at);
+function waitReasonText(reason: WaitReason, now: Date): string {
+  switch (reason.kind) {
+    case "runner":
+      return "Waits for a free runner";
+    case "usage_limit":
+      return `Waits for the usage limit to reset at ${clockText(reason.until, now)}`;
+    case "analysis_running":
+      return "Waits for the review analysis to finish";
+    default:
+      return "Waiting";
+  }
+}
 
 function JobRow({
   running,
@@ -36,7 +50,7 @@ function JobRow({
   children,
 }: {
   running: boolean;
-  time: string;
+  time?: string | null;
   now: Date;
   children: ReactNode;
 }) {
@@ -46,9 +60,11 @@ function JobRow({
         {running ? "◔" : "◌"}
       </span>
       <span className="min-w-0 flex-1">{children}</span>
-      <span className="shrink-0 text-xs text-muted tabular-nums">
-        {running ? "since" : "queued"} {clockText(time, now)}
-      </span>
+      {time && (
+        <span className="shrink-0 text-xs text-muted tabular-nums">
+          {running ? "since" : "queued"} {clockText(time, now)}
+        </span>
+      )}
     </li>
   );
 }
@@ -56,26 +72,21 @@ function JobRow({
 function Jobs({
   title,
   jobs,
+  running = false,
   now,
   onNavigate,
 }: {
   title: string;
-  jobs: Job[];
+  jobs: LlmJob[];
+  running?: boolean;
   now: Date;
   onNavigate?: Navigate;
 }) {
   const id = useId();
   const [expanded, setExpanded] = useState(false);
-  const [first] = jobs;
-  if (!first) return null;
-
-  const running = "since" in first;
+  if (jobs.length === 0) return null;
   const own = jobs.filter((job) => job.owner === "self");
   const others = jobs.filter((job) => job.owner === "other");
-  const oldest = others.reduce<string | null>((earliest, job) => {
-    const time = jobTime(job);
-    return earliest === null || Date.parse(time) < Date.parse(earliest) ? time : earliest;
-  }, null);
   const shown = expanded ? own : own.slice(0, PREVIEW_COUNT);
   return (
     <div className="grid gap-1">
@@ -87,8 +98,8 @@ function Jobs({
           const subject = job.subject;
           const href = subject ? subjectHref(subject.href) : null;
           return (
-            <JobRow key={job.id} running={running} time={jobTime(job)} now={now}>
-              {KIND[job.kind]}
+            <JobRow key={job.id} running={running} time={running ? job.since : job.queued_at} now={now}>
+              {Object.hasOwn(KIND, job.kind) ? KIND[job.kind] : "LLM job"}
               {subject && (
                 <>
                   {" · "}
@@ -105,14 +116,14 @@ function Jobs({
                   )}
                 </>
               )}
-              {"queued_at" in job && job.waits_for && (
-                <small className="block text-xs text-muted">{job.waits_for}</small>
+              {!running && job.waits_for && (
+                <small className="block text-xs text-muted">{waitReasonText(job.waits_for, now)}</small>
               )}
             </JobRow>
           );
         })}
-        {oldest && (
-          <JobRow running={running} time={oldest} now={now}>
+        {others.length > 0 && (
+          <JobRow running={running} now={now}>
             {others.length === 1 ? "1 job of another user" : `${others.length} jobs of other users`}
           </JobRow>
         )}
@@ -198,7 +209,7 @@ export function LlmActivityList({
       </div>
       {activity && (
         <>
-          <Jobs title="Running now" jobs={activity.running} now={now} onNavigate={onNavigate} />
+          <Jobs title="Running now" jobs={activity.running} running now={now} onNavigate={onNavigate} />
           <Jobs title="Queued" jobs={activity.queued} now={now} onNavigate={onNavigate} />
         </>
       )}

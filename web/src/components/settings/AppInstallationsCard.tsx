@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { writeClipboard } from "../dashboard/common/copyList";
 import { GithubIcon } from "../github/GithubMark";
-import type { AppInstallation } from "../../api/generated/types";
+import type { AppInstallation, GithubWebhook } from "../../api/generated/types";
 import { buttonClass } from "../button/button";
+import { dateTimeText } from "../format/time";
 import { GithubMark } from "../github/GithubMark";
 import { Tooltip } from "../tooltip/Tooltip";
 import { SettingsCard } from "./Card";
@@ -12,15 +13,16 @@ import { HelpTip } from "./HelpTip";
 export function AppInstallationsCard({
   installations,
   signInHref,
-  webhookUrl,
+  webhook,
   webhookError,
 }: {
   installations: AppInstallation[] | null;
   /** The sign-in route, offered when the installations were not checked. */
   signInHref: string;
-  webhookUrl?: string | null;
+  webhook?: GithubWebhook | null;
   webhookError?: string;
 }) {
+  const webhookUrl = webhook?.webhook_url;
   const [copied, setCopied] = useState<boolean>();
   return (
     <SettingsCard title="GitHub App" help={<HelpTip topic="app_installations" />}>
@@ -80,9 +82,20 @@ export function AppInstallationsCard({
         ) : webhookError ? (
           <span role="alert">{webhookError}</span>
         ) : (
-          <span role="status">{webhookUrl === null ? "Unavailable." : "Loading…"}</span>
+          <span role="status">{webhook === undefined ? "Loading…" : "Unavailable."}</span>
         )}
       </div>
+      {webhook && (
+        <ul className="list-disc pl-5">
+          <li>Webhook {webhook.configured ? "configured" : "not configured"}</li>
+          <li>
+            Last GitHub delivery:{" "}
+            {webhook.last_delivery_at ? dateTimeText(webhook.last_delivery_at) : "none recorded"}
+          </li>
+          <li>Dropped deliveries since last restart, up to 14 days: {webhook.dropped_deliveries}</li>
+          <li>Connections refused since last restart: {webhook.refused_connections}</li>
+        </ul>
+      )}
     </SettingsCard>
   );
 }

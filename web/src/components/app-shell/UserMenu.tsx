@@ -1,6 +1,5 @@
 import { useId, useRef, useState } from "react";
-import type { LlmCallOutcome, RankingStatus } from "../../api/generated/types";
-import type { LlmActivity } from "../../api/provisional/llmActivity";
+import type { LlmCallOutcome, RankingStatus, LlmActivity } from "../../api/generated/types";
 import { navigateOnClick, type Navigate } from "../dashboard/common/navigate";
 import { clockText, dateTimeText } from "../format/time";
 import { useOutsidePress } from "../popover/useOutsidePress";

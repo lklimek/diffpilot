@@ -2,7 +2,6 @@
 // pure functions of the screen, tested without rendering.
 import { ApiError } from "../../api/client";
 import type { DashboardSummary, RefreshStatus, SnapshotMeta, WorkItem } from "../../api/generated/types";
-import type { DashboardItem } from "../../api/provisional/dashboard";
 import type { RankingNotice } from "../../components/dashboard/refresh-control/RefreshControl";
 import { commentsPath, prPath } from "../pr/paths";
 import { PRS_PATH } from "../shell/paths";
@@ -120,19 +119,8 @@ export function rankingFeedback(summary: DashboardSummary, snapshotRefresh?: Ref
   return {
     notices,
     retryId,
-    legacyDailyCap: daily && ranking?.state === "finished" && ranking.judged === ranking.total,
     statusDescriptions: { not_judged: notJudged },
   };
-}
-
-/** A successful daily-limited ranking left unjudged candidates with open parts out of its queue. */
-export function withLegacyDailyCap(item: DashboardItem): DashboardItem {
-  const asked = item.score.parts.some(
-    ({ status, source }) => status === "estimated" || (status === "pending" && source === "llm"),
-  );
-  return !item.judgement && !item.llm && item.score.state === "unjudged" && asked
-    ? { ...item, judgement: { state: "capped", judged_at: null, outdated_because: null } }
-    : item;
 }
 
 /**

@@ -1,11 +1,11 @@
-import type { CommentTitleFields } from "../../api/provisional/commentTitle";
+import type { CommentItem } from "../../api/generated/types";
 import { ProvenanceTag } from "../section/ProvenanceTag";
 
 export function CommentTitle({
   item,
   tip = true,
 }: {
-  item: CommentTitleFields & { title: string };
+  item: Pick<CommentItem, "llm_title"> & { title: string };
   tip?: boolean;
 }) {
   return item.llm_title ? (
@@ -17,7 +17,7 @@ export function CommentTitle({
   );
 }
 
-export function BotHeading({ item }: { item: CommentTitleFields & { title: string } }) {
+export function BotHeading({ item }: { item: Pick<CommentItem, "llm_title"> & { title: string } }) {
   return item.llm_title ? (
     <span className="block text-xs font-normal text-muted">Bot heading: {item.title}</span>
   ) : null;

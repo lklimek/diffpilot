@@ -137,7 +137,6 @@ it.each([404, 405, 501])("distinguishes loading usage from an absent route retur
       return HttpResponse.json({ ...SETTINGS, llm_usage: undefined });
     }),
     http.get("/api/v1/settings/ranking-usage", missing),
-    http.get("/api/v1/settings/monthly-token-usage", missing),
   );
   try {
     renderRoute("/settings/llm");
@@ -169,9 +168,8 @@ it("shows zero jobs for usage windows with no token reports", async () => {
   };
   server.use(
     http.get("/api/v1/settings", () =>
-      HttpResponse.json({ ...SETTINGS, llm_usage: { today: null, last_7_days: zero } }),
+      HttpResponse.json({ ...SETTINGS, llm_usage: { today: null, last_7_days: zero, this_month: zero } }),
     ),
-    http.get("/api/v1/settings/monthly-token-usage", () => HttpResponse.json({ this_month: zero })),
   );
   renderRoute("/settings/llm");
   expect(await screen.findByText("Today: 0 jobs with token reports")).toBeVisible();
@@ -179,18 +177,16 @@ it("shows zero jobs for usage windows with no token reports", async () => {
   expect(await screen.findByText("This month: 0 jobs with token reports")).toBeVisible();
 });
 
-it("shows a distinct error for each provisional usage request that fails", async () => {
+it("shows a distinct error for each usage request that fails", async () => {
   server.use(
     http.get("/api/v1/settings", () => new HttpResponse(null, { status: 500 })),
     http.get("/api/v1/settings/ranking-usage", () => new HttpResponse(null, { status: 500 })),
-    http.get("/api/v1/settings/monthly-token-usage", () => new HttpResponse(null, { status: 500 })),
   );
   renderRoute("/settings/llm");
   const ranking = within(await screen.findByRole("region", { name: "Ranking today" }));
   const tokens = within(screen.getByRole("region", { name: "Tokens" }));
   expect(await ranking.findByRole("alert")).toHaveTextContent("Could not load ranking usage");
-  expect(await tokens.findByText(/Could not load monthly token usage/)).toHaveRole("alert");
-  expect(await tokens.findByText(/Could not load today's and last 7 days' token usage/)).toHaveRole("alert");
+  expect(await tokens.findByText(/Could not load token usage/)).toHaveRole("alert");
 });
 
 it("places the browser and push channel headings under Notifications", async () => {
@@ -198,4 +194,22 @@ it("places the browser and push channel headings under Notifications", async () 
   expect(await screen.findByRole("heading", { name: "Notifications", level: 2 })).toBeVisible();
   for (const name of ["Browser", "ntfy", "Webhook (e.g. Home Assistant)"])
     expect(await screen.findByRole("heading", { name, level: 3 })).toBeVisible();
+});
+
+it("shows GitHub webhook losses with the server's counting windows", async () => {
+  server.use(
+    http.get("/api/v1/settings/github-webhook", () =>
+      HttpResponse.json({
+        configured: true,
+        webhook_url: "https://webhooks.example.test/github",
+        last_delivery_at: "2026-11-25T09:00:00Z",
+        dropped_deliveries: 7,
+        refused_connections: 2,
+      }),
+    ),
+  );
+  renderRoute("/settings/github-sync");
+  const app = within(await screen.findByRole("region", { name: "GitHub App" }));
+  expect(await app.findByText(/Dropped deliveries since last restart, up to 14 days: 7/)).toBeVisible();
+  expect(app.getByText(/Connections refused since last restart: 2/)).toBeVisible();
 });

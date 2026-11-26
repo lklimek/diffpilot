@@ -1,7 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAssessmentSettings, useCodexAccount } from "../../api/assessment-settings";
-import { fetchMonthlyTokenUsage } from "../../api/provisional/monthlyTokenUsage";
-import { fetchRankingUsage, resetRankingUsage } from "../../api/provisional/rankingUsage";
+import { api } from "../../api/client";
 import {
   useAccessTokenActions,
   useAccessTokens,
@@ -74,7 +73,7 @@ export function AccountPage() {
   );
 }
 
-const rankingKey = ["settings", "ranking-usage-v14"] as const;
+const rankingKey = ["settings", "ranking-usage"] as const;
 export function LlmPage({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => void }) {
   const client = useQueryClient();
   const settings = useSettings();
@@ -82,11 +81,7 @@ export function LlmPage({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => 
   const assessment = useAssessmentSettings();
   const now = new Date(useNow());
   const codex = useCodexAccount(now.getTime());
-  const ranking = useQuery({ queryKey: rankingKey, queryFn: ({ signal }) => fetchRankingUsage(signal) });
-  const month = useQuery({
-    queryKey: ["monthly-token-usage-v14"],
-    queryFn: ({ signal }) => fetchMonthlyTokenUsage(signal),
-  });
+  const ranking = useQuery({ queryKey: rankingKey, queryFn: ({ signal }) => api.getRankingUsage(signal) });
   const setLlm = useSetLlm();
   const setAskEffort = useSetAskEffort();
   const setJudgeEffort = useSetJudgeEffort();
@@ -105,7 +100,7 @@ export function LlmPage({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => 
           rankingError={ranking.isError ? messageOf(ranking.error) : undefined}
           rankingZone={dashboard.data?.settings.time_zone ?? undefined}
           onReset={async () => {
-            const usage = await resetRankingUsage();
+            const usage = await api.resetRankingUsage();
             await client.cancelQueries({ queryKey: rankingKey });
             client.setQueryData(rankingKey, usage);
           }}
@@ -113,8 +108,6 @@ export function LlmPage({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => 
           quotaError={assessment.isError ? messageOf(assessment.error) : undefined}
           tokens={settings.data && (settings.data.llm_usage ?? null)}
           tokensError={!settings.data && settings.isError ? messageOf(settings.error) : undefined}
-          month={month.data === undefined ? undefined : (month.data?.this_month ?? null)}
-          monthError={month.isError ? messageOf(month.error) : undefined}
           codex={codex.status.data}
           now={now}
           lastCall={settings.data?.llm_status}

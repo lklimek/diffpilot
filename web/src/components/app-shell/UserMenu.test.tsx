@@ -1,7 +1,7 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
-import type { LlmActivity, RunningLlmJob, QueuedLlmJob } from "../../api/provisional/llmActivity";
+import type { LlmActivity, LlmJob, LlmJobKind, WaitReason } from "../../api/generated/types";
 import { clockText } from "../format/time";
 import { UserMenu } from "./UserMenu";
 
@@ -9,20 +9,23 @@ const activity: LlmActivity = { running: [], queued: [], paused_until: null, las
 const now = new Date("2026-11-25T11:00:00Z");
 const pausedUntil = "2026-11-25T13:00:00Z";
 const at = "2026-11-25T10:42:00Z";
-const running: RunningLlmJob = {
+const running: LlmJob = {
   id: "running",
   owner: "self",
   kind: "ranking",
   subject: { label: "My work", href: "/" },
   since: at,
+  queued_at: null,
+  waits_for: null,
 };
-const queued: QueuedLlmJob = {
+const queued: LlmJob = {
   id: "queued",
   owner: "self",
   kind: "flow_analysis",
   subject: { label: "acme/node-client#482", href: "/pr/acme/node-client/482" },
+  since: null,
   queued_at: at,
-  waits_for: "Waits for a free runner",
+  waits_for: { kind: "runner" },
 };
 const failed = { at, status: { state: "not_working", message: "Codex sign-in expired." } } as const;
 const props = {
@@ -77,7 +80,7 @@ it("shows own job details and folds the two lists independently without revealin
     id: "other",
     owner: "other",
     subject: { label: "private/repo#7", href: "/pr/private/repo/7" },
-  } as unknown as QueuedLlmJob;
+  } as unknown as LlmJob;
   render(
     <UserMenu
       {...props}
@@ -105,6 +108,26 @@ it("shows own job details and folds the two lists independently without revealin
   expect(within(waiting).getAllByRole("listitem")).toHaveLength(7);
   expect(document.body).not.toHaveTextContent("private/repo#7");
   expect(document.querySelector('a[href="/pr/private/repo/7"]')).toBeNull();
+});
+
+it("describes the typed usage and analysis wait reasons", async () => {
+  render(
+    <UserMenu
+      {...props}
+      activity={{
+        ...activity,
+        queued: [
+          { ...queued, waits_for: { kind: "usage_limit", until: pausedUntil } },
+          { ...queued, id: "ranking", kind: "ranking", waits_for: { kind: "analysis_running" } },
+        ],
+      }}
+    />,
+  );
+  await userEvent.click(screen.getByRole("button", { name: /^alice/ }));
+  expect(
+    screen.getByText(`Waits for the usage limit to reset at ${clockText(pausedUntil, now)}`),
+  ).toBeVisible();
+  expect(screen.getByText("Waits for the review analysis to finish")).toBeVisible();
 });
 
 it("opens as a disclosure with normal Tab order and Escape returning to the trigger", async () => {
@@ -171,22 +194,17 @@ it("shows an own subject as text if the server gives it an external URL", async 
 });
 
 it("keeps all five own jobs visible and summarizes other users separately in each list", async () => {
-  const earlier = "2026-11-25T10:25:00Z";
-  const other = { owner: "other", subject: null } as const;
+  const other = { owner: "other", kind: "ask" } as const;
   render(
     <UserMenu
       {...props}
       activity={{
         ...activity,
-        running: [
-          { ...running, ...other, id: "other-running-1" },
-          running,
-          { ...running, ...other, id: "other-running-2", since: earlier },
-        ],
+        running: [{ ...other, id: "other-running-1" }, running, { ...other, id: "other-running-2" }],
         queued: [
-          { ...queued, ...other, id: "other-queue-1" },
-          { ...queued, ...other, id: "other-queue-2", queued_at: earlier },
-          { ...queued, ...other, id: "other-queue-3" },
+          { ...other, id: "other-queue-1" },
+          { ...other, id: "other-queue-2" },
+          { ...other, id: "other-queue-3" },
           ...Array.from({ length: 5 }, (_, index) => ({ ...queued, id: `own-${index}` })),
         ],
       }}
@@ -197,13 +215,13 @@ it("keeps all five own jobs visible and summarizes other users separately in eac
   expect(runningRows).toHaveLength(2);
   const otherRunning = within(runningRows.at(-1)!);
   expect(otherRunning.getByText("2 jobs of other users")).toBeVisible();
-  expect(otherRunning.getByText(`since ${clockText(earlier, now)}`)).toBeVisible();
+  expect(runningRows.at(-1)).not.toHaveTextContent(/since/);
   const queuedRows = within(screen.getByRole("list", { name: "Queued (8)" })).getAllByRole("listitem");
   expect(queuedRows).toHaveLength(6);
   expect(queuedRows.slice(0, 5).every((row) => row.textContent?.includes("acme/node-client#482"))).toBe(true);
   const otherQueued = within(queuedRows.at(-1)!);
   expect(otherQueued.getByText("3 jobs of other users")).toBeVisible();
-  expect(otherQueued.getByText(`queued ${clockText(earlier, now)}`)).toBeVisible();
+  expect(queuedRows.at(-1)).not.toHaveTextContent(/queued/);
   expect(screen.queryByRole("button", { name: /Show all/ })).toBeNull();
 });
 
@@ -222,4 +240,26 @@ it("keeps the banner silent on idle, running and recovery, and reports a failed 
 
   rerender(<UserMenu {...props} activity={activity} />);
   expect(screen.queryByRole("status")).toBeNull();
+});
+
+it("uses neutral labels for future job kinds and wait reasons", async () => {
+  render(
+    <UserMenu
+      {...props}
+      activity={{
+        ...activity,
+        queued: [
+          {
+            ...queued,
+            kind: "toString" as LlmJobKind,
+            waits_for: { kind: "provider_window" } as unknown as WaitReason,
+          },
+        ],
+      }}
+    />,
+  );
+  await userEvent.click(screen.getByRole("button", { name: /^alice/ }));
+  const list = within(screen.getByRole("list", { name: "Queued (1)" }));
+  expect(list.getByText(/^LLM job/)).toBeVisible();
+  expect(list.getByText("Waiting")).toBeVisible();
 });

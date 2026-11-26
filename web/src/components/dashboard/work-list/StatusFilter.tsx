@@ -1,9 +1,8 @@
-import type { DashboardItem, DashboardStatusCounts } from "../../../api/provisional/dashboard";
-import { itemJudgement } from "../../../api/provisional/dashboardJudgement";
+import type { WorkItem, StatusCounts } from "../../../api/generated/types";
 import { buttonClass } from "../../button/button";
 import { MenuButton, MenuItem } from "../../menu/MenuButton";
 
-export type WorkStatus = "all" | keyof DashboardStatusCounts;
+export type WorkStatus = "all" | keyof StatusCounts;
 
 const LABELS: Record<WorkStatus, string> = {
   all: "All",
@@ -19,18 +18,15 @@ const DESCRIPTIONS: Partial<Record<WorkStatus, string>> = {
   not_live: "Repositories without the GitHub App update with the nightly scan and Refresh.",
 };
 
-export function matchesStatus(item: DashboardItem, status: WorkStatus): boolean {
-  const judgement = itemJudgement(item);
+export function matchesStatus(item: WorkItem, status: WorkStatus): boolean {
+  const state = item.judgement?.state;
   switch (status) {
     case "all":
       return true;
     case "outdated":
-      return judgement.state === "outdated";
+      return state === "outdated" || state === "judging";
     case "not_judged":
-      return (
-        judgement.judged_at === null &&
-        ["not_judged", "queued", "judging", "capped"].includes(judgement.state)
-      );
+      return state === "not_judged" || state === "queued" || state === "capped";
     case "not_live":
       return Boolean(item.repo) && item.live === false;
     case "excluded":
@@ -38,7 +34,7 @@ export function matchesStatus(item: DashboardItem, status: WorkStatus): boolean 
   }
 }
 
-export function getStatusCounts(items: DashboardItem[], excluded: number): DashboardStatusCounts {
+export function getStatusCounts(items: WorkItem[], excluded: number): StatusCounts {
   return {
     outdated: items.filter((item) => matchesStatus(item, "outdated")).length,
     not_judged: items.filter((item) => matchesStatus(item, "not_judged")).length,
@@ -56,7 +52,7 @@ export function StatusFilter({
   onChange,
 }: {
   status: WorkStatus;
-  counts: DashboardStatusCounts;
+  counts: StatusCounts;
   total: number;
   excludedDescription: string;
   descriptions?: Partial<Record<WorkStatus, string>>;

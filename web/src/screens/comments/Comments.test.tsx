@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeEventSource } from "../../__tests__/fake-event-source";
 import { renderRoute, startMockServer } from "../../__tests__/screen";
 import { expectTrustWording } from "../../__tests__/wording";
-import { commentItemsResponse, listItems, overview, prPage } from "../../mocks/review-loop";
+import { listItems, overview, prPage } from "../../mocks/review-loop";
 import { setScenario } from "../../mocks/scenarios";
 
 const server = startMockServer();
@@ -126,7 +126,7 @@ describe("V1 Questions (US3, US4, US11)", () => {
       }),
       http.get("/api/v1/prs/acme/node-client/482/comments/items", () => {
         readItems();
-        return HttpResponse.json(commentItemsResponse());
+        return HttpResponse.json(listItems());
       }),
     );
     renderRoute(`${PR}/comments`);
@@ -328,9 +328,11 @@ describe("V4–V6 and Settings → Notifications", () => {
     await userEvent.click(screen.getByRole("button", { name: "Read GitHub again" }));
     expect(await screen.findByText(/GitHub is not reachable\./)).toBeVisible();
     expect(screen.getByLabelText("Your comment on C22")).toHaveValue("keep the test small");
+    await screen.findByRole("button", { name: "Read GitHub again" });
     server.resetHandlers();
     await userEvent.click(screen.getByRole("button", { name: "Read GitHub again" }));
-    await waitFor(() => expect(screen.queryByText(/GitHub is not reachable\./)).toBeNull());
+    await screen.findByRole("button", { name: "Read GitHub again" });
+    expect(screen.queryByText(/GitHub is not reachable\./)).toBeNull();
     expect(screen.getByLabelText("Your comment on C22")).toHaveValue("keep the test small");
   });
 
@@ -467,7 +469,7 @@ describe("reviewing duplicates and deferred questions", () => {
         });
       }),
       http.get("/api/v1/prs/acme/node-client/482/comments/items", () =>
-        HttpResponse.json(commentItemsResponse().filter((item) => item.no === 34)),
+        HttpResponse.json(listItems().filter((item) => item.no === 34)),
       ),
     );
     renderRoute(`${PR}/comments`);
@@ -523,9 +525,7 @@ describe("reviewing duplicates and deferred questions", () => {
         HttpResponse.json({ ...overview(), queue: [] }),
       ),
       http.get("/api/v1/prs/acme/node-client/482/comments/items", () =>
-        HttpResponse.json(
-          commentItemsResponse().filter((item) => [30, 31, 34, 35, 36, 37].includes(item.no)),
-        ),
+        HttpResponse.json(listItems().filter((item) => [30, 31, 34, 35, 36, 37].includes(item.no))),
       ),
     );
     renderRoute(`${PR}/comments`);

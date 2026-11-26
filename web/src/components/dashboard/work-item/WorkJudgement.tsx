@@ -1,5 +1,4 @@
-import type { DashboardItem } from "../../../api/provisional/dashboard";
-import { itemJudgement } from "../../../api/provisional/dashboardJudgement";
+import type { WorkItem } from "../../../api/generated/types";
 import { dayText } from "../common/format";
 import { JudgementMark } from "../judgement-mark/JudgementMark";
 import type { Navigate } from "../common/navigate";
@@ -10,8 +9,8 @@ export interface WorkJudgementProps {
   usageHref?: string;
 }
 
-export function judgementDate(item: DashboardItem) {
-  const date = itemJudgement(item).judged_at;
+export function judgementDate(item: WorkItem) {
+  const date = item.judgement ? item.judgement.judged_at : item.llm?.judged_at;
   return date ? dayText(date) : null;
 }
 
@@ -22,15 +21,16 @@ export function WorkJudgement({
   usageHref,
   onNavigate,
 }: WorkJudgementProps & {
-  item: DashboardItem;
+  item: WorkItem;
   onNavigate?: Navigate;
 }) {
-  const judgement = itemJudgement(item);
+  const { judgement } = item;
+  if (!judgement) return null;
   return (
     <span aria-live="polite">
       <JudgementMark
         judgement={rejudging ? { ...judgement, state: "judging" } : judgement}
-        onRejudge={item.judgement ? onRejudge : undefined}
+        onRejudge={onRejudge}
         usageHref={usageHref}
         onNavigate={onNavigate}
       />

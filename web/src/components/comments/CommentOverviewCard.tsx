@@ -1,6 +1,6 @@
 import { focusQuestionHeading } from "./cardKeys";
 import { useEffect, useRef } from "react";
-import type { ReviewComment } from "../../api/provisional/comments";
+import type { CommentItem } from "../../api/generated/types";
 import { OpenExternal } from "../dashboard/common/OpenExternal";
 import { ProvenanceTag } from "../section/ProvenanceTag";
 import { clockText } from "../format/time";
@@ -19,8 +19,8 @@ export function CommentOverviewCard({
   since,
   now,
 }: {
-  item: ReviewComment;
-  duplicates: ReviewComment[];
+  item: CommentItem;
+  duplicates: CommentItem[];
   inPass?: number;
   since?: string | null;
   now: Date;

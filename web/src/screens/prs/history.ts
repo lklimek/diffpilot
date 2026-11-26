@@ -1,12 +1,11 @@
-import type { MyAnalysis, PrRef, WatchedPr } from "../../api/generated/types";
-import type { PrHistoryEntry } from "../../api/provisional/prHistory";
+import type { MyAnalysis, PrRef, WatchedPr, PrHistoryItem } from "../../api/generated/types";
 
-export type HistoryRow = Omit<PrHistoryEntry, "analysis" | "watch"> & {
-  analysis?: Pick<NonNullable<PrHistoryEntry["analysis"]>, "id" | "status"> & {
+export type HistoryRow = Omit<PrHistoryItem, "analysis" | "watch"> & {
+  analysis?: Pick<NonNullable<PrHistoryItem["analysis"]>, "id" | "status"> & {
     requestedAt?: string;
     headMoved?: boolean;
   };
-  watch?: NonNullable<PrHistoryEntry["watch"]>;
+  watch?: NonNullable<PrHistoryItem["watch"]>;
 };
 
 export const historyKey = ({ repo, number }: PrRef) => `${repo.owner}/${repo.name}#${number}`.toLowerCase();
@@ -45,7 +44,7 @@ export function historyFromLegacy(
   );
 }
 
-export function historyFromServer({ analysis, ...entry }: PrHistoryEntry): HistoryRow {
+export function historyFromServer({ analysis, ...entry }: PrHistoryItem): HistoryRow {
   return {
     ...entry,
     analysis: analysis && {

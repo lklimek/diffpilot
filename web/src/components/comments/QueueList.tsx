@@ -1,5 +1,4 @@
 import { useState, type RefObject } from "react";
-import type { ReviewComment } from "../../api/provisional/comments";
 import type { CommentItem, DecisionKind, QueueEntry } from "../../api/generated/types";
 import { MenuButton, MenuItem } from "../menu/MenuButton";
 import { clockText } from "../format/time";
@@ -46,7 +45,7 @@ export function itemsAfter(queue: QueueEntry[], entry: QueueEntry): number[] {
 
 interface QueueListProps {
   queue: QueueEntry[];
-  items: ReadonlyMap<number, ReviewComment>;
+  items: ReadonlyMap<number, CommentItem>;
   status?: QueueStatus;
   onStatus?: (status: QueueStatus) => void;
   statusHost?: RefObject<HTMLDivElement | null>;
@@ -153,7 +152,7 @@ function Marks({ entry, first }: { entry: QueueEntry; first: CommentItem }) {
 }
 
 /** The sources of the tags among a row's marks ({@link Marks}), GitHub first. */
-function tagSources(entry: QueueEntry, first: ReviewComment): ProvenanceSource[] {
+function tagSources(entry: QueueEntry, first: CommentItem): ProvenanceSource[] {
   const group = entry.item_nos.length > 1;
   const github = !group && (first.bot_severity || first.imported_decision || first.state === "outside");
   const llm =
@@ -168,7 +167,7 @@ function tagSources(entry: QueueEntry, first: ReviewComment): ProvenanceSource[]
  * The row's tooltip: what a click opens and what its marks' tags mean (the marks are not focusable inside the
  * row's button, plan §3.9).
  */
-const rowTip = (entry: QueueEntry, first: ReviewComment) =>
+const rowTip = (entry: QueueEntry, first: CommentItem) =>
   [
     entry.item_nos.length > 1 ? "Opens these questions as one group." : "Opens this question.",
     ...tagSources(entry, first).map(provenanceNote),
@@ -184,7 +183,7 @@ const DESCRIPTION: Partial<Record<QueueStatus, string>> = {
   status_comments: "Bot status and summaries.",
 };
 
-export function commentStatusText(item: ReviewComment, inPass?: number, since?: string | null, now?: Date) {
+export function commentStatusText(item: CommentItem, inPass?: number, since?: string | null, now?: Date) {
   switch (commentStatus(item)) {
     case "assessing":
       if (inPass === undefined) return `◌ ${queueStatusLabel("assessing", inPass).toLowerCase()}`;

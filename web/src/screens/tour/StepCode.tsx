@@ -1,8 +1,7 @@
 import { useRef, useState, type ComponentProps } from "react";
 import { useQueries } from "@tanstack/react-query";
 import { ApiError } from "../../api/client";
-import type { LineRange, Step } from "../../api/generated/types";
-import type { StepFactsWithLeadingContext } from "../../api/provisional/stepFacts";
+import type { LineRange, Step, StepFacts } from "../../api/generated/types";
 import { linesQuery, useLines } from "../../api/queries";
 import { inApp } from "../../components/inApp";
 import { CONTEXT_ACTION, ContextFold } from "../../components/code-view/ContextFold";
@@ -147,7 +146,7 @@ export function StepCode({
   siblings: readonly Neighbour[];
   onStep: (id: string) => void;
 }) {
-  const facts: StepFactsWithLeadingContext = step.facts;
+  const facts: StepFacts = step.facts;
   const { file, side, range, leading_context: leading } = facts;
   const [showLeading, setShowLeading] = useState(true);
   const { above, below } = neighbours(step, siblings);

@@ -42,6 +42,22 @@ const STATES: [string, (page: Page) => Promise<unknown>][] = [
   ["progress-finished", (p) => p.goto(`${progress}?scenario=finished`)],
   ["progress-unknown", (p) => p.goto("/analyses/00000000-0000-0000-0000-000000000000/progress")],
   ["settings", (p) => p.goto("/settings")],
+  [
+    "settings-github-sync",
+    async (p) => {
+      await p.goto("/settings/github-sync");
+      await expect(p.getByRole("region", { name: "GitHub App" })).toContainText(
+        "Connections refused since last restart: 0",
+      );
+    },
+  ],
+  [
+    "settings-llm-usage",
+    async (p) => {
+      await p.goto("/settings/llm?scenario=usage");
+      await expect(p.getByRole("region", { name: "Tokens" })).toContainText("67 jobs");
+    },
+  ],
   ["settings-llm-error", (p) => p.goto("/settings/llm?scenario=llm-error")],
   ["settings-llm-unknown", (p) => p.goto("/settings/llm?scenario=llm-unknown")],
   ["settings-no-app", (p) => p.goto("/settings/github-sync?scenario=no-app")],

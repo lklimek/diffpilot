@@ -9,7 +9,8 @@ const queryClient = new QueryClient({
     queries: {
       // Client errors (4xx) are answers, not outages: retry only server and network failures.
       retry: (count, error) =>
-        count < 2 && (!(error instanceof ApiError) || error.status === 0 || error.status >= 500),
+        count < 2 &&
+        (!(error instanceof ApiError) || error.status === 0 || (error.status >= 500 && error.status !== 501)),
       refetchOnWindowFocus: false,
     },
   },

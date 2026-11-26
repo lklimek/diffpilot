@@ -1,7 +1,10 @@
 import { useRef } from "react";
-import type { RefreshStatus, ScheduleStatus, SnapshotMeta } from "../../../api/generated/types";
-import { RANKING_DAILY_LIMIT } from "../../../api/provisional/dashboardJudgement";
-import type { DashboardLive } from "../../../api/provisional/dashboardLive";
+import type {
+  DashboardSummary,
+  RefreshStatus,
+  ScheduleStatus,
+  SnapshotMeta,
+} from "../../../api/generated/types";
 import { BUSY_NOTE } from "../../button/button";
 import { clockText, dateTimeText } from "../../format/time";
 import { MenuItem } from "../../menu/MenuButton";
@@ -21,7 +24,8 @@ interface RefreshControlProps {
   snapshot: SnapshotMeta | null;
   snapshotRefresh?: RefreshStatus;
   schedule: ScheduleStatus;
-  live?: DashboardLive;
+  live?: Required<Pick<DashboardSummary, "live_repositories" | "not_live_repositories">> &
+    Pick<DashboardSummary, "last_event_at">;
   outdated?: number;
   onRefresh: () => void;
   onRejudgeOutdated?: () => void;
@@ -189,7 +193,7 @@ export function RefreshControl({
           />
           <MenuItem
             label={`Refresh and re-judge outdated (${outdated})`}
-            description={`Scans, then re-judges outdated items. Uses up to ${outdated} of today’s ${RANKING_DAILY_LIMIT} judgements. The daily and per-refresh caps may leave some items outdated.`}
+            description={`Scans, then re-judges outdated items. Uses up to ${outdated} judgements from today’s limit. The daily and per-refresh caps may leave some items outdated.`}
             disabledReason={
               disabledReason ??
               (outdated === 0

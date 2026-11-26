@@ -52,10 +52,10 @@ export function startMockServer() {
 }
 
 /** Renders the app at `entry`; returns the router (its `state.location` is where the app went). */
-export function renderRoute(entry: InitialEntry) {
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-  });
+export function renderRoute(
+  entry: InitialEntry,
+  client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } }),
+) {
   const router = createMemoryRouter(appRoutes, { initialEntries: [entry] });
   render(
     <QueryClientProvider client={client}>

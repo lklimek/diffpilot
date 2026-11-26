@@ -225,8 +225,7 @@ it("shows today's and seven-day provider totals separately", () => {
       now={new Date(at)}
       onReset={vi.fn()}
       lastCall={null}
-      tokens={{ today: usage, last_7_days: usage }}
-      month={usage}
+      tokens={{ today: usage, last_7_days: usage, this_month: usage }}
     />,
   );
   expect(screen.getByText("Today: 3.4 M input (2.9 M cached), 120 k output tokens in 23 jobs")).toBeVisible();

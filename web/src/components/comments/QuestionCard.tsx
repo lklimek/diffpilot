@@ -18,7 +18,6 @@ import { clockText, dateTimeText } from "../format/time";
 import { ProvenanceTag } from "../section/ProvenanceTag";
 import { CollapsibleSection } from "../collapsible/CollapsibleSection";
 import { CHOICE_LABEL, decisionLabel, type EffectsPreviewState } from "./decisions";
-import type { ReviewComment } from "../../api/provisional/comments";
 import { BotHeading, CommentTitle } from "./CommentTitle";
 import { DuplicateLinks, DuplicateOfLink } from "./DuplicateLinks";
 import { NOT_ASSESSED } from "./queueStatus";
@@ -37,8 +36,8 @@ export type ContextState =
   | { state: "ready"; value: CodeContext };
 
 interface QuestionCardProps {
-  item: ReviewComment;
-  duplicates?: ReviewComment[];
+  item: CommentItem;
+  duplicates?: CommentItem[];
   primaryHref?: string;
   /** The carry-over event that asked this repeat again (US9), when it is one. */
   reask?: CarryEvent;
@@ -177,6 +176,7 @@ function Raised({ item }: { item: CommentItem }) {
 /** The LLM assessment of the item, or why there is none; `prHead` is the pull request's head now. */
 function Assessment({ item, prHead }: { item: CommentItem; prHead: string }) {
   const a = item.assessment;
+  if (item.assessment_state.state === "queued") return <p className="m-0">Waiting for assessment.</p>;
   if (item.assessment_state.state === "running")
     return <p className="m-0">LLM assessment running for this comment.</p>;
   if (item.assessment_state.state === "not_assessed")
