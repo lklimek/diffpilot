@@ -26,6 +26,7 @@ import { GithubCommentText } from "./GithubCommentText";
 import { COMMENT_HINT } from "./DecisionForm";
 import {
   CHOICE_LABEL,
+  canMark,
   decideBlocked,
   digestFor,
   EFFECT_WORD,
@@ -293,6 +294,30 @@ export function GroupCard({
             {label} all {items.length} <Kbd decorative>Enter</Kbd>
           </button>
         </Tooltip>
+        {items.every((item) => canMark(item) && !item.gates.length) && (
+          <Tooltip tip="Marks every item in this group in diffpilot.">
+            <button
+              type="button"
+              aria-disabled={busy || undefined}
+              className={buttonClass("plain")}
+              onClick={() => {
+                if (busy) return;
+                onDecide(
+                  items.map((item) => ({
+                    item_no: item.no,
+                    ...requestOf(
+                      item,
+                      { choice: "not_a_review_point", value: "", resolve: false, comment: "" },
+                      null,
+                    ),
+                  })),
+                );
+              }}
+            >
+              {CHOICE_LABEL.not_a_review_point}
+            </button>
+          </Tooltip>
+        )}
         <Tooltip tip="Keeps this group undecided and opens the next question (s).">
           <button type="button" onClick={onSkip} className={buttonClass("plain")}>
             Skip for now <Kbd decorative>s</Kbd>

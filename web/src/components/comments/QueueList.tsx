@@ -179,6 +179,7 @@ const DESCRIPTION: Partial<Record<QueueStatus, string>> = {
   waiting: "Read from GitHub and waiting for the next pass.",
   not_assessed: "Assessment did not complete or reached the daily limit.",
   decided: "Decisions made here, carried from earlier rounds or imported from GitHub.",
+  not_a_review_point: "Items marked in diffpilot.",
   duplicates: "Items whose decision follows their primary.",
   status_comments: "Bot status and summaries.",
 };
@@ -194,6 +195,8 @@ export function commentStatusText(item: CommentItem, inPass?: number, since?: st
       return item.assessment_state.state === "not_assessed"
         ? `Not assessed: ${NOT_ASSESSED[item.assessment_state.reason] ?? item.assessment_state.reason}`
         : "Not assessed";
+    case "not_a_review_point":
+      return QUEUE_STATUS.not_a_review_point;
     case "duplicates":
       return `⧉ Same point as C${item.duplicate_of}`;
     case "status_comments":
@@ -357,7 +360,11 @@ export function QueueList({
       </li>
     );
   };
-  const trigger = `${queueStatusLabel(status, inPass)} · ${count(status)}`;
+  const countedLabel = (key: QueueStatus) => {
+    const label = queueStatusLabel(key, inPass);
+    return key === "not_a_review_point" ? `${label} (${count(key)})` : `${label} · ${count(key)}`;
+  };
+  const trigger = countedLabel(status);
   const gateText = status === "needs_you" && gates ? `${gates} ${gates === 1 ? "gate" : "gates"}` : null;
   return (
     <nav aria-label="Queue" className="min-w-0 rounded-lg border border-border bg-surface px-3 py-3">
@@ -375,7 +382,7 @@ export function QueueList({
           {(Object.keys(QUEUE_STATUS) as QueueStatus[]).map((key) => (
             <MenuItem
               key={key}
-              label={`${queueStatusLabel(key, inPass)} · ${count(key)}`}
+              label={countedLabel(key)}
               selection={{ kind: "radio", checked: key === status }}
               description={
                 key === "assessing" && inPass === undefined

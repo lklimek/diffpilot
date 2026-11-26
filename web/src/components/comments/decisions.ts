@@ -13,6 +13,7 @@ import type {
   Gate,
   PlannedEffect,
 } from "../../api/generated/types";
+import { awaitsDecision } from "./queueStatus";
 
 /** A choice on a card: a decision kind, or D8 "Accept despite the gate" (stored as Reject with a gate override). */
 export type Choice = DecisionKind | "accept";
@@ -49,19 +50,29 @@ const ITEM_CHOICES: Choice[] = [
 export const gateOf = (item: Pick<CommentItem, "gates">): Gate | null => item.gates[0]?.gate ?? null;
 
 /** The item's options: the recommended one first (RQ7), D8 last on gate items. */
-export function choicesFor(item: Pick<CommentItem, "gates" | "assessment">): Choice[] {
+export const canMark = (item: CommentItem) =>
+  awaitsDecision(item) && item.kind !== "pr_question" && !item.status_comment && !item.not_a_review_point;
+
+export function choicesFor(item: CommentItem): Choice[] {
   const recommended = item.assessment?.recommendation.kind;
   const rest = ITEM_CHOICES.filter((c) => c !== recommended);
   const first = recommended && ITEM_CHOICES.includes(recommended) ? [recommended] : [];
-  return [...first, ...rest, ...(gateOf(item) ? (["accept"] as const) : [])];
+  return [
+    ...first,
+    ...rest,
+    ...(gateOf(item) ? (["accept"] as const) : []),
+    ...(canMark(item) ? (["not_a_review_point"] as const) : []),
+  ];
 }
 
 /** What a choice needs typed in. */
 export type Need = "reason" | "pr" | "title" | "upstream" | "todo" | null;
 
 /** The input a choice needs (D3, D8 reason; D4 PR; D5 optional title; D6 URL or "create"; D7 title). */
-export function needOf(choice: Choice): Need {
+export function needOf(choice: Choice, gate: Gate | null = null): Need {
   switch (choice) {
+    case "not_a_review_point":
+      return gate ? "reason" : null;
     case "reject":
     case "accept":
       return "reason";
@@ -91,11 +102,18 @@ export interface DecisionInput {
 }
 
 /** Why the input cannot be submitted yet, or null. */
-export function missingInput(input: Pick<DecisionInput, "choice" | "value">): string | null {
+export function missingInput(
+  input: Pick<DecisionInput, "choice" | "value">,
+  gate: Gate | null = null,
+): string | null {
   const value = input.value.trim();
-  switch (needOf(input.choice)) {
+  switch (needOf(input.choice, gate)) {
     case "reason":
-      return value ? null : "A reason is required: it is posted as the reply.";
+      return value
+        ? null
+        : input.choice === "not_a_review_point"
+          ? "A reason is required."
+          : "A reason is required: it is posted as the reply.";
     case "pr":
       return /^#?\d+$/.test(value) ? null : "Enter the number of the existing pull request, e.g. #490.";
     case "upstream":
@@ -131,15 +149,16 @@ export function requestOf(
   reply: string | null,
 ): DecideRequest {
   const gate = gateOf(item);
-  const reason = needOf(input.choice) === "reason" ? input.value.trim() : null;
+  const reason = needOf(input.choice, gate) === "reason" ? input.value.trim() : null;
+  const marking = input.choice === "not_a_review_point";
   return {
     kind: input.choice === "accept" ? "reject" : input.choice,
     reason,
     target: targetOf(input.choice, input.value),
     override: input.choice === "accept" && gate ? { type: "blocker_gate", gate } : null,
-    resolve_ticked: resolveLocked(input.choice) || input.resolve,
-    reply_text: reply,
-    comment: input.comment.trim() || null,
+    resolve_ticked: !marking && (resolveLocked(input.choice) || input.resolve),
+    reply_text: marking ? null : reply,
+    comment: marking ? null : input.comment.trim() || null,
     item_revision: item.revision,
   };
 }

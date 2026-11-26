@@ -369,6 +369,7 @@ const SCENARIOS = {
   "comments-no-agent": { comments: "no-agent" },
   "comments-github-error": { comments: "github-error" },
   "comments-v14": { comments: "v14" },
+  "comments-marks": { comments: "marks" },
   "comments-watched": { comments: "watched" },
   "show-less": { showLess: true },
   // Owner screenshot: one remark over a replaced line, unchanged lines and added comment lines that fold.

@@ -21,6 +21,7 @@ import {
   listItems,
   log,
   markGate,
+  markedItems,
   notificationSettings,
   overview,
   prPage,
@@ -69,6 +70,10 @@ const isRefusal = (value: unknown): value is Refusal => Array.isArray(value) && 
 
 /** RC1–RC17, RW1–RW2, RN1–RN3 of the review loop (plan §6) over the store of review-loop.ts. */
 export const reviewLoopHandlers = [
+  route("listMarkedItems", ({ request }) => {
+    const result = markedItems(new URL(request.url).searchParams.get("cursor"));
+    return isRefusal(result) ? refused(result) : HttpResponse.json(result);
+  }),
   route("getPrPage", (info) => {
     if (info.params.owner === "acme" && info.params.name === "private-repo") {
       return apiError(

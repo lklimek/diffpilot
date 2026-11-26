@@ -23,6 +23,7 @@ import type {
   CodeContext,
   CommentItem,
   CommentLog,
+  MarkedItems,
   CommentsOverview,
   ContextQuery,
   DecideRequest,
@@ -489,6 +490,8 @@ export function createApiClient(baseUrl = "") {
     /** The server's "Decide the rest per recommendation" list and the items it leaves out (RC17). */
     getDecideRest: (pr: PrRef) => call<DecideRest>("getDecideRest", { params: prParams(pr) }),
     getCommentLog: (pr: PrRef) => call<CommentLog>("getCommentLog", { params: prParams(pr) }),
+    listMarkedItems: (cursor: string | null) =>
+      call<MarkedItems>("listMarkedItems", { query: definedParams({ cursor }) }),
     listCarryOvers: (query: CarryOverQuery) =>
       call<CarryOverPage>("listCarryOvers", { query: definedParams(query) }),
     watchPr: (pr: PrRef) => call<void>("watchPr", { params: prParams(pr) }),

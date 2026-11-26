@@ -1,10 +1,12 @@
 import { useCallback, useState } from "react";
 import { useAssessmentSettings, useSetAssessmentSettings } from "../../api/assessment-settings";
+import { useMarkedItems } from "../../api/review-loop";
 import { ApiError } from "../../api/client";
 import { useNow } from "../../app/now";
 import { useNotifySetting } from "../../app/workNotifications";
 import { messageOf } from "../../components/inspector/action";
 import { AssessmentSettingsCard } from "../../components/settings/AssessmentSettingsCard";
+import { MarkedItemsCard } from "../../components/settings/MarkedItemsCard";
 import { NotificationsCard } from "../../components/settings/NotificationsCard";
 import { Section } from "../../components/settings/Section";
 import { StatusMessage } from "../../components/status/StatusMessage";
@@ -13,6 +15,7 @@ import { useReportDirty } from "./useReportDirty";
 
 export function ReviewLoopPage({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => void }) {
   const assessment = useAssessmentSettings();
+  const marks = useMarkedItems();
   const save = useSetAssessmentSettings();
   const [saveCount, setSaveCount] = useState(0);
   const [dirty, setDirty] = useState({ assessment: false, ntfy: false, webhook: false });
@@ -69,6 +72,12 @@ export function ReviewLoopPage({ onDirtyChange }: { onDirtyChange: (dirty: boole
         <NotificationsCard {...notify} />
         <NotificationChannels onDirtyChange={channelDirty} />
       </section>
+      <MarkedItemsCard
+        items={marks.data?.pages.flatMap((page) => page.items)}
+        error={marks.isError ? messageOf(marks.error) : undefined}
+        loadingOlder={marks.isFetchingNextPage}
+        onShowOlder={marks.hasNextPage ? () => void marks.fetchNextPage() : undefined}
+      />
     </>
   );
 }
