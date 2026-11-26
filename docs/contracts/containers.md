@@ -106,6 +106,10 @@ Jobs store payer and PR container identity; partial unique indexes enforce one c
 The shapes identify separate workers. Each queued job snapshots its payer's model and job-specific
 effort under ADR-025; paired methods share one selection. Migration 0039 stores personal overrides
 independently of tenant membership. The installation row is a read-only fallback.
+Migration 0040 adds `users.llm_job_slots` (1–65,535, default 1). An immediate claim transaction checks the
+user's limit against their claimed/running jobs across targets and memberships. Eligible jobs keep their
+priority and FIFO order. Existing attempts keep their leases when the user's limit changes. The launcher's
+`SR_WORKER_MAX_RUNNING` independently caps running worker containers.
 `analytic_threads` is keyed by (PR,user), and last-context generation must equal its analytic generation.
 Working sessions are keyed by (PR,user,kind), preserving separate analytic Ask and review Ask threads.
 Migration 0030 cleans and rebuilds working_sessions as well. Working preflight is bound to seed, generation and immutable kind; repository acknowledgement additionally

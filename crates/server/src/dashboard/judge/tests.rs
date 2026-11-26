@@ -2444,9 +2444,8 @@ async fn unusable_credential_refunds_a_queued_judge() {
     assert_eq!(h.sent_since(now()).await, 0);
 }
 
-/// PR Ask and dashboard judging use independent containers for the same payer.
 #[tokio::test]
-async fn ask_container_does_not_suppress_the_unclaimed_judge_limit() {
+async fn unclaimed_judge_timeout_starts_when_the_payer_has_a_slot() {
     let h = harness().await;
     let snap = snapshot(prs(1), vec![], vec![]);
     let id = h.stored("u1", &snap).await;
@@ -2510,10 +2509,21 @@ async fn ask_container_does_not_suppress_the_unclaimed_judge_limit() {
     let ask = h.claim().await;
     assert_eq!(ask.kind, JobKind::Ask, "the later Ask is claimed first");
 
+    ranking
+        .observe(job)
+        .await
+        .expect("the payer's only slot is in use");
+    assert!(ranking.unclaimed_since.is_none());
+    h.db()
+        .settings()
+        .set_llm_job_slots(CREDENTIAL_ID, std::num::NonZeroU16::new(2).unwrap())
+        .await
+        .unwrap();
+    ranking.unclaimed_since = Some(long_ago);
     let error = ranking
         .observe(job)
         .await
-        .expect_err("an active Ask does not occupy the judge container");
+        .expect_err("a free payer slot starts the unclaimed timeout");
     assert!(matches!(error, RankError::Unclaimed));
     h.complete(&ask, JobOutcome::Cancelled).await;
 }
@@ -2550,6 +2560,11 @@ async fn ranking_waits_for_running_analysis_job() {
         })
         .await;
     assert_eq!(waiting.state, RefreshState::Ranking);
+    h.db()
+        .settings()
+        .set_llm_job_slots(CREDENTIAL_ID, std::num::NonZeroU16::new(2).unwrap())
+        .await
+        .unwrap();
     h.serve(|i| succeeded(neutral(i))).await;
     assert_eq!(
         h.db().jobs().get(analysis_job.id).await.unwrap().state,

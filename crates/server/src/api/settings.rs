@@ -13,14 +13,14 @@ use axum::{Json, Router};
 use contracts::api::error::ApiErrorCode;
 use contracts::api::settings::AppInstallation;
 use contracts::api::settings::{
-    ControlledOwners, LlmSelection, RepoSettings, SetAskEffortRequest, SetControlledOwnersRequest,
-    SetJudgeEffortRequest, SetLanguageRequest, Settings,
+    ControlledOwners, LlmJobSlots, LlmSelection, RepoSettings, SetAskEffortRequest,
+    SetControlledOwnersRequest, SetJudgeEffortRequest, SetLanguageRequest, Settings,
 };
 use contracts::common::RepoRef;
 use contracts::job::result::{JobFailureKind, LlmCallOutcome, LlmCallStatus};
 use contracts::routes::{
     GET_REPO_SETTINGS, GET_SETTINGS, SET_ASK_EFFORT, SET_CONTROLLED_OWNERS, SET_JUDGE_EFFORT,
-    SET_LANGUAGE, SET_LLM,
+    SET_LANGUAGE, SET_LLM, SET_LLM_JOB_SLOTS,
 };
 use contracts::time::Timestamp;
 use db::error::DbError;
@@ -124,6 +124,7 @@ pub fn routes() -> Router<AppState> {
         .route(SET_LANGUAGE.path, put(set_language))
         .route(SET_CONTROLLED_OWNERS.path, put(set_controlled_owners))
         .route(SET_LLM.path, put(set_llm))
+        .route(SET_LLM_JOB_SLOTS.path, put(set_llm_job_slots))
         .route(SET_ASK_EFFORT.path, put(set_ask_effort))
         .route(SET_JUDGE_EFFORT.path, put(set_judge_effort))
         .route(GET_REPO_SETTINGS.path, get(read_repo))
@@ -214,6 +215,22 @@ async fn set_llm(
     Ok(Json(crate::model::selection(Some(saved))))
 }
 
+async fn set_llm_job_slots(
+    State(state): State<AppState>,
+    SessionCsrf(session): SessionCsrf,
+    body: Result<Json<LlmJobSlots>, JsonRejection>,
+) -> SettingsResult<Json<LlmJobSlots>> {
+    let Json(request) = body.map_err(failure)?;
+    state
+        .db
+        .settings()
+        .set_llm_job_slots(&session.user_id, request.slots)
+        .await
+        .map_err(failure)?;
+    tracing::info!(user = %session.user_id, slots = request.slots.get(), "payer LLM job slots changed");
+    Ok(Json(request))
+}
+
 async fn set_ask_effort(
     State(state): State<AppState>,
     SessionCsrf(session): SessionCsrf,
@@ -297,6 +314,7 @@ async fn settings(state: &AppState, session: &Session) -> Result<Settings, Setti
         llm_selection: Some(crate::model::selection(
             state.db.settings().llm_selection(&session.user_id).await?,
         )),
+        llm_job_slots: Some(state.db.settings().llm_job_slots(&session.user_id).await?),
         llm_usage: Some(
             state
                 .db
@@ -1188,6 +1206,62 @@ pub(super) mod tests {
         assert_eq!(settings["llm_selection"]["current"], choice);
         assert_eq!(settings["llm_selection"]["ask_effort"], "medium");
         assert_eq!(settings["llm_selection"]["changed_by"], "lklimek");
+    }
+
+    #[tokio::test]
+    async fn llm_job_slots_validate_csrf_bounds_and_payer_isolation() {
+        let h = harness().await;
+        let other = crate::test_support::other_user_cookie(&h.state).await;
+        let (_, initial) = h.get(GET_SETTINGS.path).await;
+        assert_eq!(initial["llm_job_slots"], 1);
+
+        for (cookie, csrf, expected) in [
+            (None, true, StatusCode::UNAUTHORIZED),
+            (Some(h.cookie.as_str()), false, StatusCode::FORBIDDEN),
+        ] {
+            let (status, _) = h
+                .send(
+                    "PUT",
+                    SET_LLM_JOB_SLOTS.path,
+                    cookie,
+                    csrf,
+                    Some(json!({"slots": 3})),
+                )
+                .await;
+            assert_eq!(status, expected);
+        }
+        for slots in [json!(0), json!(-1), json!(2.5), json!(65536), json!("3")] {
+            let (status, _) = h
+                .send(
+                    "PUT",
+                    SET_LLM_JOB_SLOTS.path,
+                    Some(&h.cookie),
+                    true,
+                    Some(json!({"slots": slots})),
+                )
+                .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+        }
+        for slots in [3, 4, 3] {
+            let (status, saved) = h
+                .send(
+                    "PUT",
+                    SET_LLM_JOB_SLOTS.path,
+                    Some(&h.cookie),
+                    true,
+                    Some(json!({"slots": slots})),
+                )
+                .await;
+            assert_eq!(status, StatusCode::OK, "{saved}");
+            assert_eq!(saved, json!({"slots": slots}));
+        }
+
+        let (_, reader) = h.get(GET_SETTINGS.path).await;
+        assert_eq!(reader["llm_job_slots"], 3);
+        let (_, colleague) = h
+            .send("GET", GET_SETTINGS.path, Some(&other), false, None)
+            .await;
+        assert_eq!(colleague["llm_job_slots"], 1);
     }
 
     #[tokio::test]

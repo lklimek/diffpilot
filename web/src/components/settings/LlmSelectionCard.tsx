@@ -12,33 +12,46 @@ export interface LlmChoiceChanges {
   model?: ModelChoice;
   ask?: ReasoningEffort;
   ranking?: ReasoningEffort;
+  slots?: number;
 }
+
+type Draft = Partial<ModelChoice> & Pick<LlmChoiceChanges, "ask" | "ranking"> & { slots?: string };
+const MAX_JOB_SLOTS = 65_535;
 
 /** The payer's model and efforts, saved together. */
 export function LlmSelectionCard({
   selection,
+  jobSlots,
   onSave,
   onDirtyChange,
 }: {
   selection: LlmSelection;
+  jobSlots?: number;
   onSave: (changes: LlmChoiceChanges) => Promise<void>;
   onDirtyChange?: (dirty: boolean) => void;
 }) {
   const id = useId();
   const action = useAction();
-  const [draft, setDraft] = useState<Partial<ModelChoice> & Omit<LlmChoiceChanges, "model">>({});
+  const [draft, setDraft] = useState<Draft>({});
   const [saved, setSaved] = useState(false);
   const model = draft.model ?? selection.current.model;
   const effort = draft.reasoning_effort ?? selection.current.reasoning_effort;
   const ask = draft.ask ?? selection.ask_effort ?? "medium";
   const ranking = draft.ranking ?? selection.judge_effort ?? "low";
+  const slots = draft.slots ?? jobSlots?.toString() ?? "";
+  const slotCount = Number(slots);
+  const slotsChanged = draft.slots !== undefined && slotCount !== jobSlots;
+  const slotsInvalid =
+    slotsChanged && (!Number.isInteger(slotCount) || slotCount < 1 || slotCount > MAX_JOB_SLOTS);
   const changes: LlmChoiceChanges = {};
   if (model !== selection.current.model || effort !== selection.current.reasoning_effort) {
     changes.model = { model, reasoning_effort: effort };
   }
   if (ask !== (selection.ask_effort ?? "medium")) changes.ask = ask;
   if (ranking !== (selection.judge_effort ?? "low")) changes.ranking = ranking;
-  const dirty = Object.keys(changes).length > 0;
+  if (slotsChanged && !slotsInvalid) changes.slots = slotCount;
+  const dirty = slotsChanged || Object.keys(changes).length > 0;
+  const canSave = dirty && !slotsInvalid && !action.busy;
   useEffect(() => onDirtyChange?.(dirty), [dirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
   const save = async () => {
@@ -55,11 +68,7 @@ export function LlmSelectionCard({
   };
   return (
     <Section title="Model and effort">
-      <FormRow
-        label="Model"
-        htmlFor={`${id}-model`}
-        help="The model used by new jobs on your linked plan."
-      >
+      <FormRow label="Model" htmlFor={`${id}-model`} help="The model used by new jobs on your linked plan.">
         <select
           id={`${id}-model`}
           value={model}
@@ -129,18 +138,50 @@ export function LlmSelectionCard({
           </select>
         </FormRow>
       ))}
+      {jobSlots !== undefined && (
+        <FormRow
+          label="Concurrent LLM jobs"
+          htmlFor={`${id}-slots`}
+          help={
+            <>
+              Your jobs for a pull request run one at a time. <HelpTip topic="llm_job_slots" />
+            </>
+          }
+        >
+          <input
+            id={`${id}-slots`}
+            type="number"
+            min={1}
+            max={MAX_JOB_SLOTS}
+            step={1}
+            value={slots}
+            disabled={action.busy}
+            aria-invalid={slotsInvalid || undefined}
+            aria-describedby={slotsInvalid ? `${id}-slots-error` : undefined}
+            onChange={(e) =>
+              edit({ slots: e.target.value === String(jobSlots) ? undefined : e.target.value })
+            }
+            className="w-full rounded border border-border bg-surface px-2 py-1"
+          />
+          {slotsInvalid && (
+            <p id={`${id}-slots-error`} className="text-xs">
+              Enter a whole number from 1 to 65,535.
+            </p>
+          )}
+        </FormRow>
+      )}
       {selection.changed_by && selection.changed_at && (
         <p className="text-xs text-muted">
           changed by {selection.changed_by} at {dateTimeText(selection.changed_at)}
         </p>
       )}
       <div className="grid justify-items-end gap-1">
-        <Tooltip tip="Saves your model and effort changes.">
+        <Tooltip tip="Saves your LLM preferences.">
           <button
             type="button"
-            aria-disabled={!dirty || action.busy || undefined}
+            aria-disabled={!canSave || undefined}
             className={buttonClass("primary")}
-            onClick={() => dirty && void save()}
+            onClick={() => canSave && void save()}
           >
             {action.busy ? "Saving…" : "Save"}
           </button>

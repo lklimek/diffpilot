@@ -418,6 +418,8 @@ export function createApiClient(baseUrl = "") {
     resetRankingUsage: () => call<RankingUsage>("resetRankingUsage"),
     setLlm: (body: import("./generated/types").ModelChoice) =>
       call<import("./generated/types").LlmSelection>("setLlm", { body }),
+    setLlmJobSlots: (slots: number) =>
+      call<import("./generated/types").LlmJobSlots>("setLlmJobSlots", { body: { slots } }),
     requestFlow: (id: AnalysisId, flow: string) =>
       call<AnalysisSummary>("requestFlow", { params: { id, flow } }),
     setBackgroundAnalysis: (id: AnalysisId, enabled: boolean) =>

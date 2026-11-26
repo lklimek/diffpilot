@@ -53,6 +53,7 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
 | GET | `/api/v1/analyses/{id}` | read | – | `AnalysisSummary` |
 | GET | `/api/v1/analyses/{id}/events` | read | – | SSE (`sse-events.md`) |
 | PUT | `/api/v1/settings/llm` | session_csrf | `ModelChoice` | Authenticated payer's `LlmSelection` |
+| PUT | `/api/v1/settings/llm/job-slots` | session_csrf | `LlmJobSlots` | Saved `LlmJobSlots` |
 | PUT | `/api/v1/settings/llm/ask-effort` | session_csrf | `SetAskEffortRequest` | Authenticated payer's `LlmSelection` with updated `ask_effort` |
 | POST | `/api/v1/analyses/{id}/pause` | session_csrf | – | `AnalysisSummary` |
 | POST | `/api/v1/analyses/{id}/resume` | session_csrf | – | `AnalysisSummary` |
@@ -284,6 +285,9 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
   effort and ranking effort. Each unset preference falls back to the installation's pre-v1.5 selection and
   then to Sol 6.1/high, Ask medium and ranking low. `changed_by` and `changed_at` report only a personal
   save. Each PUT changes only its own field for the authenticated payer and returns their effective selection.
+- **LLM job slots** (v1.5). `Settings.llm_job_slots` holds the signed-in payer's limit (default 1).
+  PUT accepts `{"slots": number}` with a whole number from 1 to 65,535. New claims use the current limit
+  across all of the payer's memberships. Running attempts finish normally after a decrease.
 - **MemCan status**: Settings and Tour PR-context facts expose `memcan_status {state, last_success_at}`,
   separate from `project_profile.memcan` (the stored analysis lookup). Read status never calls MemCan.
   `not_checked` means configured but no completed attempt since startup; `reachable` means the last attempt

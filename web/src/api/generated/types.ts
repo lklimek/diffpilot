@@ -4964,6 +4964,15 @@ kind: LlmJobKind, };
 export type LlmJobKind = "analysis" | "flow_analysis" | "ranking" | "comment_assessment" | "ask";
 
 /**
+ * Request and response of `PUT /api/v1/settings/llm/job-slots`.
+ */
+export type LlmJobSlots = {
+/**
+ * Maximum concurrent jobs using the authenticated payer's plan.
+ */
+slots: number, };
+
+/**
  * Language of LLM-written texts.
  */
 export type LlmLanguage = "en" | "pl" | "ru";
@@ -7661,6 +7670,10 @@ export type Settings = {
  * The payer's effective model and effort selection; absent on older servers.
  */
 llm_selection?: LlmSelection,
+/**
+ * The payer's concurrent job limit; absent on older servers.
+ */
+llm_job_slots?: number,
 /**
  * Tenant usage in the server's local calendar; absent on older responses.
  */

@@ -9,6 +9,7 @@ import {
   useMe,
   useSetAskEffort,
   useSetJudgeEffort,
+  useSetLlmJobSlots,
   useSetLanguage,
   useSetLlm,
   useSettings,
@@ -85,11 +86,13 @@ export function LlmPage({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => 
   const setAskEffort = useSetAskEffort();
   const setJudgeEffort = useSetJudgeEffort();
   const setLanguage = useSetLanguage();
-  const save = async ({ model, ask, ranking }: LlmChoiceChanges) => {
+  const setSlots = useSetLlmJobSlots();
+  const save = async ({ model, ask, ranking, slots }: LlmChoiceChanges) => {
     // Each mutation returns the full selection and updates the same cache.
     if (model) await setLlm.mutateAsync(model);
     if (ask) await setAskEffort.mutateAsync(ask);
     if (ranking) await setJudgeEffort.mutateAsync(ranking);
+    if (slots !== undefined) await setSlots.mutateAsync(slots);
   };
   return (
     <>
@@ -115,6 +118,7 @@ export function LlmPage({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => 
       {settings.data?.llm_selection && (
         <LlmSelectionCard
           selection={settings.data.llm_selection}
+          jobSlots={settings.data.llm_job_slots}
           onSave={save}
           onDirtyChange={onDirtyChange}
         />

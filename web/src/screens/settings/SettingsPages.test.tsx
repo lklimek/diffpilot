@@ -61,6 +61,33 @@ it("holds a model or effort change until Save and guards switching settings page
   await waitFor(() => expect(router.state.location.pathname).toBe("/settings/repositories"));
 });
 
+it("saves three concurrent LLM job slots without changing the model", async () => {
+  const writes: unknown[] = [];
+  server.events.on("request:start", async ({ request }) => {
+    if (request.method === "PUT" && new URL(request.url).pathname === "/api/v1/settings/llm/job-slots")
+      writes.push(await request.clone().json());
+  });
+  renderRoute("/settings/llm");
+  const model = within(await screen.findByRole("region", { name: "Model and effort" }));
+  const slots = model.getByRole("spinbutton", { name: "Concurrent LLM jobs" });
+  expect(slots).toHaveValue(1);
+  await userEvent.clear(slots);
+  await userEvent.type(slots, "0");
+  const save = model.getByRole("button", { name: "Save" });
+  expect(save).toHaveAttribute("aria-disabled", "true");
+  expect(slots).toHaveAccessibleDescription("Enter a whole number from 1 to 65,535.");
+  await userEvent.click(save);
+  expect(writes).toEqual([]);
+  await userEvent.clear(slots);
+  await userEvent.type(slots, "3");
+  expect(writes).toEqual([]);
+  await userEvent.click(model.getByRole("button", { name: "Save" }));
+  expect(await model.findByText("Saved")).toBeVisible();
+  expect(slots).toHaveValue(3);
+  expect(model.getByLabelText("Model")).toHaveValue("gpt-6.1-sol");
+  expect(writes).toEqual([{ slots: 3 }]);
+});
+
 it("retries the failed effort without repeating a successful edit from the same Save", async () => {
   const writes: string[] = [];
   let refuse = true;

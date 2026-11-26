@@ -1,6 +1,8 @@
 //! Repository for `settings`: what the Settings screen reads and writes besides the LLM call outcome
 //! (`llm_credentials`): the user's language, the tenant's analysed repositories and credential usability.
 
+use std::num::NonZeroU16;
+
 use contracts::api::settings::ControlledOwners;
 use contracts::common::{LlmLanguage, RepoRef};
 use contracts::ids::AnalysisId;
@@ -240,6 +242,33 @@ impl SettingsRepo<'_> {
         let saved = read_controlled_owners(&mut tx, tenant_id).await?;
         tx.commit().await?;
         Ok((old, saved))
+    }
+
+    /// The payer's maximum number of claimed or running LLM jobs.
+    pub async fn llm_job_slots(&self, user_id: &str) -> Result<NonZeroU16, DbError> {
+        let stored: i64 = sqlx::query_scalar("SELECT llm_job_slots FROM users WHERE id = ?")
+            .bind(user_id)
+            .fetch_one(self.pool)
+            .await?;
+        u16::try_from(stored)
+            .ok()
+            .and_then(NonZeroU16::new)
+            .ok_or(DbError::Corrupt {
+                column: "users.llm_job_slots",
+            })
+    }
+
+    /// Sets the limit for future claims; existing attempts keep their leases.
+    pub async fn set_llm_job_slots(&self, user_id: &str, slots: NonZeroU16) -> Result<(), DbError> {
+        let updated = sqlx::query("UPDATE users SET llm_job_slots = ? WHERE id = ?")
+            .bind(i64::from(slots.get()))
+            .bind(user_id)
+            .execute(self.pool)
+            .await?;
+        if updated.rows_affected() != 1 {
+            return Err(DbError::NotFound);
+        }
+        Ok(())
     }
 
     /// The user's effective stored preferences across memberships.

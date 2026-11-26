@@ -546,6 +546,19 @@ export function useSetJudgeEffort() {
   });
 }
 
+/** Saves the payer's concurrent job limit. */
+export function useSetLlmJobSlots() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: api.setLlmJobSlots,
+    onSuccess: ({ slots }) =>
+      client.setQueryData<import("./generated/types").Settings>(
+        ["settings"],
+        (old) => old && { ...old, llm_job_slots: slots },
+      ),
+  });
+}
+
 /** The user's access tokens (R8). */
 export const useAccessTokens = () => useQuery({ queryKey: ["access-tokens"], queryFn: api.listAccessTokens });
 

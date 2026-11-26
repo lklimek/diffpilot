@@ -1,5 +1,7 @@
 //! Settings (brief §4.4).
 
+use std::num::NonZeroU16;
+
 use crate::time::Timestamp;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -16,6 +18,10 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub llm_selection: Option<LlmSelection>,
+    /// The payer's concurrent job limit; absent on older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub llm_job_slots: Option<NonZeroU16>,
     /// Tenant usage in the server's local calendar; absent on older responses.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -165,6 +171,14 @@ pub struct LlmSelection {
     pub changed_by: Option<String>,
     /// Time of the last save; null without a personal save.
     pub changed_at: Option<Timestamp>,
+}
+
+/// Request and response of `PUT /api/v1/settings/llm/job-slots`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct LlmJobSlots {
+    /// Maximum concurrent jobs using the authenticated payer's plan.
+    pub slots: NonZeroU16,
 }
 
 /// One model available in this deployment.

@@ -181,6 +181,10 @@ pub(crate) mod tests {
                 assert_eq!(response.status(), StatusCode::OK, "{path}");
                 let body = response.into_body().collect().await.unwrap().to_bytes();
                 let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                if path == "/api/v1/settings" {
+                    assert_eq!(json["llm_job_slots"], 1);
+                    assert!(json["llm_selection"]["changed_by"].is_null());
+                }
                 if path == "/api/v1/settings/dashboard" {
                     assert_eq!(json["settings"]["time_zone"], "Europe/Warsaw");
                     assert_eq!(

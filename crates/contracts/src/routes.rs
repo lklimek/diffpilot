@@ -307,6 +307,13 @@ pub const DELETE_COMMENT: Route = route(
 );
 /// Saves the payer's model and reasoning effort.
 pub const SET_LLM: Route = route("setLlm", Put, "/api/v1/settings/llm", SessionCsrf);
+/// Saves the payer's concurrent job limit.
+pub const SET_LLM_JOB_SLOTS: Route = route(
+    "setLlmJobSlots",
+    Put,
+    "/api/v1/settings/llm/job-slots",
+    SessionCsrf,
+);
 /// Read settings.
 pub const GET_SETTINGS: Route = route("getSettings", Get, "/api/v1/settings", READ);
 /// Frozen assessment method configuration and UTC quota.
@@ -846,6 +853,7 @@ pub const ROUTES: &[Route] = &[
     SET_LANGUAGE,
     SET_CONTROLLED_OWNERS,
     SET_LLM,
+    SET_LLM_JOB_SLOTS,
     SET_ASK_EFFORT,
     GET_REPO_SETTINGS,
     GET_DASHBOARD,

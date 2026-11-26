@@ -79,7 +79,7 @@ const HELP = {
     section: "LLM & usage",
     title: "Model",
     what: "The model used by jobs paid for by your linked plan, including analyses, Ask answers, comment assessments and My work ranking.",
-    when: "Each new job reads the current choice; a running job keeps the one it started with.",
+    when: "Each job reads your current choice when it enters the queue.",
     empty: "The installation's saved model, or Sol 6.1 if it has no saved selection.",
     limits: "One of the listed models.",
     example: "Pick Astra 6 for a hard pull request, then switch back.",
@@ -88,7 +88,7 @@ const HELP = {
     section: "LLM & usage",
     title: "Reasoning effort",
     what: "How much the model reasons in analysis and comment assessment jobs paid for by your linked plan.",
-    when: "Each new analysis job reads it.",
+    when: "Each new analysis and comment assessment job reads it.",
     empty: "The installation's saved effort, or high if it has no saved selection.",
     limits: "Low, medium or high. Higher effort can take longer.",
     example: "Medium is often enough for small pull requests.",
@@ -110,6 +110,16 @@ const HELP = {
     empty: "The installation's saved ranking effort, or low if it has no saved selection.",
     limits: "Low, medium or high.",
     example: "Medium if the ranking reasons look too thin.",
+  },
+  llm_job_slots: {
+    section: "LLM & usage",
+    title: "Concurrent LLM jobs",
+    what: "How many jobs can run at once on your linked plan.",
+    when: "Each claim checks your current limit. Active jobs finish normally when you lower it.",
+    empty: "One slot until you change it.",
+    limits:
+      "A whole number from 1 to 65,535. Your jobs for the same pull request run one at a time, and the server's worker limit also applies.",
+    example: "Use three slots to review three different pull requests at once when the server has capacity.",
   },
   llm_status: {
     section: "LLM & usage",
@@ -416,6 +426,7 @@ export const CONTRACT_HELP: {
 } = {
   settings: {
     llm_selection: "llm_model",
+    llm_job_slots: "llm_job_slots",
     llm_usage: "llm_status",
     llm_status: "llm_status",
     memcan_status: "memcan_status",
