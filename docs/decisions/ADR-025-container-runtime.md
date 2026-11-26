@@ -42,6 +42,18 @@ Old Codex credentials are dropped/recreated empty and plan-only (CCR10); gateway
 A fresh database remains supported. Applied migrations remain append-only; 0030 is still unmerged.
 Database code and transactions remain behind the db repository API.
 
+## v1.5 payer preferences
+
+A model and reasoning effort, Ask effort and dashboard ranking effort belong to the user whose plan
+pays for a job. Migration 0039 adds personal overrides and retains the installation choice as a
+read-only fallback. Built-in defaults apply where neither value exists. Settings writes only the
+authenticated user's requested field, across all their tenant memberships.
+
+Admission snapshots the current effective choice into the queued job. New analyses use the creator,
+explicit analysis retries use the retrying user, Ask uses the asker, and comment assessment uses its
+initiator or selected watcher. Ranking uses the dashboard user. Both jobs of a paired assessment use
+the same payer and selection. A lease or method retry retains its existing job spec.
+
 This supersedes ADR-013 and the unmerged ADR-024 design. It amends ADR-002/003/004/005/017/023 and plan §5.4.
 `runner::provider` and `server::gateway` alone know Codex; gateway may use secrets/config/contracts but not db.
 Runner gains launcher mode and gateway admin access, with no DB or GitHub API client. JobSpec remains

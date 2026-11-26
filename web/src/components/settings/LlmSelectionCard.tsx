@@ -14,7 +14,7 @@ export interface LlmChoiceChanges {
   ranking?: ReasoningEffort;
 }
 
-/** The installation-wide model and efforts, saved together. */
+/** The payer's model and efforts, saved together. */
 export function LlmSelectionCard({
   selection,
   onSave,
@@ -58,7 +58,7 @@ export function LlmSelectionCard({
       <FormRow
         label="Model"
         htmlFor={`${id}-model`}
-        help="The model used by new jobs across this installation."
+        help="The model used by new jobs on your linked plan."
       >
         <select
           id={`${id}-model`}
@@ -135,7 +135,7 @@ export function LlmSelectionCard({
         </p>
       )}
       <div className="grid justify-items-end gap-1">
-        <Tooltip tip="Saves the changed model and efforts for this installation.">
+        <Tooltip tip="Saves your model and effort changes.">
           <button
             type="button"
             aria-disabled={!dirty || action.busy || undefined}

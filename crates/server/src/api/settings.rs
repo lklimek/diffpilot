@@ -13,7 +13,7 @@ use axum::{Json, Router};
 use contracts::api::error::ApiErrorCode;
 use contracts::api::settings::AppInstallation;
 use contracts::api::settings::{
-    ControlledOwners, RepoSettings, SetAskEffortRequest, SetControlledOwnersRequest,
+    ControlledOwners, LlmSelection, RepoSettings, SetAskEffortRequest, SetControlledOwnersRequest,
     SetJudgeEffortRequest, SetLanguageRequest, Settings,
 };
 use contracts::common::RepoRef;
@@ -24,7 +24,7 @@ use contracts::routes::{
 };
 use contracts::time::Timestamp;
 use db::error::DbError;
-use db::repo::settings::{AnalysedRepo, CallFailure, LastCall};
+use db::repo::settings::{AnalysedRepo, CallFailure, LastCall, LlmSelectionUpdate};
 
 use crate::api::error::{ApiErrorSource, ApiFailure};
 use crate::auth::access_tokens::github_read;
@@ -194,25 +194,23 @@ async fn set_llm(
     State(state): State<AppState>,
     SessionCsrf(session): SessionCsrf,
     body: Result<Json<contracts::job::spec::ModelChoice>, JsonRejection>,
-) -> SettingsResult<Json<contracts::api::settings::LlmSelection>> {
+) -> SettingsResult<Json<LlmSelection>> {
     let Json(choice) = body.map_err(failure)?;
     if !crate::model::allowed(&choice) {
         return Err(failure(SettingsApiError::InvalidModel));
     }
-    let user = state
-        .db
-        .users()
-        .get(&session.user_id)
-        .await
-        .map_err(failure)?;
     let (old, saved) = state
         .db
         .settings()
-        .set_llm_selection(&choice, &user.profile.login, Timestamp::now())
+        .set_llm_selection(
+            &session.user_id,
+            LlmSelectionUpdate::Model(choice.clone()),
+            Timestamp::now(),
+        )
         .await
         .map_err(failure)?;
     let old = crate::model::selection(old).current;
-    tracing::info!(login = %user.profile.login, old_model = %old.model, old_effort = ?old.reasoning_effort, new_model = %choice.model, new_effort = ?choice.reasoning_effort, "installation LLM selection changed");
+    tracing::info!(user = %session.user_id, old_model = %old.model, old_effort = ?old.reasoning_effort, new_model = %choice.model, new_effort = ?choice.reasoning_effort, "payer LLM selection changed");
     Ok(Json(crate::model::selection(Some(saved))))
 }
 
@@ -220,58 +218,41 @@ async fn set_ask_effort(
     State(state): State<AppState>,
     SessionCsrf(session): SessionCsrf,
     body: Result<Json<SetAskEffortRequest>, JsonRejection>,
-) -> SettingsResult<Json<contracts::api::settings::LlmSelection>> {
+) -> SettingsResult<Json<LlmSelection>> {
     let Json(request) = body.map_err(failure)?;
-    let user = state
-        .db
-        .users()
-        .get(&session.user_id)
-        .await
-        .map_err(failure)?;
-    let default_choice = crate::model::selection(None).current;
     let (old, saved) = state
         .db
         .settings()
-        .set_ask_effort(
-            request.reasoning_effort,
-            &default_choice,
-            &user.profile.login,
+        .set_llm_selection(
+            &session.user_id,
+            LlmSelectionUpdate::AskEffort(request.reasoning_effort),
             Timestamp::now(),
         )
         .await
         .map_err(failure)?;
     let old = crate::model::selection(old).ask_effort;
-    tracing::info!(login = %user.profile.login, ?old, new = ?request.reasoning_effort, "installation Ask effort changed");
+    tracing::info!(user = %session.user_id, ?old, new = ?request.reasoning_effort, "payer Ask effort changed");
     Ok(Json(crate::model::selection(Some(saved))))
 }
 
-/// R7: the installation-wide dashboard ranking effort; the model choice and other efforts are kept.
 async fn set_judge_effort(
     State(state): State<AppState>,
     SessionCsrf(session): SessionCsrf,
     body: Result<Json<SetJudgeEffortRequest>, JsonRejection>,
-) -> SettingsResult<Json<contracts::api::settings::LlmSelection>> {
+) -> SettingsResult<Json<LlmSelection>> {
     let Json(request) = body.map_err(failure)?;
-    let user = state
-        .db
-        .users()
-        .get(&session.user_id)
-        .await
-        .map_err(failure)?;
-    let default_choice = crate::model::selection(None).current;
     let (old, saved) = state
         .db
         .settings()
-        .set_judge_effort(
-            request.reasoning_effort,
-            &default_choice,
-            &user.profile.login,
+        .set_llm_selection(
+            &session.user_id,
+            LlmSelectionUpdate::JudgeEffort(request.reasoning_effort),
             Timestamp::now(),
         )
         .await
         .map_err(failure)?;
     let old = crate::model::selection(old).judge_effort;
-    tracing::info!(login = %user.profile.login, ?old, new = ?request.reasoning_effort, "installation dashboard ranking effort changed");
+    tracing::info!(user = %session.user_id, ?old, new = ?request.reasoning_effort, "payer dashboard ranking effort changed");
     Ok(Json(crate::model::selection(Some(saved))))
 }
 
@@ -314,7 +295,7 @@ async fn settings(state: &AppState, session: &Session) -> Result<Settings, Setti
         .await?;
     Ok(Settings {
         llm_selection: Some(crate::model::selection(
-            state.db.settings().llm_selection().await?,
+            state.db.settings().llm_selection(&session.user_id).await?,
         )),
         llm_usage: Some(
             state
@@ -511,9 +492,6 @@ pub(super) mod tests {
 
         let state = AppState::with_queue(config, db);
         seed_analysis(&state.db).await.expect("analysis");
-        db::repo::analyses::testing::seed_payer(&state.db, "codex-1")
-            .await
-            .unwrap();
         let lock = lock_user("u1").await;
         let grant = TokenGrant {
             access_token: SecretString::from(ACCESS),
@@ -634,6 +612,9 @@ pub(super) mod tests {
     #[tokio::test]
     async fn llm_status_is_private_to_the_signed_in_payer() {
         let h = harness().await;
+        db::repo::analyses::testing::seed_payer(&h.state.db, "codex-1")
+            .await
+            .unwrap();
         let credentials = h.state.db.llm_credentials();
         crate::test_support::link_payer(&h.state.db, DEFAULT_TENANT, "codex-1").await;
         credentials
@@ -1171,7 +1152,46 @@ pub(super) mod tests {
         }
     }
     #[tokio::test]
-    async fn installation_model_choice_validates_csrf_and_records_the_changer() {
+    async fn llm_preferences_are_private_to_the_authenticated_payer() {
+        let h = harness().await;
+        let colleague = crate::test_support::other_user_cookie(&h.state).await;
+        let choice = json!({"model": "gpt-6-astra", "reasoning_effort": "low"});
+        let (status, saved) = h
+            .send(
+                "PUT",
+                SET_LLM.path,
+                Some(&h.cookie),
+                true,
+                Some(choice.clone()),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{saved}");
+
+        let (status, saved) = h
+            .send(
+                "PUT",
+                SET_ASK_EFFORT.path,
+                Some(&colleague),
+                true,
+                Some(json!({"reasoning_effort": "high"})),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{saved}");
+        assert_eq!(
+            saved["current"],
+            json!({"model": "gpt-6.1-sol", "reasoning_effort": "high"})
+        );
+        assert_eq!(saved["ask_effort"], "high");
+        assert_eq!(saved["changed_by"], "colleague");
+
+        let (_, settings) = h.get(GET_SETTINGS.path).await;
+        assert_eq!(settings["llm_selection"]["current"], choice);
+        assert_eq!(settings["llm_selection"]["ask_effort"], "medium");
+        assert_eq!(settings["llm_selection"]["changed_by"], "lklimek");
+    }
+
+    #[tokio::test]
+    async fn payer_model_choice_validates_csrf_and_records_the_changer() {
         let h = harness().await;
         let (_, initial) = h.get(GET_SETTINGS.path).await;
         assert_eq!(initial["llm_selection"]["current"]["model"], "gpt-6.1-sol");
@@ -1204,7 +1224,7 @@ pub(super) mod tests {
         assert!(saved["changed_at"].is_string());
         let (_, read) = h.get(GET_SETTINGS.path).await;
         assert_eq!(read["llm_selection"], saved);
-        assert!(logs.text().contains("installation LLM selection changed"));
+        assert!(logs.text().contains("payer LLM selection changed"));
     }
 
     #[tokio::test]
@@ -1244,7 +1264,7 @@ pub(super) mod tests {
         assert_eq!(saved["changed_by"], "lklimek");
         let (_, read) = h.get(GET_SETTINGS.path).await;
         assert_eq!(read["llm_selection"], saved);
-        assert!(logs.text().contains("installation Ask effort changed"));
+        assert!(logs.text().contains("payer Ask effort changed"));
     }
 
     #[tokio::test]
@@ -1287,7 +1307,7 @@ pub(super) mod tests {
         assert_eq!(read["llm_selection"], saved);
         assert!(
             logs.text()
-                .contains("installation dashboard ranking effort changed")
+                .contains("payer dashboard ranking effort changed")
         );
     }
 }

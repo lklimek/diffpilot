@@ -51,7 +51,7 @@ use super::refresh::{self, Scope};
 use super::score::{Freshness, ScoreRules};
 use super::snapshot::{self, Snapshot};
 use crate::jobs::executor::{ExecutorError, JobHandle, JobRequest, JobUpdate};
-use crate::model::{ModelContext, select_model};
+use crate::model::{ModelContext, select_model_for_payer};
 use crate::state::AppState;
 
 /// Version of the judge prompt and output schema; a mismatch makes a stored judgement stale.
@@ -664,7 +664,7 @@ impl<'a> Ranking<'a> {
                 crate::jobs::payer::PayerError::Missing => RankError::Unusable,
                 crate::jobs::payer::PayerError::Db(error) => RankError::Db(error),
             })?;
-        let saved = self.state.db.settings().llm_selection().await?;
+        let payer = contracts::ids::UserId(self.run.scope.user_id.clone());
         let spec = JobSpec {
             job_id,
             attempt: 0,
@@ -677,9 +677,15 @@ impl<'a> Ranking<'a> {
             flow_file: None,
             assessment: None,
             pr_data: None,
-            model: select_model(JobKind::JudgeWork, &ModelContext::default(), saved.as_ref()),
+            model: select_model_for_payer(
+                &self.state.db,
+                &payer,
+                JobKind::JudgeWork,
+                &ModelContext::default(),
+            )
+            .await?,
             limits: JobLimits::default(),
-            payer: contracts::ids::UserId(self.run.scope.user_id.clone()),
+            payer,
             session: None,
             working_session: None,
             context_pack: None,

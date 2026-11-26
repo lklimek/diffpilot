@@ -12,7 +12,7 @@ use crate::job::result::LlmCallOutcome;
 /// Response of `GET /api/v1/settings`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct Settings {
-    /// Installation-wide model selection; absent on older servers.
+    /// The payer's effective model and effort selection; absent on older servers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub llm_selection: Option<LlmSelection>,
@@ -142,28 +142,28 @@ pub enum MemcanState {
     NotReachable,
 }
 
-/// Allowed models and the installation-wide choice for newly submitted jobs.
+/// Allowed models and this payer's effective choice for newly submitted jobs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct LlmSelection {
     /// Fixed server-supported model ids and labels.
     pub models: Vec<LlmModelOption>,
     /// Allowed reasoning efforts.
     pub efforts: Vec<crate::job::spec::ReasoningEffort>,
-    /// Current choice, or the server default before the first save.
+    /// Current choice, falling back to the installation choice or built-in default.
     pub current: crate::job::spec::ModelChoice,
     /// Reasoning effort of the dashboard ranking (`judge_work`; default low). Optional on the wire; absent on
     /// older servers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub judge_effort: Option<crate::job::spec::ReasoningEffort>,
-    /// Reasoning effort of Ask jobs (default medium); every other job uses `current`. Optional on the wire;
+    /// Reasoning effort of Ask jobs (default medium). Optional on the wire;
     /// absent on older servers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub ask_effort: Option<crate::job::spec::ReasoningEffort>,
-    /// Login of the last editor of the model, effort, ranking effort or Ask effort; null for the default.
+    /// Login of the last editor of the model, effort, ranking effort or Ask effort; null without a personal save.
     pub changed_by: Option<String>,
-    /// Time of the last save; null for the default.
+    /// Time of the last save; null without a personal save.
     pub changed_at: Option<Timestamp>,
 }
 

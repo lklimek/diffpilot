@@ -103,7 +103,9 @@ and “new” means created empty. Settings stored outside SQLite are untouched.
 
 Jobs store payer and PR container identity; partial unique indexes enforce one claimed/running job per
 (PR,payer), or per payer for judge_work. Target triggers keep a job's explicit PR equal to its analysis/pass PR.
-The two shapes are independent: a payer's judge worker and PR worker may each own a job.
+The shapes identify separate workers. Each queued job snapshots its payer's model and job-specific
+effort under ADR-025; paired methods share one selection. Migration 0039 stores personal overrides
+independently of tenant membership. The installation row is a read-only fallback.
 `analytic_threads` is keyed by (PR,user), and last-context generation must equal its analytic generation.
 Working sessions are keyed by (PR,user,kind), preserving separate analytic Ask and review Ask threads.
 Migration 0030 cleans and rebuilds working_sessions as well. Working preflight is bound to seed, generation and immutable kind; repository acknowledgement additionally

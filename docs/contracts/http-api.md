@@ -52,8 +52,8 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
 | GET | `/api/v1/analyses` | read | `MyAnalysesQuery` (`limit` 1–100, default 20) | `MyAnalyses`: the reader's own analyses (requested by them, this tenant), the latest per pull request, newest first; title, stored status and request time only (Recent reviews) |
 | GET | `/api/v1/analyses/{id}` | read | – | `AnalysisSummary` |
 | GET | `/api/v1/analyses/{id}/events` | read | – | SSE (`sse-events.md`) |
-| PUT | `/api/v1/settings/llm` | session_csrf | `ModelChoice` | `LlmSelection` |
-| PUT | `/api/v1/settings/llm/ask-effort` | session_csrf | `SetAskEffortRequest` | `LlmSelection` (Ask jobs' reasoning effort, default `medium`; every other job uses `current`; `LlmSelection.ask_effort` reports it; `changed_by`/`changed_at` are shared with the model choice) |
+| PUT | `/api/v1/settings/llm` | session_csrf | `ModelChoice` | Authenticated payer's `LlmSelection` |
+| PUT | `/api/v1/settings/llm/ask-effort` | session_csrf | `SetAskEffortRequest` | Authenticated payer's `LlmSelection` with updated `ask_effort` |
 | POST | `/api/v1/analyses/{id}/pause` | session_csrf | – | `AnalysisSummary` |
 | POST | `/api/v1/analyses/{id}/resume` | session_csrf | – | `AnalysisSummary` |
 | POST | `/api/v1/analyses/{id}/cancel` | session_csrf | – | `AnalysisSummary` |
@@ -280,6 +280,10 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
 - **Controlled owners** (R16, v1.2). Replaces the installation-wide list of controlled GitHub owners (case-insensitive,
   deduplicated, sorted); `Settings.controlled_owners` reports it with who changed it and when. The pull request's
   owner is controlled whether listed or not.
+- **LLM selection** (v1.5). Settings reads the authenticated payer's effective model, reasoning effort, Ask
+  effort and ranking effort. Each unset preference falls back to the installation's pre-v1.5 selection and
+  then to Sol 6.1/high, Ask medium and ranking low. `changed_by` and `changed_at` report only a personal
+  save. Each PUT changes only its own field for the authenticated payer and returns their effective selection.
 - **MemCan status**: Settings and Tour PR-context facts expose `memcan_status {state, last_success_at}`,
   separate from `project_profile.memcan` (the stored analysis lookup). Read status never calls MemCan.
   `not_checked` means configured but no completed attempt since startup; `reachable` means the last attempt
@@ -760,7 +764,7 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
   most 100 rows): a GitHub login (unique, any case) and the text "Copy for Slack" writes instead of `@login` (1–80
   characters as typed, no control character, no white space at either end; absent in a request: an empty table).
   My work reads it with R6 only for Copy for Slack (plan K19). R6b stores the browser's IANA zone (sent once on the first dashboard visit
-  while none is stored). R7 sets the installation-wide ranking effort (`low` default, `medium`, `high`);
+  while none is stored). R7 sets the authenticated payer's ranking effort (`low` default, `medium`, `high`);
   `LlmSelection.judge_effort` reports it, and `changed_by`/`changed_at` are shared with the model choice.
 - **Access tokens (R8–R10, ADR-019).** Token `srp_<id>_<secret>`: `id` 8 base62 characters, secret 32 random bytes
   base64url. Only `CreatedAccessToken.token` (R9's 201 body) ever carries the secret; no other response, log, event

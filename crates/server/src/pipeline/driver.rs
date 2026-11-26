@@ -41,7 +41,7 @@ use crate::github::oauth::endpoint;
 use crate::jobs::executor::{ExecutorError, JobHandle, JobRequest, JobUpdate};
 use crate::memcan::calibration::{CalibrationDirection, CalibrationExample, calibration_examples};
 use crate::memcan::profile::{self, ProfileLookup};
-use crate::model::{ModelContext, select_model};
+use crate::model::{ModelContext, select_model_for_payer};
 use crate::prompts::{
     self, FlowInput, JobContext, PlanBatch, PlanInput, PrContextInput, Profile, PromptError,
     PromptThread, RepairInput, RepairOf,
@@ -1035,19 +1035,15 @@ impl Driver<'_> {
         let kind = stage.kind();
         let pr = &self.summary.pr;
         let changed_lines = changed_line_count(&self.facts.files);
+        let owner = self.state.db.analyses().get(self.analysis).await?;
+        let payer = contracts::ids::UserId(owner.payer_id);
         let spec = JobSpec {
             job_id: JobId::new_random(),
             attempt: 0,
             kind,
             target: JobTarget::PullRequest(PullRequestTarget {
                 analysis_id: self.analysis,
-                pull_request_id: self
-                    .state
-                    .db
-                    .analyses()
-                    .get(self.analysis)
-                    .await?
-                    .pull_request_id,
+                pull_request_id: owner.pull_request_id,
                 repo: RepoCheckout {
                     clone_url: endpoint(
                         &self.state.config.github.clone_url,
@@ -1074,15 +1070,15 @@ impl Driver<'_> {
             },
             assessment: None,
             pr_data: None,
-            model: select_model(
+            model: select_model_for_payer(
+                &self.state.db,
+                &payer,
                 kind,
                 &ModelContext { changed_lines },
-                self.state.db.settings().llm_selection().await?.as_ref(),
-            ),
+            )
+            .await?,
             limits: JobLimits::default(),
-            payer: contracts::ids::UserId(
-                self.state.db.analyses().get(self.analysis).await?.payer_id,
-            ),
+            payer,
             session: None,
             // Built at claim from the results stored then (`context::StoredPacks`).
             working_session: None,

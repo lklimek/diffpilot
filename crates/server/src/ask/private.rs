@@ -17,7 +17,7 @@ use super::job::FollowError;
 use crate::github::oauth::endpoint;
 use crate::jobs::claim::ContextPackError;
 use crate::jobs::executor::{JobHandle, JobRequest};
-use crate::model::{ModelContext, select_model};
+use crate::model::{ModelContext, select_model_for_payer};
 use crate::prompts::{self, ThreadQuestion};
 use crate::review_loop::assess::verify_item;
 use crate::state::AppState;
@@ -45,6 +45,7 @@ pub(super) async fn submit(
             answer: r.question.answer.as_ref().map(|a| a.answer.as_str()),
         })
         .collect();
+    let payer = UserId(record.user_id.clone());
     let spec = JobSpec {
         job_id: JobId::new_random(),
         attempt: 0,
@@ -72,13 +73,9 @@ pub(super) async fn submit(
         flow_file: None,
         assessment: None,
         pr_data: None,
-        model: select_model(
-            JobKind::Ask,
-            &ModelContext::default(),
-            db.settings().llm_selection().await?.as_ref(),
-        ),
+        model: select_model_for_payer(db, &payer, JobKind::Ask, &ModelContext::default()).await?,
         limits: JobLimits::default(),
-        payer: UserId(record.user_id.clone()),
+        payer,
         session: None,
         working_session: None,
         context_pack: None,

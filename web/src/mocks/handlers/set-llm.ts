@@ -3,11 +3,11 @@ import type { LlmSelection, ModelChoice, SetAskEffortRequest } from "../../api/g
 import { SETTINGS, scenario } from "../scenarios";
 import { apiError, route } from "./common";
 export let savedSelection: LlmSelection | undefined;
-/** Clears the installation choice between mock tests. */
+/** Clears the signed-in user's choices between mock tests. */
 export function resetSelection() {
   savedSelection = undefined;
 }
-/** Shared mock installation selection. */
+/** The signed-in user's model selection. */
 export const setLlm = route("setLlm", async ({ request }) => {
   if (scenario().llmSaveFails) return apiError(503, "unavailable", "Try again later.");
   const choice = (await request.json()) as ModelChoice;
@@ -25,7 +25,7 @@ export const setLlm = route("setLlm", async ({ request }) => {
   };
   return HttpResponse.json(savedSelection);
 });
-/** `PUT /api/v1/settings/llm/ask-effort`: kept with the shared mock selection. */
+/** `PUT /api/v1/settings/llm/ask-effort`: kept with the signed-in user's selection. */
 const saveEffort = (name: "setAskEffort" | "setJudgeEffort", field: "ask_effort" | "judge_effort") =>
   route(name, async ({ request }) => {
     if (scenario().llmSaveFails) return apiError(503, "unavailable", "Try again later.");

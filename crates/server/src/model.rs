@@ -1,7 +1,10 @@
-//! Installation model selection, applied at submission through one plain Rust function.
+//! Payer model selection, applied at submission through one plain Rust function.
 
 use contracts::agent::JobKind;
+use contracts::ids::UserId;
 use contracts::job::spec::{ModelChoice, ReasoningEffort};
+use db::error::DbError;
+use db::repo::Db;
 use db::repo::settings::{DEFAULT_ASK_EFFORT, DEFAULT_JUDGE_EFFORT, StoredLlmSelection};
 
 /// Codex model id of "Sol" (spike S1a).
@@ -14,7 +17,7 @@ pub struct ModelContext {
     pub changed_lines: u32,
 }
 
-/// The saved installation choice (Sol at high effort before any save), also for `verify_comments` jobs; Ask jobs use
+/// The payer's effective choice (Sol at high effort by default), also for `verify_comments` jobs; Ask jobs use
 /// the saved Ask effort instead ([`DEFAULT_ASK_EFFORT`] before any save) and dashboard ranking jobs the saved ranking
 /// effort ([`DEFAULT_JUDGE_EFFORT`] before any save).
 pub fn select_model(
@@ -24,7 +27,7 @@ pub fn select_model(
 ) -> ModelChoice {
     let _ = context;
     let choice = saved
-        .map(|saved| &saved.choice)
+        .and_then(|saved| saved.choice.as_ref())
         .filter(|choice| allowed(choice))
         .cloned()
         .unwrap_or_else(|| ModelChoice {
@@ -33,19 +36,34 @@ pub fn select_model(
         });
     match kind {
         JobKind::Ask => ModelChoice {
-            reasoning_effort: saved.map_or(DEFAULT_ASK_EFFORT, |saved| saved.ask_effort),
+            reasoning_effort: saved
+                .and_then(|saved| saved.ask_effort)
+                .unwrap_or(DEFAULT_ASK_EFFORT),
             ..choice
         },
         JobKind::JudgeWork => ModelChoice {
-            reasoning_effort: saved.map_or(DEFAULT_JUDGE_EFFORT, |saved| saved.judge_effort),
+            reasoning_effort: saved
+                .and_then(|saved| saved.judge_effort)
+                .unwrap_or(DEFAULT_JUDGE_EFFORT),
             ..choice
         },
-        // `verify_comments` uses the installation choice (plan §4.2; no own setting); at medium effort it misread
+        // `verify_comments` uses the analysis effort (plan §4.2; no own setting); at medium effort it misread
         // pre-existing code (spike S13-3).
         JobKind::Plan | JobKind::PrContext | JobKind::AnalyseFlow | JobKind::VerifyComments => {
             choice
         }
     }
+}
+
+/// Resolves effective preferences for the user whose linked plan pays for this job.
+pub async fn select_model_for_payer(
+    db: &Db,
+    payer: &UserId,
+    kind: JobKind,
+    context: &ModelContext,
+) -> Result<ModelChoice, DbError> {
+    let saved = db.settings().llm_selection(&payer.0).await?;
+    Ok(select_model(kind, context, saved.as_ref()))
 }
 
 /// Supported catalog: the Codex spike S1a models plus the 6.2 models of Codex 0.171 (ADR-002).
@@ -83,11 +101,17 @@ pub fn selection(saved: Option<StoredLlmSelection>) -> contracts::api::settings:
         judge_effort: Some(
             saved
                 .as_ref()
-                .map_or(DEFAULT_JUDGE_EFFORT, |s| s.judge_effort),
+                .and_then(|s| s.judge_effort)
+                .unwrap_or(DEFAULT_JUDGE_EFFORT),
         ),
-        ask_effort: Some(saved.as_ref().map_or(DEFAULT_ASK_EFFORT, |s| s.ask_effort)),
-        changed_by: saved.as_ref().map(|s| s.changed_by.clone()),
-        changed_at: saved.map(|s| s.changed_at),
+        ask_effort: Some(
+            saved
+                .as_ref()
+                .and_then(|s| s.ask_effort)
+                .unwrap_or(DEFAULT_ASK_EFFORT),
+        ),
+        changed_by: saved.as_ref().and_then(|s| s.changed_by.clone()),
+        changed_at: saved.and_then(|s| s.changed_at),
     }
 }
 
@@ -99,14 +123,14 @@ mod tests {
 
     fn saved(model: &str, effort: ReasoningEffort, ask: ReasoningEffort) -> StoredLlmSelection {
         StoredLlmSelection {
-            choice: ModelChoice {
+            choice: Some(ModelChoice {
                 model: model.into(),
                 reasoning_effort: effort,
-            },
-            judge_effort: ReasoningEffort::Medium,
-            ask_effort: ask,
-            changed_by: "alice".into(),
-            changed_at: Timestamp::now(),
+            }),
+            judge_effort: Some(ReasoningEffort::Medium),
+            ask_effort: Some(ask),
+            changed_by: Some("alice".into()),
+            changed_at: Some(Timestamp::now()),
         }
     }
 
@@ -131,9 +155,9 @@ mod tests {
         }
     }
 
-    /// `verify_comments` follows the installation model and effort, not the Ask or ranking effort (plan §4.2).
+    /// `verify_comments` uses the payer's analysis model and effort.
     #[test]
-    fn verify_comments_uses_the_installation_choice() {
+    fn verify_comments_uses_the_analysis_choice() {
         let saved = saved("gpt-6-astra", ReasoningEffort::Medium, ReasoningEffort::Low);
         assert_eq!(
             select_model(
@@ -141,7 +165,7 @@ mod tests {
                 &ModelContext::default(),
                 Some(&saved)
             ),
-            saved.choice
+            saved.choice.unwrap()
         );
         assert_eq!(
             select_model(JobKind::VerifyComments, &ModelContext::default(), None).reasoning_effort,
@@ -166,7 +190,7 @@ mod tests {
     }
 
     #[test]
-    fn ask_uses_the_saved_ask_effort_and_others_the_installation_choice() {
+    fn ask_uses_the_saved_ask_effort_and_others_the_analysis_choice() {
         let saved = saved("gpt-6-astra", ReasoningEffort::High, ReasoningEffort::Low);
         for kind in JobKind::ALL {
             let expected = match kind {
@@ -184,10 +208,10 @@ mod tests {
             );
         }
         let unlisted = StoredLlmSelection {
-            choice: ModelChoice {
+            choice: Some(ModelChoice {
                 model: "unlisted".into(),
                 reasoning_effort: ReasoningEffort::Low,
-            },
+            }),
             ..saved
         };
         assert_eq!(
@@ -206,7 +230,7 @@ mod tests {
             let saved = saved(id, ReasoningEffort::Medium, ReasoningEffort::Low);
             assert_eq!(
                 select_model(JobKind::Plan, &ModelContext::default(), Some(&saved)),
-                saved.choice,
+                saved.choice.unwrap(),
                 "{id}"
             );
             assert!(

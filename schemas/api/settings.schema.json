@@ -5,7 +5,7 @@
   "type": "object",
   "properties": {
     "llm_selection": {
-      "description": "Installation-wide model selection; absent on older servers.",
+      "description": "The payer's effective model and effort selection; absent on older servers.",
       "anyOf": [
         {
           "$ref": "#/$defs/LlmSelection"
@@ -87,7 +87,7 @@
   ],
   "$defs": {
     "LlmSelection": {
-      "description": "Allowed models and the installation-wide choice for newly submitted jobs.",
+      "description": "Allowed models and this payer's effective choice for newly submitted jobs.",
       "type": "object",
       "properties": {
         "models": {
@@ -105,7 +105,7 @@
           }
         },
         "current": {
-          "description": "Current choice, or the server default before the first save.",
+          "description": "Current choice, falling back to the installation choice or built-in default.",
           "$ref": "#/$defs/ModelChoice"
         },
         "judge_effort": {
@@ -120,7 +120,7 @@
           ]
         },
         "ask_effort": {
-          "description": "Reasoning effort of Ask jobs (default medium); every other job uses `current`. Optional on the wire;\nabsent on older servers.",
+          "description": "Reasoning effort of Ask jobs (default medium). Optional on the wire;\nabsent on older servers.",
           "anyOf": [
             {
               "$ref": "#/$defs/ReasoningEffort"
@@ -131,14 +131,14 @@
           ]
         },
         "changed_by": {
-          "description": "Login of the last editor of the model, effort, ranking effort or Ask effort; null for the default.",
+          "description": "Login of the last editor of the model, effort, ranking effort or Ask effort; null without a personal save.",
           "type": [
             "string",
             "null"
           ]
         },
         "changed_at": {
-          "description": "Time of the last save; null for the default.",
+          "description": "Time of the last save; null without a personal save.",
           "type": [
             "string",
             "null"

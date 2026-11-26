@@ -151,11 +151,18 @@ pub(crate) mod tests {
             if !populated {
                 continue;
             }
-            let selection = state.db.settings().llm_selection().await.unwrap().unwrap();
-            assert_eq!(selection.choice.model, "gpt-6.2-sol");
-            assert_eq!(selection.choice.reasoning_effort, ReasoningEffort::Low);
-            assert_eq!(selection.ask_effort, ReasoningEffort::High);
-            assert_eq!(selection.judge_effort, ReasoningEffort::High);
+            let selection = state
+                .db
+                .settings()
+                .llm_selection("u1")
+                .await
+                .unwrap()
+                .unwrap();
+            let choice = selection.choice.unwrap();
+            assert_eq!(choice.model, "gpt-6.2-sol");
+            assert_eq!(choice.reasoning_effort, ReasoningEffort::Low);
+            assert_eq!(selection.ask_effort, Some(ReasoningEffort::High));
+            assert_eq!(selection.judge_effort, Some(ReasoningEffort::High));
             for path in [
                 "/api/v1/me",
                 "/api/v1/settings",

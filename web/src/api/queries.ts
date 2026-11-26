@@ -477,7 +477,7 @@ export function useAnalysisLive(id: AnalysisId): AnalysisLive {
   return live.id === id ? live : { reconnecting: false };
 }
 
-/** Save the shared installation model and refresh its audit details. */
+/** Save the payer's model and refresh its audit details. */
 export function useSetLlm() {
   const client = useQueryClient();
   return useMutation({
@@ -505,7 +505,7 @@ export function useSaveDashboardSettings() {
     });
 }
 
-/** Saves the installation-wide Ask effort and refreshes its audit details. */
+/** Saves the payer's Ask effort and refreshes its audit details. */
 export function useSetAskEffort() {
   const client = useQueryClient();
   return useMutation({
@@ -533,7 +533,7 @@ export function useSetControlledOwners() {
   });
 }
 
-/** Saves the installation-wide ranking effort and refreshes its audit details. */
+/** Saves the payer's ranking effort and refreshes its audit details. */
 export function useSetJudgeEffort() {
   const client = useQueryClient();
   return useMutation({

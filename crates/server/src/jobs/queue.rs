@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use std::time::Duration;
 
 use contracts::ids::{AnalysisId, JobId, PassId, RefreshId};
-use contracts::job::spec::JobTarget;
+use contracts::job::spec::{JobSpec, JobTarget};
 use contracts::job::state::JobState;
 use contracts::time::Timestamp;
 use db::error::DbError;
@@ -36,6 +36,17 @@ impl QueueExecutor {
 }
 
 impl QueueExecutor {
+    async fn apply_payer_selection(&self, spec: &mut JobSpec) -> Result<(), DbError> {
+        spec.model = crate::model::select_model_for_payer(
+            &self.db,
+            &spec.payer,
+            spec.kind,
+            &crate::model::ModelContext::default(),
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Enqueues a payer-owned PR Ask once per question, independently of analysis and assessment passes.
     async fn submit_private_ask(&self, request: JobRequest) -> Result<JobHandle, ExecutorError> {
         let JobStage::Ask(question) = request.stage else {
@@ -56,12 +67,7 @@ impl QueueExecutor {
             return Ok(handle);
         }
         let mut spec = request.spec;
-        let saved = self.db.settings().llm_selection().await?;
-        spec.model = crate::model::select_model(
-            spec.kind,
-            &crate::model::ModelContext::default(),
-            saved.as_ref(),
-        );
+        self.apply_payer_selection(&mut spec).await?;
         match self
             .db
             .jobs()
@@ -108,12 +114,7 @@ impl QueueExecutor {
             stage: request.stage,
             generation,
         };
-        let saved = self.db.settings().llm_selection().await?;
-        job.spec.model = crate::model::select_model(
-            job.spec.kind,
-            &crate::model::ModelContext::default(),
-            saved.as_ref(),
-        );
+        self.apply_payer_selection(&mut job.spec).await?;
         match self.db.jobs().enqueue_linked(job, Timestamp::now()).await {
             Ok(job) => Ok(JobHandle { job_id: job.id }),
             Err(DbError::Conflict) => current().await?.ok_or(ExecutorError::Db(DbError::Conflict)),
@@ -149,12 +150,7 @@ impl QueueExecutor {
             stage: request.stage,
             generation,
         };
-        let saved = self.db.settings().llm_selection().await?;
-        job.spec.model = crate::model::select_model(
-            job.spec.kind,
-            &crate::model::ModelContext::default(),
-            saved.as_ref(),
-        );
+        self.apply_payer_selection(&mut job.spec).await?;
         match self.db.jobs().enqueue(job, Timestamp::now()).await {
             Ok(job) => Ok(JobHandle { job_id: job.id }),
             Err(DbError::Conflict) => current().await?.ok_or(ExecutorError::Db(DbError::Conflict)),
@@ -241,12 +237,7 @@ impl JobExecutor for QueueExecutor {
                         if !matches!(stage, JobStage::Ask(_)) {
                             job.spec.payer = contracts::ids::UserId(current.payer_id);
                         }
-                        let saved = self.db.settings().llm_selection().await?;
-                        job.spec.model = crate::model::select_model(
-                            job.spec.kind,
-                            &crate::model::ModelContext::default(),
-                            saved.as_ref(),
-                        );
+                        self.apply_payer_selection(&mut job.spec).await?;
                         match self.db.jobs().enqueue_linked(job, Timestamp::now()).await {
                             Ok(job) => Ok(Some(JobHandle { job_id: job.id })),
                             Err(DbError::Conflict) => self
@@ -672,12 +663,27 @@ mod tests {
 
     #[tokio::test]
     async fn latest_retry_payer_overrides_an_analytic_request_prepared_before_retry() {
+        use contracts::job::spec::{ModelChoice, ReasoningEffort};
+        use db::repo::settings::LlmSelectionUpdate;
+
         let (db, executor, analysis) = setup().await;
         let prepared = request(analysis, "f1");
         db::repo::analyses::testing::seed_payer(&db, "u2")
             .await
             .unwrap();
         crate::test_support::link_payer(&db, db::repo::DEFAULT_TENANT, "u2").await;
+        let retry_choice = ModelChoice {
+            model: "gpt-6.2-astra".to_owned(),
+            reasoning_effort: ReasoningEffort::Low,
+        };
+        db.settings()
+            .set_llm_selection(
+                "u2",
+                LlmSelectionUpdate::Model(retry_choice.clone()),
+                Timestamp::now(),
+            )
+            .await
+            .unwrap();
         fail_analysis(&db, analysis).await;
         assert!(
             db.analyses()
@@ -686,7 +692,9 @@ mod tests {
                 .unwrap()
         );
         let job = executor.submit(prepared).await.unwrap();
-        assert_eq!(db.jobs().get(job.job_id).await.unwrap().spec.payer.0, "u2");
+        let spec = db.jobs().get(job.job_id).await.unwrap().spec;
+        assert_eq!(spec.payer.0, "u2");
+        assert_eq!(spec.model, retry_choice);
     }
 
     #[tokio::test]

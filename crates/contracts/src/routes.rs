@@ -305,7 +305,7 @@ pub const DELETE_COMMENT: Route = route(
     "/api/v1/analyses/{id}/pending-review/comments/{comment_id}",
     SessionCsrf,
 );
-/// Saves the installation model and reasoning effort.
+/// Saves the payer's model and reasoning effort.
 pub const SET_LLM: Route = route("setLlm", Put, "/api/v1/settings/llm", SessionCsrf);
 /// Read settings.
 pub const GET_SETTINGS: Route = route("getSettings", Get, "/api/v1/settings", READ);
@@ -486,14 +486,14 @@ pub const SET_DASHBOARD_TIME_ZONE: Route = route(
     "/api/v1/settings/dashboard/time-zone",
     SessionCsrf,
 );
-/// Saves the installation-wide reasoning effort of Ask jobs.
+/// Saves the payer's reasoning effort for Ask jobs.
 pub const SET_ASK_EFFORT: Route = route(
     "setAskEffort",
     Put,
     "/api/v1/settings/llm/ask-effort",
     SessionCsrf,
 );
-/// R7: saves the installation-wide reasoning effort of the dashboard ranking.
+/// R7: saves the payer's reasoning effort for dashboard ranking.
 pub const SET_JUDGE_EFFORT: Route = route(
     "setJudgeEffort",
     Put,

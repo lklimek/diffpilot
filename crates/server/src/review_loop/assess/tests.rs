@@ -268,6 +268,20 @@ async fn paired_pass_freezes_head_config_and_primary_effects() {
     let f = fixture(HEAD).await;
     let item = item(&f.state, "T1", "src/rpc/client.rs", (40, 43)).await;
     let payer = contracts::ids::UserId("u1".into());
+    let model = contracts::job::spec::ModelChoice {
+        model: "gpt-6.2-astra".into(),
+        reasoning_effort: contracts::job::spec::ReasoningEffort::Low,
+    };
+    f.state
+        .db
+        .settings()
+        .set_llm_selection(
+            &payer.0,
+            db::repo::settings::LlmSelectionUpdate::Model(model.clone()),
+            Timestamp::now(),
+        )
+        .await
+        .unwrap();
     f.state
         .db
         .assessments()
@@ -296,6 +310,7 @@ async fn paired_pass_freezes_head_config_and_primary_effects() {
         .await
         .unwrap();
     assert!(frozen.paired);
+    assert_eq!(frozen.input.model, model);
     assert_eq!(frozen.config.primary_method, AssessmentMethod::ClaudiusHost);
     assert_eq!(
         f.state
@@ -342,6 +357,7 @@ async fn paired_pass_freezes_head_config_and_primary_effects() {
         };
         assert_eq!(target.repo.head_sha.0, HEAD);
         assert_eq!(spec.spec.model, frozen.input.model);
+        assert_eq!(spec.spec.payer, payer);
     }
     let now = Timestamp::now();
     let first = f
