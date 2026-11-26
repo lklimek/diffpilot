@@ -7,6 +7,7 @@ use contracts::agent::pr_data::{PrData, PrDataItem, StandingDecision};
 use contracts::agent::verify_comments::VerifyCommentsInput;
 use contracts::api::review_loop::{CommentItemKind, DecisionTarget};
 use contracts::assessment::AssessmentPass;
+use contracts::common::LlmLanguage;
 use contracts::ids::PassId;
 use db::repo::review_loop::{ItemRecord, SentItem};
 use serde::{Deserialize, Serialize};
@@ -15,6 +16,8 @@ use tokio::io::AsyncWriteExt;
 #[derive(Serialize, Deserialize)]
 pub(super) struct Frozen {
     pub data: PrData,
+    #[serde(default)]
+    pub language: Option<LlmLanguage>,
     #[serde(default)]
     pub authorities: super::imports::Authorities,
     #[serde(default)]

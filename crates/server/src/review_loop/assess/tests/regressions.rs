@@ -900,6 +900,7 @@ async fn host_new_ids_retire_unreused_server_placeholders() {
 async fn host_gone_and_status_items_are_not_offered_for_reuse() {
     let (f, items) = host_fixture(2).await;
     let mut frozen = frozen::Frozen {
+        language: None,
         authorities: Default::default(),
         own_reply_urls: Default::default(),
         own_reply_texts: Default::default(),
