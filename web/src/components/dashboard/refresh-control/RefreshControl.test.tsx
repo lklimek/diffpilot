@@ -5,6 +5,7 @@ import { NOW, SCANNING, SUMMARY } from "../test-fixtures";
 import { RefreshControl } from "./RefreshControl";
 
 const defaults = {
+  live: { live_repositories: 0, not_live_repositories: 0 },
   latest: SUMMARY.latest_refresh,
   snapshot: SUMMARY.snapshot,
   schedule: SUMMARY.schedule,

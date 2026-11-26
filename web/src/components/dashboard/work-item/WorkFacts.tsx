@@ -9,7 +9,12 @@ import { authorFilter, repoFilter } from "../filter-chips/filters";
 
 export function workTags(item: WorkItem): FactTag[] {
   const tags = [...item.tags];
-  if (item.private) tags.unshift({ text: "private", tip: "From a private repository; shown only to you." });
+  if (item.private)
+    tags.unshift({
+      text: "private",
+      tip: "From a private repository; shown only to you.",
+      filter: { key: "private", label: "private" },
+    });
   if (item.stack?.position === "bottom" && item.stack.dependents.length > 0) {
     const { size, dependents } = item.stack;
     const base = item.facts.find(({ label }) => label === "Base branch")?.value;

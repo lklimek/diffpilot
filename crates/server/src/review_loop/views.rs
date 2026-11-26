@@ -129,7 +129,7 @@ fn item_status(
         }
         let imported = decision.imported.as_ref()?;
         Some(ImportedGithubDecision {
-            kind: decision.kind,
+            kind: decision.kind.review_kind()?,
             by: imported.by.clone(),
             at: imported.at,
             evidence_url: imported.evidence_url.clone(),
@@ -414,9 +414,9 @@ fn counts(
 ) -> CommentCounts {
     let standing = loaded.standing();
     CommentCounts {
-        not_a_review_point: Some(marked),
-        needs_you: Some(needs_you),
-        needs_you_gates: Some(needs_you_gates),
+        not_a_review_point: marked,
+        needs_you,
+        needs_you_gates,
         imported_unseen: None,
         unresolved_threads: loaded
             .snapshot

@@ -3,16 +3,12 @@ import type { WorkItem, DashboardSummary, Judgement } from "../api/generated/typ
 const REPO_WITHOUT_APP = "docs-site";
 
 export function withDashboardFacts(item: WorkItem, noApp: boolean): WorkItem {
-  const review = item.tags.find((tag) => tag.text.startsWith("review requested"));
-  const tags = item.tags.map((tag) =>
-    tag === review ? { ...tag, filter: { key: "review_requested", label: "review requested" } } : tag,
-  );
   const judgement: Judgement = {
     state: "current",
     judged_at: item.llm?.judged_at ?? null,
     outdated_because: null,
   };
-  const info: WorkItem = { ...item, tags, judgement };
+  const info: WorkItem = { ...item, judgement };
   if (item.repo) info.live = !noApp && item.repo.name !== REPO_WITHOUT_APP;
   if (item.id === "NC-490") info.watched = true;
   if (item.id === "PLAT-1203") {

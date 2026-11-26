@@ -1541,28 +1541,19 @@
       "properties": {
         "not_a_review_point": {
           "description": "Items classified as not a review point.",
-          "type": [
-            "integer",
-            "null"
-          ],
+          "type": "integer",
           "format": "uint32",
           "minimum": 0
         },
         "needs_you": {
           "description": "Items in the Needs you queue.",
-          "type": [
-            "integer",
-            "null"
-          ],
+          "type": "integer",
           "format": "uint32",
           "minimum": 0
         },
         "needs_you_gates": {
           "description": "Gated items in the Needs you queue.",
-          "type": [
-            "integer",
-            "null"
-          ],
+          "type": "integer",
           "format": "uint32",
           "minimum": 0
         },
@@ -1619,6 +1610,9 @@
         }
       },
       "required": [
+        "not_a_review_point",
+        "needs_you",
+        "needs_you_gates",
         "unresolved_threads",
         "undecided",
         "asked_again",

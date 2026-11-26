@@ -193,6 +193,7 @@ const SCENARIOS = {
           ...refresh,
           ranking: finished,
           left_provisional: 1,
+          left_provisional_by: "daily",
           steps: refresh.steps.map((step) =>
             step.key === "ranking"
               ? { ...step, state: "done", detail: "1 item left provisional: today's ranking limit (120)" }
@@ -495,13 +496,11 @@ function current(): Base {
     snoozed_until: snoozed.get(item.key)!,
   }));
   const items = view.items.items.filter((item) => !asleep.includes(item));
-  const status_counts =
-    view.summary.status_counts &&
-    dashboardCoverage(items, exclusions.total + asleep.length, null).status_counts;
+  const { status_counts } = dashboardCoverage(items, exclusions.total + asleep.length, null);
   return {
     summary: {
       ...view.summary,
-      ...(status_counts && { status_counts }),
+      status_counts,
       revision,
       snapshot: {
         ...snapshot,
@@ -539,7 +538,11 @@ function fromScript(): Base {
 }
 
 function withV14(view: Base): Base {
-  if (!scenarioName.startsWith("v14")) return view;
+  if (!scenarioName.startsWith("v14")) {
+    const excluded = view.summary.snapshot?.excluded ?? 0;
+    const { status_counts } = dashboardCoverage(view.items.items, excluded, null);
+    return { ...view, summary: { ...view.summary, status_counts } };
+  }
   const noApp = scenarioName === "v14-no-app";
   const holder = runStatus();
   const now = Date.now();

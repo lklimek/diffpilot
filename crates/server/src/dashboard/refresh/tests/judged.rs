@@ -427,7 +427,7 @@ async fn refresh_with_rejudge_outdated_replaces_only_stale_answers() {
         .await
         .expect("age judgement");
     let initial = w.summary(ALICE).await;
-    assert_eq!(initial.status_counts.expect("counts").outdated, 1);
+    assert_eq!(initial.status_counts.outdated, 1);
     assert_ne!(initial.revision, previous);
     let page = w.items("?limit=500").await;
     let item = page
@@ -474,12 +474,5 @@ async fn refresh_with_rejudge_outdated_replaces_only_stale_answers() {
         .map(|item| item.key.clone())
         .collect::<Vec<_>>();
     assert_eq!(served, [key]);
-    assert_eq!(
-        w.summary(ALICE)
-            .await
-            .status_counts
-            .expect("counts")
-            .outdated,
-        0
-    );
+    assert_eq!(w.summary(ALICE).await.status_counts.outdated, 0);
 }

@@ -33,15 +33,7 @@ export const encodeFilters = (filters: readonly Filter[]) =>
     )
     .join(",");
 
-export function tagFilter(tag: FactTag): FilterValue {
-  if (tag.filter) return { field: "label", ...tag.filter };
-  const label = tag.text
-    .replace(/^(\d+ )(?=unresolved threads?$)/i, "")
-    .replace(/^unresolved thread$/i, "unresolved threads")
-    .replace(/^(not ready): .+$/i, "$1")
-    .replace(/^(review requested)(?: \d+ [dhm]| today)$/i, "$1");
-  return { field: "label", key: label.toLowerCase().replaceAll(/\s+/g, "_"), label };
-}
+export const tagFilter = (tag: FactTag): FilterValue => ({ field: "label", ...tag.filter });
 
 export const repoFilter = (item: WorkItem): FilterValue | null => {
   if (!item.repo) return null;

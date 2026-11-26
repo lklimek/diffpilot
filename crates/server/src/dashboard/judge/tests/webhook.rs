@@ -383,6 +383,48 @@ async fn issue_event_rereads_issue() {
 }
 
 #[tokio::test]
+async fn issue_event_invalidates_dashboard_page() {
+    use axum::http::{Method, StatusCode};
+    use contracts::routes::{GET_DASHBOARD, LIST_DASHBOARD_ITEMS};
+
+    let (h, _) = setup("alice", 1, 4000).await;
+    seed(&h, "u1", &snapshot(vec![], vec![issue(1, "Old")], vec![])).await;
+    let get = |path| {
+        let h = &h;
+        async move {
+            let (status, body) = h.request("u1", Method::GET, path, None).await;
+            assert_eq!(status, StatusCode::OK);
+            body
+        }
+    };
+    let before = get(GET_DASHBOARD.path).await;
+    let old_page = get(LIST_DASHBOARD_ITEMS.path).await;
+    assert_eq!(before["revision"], old_page["revision"]);
+    assert_eq!(old_page["items"][0]["title"], "Old");
+
+    let mut d = Dispatcher::default();
+    let start = Instant::now();
+    enqueue(
+        &h,
+        &mut d,
+        start,
+        signal(ChangeKind::Issue, repo("wallet-ui"), Some(1)),
+    )
+    .await;
+    flush(&h, &mut d, start + WINDOW).await;
+
+    let after = get(GET_DASHBOARD.path).await;
+    let new_page = get(LIST_DASHBOARD_ITEMS.path).await;
+    assert_eq!(after["revision"], new_page["revision"]);
+    assert_eq!(new_page["items"][0]["title"], "Changed issue");
+    assert_eq!(
+        old_page["items"][0]["judgement"],
+        new_page["items"][0]["judgement"]
+    );
+    assert_ne!(before["revision"], after["revision"]);
+}
+
+#[tokio::test]
 async fn burst_of_events_one_reread_per_user() {
     let (h, github) = setup("alice", 1, 4000).await;
     seed(&h, "u1", &snapshot(prs(2), vec![], vec![])).await;
@@ -531,6 +573,119 @@ async fn review_requested_adds_and_judges_new_item() {
         read(&h, "u1").await.pull_requests[0].facts.relations,
         [Relation::ReviewRequested]
     );
+}
+
+#[tokio::test]
+async fn event_added_during_scan_gets_daily_room_after_refresh_cap() {
+    let (h, _) = setup("alice", 1, 4000).await;
+    let id = h
+        .rank("u1", &snapshot(prs(REFRESH_CAP + 1), vec![], vec![]))
+        .await;
+    for _ in 1..REFRESH_CAP as usize / MAX_ITEMS {
+        h.serve(|i| succeeded(neutral(i))).await;
+    }
+    let last = h.claim().await;
+    let input = JudgeWorkInput::from_prompt(&last.spec.prompt).unwrap();
+    assert_eq!(input.items.len(), MAX_ITEMS);
+    let mut d = Dispatcher::default();
+    let start = Instant::now();
+    enqueue(&h, &mut d, start, candidate(100)).await;
+    flush(&h, &mut d, start + WINDOW).await;
+
+    h.complete(&last, succeeded(neutral(&input))).await;
+    let (sent, _) = h
+        .serve_until_ended("u1", id, |input| {
+            assert_eq!(
+                input.items.iter().map(|i| &i.key).collect::<Vec<_>>(),
+                [&key(100)]
+            );
+            succeeded(neutral(input))
+        })
+        .await;
+    assert_eq!(sent, 1);
+    let status = h.ranked("u1", id).await;
+    assert_eq!(
+        status.left_provisional, 1,
+        "the scan's other capped item stays capped"
+    );
+    assert_eq!(status.left_provisional_by, Some(RankingLimit::PerRefresh));
+    let snap = read(&h, "u1").await;
+    assert!(h.judgements("u1", &snap).await.contains_key(&key(100)));
+}
+
+#[tokio::test]
+async fn event_added_during_scan_gets_follow_up_after_failure() {
+    let (h, _) = setup("alice", 1, 4000).await;
+    let id = h.rank("u1", &snapshot(prs(1), vec![], vec![])).await;
+    let first = h.claim().await;
+    let mut d = Dispatcher::default();
+    let start = Instant::now();
+    enqueue(&h, &mut d, start, candidate(2)).await;
+    flush(&h, &mut d, start + WINDOW).await;
+
+    h.complete(
+        &first,
+        JobOutcome::Failed {
+            kind: JobFailureKind::Configuration,
+            message: "The scan job failed".into(),
+        },
+    )
+    .await;
+    let (sent, _) = h
+        .serve_until_ended("u1", id, |input| {
+            assert_eq!(
+                input.items.iter().map(|i| &i.key).collect::<Vec<_>>(),
+                [&key(2)]
+            );
+            succeeded(neutral(input))
+        })
+        .await;
+    assert_eq!(sent, 1);
+    let snap = read(&h, "u1").await;
+    assert!(h.judgements("u1", &snap).await.contains_key(&key(2)));
+}
+
+#[tokio::test]
+async fn cancel_does_not_start_event_follow_up() {
+    let (h, _) = setup("alice", 1, 4000).await;
+    let id = h.rank("u1", &snapshot(prs(1), vec![], vec![])).await;
+    let first = h.claim().await;
+    let mut d = Dispatcher::default();
+    let start = Instant::now();
+    enqueue(&h, &mut d, start, candidate(2)).await;
+    flush(&h, &mut d, start + WINDOW).await;
+
+    let (status, body) = h
+        .post(
+            "u1",
+            &format!("/api/v1/dashboard/refreshes/{id}/cancel"),
+            None,
+        )
+        .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(body["ranking"]["state"], "cancelled");
+    let record = h
+        .db()
+        .dashboard()
+        .refresh(DEFAULT_TENANT, "u1", id)
+        .await
+        .unwrap();
+    assert_eq!(
+        (record.state, record.ranking_attempt),
+        (RefreshState::Finished, first.round)
+    );
+    assert_eq!(h.jobs(id).await.len(), 1);
+    assert_eq!(read(&h, "u1").await.pending_event_items, [key(2)]);
+
+    h.complete(&first, JobOutcome::Cancelled).await;
+    enqueue(&h, &mut d, start + WINDOW, candidate(2)).await;
+    flush(&h, &mut d, start + WINDOW * 2).await;
+    let (_, input) = h.serve(|input| succeeded(neutral(input))).await;
+    assert_eq!(
+        input.items.iter().map(|item| &item.key).collect::<Vec<_>>(),
+        [&key(2)]
+    );
+    h.ranked("u1", id).await;
 }
 
 #[tokio::test]
@@ -758,13 +913,13 @@ async fn event_item_waits_behind_dedicated_rejudge() {
     let start = Instant::now();
     enqueue(&h, &mut d, start, candidate(2)).await;
     flush(&h, &mut d, start + WINDOW).await;
-    assert!(read(&h, "u1").await.event_ranking_pending);
+    assert_eq!(read(&h, "u1").await.pending_event_items, [key(2)]);
     h.complete(&first, succeeded(neutral(&input))).await;
     let (next, input) = h.serve(|i| succeeded(neutral(i))).await;
     assert_eq!(input.items[0].key, key(2));
     assert!(next.round > first.round);
     h.ranked("u1", id).await;
-    assert!(!read(&h, "u1").await.event_ranking_pending);
+    assert!(read(&h, "u1").await.pending_event_items.is_empty());
 }
 
 #[tokio::test]

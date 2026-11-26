@@ -2,6 +2,7 @@
 // pure functions of the screen, tested without rendering.
 import { ApiError } from "../../api/client";
 import type { DashboardSummary, RefreshStatus, SnapshotMeta, WorkItem } from "../../api/generated/types";
+import { dateTimeText } from "../../components/format/time";
 import type { RankingNotice } from "../../components/dashboard/refresh-control/RefreshControl";
 import { commentsPath, prPath } from "../pr/paths";
 import { PRS_PATH } from "../shell/paths";
@@ -63,11 +64,22 @@ export function dashboardView(summary: DashboardSummary, timeZoneSaveFailed = fa
   };
 }
 
-/** Feedback about ranking the snapshot on screen, including when a later scan failed. */
-export function rankingFeedback(summary: DashboardSummary, snapshotRefresh?: RefreshStatus) {
-  const holder = [summary.latest_refresh, snapshotRefresh].find(
-    (refresh) => refresh != null && refresh.id === summary.snapshot?.refresh_id,
-  );
+/** The refresh that supplied the visible snapshot, even when a later scan failed. */
+export function refreshHoldingSnapshot(summary: DashboardSummary, snapshotRefresh?: RefreshStatus) {
+  return summary.latest_refresh?.id === summary.snapshot?.refresh_id
+    ? summary.latest_refresh
+    : snapshotRefresh?.id === summary.snapshot?.refresh_id
+      ? snapshotRefresh
+      : undefined;
+}
+
+/** Feedback about ranking the snapshot on screen. */
+export function rankingFeedback(
+  summary: DashboardSummary,
+  snapshotRefresh?: RefreshStatus,
+  resetsAt?: string,
+) {
+  const holder = refreshHoldingSnapshot(summary, snapshotRefresh);
   const ranking = holder?.ranking;
   const notices: RankingNotice[] = [];
   let retryId: string | undefined;
@@ -89,22 +101,20 @@ export function rankingFeedback(summary: DashboardSummary, snapshotRefresh?: Ref
     });
   }
   const left = holder?.left_provisional ?? 0;
-  // The ranking step names the cap when the legacy counter alone cannot distinguish it.
-  const detail = holder?.steps.find(({ key }) => key === "ranking")?.detail ?? "";
-  const limit = detail.match(
-    /^\d+ items? left provisional: (today's|this refresh's) ranking limit \(\d+\)$/,
-  )?.[1];
-  const daily = left > 0 && limit === "today's";
+  const limit = holder?.left_provisional_by;
   if (left > 0) {
     const estimate = `${left} ${left === 1 ? "item was" : "items were"} left provisional by the last ranking.`;
 
-    if (daily) {
-      const reset = `The daily allowance resets at 00:00 (${summary.schedule.time_zone || "UTC"}).`;
+    if (limit === "daily") {
+      const reset = resetsAt ? dateTimeText(resetsAt) : undefined;
       const reached = ranking?.state === "finished" ? "Daily limit reached" : "Daily ranking limit";
-      notices.push({ label: `${reached} · resets at 00:00`, detail: `${estimate} ${reset}` });
+      notices.push({
+        label: reset ? `${reached} · resets at ${reset}` : reached,
+        detail: reset ? `${estimate} The daily allowance resets at ${reset}.` : estimate,
+      });
     } else {
       notices.push({
-        label: limit === "this refresh's" ? "Per-refresh ranking limit" : `${left} left provisional`,
+        label: limit === "per_refresh" ? "Per-refresh ranking limit" : `${left} left provisional`,
         detail: estimate,
       });
     }

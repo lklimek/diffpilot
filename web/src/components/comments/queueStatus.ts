@@ -84,15 +84,5 @@ export function needsYouQueue(queue: QueueEntry[], items: ReadonlyMap<number, Co
   });
 }
 
-/** Use the same queue membership as the list, including PR-level and individually decided gate items. */
-export function needsYouCount(
-  fallback: number,
-  queue?: QueueEntry[],
-  items?: ReadonlyMap<number, CommentItem>,
-): number {
-  if (!queue || !items) return fallback;
-  return needsYouQueue(queue, items).reduce((count, entry) => count + entry.item_nos.length, 0);
-}
-
 export const commentsByNo = (items?: readonly CommentItem[]) =>
   items ? new Map(items.map((item) => [item.no, item])) : undefined;

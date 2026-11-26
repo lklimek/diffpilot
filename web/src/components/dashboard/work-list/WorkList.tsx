@@ -17,7 +17,7 @@ import {
   type FilterValue,
 } from "../filter-chips/filters";
 import { workTags } from "../work-item/WorkFacts";
-import { getStatusCounts, matchesStatus, StatusFilter, type WorkStatus } from "./StatusFilter";
+import { matchesStatus, StatusFilter, type WorkStatus } from "./StatusFilter";
 import { dashboardShortcut, isTyping } from "./shortcuts";
 
 /** A kind of listed item: pull request, issue or MemCan TODO. */
@@ -34,7 +34,7 @@ interface WorkListProps {
   onKindsChange: (kinds: ItemKind[]) => void;
   filters?: Filter[];
   onFiltersChange?: (filters: Filter[]) => void;
-  statusCounts?: StatusCounts;
+  statusCounts: StatusCounts;
   statusDescriptions?: Partial<Record<WorkStatus, string>>;
   exclusions?: Exclusions | null;
   guideOrigin?: string;
@@ -156,7 +156,6 @@ export function WorkList({
   const alarms = groupItems(items).alarms;
   const { tiers, notJudged } = groupItems(shown);
   const rows = [...alarms, ...tiers.flatMap((group) => group.items), ...notJudged];
-  const counts = statusCounts ?? getStatusCounts(items, exclusions?.total ?? 0);
   const count = (kind: ItemKind) => items.filter((item) => item.kind === kind).length;
   const filterBy =
     onFiltersChange &&
@@ -268,7 +267,7 @@ export function WorkList({
         </h2>
         <span role="status" className="text-xs text-muted">
           {status === "excluded"
-            ? `${counts.excluded} excluded or snoozed`
+            ? `${statusCounts.excluded} excluded or snoozed`
             : `${rows.length} of ${items.length} items, ranked`}
         </span>
         <span className="flex-1" />
@@ -288,7 +287,7 @@ export function WorkList({
         />
         <StatusFilter
           status={status}
-          counts={counts}
+          counts={statusCounts}
           total={items.length}
           onChange={setStatus}
           descriptions={statusDescriptions}

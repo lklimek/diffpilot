@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use contracts::api::dashboard::{ItemKey, ItemTarget};
 use contracts::time::Timestamp;
 use db::error::DbError;
 use tokio::time::Instant;
@@ -155,7 +156,6 @@ pub(crate) async fn reread_items(
         .chain(candidates.iter().take(new_limit).cloned())
         .collect();
     let mut dirty = false;
-    let mut added = 0;
     let mut retry = None;
     for (index, batch) in wanted.chunks(PR_BATCH).enumerate() {
         let fetched = match client.pull_requests(batch).await {
@@ -176,7 +176,6 @@ pub(crate) async fn reread_items(
                     && stored.event_additions.len() < DAILY_ADDITIONS
                     && add_candidate(&mut stored, item, detail, rules, policies, now)
                 {
-                    added += 1;
                     dirty = true;
                 }
             }
@@ -210,14 +209,13 @@ pub(crate) async fn reread_items(
         }
     }
     if !dirty {
-        if stored.event_ranking_pending {
+        if !stored.pending_event_items.is_empty() {
             super::rank_pending_locked(state, scope, super::RankMode::Pending).await?;
         }
         return retry.map_or(Ok(EventRead::Complete), Err);
     }
 
     stored.last_event_at = Some(now);
-    stored.event_ranking_pending |= added != 0;
     let updated = state
         .db
         .dashboard()
@@ -225,7 +223,7 @@ pub(crate) async fn reread_items(
         .await;
     match updated {
         Ok(()) => {
-            if stored.event_ranking_pending {
+            if !stored.pending_event_items.is_empty() {
                 super::rank_pending_locked(state, scope, super::RankMode::Pending).await?;
             }
             drop(writer);
@@ -352,9 +350,16 @@ fn add_candidate(
             milestones: Default::default(),
         },
     );
+    let Ok(key) = ItemKey::new(&ItemTarget::PullRequest {
+        repo: pr.facts.repo.clone(),
+        number: pr.facts.number,
+    }) else {
+        return false;
+    };
     stored.pull_requests.push(pr);
     stored.checked.pr = stored.checked.pr.saturating_add(1);
     stored.event_additions.push(now);
+    stored.pending_event_items.push(key);
     true
 }
 

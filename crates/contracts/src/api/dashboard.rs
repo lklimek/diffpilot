@@ -16,17 +16,11 @@ use crate::ids::{AnalysisId, CommitSha, RefreshId};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct DashboardSummary {
     /// Counts of distinct judgement and sync states.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub status_counts: Option<StatusCounts>,
+    pub status_counts: StatusCounts,
     /// Repositories updated by GitHub App webhooks.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub live_repositories: Option<u32>,
+    pub live_repositories: u32,
     /// Repositories refreshed by manual and scheduled scans.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub not_live_repositories: Option<u32>,
+    pub not_live_repositories: u32,
     /// Latest GitHub event applied to this dashboard.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -233,6 +227,10 @@ pub struct RefreshStatus {
     pub reused: u32,
     /// Items left provisional by the per-refresh or daily ranking limit.
     pub left_provisional: u32,
+    /// The cap that left items provisional, when a cap was reached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub left_provisional_by: Option<RankingLimit>,
     /// Scan steps in order.
     pub steps: Vec<ScanStep>,
     /// Scan progress, 0–100.
@@ -247,6 +245,16 @@ pub struct RefreshStatus {
     pub failure: Option<RefreshFailure>,
     /// Plain log lines of the scan (at most 200, oldest first); no tokens, no query strings.
     pub log: Vec<String>,
+}
+
+/// A limit on how many items can be sent for ranking.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RankingLimit {
+    /// The current refresh's allowance.
+    PerRefresh,
+    /// The reader's daily allowance.
+    Daily,
 }
 
 /// A step of the scan, shown as a list with progress.
@@ -917,9 +925,7 @@ pub struct ChangeSizeMark {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct FactTag {
     /// Filter for items with this fact.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub filter: Option<FactFilter>,
+    pub filter: FactFilter,
     /// Short text.
     pub text: String,
     /// Tooltip with the underlying fact.

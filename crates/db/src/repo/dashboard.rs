@@ -9,8 +9,8 @@
 //! or restarted ranking is [`RankingUpdate::Stale`]. The send ledger tracks ranking caps independently.
 
 use contracts::api::dashboard::{
-    DashboardSettings, ItemKey, RankingState, RefreshFailure, RefreshState, RefreshTrigger,
-    ScanStep, ScheduledOutcome,
+    DashboardSettings, ItemKey, RankingLimit, RankingState, RefreshFailure, RefreshState,
+    RefreshTrigger, ScanStep, ScheduledOutcome,
 };
 use contracts::ids::{JobId, RefreshId};
 use contracts::time::Timestamp;
@@ -195,6 +195,9 @@ pub struct RefreshProgress {
     /// Never-judged items left behind by a ranking cap.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub left_provisional_keys: Vec<ItemKey>,
+    /// Cap hit by the ranking, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_provisional_by: Option<RankingLimit>,
     /// Outdated items selected for the current scan's ranking attempt.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bulk_rejudge_keys: Vec<ItemKey>,
@@ -889,16 +892,21 @@ impl Dashboard<'_> {
     /// Whether event additions still need a ranking on the current snapshot.
     pub async fn event_ranking_pending(&self, tenant: &str, user: &str) -> Result<bool, DbError> {
         Ok(sqlx::query_scalar(concat!(
-            "SELECT COALESCE(snapshot ->> '$.event_ranking_pending', 0)
-             FROM dashboard_refreshes WHERE id IS (",
+            "SELECT EXISTS (
+                 SELECT 1 FROM dashboard_refreshes r, json_each(r.snapshot, '$.pending_event_items') k
+                 WHERE r.id IS (",
             current_snapshot_id!(),
-            ")"
+            ")
+                 AND NOT EXISTS (
+                     SELECT 1 FROM dashboard_judgements j
+                     WHERE j.tenant_id = ?1 AND j.user_id = ?2 AND j.item_key = k.value
+                 )
+             )"
         ))
         .bind(tenant)
         .bind(user)
-        .fetch_optional(self.pool)
-        .await?
-        .unwrap_or(false))
+        .fetch_one(self.pool)
+        .await?)
     }
 
     /// Marks event additions handed to a ranking of this snapshot.
@@ -909,8 +917,8 @@ impl Dashboard<'_> {
         id: RefreshId,
     ) -> Result<(), DbError> {
         sqlx::query(
-            "UPDATE dashboard_refreshes SET snapshot = json_remove(snapshot, '$.event_ranking_pending')
-             WHERE id = ? AND tenant_id = ? AND user_id = ? AND snapshot ->> '$.event_ranking_pending' = 1",
+            "UPDATE dashboard_refreshes SET snapshot = json_remove(snapshot, '$.pending_event_items')
+             WHERE id = ? AND tenant_id = ? AND user_id = ? AND json_array_length(snapshot, '$.pending_event_items') > 0",
         )
         .bind(id.to_string())
         .bind(tenant)
@@ -3121,6 +3129,7 @@ mod tests {
         let id = start(&db, "u1", 0).await;
         let progress = RefreshProgress {
             left_provisional_keys: Vec::new(),
+            left_provisional_by: None,
             bulk_rejudge_keys: Vec::new(),
             steps: vec![ScanStep {
                 key: ScanStepKey::PrDetails,
@@ -4732,6 +4741,7 @@ mod tests {
         let id = ranking(&db, "u1", 1).await;
         let progress = RefreshProgress {
             left_provisional_keys: Vec::new(),
+            left_provisional_by: None,
             bulk_rejudge_keys: Vec::new(),
             steps: Vec::new(),
             percent: 100,

@@ -24,8 +24,7 @@ interface RefreshControlProps {
   snapshot: SnapshotMeta | null;
   snapshotRefresh?: RefreshStatus;
   schedule: ScheduleStatus;
-  live?: Required<Pick<DashboardSummary, "live_repositories" | "not_live_repositories">> &
-    Pick<DashboardSummary, "last_event_at">;
+  live: Pick<DashboardSummary, "live_repositories" | "not_live_repositories" | "last_event_at">;
   outdated?: number;
   onRefresh: () => void;
   onRejudgeOutdated?: () => void;
@@ -83,9 +82,7 @@ export function RefreshControl({
 }: RefreshControlProps) {
   const scannedAt = snapshot ? clockText(snapshot.scanned_at, now) : null;
   const own = latest?.id === snapshot?.refresh_id ? latest : snapshotRefresh;
-  const coverage =
-    live &&
-    `${live.live_repositories} live ${live.live_repositories === 1 ? "repository" : "repositories"} · ${live.not_live_repositories} not live. ${live.last_event_at ? `Last GitHub event: ${dateTimeText(live.last_event_at)}.` : "No GitHub events recorded."}`;
+  const coverage = `${live.live_repositories} live ${live.live_repositories === 1 ? "repository" : "repositories"} · ${live.not_live_repositories} not live. ${live.last_event_at ? `Last GitHub event: ${dateTimeText(live.last_event_at)}.` : "No GitHub events recorded."}`;
   const scanOutcome =
     latest?.state === "failed" || latest?.state === "cancelled"
       ? `Scan started at ${dateTimeText(latest.started_at)} ${latest.state === "failed" ? "failed" : "was cancelled"}.`
@@ -116,13 +113,14 @@ export function RefreshControl({
       : "Refresh";
   const description = `Scan GitHub and MemCan. New items are judged by the LLM.${latest?.state === "ranking" ? " Starting a scan stops the current LLM ranking." : ""}`;
   const scanText = scannedAt ? `scan ${scannedAt}` : "no full scan yet";
-  const status = !live
-    ? scannedAt
-      ? `Full ${scanText}`
-      : "No full scan yet"
-    : live.live_repositories > 0
+  const status =
+    live.live_repositories > 0
       ? `● Live · ${scannedAt ? `full ${scanText}` : scanText}`
-      : `Not live · ${scanText}`;
+      : live.not_live_repositories > 0
+        ? `Not live · ${scanText}`
+        : scannedAt
+          ? `Full ${scanText}`
+          : "No full scan yet";
 
   const rankingLabel = rankingNotices[0]?.label;
   const scanLabel = latest?.state === "cancelled" ? "Scan cancelled" : null;

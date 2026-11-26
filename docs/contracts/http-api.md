@@ -1002,20 +1002,23 @@ Cards show only the frozen primary; secondary results are comparison-only.
   installation-wide count of verified deliveries dropped for untracked repositories since the last restart, at most
   14 days. They also show the number of TCP connections refused at the webhook listener's capacity limit since the
   last restart.
-- Fact tags may include stable filter keys and labels. Work items may include stack position, size and dependent
+- Each fact tag includes a stable filter key and label. Work items may include stack position, size and dependent
   PR numbers. `WorkItem.release_base` is the PR's base branch when it matches the repository's release patterns.
   These are the configured patterns when present and the built-in patterns otherwise, including `main` and `master`.
   `Settings.llm_usage.this_month` uses the server-local month. The ranking usage reset starts counting from the
-  reset time. `resets_at` is the next midnight in the reader's configured zone.
+  reset time. `RankingUsage.resets_at` gives the next midnight in the reader's configured zone.
+  `RefreshStatus.left_provisional_by` identifies the cap as `per_refresh` or `daily` when one was reached.
 - The activity response shows the reader's own jobs with optional subject, times and typed wait reason, plus
   other running or queued jobs in the same tenant with kind and a response-local opaque id. The pause and last
   call are the reader's own.
 - `AssessmentState::Queued` waits for the next pass. `Running` identifies items in the live pass. Progress has
   `in_pass`, `waiting` and optional `since`. Comments can carry a reader's watch and items can carry a short
   LLM title, status-comment flag, imported-decision evidence, an import proposal or a primary-following flag.
+  Imported evidence and proposals use `ReviewDecisionKind`.
   `Decision` carries imported evidence or a primary item number with its corresponding `via`. A proposal still
   needs the owner to decide it. See [the Phase B rules](../v1.4-phase-b-plan.md#6-needs-you-c10-and-duplicates-c15).
-- `needs_you` counts queue items whose status is Needs you. `needs_you_gates` counts the gated subset. Running
+- `CommentCounts` always includes `not_a_review_point`, `needs_you` and `needs_you_gates`.
+  `needs_you` counts queue items whose status is Needs you. `needs_you_gates` counts the gated subset. Running
   assessments and unassessed unlinked comments are excluded, with the exceptions in the [N1 rules](../v1.4-phase-b-plan.md#6-needs-you-c10-and-duplicates-c15).
   The PR badge and dashboard use this calculation. An open non-bot review item in the decision queue vetoes
   Ready to merge while awaiting assessment or included in a running pass. Status comments are listed and excluded
@@ -1028,7 +1031,7 @@ Cards show only the frozen primary; secondary results are comparison-only.
   immediately above the step's first item. The generic technology plugin leaves it absent.
 - PR history merges the reader's requested analyses, watches including ended ones, and PR page visits. It returns
   one item per PR in the reader's tenant, newest activity first. Activity is the latest analysis request, watch start
-  or end, or page visit. Pass `limit` (1–100, default 50) and the previous page's opaque `next_cursor`. An invalid
+  or end, or page visit. `analysis.requested_at` is the latest analysis request time. Pass `limit` (1–100, default 50) and the previous page's opaque `next_cursor`. An invalid
   cursor returns 400 `invalid_request`. A null `next_cursor` ends the list.
 - A successful PR page read in a browser session attempts to update the reader's `last_opened_at`. The page
   remains available if the update fails. The PR page, Comments overview, item list and GitHub refresh handlers

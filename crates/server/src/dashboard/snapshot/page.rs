@@ -33,7 +33,7 @@ fn short_hash(bytes: &[u8]) -> String {
 
 /// Opaque revision of `snapshot`, held by `record`, as `view` shows it: changes when the snapshot or its ranking
 /// changes (state, attempt and judgement counts; WP11-JUDGE records the counts as judgements land), when TODOs are
-/// hidden, when pull requests are re-read, when the shown plug-in statements change (ADR-022) and when the user's
+/// hidden, when GitHub items are re-read, when the shown plug-in statements change (ADR-022) and when the user's
 /// snoozes or repository live status change.
 pub fn revision(record: &RefreshRecord, snapshot: &Snapshot, view: &View) -> String {
     let mut source = format!(
@@ -52,6 +52,9 @@ pub fn revision(record: &RefreshRecord, snapshot: &Snapshot, view: &View) -> Str
     );
     if let Some(at) = snapshot.prs_reread_at {
         source.push_str(&format!("|reread {at}"));
+    }
+    if let Some(at) = snapshot.last_event_at {
+        source.push_str(&format!("|webhook {at}"));
     }
     if !snapshot.snoozes.is_empty() {
         let snoozed: Vec<_> = snapshot

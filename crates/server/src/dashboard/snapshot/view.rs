@@ -496,10 +496,10 @@ fn count(counts: &mut ItemCounts, item: &Scored) {
 
 fn tag(key: impl Into<String>, label: &str, tip: impl Into<String>) -> FactTag {
     FactTag {
-        filter: Some(FactFilter {
+        filter: FactFilter {
             key: key.into(),
             label: label.to_owned(),
-        }),
+        },
         text: label.to_owned(),
         tip: tip.into(),
     }

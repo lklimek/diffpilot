@@ -4,6 +4,7 @@ import { api } from "../../api/client";
 import {
   useAccessTokenActions,
   useAccessTokens,
+  rankingUsageQuery,
   useDashboardSettings,
   useMe,
   useSetAskEffort,
@@ -73,7 +74,6 @@ export function AccountPage() {
   );
 }
 
-const rankingKey = ["settings", "ranking-usage"] as const;
 export function LlmPage({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => void }) {
   const client = useQueryClient();
   const settings = useSettings();
@@ -81,7 +81,7 @@ export function LlmPage({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => 
   const assessment = useAssessmentSettings();
   const now = new Date(useNow());
   const codex = useCodexAccount(now.getTime());
-  const ranking = useQuery({ queryKey: rankingKey, queryFn: ({ signal }) => api.getRankingUsage(signal) });
+  const ranking = useQuery(rankingUsageQuery);
   const setLlm = useSetLlm();
   const setAskEffort = useSetAskEffort();
   const setJudgeEffort = useSetJudgeEffort();
@@ -101,8 +101,8 @@ export function LlmPage({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => 
           rankingZone={dashboard.data?.settings.time_zone ?? undefined}
           onReset={async () => {
             const usage = await api.resetRankingUsage();
-            await client.cancelQueries({ queryKey: rankingKey });
-            client.setQueryData(rankingKey, usage);
+            await client.cancelQueries({ queryKey: rankingUsageQuery.queryKey });
+            client.setQueryData(rankingUsageQuery.queryKey, usage);
           }}
           quota={assessment.data?.quota}
           quotaError={assessment.isError ? messageOf(assessment.error) : undefined}

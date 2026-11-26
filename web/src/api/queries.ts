@@ -298,6 +298,12 @@ export const useRetryAnalysis = () => useMutation({ mutationFn: api.retryAnalysi
 /** Global settings: LLM status of the last call, language, App installations, known repositories. */
 export const useSettings = () => useQuery({ queryKey: ["settings"], queryFn: api.getSettings });
 
+/** Ranking usage shared by My work and the LLM settings. */
+export const rankingUsageQuery = {
+  queryKey: ["settings", "ranking-usage"] as const,
+  queryFn: ({ signal }: { signal: AbortSignal }) => api.getRankingUsage(signal),
+};
+
 /** Read-only settings of one repository; disabled while `repo` is undefined. */
 export const useRepoSettings = (repo: RepoRef | undefined) =>
   useQuery({

@@ -35,7 +35,12 @@ import type {
   WatchedPr,
   WatchList,
 } from "../api/generated/types";
-import { duplicatePrimary, followsPrimary } from "../components/comments/queueStatus";
+import {
+  commentsByNo,
+  duplicatePrimary,
+  followsPrimary,
+  needsYouQueue,
+} from "../components/comments/queueStatus";
 import {
   ASKED_AGAIN,
   NOT_READ,
@@ -673,9 +678,13 @@ const READ = () => ({
 
 function counts(list: CommentItem[]) {
   const effects = list.flatMap((i) => i.decisions.at(-1)?.effects ?? []);
+  const items = commentsByNo(list)!;
+  const needs = needsYouQueue(queue(list), items).flatMap((entry) => entry.item_nos);
   return {
     unresolved_threads: list.filter((i) => i.kind === "thread" && i.github.resolved === false).length,
     undecided: waitingIn(list).length,
+    needs_you: needs.length,
+    needs_you_gates: needs.filter((no) => items.get(no)!.gates.length > 0).length,
     not_a_review_point: list.filter((i) => i.not_a_review_point).length,
     asked_again: waitingIn(list).filter((i) => i.state === "reopened").length,
     waiting_for_agents: list.filter((i) => i.state === "executing").length,

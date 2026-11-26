@@ -4,7 +4,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { ApiError, AssessmentAdmissionError } from "../../api/client";
 import {
-  cachedCommentsReview,
+  cachedCommentsOverview,
   useAssessAgain,
   useCommentContext,
   useCommentLog,
@@ -25,9 +25,7 @@ import { itemId } from "../../components/comments/parts";
 import { CommentOverviewCard } from "../../components/comments/CommentOverviewCard";
 import {
   awaitsDecision,
-  commentsByNo,
   duplicatePrimary,
-  needsYouCount,
   needsYouQueue,
   commentStatus,
   queueStatusOf,
@@ -219,8 +217,7 @@ export function QuestionsScreen() {
         : { state: "loading" };
 
   const afterDecided = (what: string, next: number[] | null, mark = false) => {
-    const cached = cachedCommentsReview(client, pr);
-    const left = needsYouCount(needsYou, cached.overview?.queue, commentsByNo(cached.items));
+    const left = cachedCommentsOverview(client, pr)?.counts.needs_you ?? needsYou;
     setAnnouncement(
       `${what}: ${mark ? "Not a review point" : "decision recorded"}. ${left} ${left === 1 ? "question" : "questions"} left.`,
     );
@@ -493,6 +490,7 @@ export function QuestionsScreen() {
     <div className="grid items-start gap-3.5 lg:grid-cols-[clamp(230px,15vw,320px)_minmax(0,1fr)_clamp(240px,18vw,380px)]">
       <QueueList
         queue={queue}
+        counts={overview.counts}
         items={byNo}
         current={rest ? null : entry && entryKey(entry)}
         onOpen={open}

@@ -1,14 +1,13 @@
 import { Link, useLocation, useNavigate, useParams } from "react-router";
 import { ApiError } from "../../api/client";
 import { useMe } from "../../api/queries";
-import { useCommentItems, usePrPage, useReadComments, useWatchPr } from "../../api/review-loop";
+import { usePrPage, useReadComments, useWatchPr } from "../../api/review-loop";
 import { useNow } from "../../app/now";
 import { useUserEventNotifications } from "../../app/userEvents";
 import { usePrTabSubject } from "../../app/tabStatus";
 import { prGithubUrl } from "../../components/github/links";
 import type { AnalysisId } from "../../api/generated/types";
 import { CollapsibleSection } from "../../components/collapsible/CollapsibleSection";
-import { commentStatus } from "../../components/comments/queueStatus";
 import { ProcessCommentsCard } from "../../components/comments/ProcessCommentsCard";
 import { OpenExternal } from "../../components/dashboard/common/OpenExternal";
 import { StatusPopover } from "../../components/status/StatusPopover";
@@ -27,8 +26,6 @@ export function PrScreen() {
   const page = usePrPage(pr);
   const { progressId } = (useLocation().state ?? {}) as { progressId?: AnalysisId };
   usePrTabSubject(pr);
-  const needsYou = page.data?.comments.counts.needs_you;
-  const items = useCommentItems(pr, Boolean(page.data) && needsYou === undefined);
   const me = useMe();
   const login = me.data?.user?.login ?? null;
   const watch = useWatchPr(pr);
@@ -113,9 +110,6 @@ export function PrScreen() {
               </CollapsibleSection>
               <ProcessCommentsCard
                 summary={data.comments}
-                needsYou={
-                  needsYou ?? items.data?.filter((item) => commentStatus(item) === "needs_you").length
-                }
                 watch={data.watch}
                 watchBusy={watch.isPending}
                 onWatchChange={(on) => watch.mutate(on)}

@@ -116,6 +116,20 @@ fn every_token_readable_route_has_a_response_schema() {
 }
 
 #[test]
+fn imported_github_decision_schema_excludes_internal_marks() {
+    let files = generated_files().expect("contracts generate");
+    let file = files
+        .iter()
+        .find(|file| file.path == "schemas/api/comment_item_list.schema.json")
+        .expect("comment items schema");
+    let schema: serde_json::Value = serde_json::from_str(&file.contents).unwrap();
+    assert_eq!(
+        schema["$defs"]["ImportedGithubDecision"]["properties"]["kind"]["$ref"],
+        "#/$defs/ReviewDecisionKind"
+    );
+}
+
+#[test]
 fn external_schema_does_not_offer_internal_marks() {
     let files = generated_files().expect("contracts generate");
     for path in [

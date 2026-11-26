@@ -680,7 +680,7 @@ pub struct ImportedDecision {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct ImportedGithubDecision {
     /// Kind of the decision.
-    pub kind: DecisionKind,
+    pub kind: ReviewDecisionKind,
     /// GitHub login of the author.
     pub by: String,
     /// When the statement was made.
@@ -1194,17 +1194,11 @@ pub struct AssessmentProgress {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct CommentCounts {
     /// Items classified as not a review point.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub not_a_review_point: Option<u32>,
+    pub not_a_review_point: u32,
     /// Items in the Needs you queue.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub needs_you: Option<u32>,
+    pub needs_you: u32,
     /// Gated items in the Needs you queue.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub needs_you_gates: Option<u32>,
+    pub needs_you_gates: u32,
     /// Items with a decision imported since this reader last visited Comments.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]

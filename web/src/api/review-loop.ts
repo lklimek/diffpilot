@@ -37,12 +37,8 @@ const prKey = (pr: PrRef) => [pr.repo.owner, pr.repo.name, pr.number] as const;
 const overviewKey = (pr: PrRef) => ["comments", ...prKey(pr)] as const;
 const itemsKey = (pr: PrRef | null) => ["comment-items", ...(pr ? prKey(pr) : [])] as const;
 
-export function cachedCommentsReview(client: QueryClient, pr: PrRef) {
-  return {
-    overview: client.getQueryData<CommentsOverview>(overviewKey(pr)),
-    items: client.getQueryData<CommentItem[]>(itemsKey(pr)),
-  };
-}
+export const cachedCommentsOverview = (client: QueryClient, pr: PrRef) =>
+  client.getQueryData<CommentsOverview>(overviewKey(pr));
 
 /** One read of an analysis (the old progress URL finds its PR with it). */
 export const useAnalysisOnce = (id: AnalysisId) =>

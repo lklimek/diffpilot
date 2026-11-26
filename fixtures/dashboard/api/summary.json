@@ -1,4 +1,12 @@
 {
+  "status_counts": {
+    "outdated": 0,
+    "not_judged": 0,
+    "not_live": 0,
+    "excluded": 3
+  },
+  "live_repositories": 0,
+  "not_live_repositories": 0,
   "mention_coverage": {
     "unchecked_items": 0,
     "unchecked_logins": [],
@@ -142,10 +150,12 @@
         "waiting_since": "2026-11-07T08:14:00Z",
         "tags": [
           {
+            "filter": {"key": "ci_passing", "label": "CI passing"},
             "text": "CI passing",
             "tip": "6 checks passed"
           },
           {
+            "filter": {"key": "self-reviewed", "label": "self-reviewed"},
             "text": "self-reviewed",
             "tip": "The author marked it self-reviewed"
           }
@@ -175,6 +185,7 @@
         "waiting_since": "2026-11-14T08:14:00Z",
         "tags": [
           {
+            "filter": {"key": "ci_passing", "label": "CI passing"},
             "text": "CI passing",
             "tip": "3 checks passed"
           }
@@ -203,6 +214,7 @@
         "waiting_since": "2026-11-16T08:14:00Z",
         "tags": [
           {
+            "filter": {"key": "ci_passing", "label": "CI passing"},
             "text": "CI passing",
             "tip": "4 checks passed"
           }
@@ -222,10 +234,12 @@
         "url": "https://github.com/acme/wallet-ui/pull/311",
         "tags": [
           {
+            "filter": {"key": "ci_failing", "label": "CI failing"},
             "text": "CI failing",
             "tip": "Failing: test (e2e)"
           },
           {
+            "filter": {"key": "non-required_checks_not_passing", "label": "non-required checks not passing"},
             "text": "non-required checks not passing",
             "tip": "GitHub allows the merge while a check that is not required has not passed (merge state unstable)"
           }

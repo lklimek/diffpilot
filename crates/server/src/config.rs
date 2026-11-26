@@ -237,36 +237,29 @@ pub enum ConfigError {
         source: ipnet::AddrParseError,
     },
     /// The allowed-login list names no login.
-    #[error("environment variable {key} names no GitHub login, so nobody could sign in")]
-    NoAllowedLogins {
-        /// Variable name.
-        key: &'static str,
-    },
+    #[error("environment variable {ALLOWED_LOGINS} names no GitHub login, so nobody could sign in")]
+    NoAllowedLogins,
     /// One entry of the allowed-login list is not a GitHub login.
     #[error(
-        "environment variable {key} contains '{entry}', which is not a GitHub login (letters, digits, - or _, at most 39 characters)"
+        "environment variable {ALLOWED_LOGINS} contains '{entry}', which is not a GitHub login (letters, digits, - or _, at most 39 characters)"
     )]
     InvalidLogin {
-        /// Variable name.
-        key: &'static str,
         /// The rejected entry (not secret).
         entry: String,
     },
     /// An entry still holds the `.env.example` placeholder.
     #[error(
-        "environment variable {key} still holds the placeholder '{entry}'; list the GitHub logins allowed to sign in"
+        "environment variable {ALLOWED_LOGINS} still holds the placeholder '{entry}'; list the GitHub logins allowed to sign in"
     )]
     PlaceholderLogin {
-        /// Variable name.
-        key: &'static str,
         /// The placeholder entry.
         entry: String,
     },
     /// A login is listed twice (logins are case-insensitive).
-    #[error("environment variable {key} lists '{entry}' twice; GitHub logins are case-insensitive")]
+    #[error(
+        "environment variable {ALLOWED_LOGINS} lists '{entry}' twice; GitHub logins are case-insensitive"
+    )]
     DuplicateLogin {
-        /// Variable name.
-        key: &'static str,
         /// The repeated entry as written the second time.
         entry: String,
     },
@@ -594,10 +587,6 @@ fn is_github_login(entry: &str) -> bool {
 }
 
 fn parse_allowed_logins(value: &str) -> Result<Vec<String>, ConfigError> {
-    parse_logins(ALLOWED_LOGINS, value)
-}
-
-fn parse_logins(key: &'static str, value: &str) -> Result<Vec<String>, ConfigError> {
     let mut logins: Vec<String> = Vec::new();
     for entry in value
         .split(',')
@@ -607,26 +596,23 @@ fn parse_logins(key: &'static str, value: &str) -> Result<Vec<String>, ConfigErr
         // Checked as check-production-config.sh does: a start with the example value would drop every bound entry.
         if entry.contains("REPLACE") {
             return Err(ConfigError::PlaceholderLogin {
-                key,
                 entry: entry.to_owned(),
             });
         }
         if !is_github_login(entry) {
             return Err(ConfigError::InvalidLogin {
-                key,
                 entry: entry.to_owned(),
             });
         }
         if logins.iter().any(|login| login.eq_ignore_ascii_case(entry)) {
             return Err(ConfigError::DuplicateLogin {
-                key,
                 entry: entry.to_owned(),
             });
         }
         logins.push(entry.to_owned());
     }
     if logins.is_empty() {
-        return Err(ConfigError::NoAllowedLogins { key });
+        return Err(ConfigError::NoAllowedLogins);
     }
     Ok(logins)
 }
@@ -868,12 +854,7 @@ pub(crate) mod tests {
         let mut env = required_env();
         env.insert(ALLOWED_LOGINS, " , ,".to_owned());
         assert!(
-            matches!(
-                parse(&env),
-                Err(ConfigError::NoAllowedLogins {
-                    key: ALLOWED_LOGINS
-                })
-            ),
+            matches!(parse(&env), Err(ConfigError::NoAllowedLogins)),
             "only separators"
         );
     }

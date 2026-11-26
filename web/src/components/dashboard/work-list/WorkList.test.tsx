@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { TodosState, WorkItem } from "../../../api/generated/types";
 import { rowOpenLabel } from "../common/OpenExternal";
 import type { Filter } from "../filter-chips/filters";
-import { ITEMS, NOW, PROVISIONAL_ITEMS } from "../test-fixtures";
+import { ITEMS, NOW, PROVISIONAL_ITEMS, SUMMARY } from "../test-fixtures";
 import { reviewHref } from "../../../screens/dashboard/state";
 import { ALL_KINDS, WorkList, type ItemKind } from "./WorkList";
 
@@ -22,6 +22,7 @@ function List(props: {
     <>
       <input aria-label="search" />
       <WorkList
+        statusCounts={SUMMARY.status_counts}
         items={props.items ?? ITEMS}
         kinds={kinds}
         onKindsChange={setKinds}
@@ -41,10 +42,26 @@ const rowIds = () =>
   [...document.querySelectorAll("li[data-item]")].map((li) => li.getAttribute("data-item"));
 
 describe("WorkList", () => {
+  it("shows the server's status counts, including items outside the loaded page", async () => {
+    render(
+      <WorkList
+        statusCounts={{ ...SUMMARY.status_counts, outdated: 4 }}
+        items={ITEMS.slice(0, 1)}
+        kinds={ALL_KINDS}
+        onKindsChange={vi.fn()}
+        reviewHref={reviewHref}
+        now={NOW}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Status: All. 4 outdated" }));
+    expect(screen.getByRole("menuitemradio", { name: "Outdated judgement · 4" })).toBeVisible();
+  });
+
   it("the row menu snoozes the selected item and P0 alarms cannot be snoozed", async () => {
     const onSnooze = vi.fn();
     render(
       <WorkList
+        statusCounts={SUMMARY.status_counts}
         items={ITEMS}
         kinds={ALL_KINDS}
         onKindsChange={vi.fn()}
@@ -364,6 +381,7 @@ describe("WorkList", () => {
   it("marks a stale list by its note and a dashed frame, never by lowering text contrast", () => {
     render(
       <WorkList
+        statusCounts={SUMMARY.status_counts}
         items={ITEMS}
         kinds={["pr"]}
         onKindsChange={() => {}}
@@ -550,6 +568,7 @@ describe("WorkList: comments of a pull request (owner 2026-11-23)", () => {
   const issue = ITEMS.find((item) => item.kind === "issue" && item.score.tier !== "p0")!;
   const list = (props: Partial<ComponentProps<typeof WorkList>>) => (
     <WorkList
+      statusCounts={SUMMARY.status_counts}
       items={[counted, unread, issue]}
       kinds={ALL_KINDS}
       onKindsChange={vi.fn()}

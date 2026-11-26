@@ -520,14 +520,14 @@ test.describe("My work (msw)", () => {
   test("daily limit marks the capped row and the older prompt stays in the scan status", async ({ page }) => {
     await open(page, "ranking-daily-cap");
     const info = page.locator("[data-scan-info]");
-    await expect(info).toContainText("Daily limit reached · resets at 00:00");
+    await expect(info).toContainText("Daily limit reached · resets at 25 Nov 2026, 23:00");
     await expect(info).toHaveAccessibleDescription(/2 items were judged with an older ranking prompt/);
     await status(page).click();
     await expect(
       main(page).getByRole("menuitemradio", { name: /^Outdated judgement/ }),
     ).toHaveAccessibleDescription("Judgement inputs changed after the LLM judged these items.");
     const unjudged = main(page).getByRole("menuitemradio", { name: /^Not judged yet/ });
-    await expect(unjudged).toHaveAccessibleDescription(/00:00.*Europe\/Warsaw/);
+    await expect(unjudged).toHaveAccessibleDescription(/resets at 25 Nov 2026, 23:00/);
     await unjudged.click();
     await expect(main(page).getByText("◌ not judged · daily limit")).toBeVisible();
   });

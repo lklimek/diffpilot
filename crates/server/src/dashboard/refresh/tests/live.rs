@@ -106,8 +106,8 @@ async fn item_live_only_with_webhook_and_installation() {
     assert_eq!(read_live(w.items("").await), Some(true));
     let summary = w.summary(ALICE).await;
     assert_ne!(summary.revision, revision);
-    assert_eq!(summary.live_repositories, Some(1));
-    assert!(summary.not_live_repositories.is_some_and(|count| count > 0));
+    assert_eq!(summary.live_repositories, 1);
+    assert!(summary.not_live_repositories > 0);
     assert_eq!(
         summary.last_event_at, None,
         "an installation delivery is not a dashboard update"
@@ -138,7 +138,7 @@ async fn item_live_only_with_webhook_and_installation() {
         .await
         .expect("suspension");
     assert_eq!(read_live(w.items("").await), Some(false));
-    assert_eq!(w.summary(ALICE).await.live_repositories, Some(0));
+    assert_eq!(w.summary(ALICE).await.live_repositories, 0);
 }
 
 #[tokio::test]
@@ -266,9 +266,9 @@ async fn repository_counts_exclude_unlisted_and_snoozed_repositories() {
             .unwrap();
     }
     let summary = w.summary(ALICE).await;
-    assert_eq!(summary.live_repositories, Some(0));
+    assert_eq!(summary.live_repositories, 0);
     assert_eq!(
         summary.not_live_repositories,
-        Some(u32::try_from(visible.len() - 1).unwrap())
+        u32::try_from(visible.len() - 1).unwrap()
     );
 }
