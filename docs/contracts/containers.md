@@ -144,6 +144,7 @@ W5 uses claudius 13.7.0 (`71096d7d4481977added8761b2cfd63cd84852b4`), including 
 without reply-chain attribution. A missing required target rejects host input before admission.
 A linked GitHub account can submit a decision proposal with the structured decision marker. The server checks
 the account's numeric GitHub ID. The member confirms the proposal in diffpilot before it becomes a decision.
+Neither bot status nor tenant membership implicitly grants relay authority.
 
 The server archives non-secret inputs under `data_dir/assessment-snapshots/<pass>.json` with mode 0600.
 The immutable reference and SHA-256 are stored in the pass; recovery checks both before reading the archive.

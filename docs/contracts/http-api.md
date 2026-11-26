@@ -690,7 +690,8 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
   current plug-in); they are ranked. `merge_state_pending` counts those of the user's pull requests Ready to merge
   could list whose merge state GitHub had not computed by the scan (the next refresh reads them again); null when the snapshot did not record merge states.
   Refreshes come from GitHub webhooks for tracked items, manual Refresh and the nightly scan. Reading the
-  summary does not schedule a refresh. See the v1.4 dashboard status additions below.
+  summary does not schedule a refresh. A summary read in a browser session (not an access-token read) counts as
+  the user's presence for the plug-in poller (ADR-022 §3). See the v1.4 dashboard status additions below.
 - **Excluded items (R1, B4).** `SnapshotMeta.exclusions` tells what the rules left out of the ranking, computed
   with the ranking at read time from the stored scan facts (so every stored snapshot has it; the web shows "not
   recorded for this snapshot" only when the field is absent): `total` (= `excluded`) and the non-zero `counts` per
