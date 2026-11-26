@@ -52,8 +52,12 @@ impl Window {
                 DashboardRead::Issue => &mut self.items.issues,
                 DashboardRead::Candidate => &mut self.items.candidates,
             };
+            let key = PrKey::new(&item.repo, item.number);
+            if let Some(id) = item.repository_id {
+                self.items.pull_repo_ids.insert(key.clone(), id);
+            }
             items.insert(
-                PrKey::new(&item.repo, item.number),
+                key,
                 ItemRef {
                     repo: item.repo.clone(),
                     number: item.number,
@@ -83,11 +87,16 @@ impl Window {
             (DashboardRead::Issue, &self.items.issues),
             (DashboardRead::Candidate, &self.items.candidates),
         ] {
-            work.items.extend(items.values().map(|item| DashboardItem {
-                read,
-                repo: item.repo.clone(),
-                number: item.number,
-            }));
+            work.items
+                .extend(items.iter().map(|(key, item)| DashboardItem {
+                    read,
+                    repo: item.repo.clone(),
+                    number: item.number,
+                    repository_id: match read {
+                        DashboardRead::Pull => self.items.pull_repo_ids.get(key).copied(),
+                        _ => None,
+                    },
+                }));
         }
         // If the destination is still blocked at expiry, start a fresh hold without spending a retry.
         let hold_until = previous
@@ -301,16 +310,20 @@ async fn route(
             tenant: target.tenant_id,
             user: target.user_id,
         };
+        let signal = changes.get(target.change);
         let read = if target.candidate {
             DashboardRead::Candidate
-        } else if matches!(
-            changes.get(target.change).map(|change| change.kind),
-            Some(ChangeKind::Issue)
-        ) {
+        } else if matches!(signal.map(|change| change.kind), Some(ChangeKind::Issue)) {
             DashboardRead::Issue
         } else {
             DashboardRead::Pull
         };
+        let repository_id = signal
+            .filter(|change| {
+                matches!(change.kind, ChangeKind::PullRequest)
+                    && matches!(change.action.as_deref(), Some("closed" | "reopened"))
+            })
+            .and_then(|change| change.repository.id);
         targets
             .entry(destination.clone())
             .or_insert_with(|| DispatchTarget::new(destination, attempts))
@@ -319,6 +332,7 @@ async fn route(
                 repo: target.repo,
                 number: target.number,
                 read,
+                repository_id,
             });
     }
     let watches = watched.into_iter().map(|(pr, review)| {

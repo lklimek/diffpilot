@@ -21,11 +21,11 @@ const REACH_BATCH: usize = 50;
 /// The selection of Q2 (the skill's `PR_DETAIL_QUERY` plus the head and base commits, the repository's privacy and
 /// name).
 const PULL_FRAGMENT: &str = " fragment Pull on PullRequest { number title url state isDraft \
-isCrossRepository body additions deletions createdAt updatedAt mergeable mergeStateStatus reviewDecision \
+isCrossRepository body additions deletions createdAt closedAt mergedAt updatedAt mergeable mergeStateStatus reviewDecision \
 baseRefName baseRefOid headRefName headRefOid milestone { title number state } \
 stackEntry { position stack { id baseRefName size entries(first: 100) { pageInfo { hasNextPage endCursor } \
 nodes { position pullRequest { number state } } } } } \
-baseRepository { nameWithOwner isPrivate viewerPermission defaultBranchRef { name } } \
+baseRepository { nameWithOwner fullDatabaseId isPrivate viewerPermission defaultBranchRef { name } } \
 headRepository { nameWithOwner } author { __typename login } \
 labels(first: 20) { nodes { name } } participants { totalCount } \
 closingIssuesReferences(first: 5) { nodes { number title labels(first: 10) { nodes { name } } } } \
@@ -101,6 +101,7 @@ pub struct Count {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PullRepository {
+    full_database_id: Option<Value>,
     /// `owner/name`.
     pub name_with_owner: String,
     /// Private repository (OD11: shown to this user only).
@@ -110,6 +111,14 @@ pub struct PullRepository {
     /// The signed-in user's permission (`ADMIN`, `MAINTAIN`, `WRITE`, `TRIAGE`, `READ`); null when unknown.
     #[serde(default)]
     pub viewer_permission: Option<String>,
+}
+
+impl PullRepository {
+    /// Stable GitHub repository identity from the details read.
+    pub(crate) fn github_id(&self) -> Option<i64> {
+        let id = self.full_database_id.as_ref()?;
+        id.as_i64().or_else(|| id.as_str()?.parse().ok())
+    }
 }
 
 /// An issue a pull request closes.
@@ -340,6 +349,10 @@ pub struct PullDetail {
     pub deletions: u64,
     /// Opened.
     pub created_at: Timestamp,
+    /// Closed (merged or not).
+    pub closed_at: Option<Timestamp>,
+    /// Merged.
+    pub merged_at: Option<Timestamp>,
     /// Last update.
     pub updated_at: Timestamp,
     /// `MERGEABLE`, `CONFLICTING`, `UNKNOWN`.
@@ -481,6 +494,8 @@ impl PullDetail {
 /// History facts of one pull request (Q13).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HistoryPr {
+    /// `OPEN`, `CLOSED`, `MERGED`.
+    pub state: String,
     /// Opened.
     pub created_at: Timestamp,
     /// Closed (merged or not).
@@ -742,7 +757,7 @@ impl<T: TokenSource> WorkClient<T> {
                 repository(
                     &pr.repo,
                     &format!(
-                        "pullRequest(number: {}) {{ createdAt closedAt mergedAt author {{ login }}{reviews} }}",
+                        "pullRequest(number: {}) {{ state createdAt closedAt mergedAt author {{ login }}{reviews} }}",
                         pr.number
                     ),
                 )
@@ -751,7 +766,9 @@ impl<T: TokenSource> WorkClient<T> {
         let mut fetched = Fetched::default();
         for (pr, value) in answers.resolved {
             let found = &value["pullRequest"];
-            let Some(created_at) = timestamp(&found["createdAt"]) else {
+            let (Some(state), Some(created_at)) =
+                (found["state"].as_str(), timestamp(&found["createdAt"]))
+            else {
                 fetched.notes.push(left_out(&pr, "The history", false));
                 continue;
             };
@@ -772,6 +789,7 @@ impl<T: TokenSource> WorkClient<T> {
             fetched.found.insert(
                 pr,
                 HistoryPr {
+                    state: state.to_owned(),
                     created_at,
                     closed_at: timestamp(&found["closedAt"]),
                     merged_at: timestamp(&found["mergedAt"]),

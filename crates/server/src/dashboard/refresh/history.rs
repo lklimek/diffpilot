@@ -11,11 +11,14 @@ use jiff::civil::{Date, Time};
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Span};
 
+use super::reread::PullRenames;
+use crate::dashboard::plugin::PrKey;
 use crate::dashboard::score::ScoreRules;
+use crate::dashboard::snapshot::Snapshot;
 use crate::dashboard::zone;
 use crate::github::work::{
-    AUTHORED_PAGES, AuthoredPulls, Fetched, HistoryPr, ItemRef, TokenSource, WorkClient, WorkError,
-    repo_name,
+    AUTHORED_PAGES, AuthoredPulls, Fetched, HistoryPr, ItemRef, PullDetail, TokenSource,
+    WorkClient, WorkError, repo_name,
 };
 
 /// The chart window.
@@ -67,12 +70,171 @@ impl Events {
             .into_iter()
             .map(|((item_id, kind), at)| HistoryEvent { kind, at, item_id })
             .collect();
-        let rank = |kind: HistoryKind| kind as u8;
-        events.sort_by(|a, b| {
-            (a.at, &a.item_id, rank(a.kind)).cmp(&(b.at, &b.item_id, rank(b.kind)))
-        });
+        sort_events(&mut events);
         events
     }
+}
+
+fn sort_events(events: &mut [HistoryEvent]) {
+    events.sort_by(|a, b| (a.at, &a.item_id, a.kind as u8).cmp(&(b.at, &b.item_id, b.kind as u8)));
+}
+
+struct Lifecycle<'a> {
+    author: Option<&'a str>,
+    state: &'a str,
+    created_at: Timestamp,
+    closed_at: Option<Timestamp>,
+    merged_at: Option<Timestamp>,
+}
+
+impl<'a> From<&'a HistoryPr> for Lifecycle<'a> {
+    fn from(pr: &'a HistoryPr) -> Self {
+        Self {
+            author: pr.author.as_deref(),
+            state: &pr.state,
+            created_at: pr.created_at,
+            closed_at: pr.closed_at,
+            merged_at: pr.merged_at,
+        }
+    }
+}
+
+impl<'a> From<&'a PullDetail> for Lifecycle<'a> {
+    fn from(pr: &'a PullDetail) -> Self {
+        Self {
+            author: pr.author.as_ref().and_then(|a| a.login.as_deref()),
+            state: &pr.state,
+            created_at: pr.created_at,
+            closed_at: pr.closed_at,
+            merged_at: pr.merged_at,
+        }
+    }
+}
+
+impl Lifecycle<'_> {
+    fn authored_by_scanned_login(&self, rules: &ScoreRules) -> bool {
+        self.author.is_some_and(|login| rules.is_scanned(login))
+    }
+
+    fn events(&self) -> impl Iterator<Item = (HistoryKind, Timestamp)> {
+        let terminal = match self.state {
+            "MERGED" => self.merged_at.map(|at| (HistoryKind::PrMerged, at)),
+            "CLOSED" => self.closed_at.map(|at| (HistoryKind::PrClosedUnmerged, at)),
+            _ => None,
+        };
+        std::iter::once((HistoryKind::PrOpened, self.created_at)).chain(terminal)
+    }
+}
+
+/// Replaces authored lifecycle events from the same pull details used to update open items.
+pub(super) fn apply(
+    rules: &ScoreRules,
+    stored: &mut Snapshot,
+    found: &BTreeMap<ItemRef, PullDetail>,
+    renames: &PullRenames,
+    now: Timestamp,
+) -> bool {
+    if found.is_empty() {
+        return false;
+    }
+    let zone = stored
+        .settings
+        .time_zone
+        .as_deref()
+        .and_then(zone::parse)
+        .unwrap_or(TimeZone::UTC);
+    let (_, start) = window_start(now, &zone);
+    let mut updates: HashMap<_, Vec<_>> = found
+        .iter()
+        .map(|(item, detail)| {
+            let repo = repo_name(&item.repo);
+            let item_id = if let Some(rename) = renames.get(item) {
+                rename.current.to_string()
+            } else {
+                let name = detail
+                    .base_repository
+                    .as_ref()
+                    .map(|base| base.name_with_owner.as_str())
+                    .filter(|name| name.eq_ignore_ascii_case(&repo))
+                    .unwrap_or(&repo);
+                format!("{name}#{}", item.number)
+            };
+            let lifecycle = Lifecycle::from(detail);
+            let authored = lifecycle.authored_by_scanned_login(rules);
+            let events = lifecycle
+                .events()
+                .filter(|(_, at)| authored && *at >= start)
+                .map(|(kind, at)| HistoryEvent {
+                    kind,
+                    at,
+                    item_id: item_id.clone(),
+                })
+                .collect();
+            (item_id.to_ascii_lowercase(), events)
+        })
+        .collect();
+    for old in renames.values().flat_map(|rename| &rename.previous) {
+        updates
+            .entry(old.to_string().to_ascii_lowercase())
+            .or_default();
+    }
+    let mut changed = false;
+    stored.history.retain(|event| {
+        if event.kind == HistoryKind::ReviewGiven {
+            return true;
+        }
+        let Some(events) = updates.get_mut(&event.item_id.to_ascii_lowercase()) else {
+            return true;
+        };
+        if let Some(index) = events.iter().position(|next| next == event) {
+            events.swap_remove(index);
+            true
+        } else {
+            changed = true;
+            false
+        }
+    });
+    let kept = stored.history.len();
+    stored.history.extend(updates.into_values().flatten());
+    changed |= stored.history.len() != kept;
+    if changed {
+        sort_events(&mut stored.history);
+    }
+    changed
+}
+
+/// Reconciles the scan's open membership and chart against the same latest observed state.
+pub(super) fn reconcile(
+    rules: &ScoreRules,
+    pulls: &mut BTreeMap<ItemRef, PullDetail>,
+    terminal: &BTreeMap<ItemRef, PullDetail>,
+    history: &BTreeMap<ItemRef, HistoryPr>,
+    start: Timestamp,
+) -> Vec<HistoryEvent> {
+    let mut events = Events::default();
+    from_details(rules, history, start, &mut events);
+    let states: HashMap<_, _> = history
+        .iter()
+        .map(|(item, detail)| (PrKey::new(&item.repo, item.number), detail.state.as_str()))
+        .collect();
+    let mut reconcile = |item: &ItemRef, detail: &PullDetail| {
+        if let Some(state) = states.get(&PrKey::new(&item.repo, item.number)) {
+            return *state == "OPEN";
+        }
+        let lifecycle = Lifecycle::from(detail);
+        if lifecycle.authored_by_scanned_login(rules) {
+            for (kind, at) in lifecycle.events() {
+                events.add(kind, item, at, start);
+            }
+        }
+        lifecycle.state == "OPEN"
+    };
+    for (item, detail) in terminal {
+        // Terminal Q2 answers can supply chart facts but do not carry open ranking context.
+        reconcile(item, detail);
+    }
+    pulls.retain(|item, detail| reconcile(item, detail));
+    events.into_events()
 }
 
 /// Events of pull requests read by search and Q13.
@@ -83,15 +245,10 @@ fn from_details(
     events: &mut Events,
 ) {
     for (item, pr) in details {
-        let own = pr.author.as_deref().is_some_and(|a| rules.is_scanned(a));
-        if own {
-            events.add(HistoryKind::PrOpened, item, pr.created_at, start);
-            match (pr.merged_at, pr.closed_at) {
-                (Some(merged), _) => events.add(HistoryKind::PrMerged, item, merged, start),
-                (None, Some(closed)) => {
-                    events.add(HistoryKind::PrClosedUnmerged, item, closed, start);
-                }
-                (None, None) => {}
+        let lifecycle = Lifecycle::from(pr);
+        if lifecycle.authored_by_scanned_login(rules) {
+            for (kind, at) in lifecycle.events() {
+                events.add(kind, item, at, start);
             }
             // Reviews count on other people's pull requests only: GitHub lists an author's thread replies as
             // reviews, and a scanned login reviewing another's pull request is the user reviewing their own work.
@@ -125,16 +282,14 @@ pub(super) struct Refused<'a> {
 /// Reads the history of `logins` since `first` (local date) / `start`. A login search refuses is read from the
 /// pull requests of the configured and enumerated repositories (whoever merged them; Q16) plus the pull requests
 /// its public events name (its reviews elsewhere; Q14). Errors that end the refresh are returned; others become
-/// notes.
+/// notes. Lifecycle facts read in Q13 take precedence over Q16.
 pub(super) async fn collect<T: TokenSource>(
     client: &WorkClient<T>,
-    rules: &ScoreRules,
     logins: &[String],
     refused_from: &Refused<'_>,
     first: Date,
     start: Timestamp,
-) -> Result<(Vec<HistoryEvent>, Vec<ScanNote>), WorkError> {
-    let mut events = Events::default();
+) -> Result<Fetched<HistoryPr>, WorkError> {
     let mut notes = Vec::new();
     let mut searched: BTreeSet<ItemRef> = BTreeSet::new();
     let mut from_feeds: BTreeSet<ItemRef> = BTreeSet::new();
@@ -210,16 +365,16 @@ pub(super) async fn collect<T: TokenSource>(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    let Fetched {
-        mut found,
-        notes: detail_notes,
-    } = client.history_details(&pulls, logins).await?;
-    notes.extend(detail_notes);
-    for (item, pr) in listed {
-        found.entry(item).or_insert(pr);
-    }
-    from_details(rules, &found, start, &mut events);
-    Ok((events.into_events(), notes))
+    let fetched = client.history_details(&pulls, logins).await?;
+    notes.extend(fetched.notes);
+    let mut seen = BTreeSet::new();
+    let found = fetched
+        .found
+        .into_iter()
+        .chain(listed)
+        .filter(|(item, _)| seen.insert(PrKey::new(&item.repo, item.number)))
+        .collect();
+    Ok(Fetched { found, notes })
 }
 
 /// The UTC date of `at` (scan notes name days, not instants).
@@ -331,6 +486,7 @@ mod tests {
             (
                 item(1190),
                 HistoryPr {
+                    state: "MERGED".to_owned(),
                     created_at: at("2026-11-02T10:00:00Z"),
                     closed_at: Some(at("2026-11-10T10:00:00Z")),
                     merged_at: Some(at("2026-11-10T10:00:00Z")),
@@ -341,6 +497,7 @@ mod tests {
             (
                 item(1195),
                 HistoryPr {
+                    state: "OPEN".to_owned(),
                     created_at: at("2026-11-01T10:00:00Z"),
                     closed_at: None,
                     merged_at: None,
@@ -357,6 +514,7 @@ mod tests {
             (
                 item(1100),
                 HistoryPr {
+                    state: "CLOSED".to_owned(),
                     created_at: at("2026-07-01T10:00:00Z"),
                     closed_at: Some(at("2026-07-02T10:00:00Z")),
                     merged_at: None,
@@ -407,6 +565,7 @@ mod tests {
         let rules = ScoreRules::new("alice", &settings);
         let start = at("2026-08-25T22:00:00Z");
         let own = |author: &str, reviewer: &str| HistoryPr {
+            state: "OPEN".to_owned(),
             created_at: at("2026-11-02T10:00:00Z"),
             closed_at: None,
             merged_at: None,

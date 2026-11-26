@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use contracts::api::dashboard::{ItemKey, ItemTarget};
+use contracts::common::RepoRef;
 use contracts::time::Timestamp;
 use db::error::DbError;
 use tokio::time::Instant;
@@ -23,6 +24,7 @@ const DAILY_ADDITIONS: usize = 20;
 #[derive(Default)]
 pub(crate) struct EventItems {
     pub(crate) pulls: BTreeMap<PrKey, ItemRef>,
+    pub(crate) pull_repo_ids: BTreeMap<PrKey, i64>,
     pub(crate) issues: BTreeMap<PrKey, ItemRef>,
     pub(crate) candidates: BTreeMap<PrKey, ItemRef>,
 }
@@ -94,11 +96,10 @@ pub(crate) async fn reread_items(
         }
         existing.insert(key);
     }
-    let candidates: BTreeSet<_> = items
+    let candidates: Vec<_> = items
         .candidates
         .iter()
         .filter(|(key, _)| !existing.contains(*key))
-        .map(|(_, item)| item.clone())
         .collect();
     let issues: Vec<_> = stored
         .issues
@@ -140,39 +141,75 @@ pub(crate) async fn reread_items(
     };
     let pull_limit = pulls.len().min(reread::REREAD_LIMIT);
     let issue_limit = issues.len().min(reread::REREAD_LIMIT - pull_limit);
-    let new_limit = candidate_limit.min(reread::REREAD_LIMIT - pull_limit - issue_limit);
+    let remaining = reread::REREAD_LIMIT - pull_limit - issue_limit;
+    let new_limit = candidates.len().min(candidate_limit).min(remaining);
+    let admitting: BTreeSet<_> = candidates[..new_limit]
+        .iter()
+        .map(|(key, _)| *key)
+        .collect();
+    let unranked: Vec<_> = items
+        .pulls
+        .iter()
+        .filter(|(key, _)| !existing.contains(*key) && !admitting.contains(*key))
+        .map(|(_, item)| item)
+        .collect();
+    let history_limit = unranked.len().min(remaining - new_limit);
     log_skipped(
         scope,
         "event item or re-read limit",
         pulls[pull_limit..]
             .iter()
             .chain(issues[issue_limit..].iter())
-            .chain(candidates.iter().skip(new_limit)),
+            .chain(candidates[new_limit..].iter().map(|(_, item)| *item))
+            .chain(unranked[history_limit..].iter().copied()),
     );
 
     let wanted: Vec<_> = pulls
         .into_iter()
         .take(pull_limit)
-        .chain(candidates.iter().take(new_limit).cloned())
+        .chain(
+            candidates[..new_limit]
+                .iter()
+                .map(|(_, item)| (*item).clone()),
+        )
+        .chain(unranked[..history_limit].iter().map(|item| (*item).clone()))
         .collect();
     let mut dirty = false;
     let mut retry = None;
     for (index, batch) in wanted.chunks(PR_BATCH).enumerate() {
-        let fetched = match client.pull_requests(batch).await {
+        let mut fetched = match client.pull_requests(batch).await {
             Ok(fetched) => fetched,
             Err(error) => {
                 retry = read_failure(state, scope, error, &wanted[index * PR_BATCH..], now);
                 break;
             }
         };
-        let (updated, closed) = reread::apply(&rules, &mut stored.pull_requests, &fetched.found);
+        let ids: Vec<_> = fetched
+            .found
+            .keys()
+            .filter_map(|item| {
+                items
+                    .pull_repo_ids
+                    .get(&PrKey::new(&item.repo, item.number))
+                    .copied()
+            })
+            .collect();
+        let renames = if ids.is_empty() {
+            reread::PullRenames::new()
+        } else {
+            let names = state.db.repos().bound_names(&scope.tenant_id, &ids).await?;
+            verified_renames(&mut fetched.found, &items.pull_repo_ids, &names)
+        };
+        let (updated, closed, history_changed) =
+            reread::apply(&rules, &mut stored, &fetched.found, &renames, now);
+        dirty |= history_changed;
         if updated + closed > 0 {
             stored.prs_reread_at = Some(now);
             dirty = true;
         }
         if let Some((rules, policies)) = &candidate_rules {
             for (item, detail) in &fetched.found {
-                if candidates.contains(item)
+                if admitting.contains(&PrKey::new(&item.repo, item.number))
                     && stored.event_additions.len() < DAILY_ADDITIONS
                     && add_candidate(&mut stored, item, detail, rules, policies, now)
                 {
@@ -180,10 +217,11 @@ pub(crate) async fn reread_items(
                 }
             }
         }
-        if batch
-            .iter()
-            .any(|item| !candidates.contains(item) && !fetched.found.contains_key(item))
-        {
+        if batch.iter().any(|item| {
+            let key = PrKey::new(&item.repo, item.number);
+            (!admitting.contains(&key) || items.pulls.contains_key(&key))
+                && !fetched.found.contains_key(item)
+        }) {
             retry = Some(EventReadError::Github(WorkError::ExecutionFailed));
         }
     }
@@ -233,6 +271,52 @@ pub(crate) async fn reread_items(
         Err(error) => return Err(error.into()),
     }
     retry.map_or(Ok(EventRead::Complete), Err)
+}
+
+/// Discards answers for a reused name and maps aliases only after GitHub confirms the ID.
+fn verified_renames(
+    found: &mut BTreeMap<ItemRef, PullDetail>,
+    ids: &BTreeMap<PrKey, i64>,
+    names: &[(i64, RepoRef)],
+) -> reread::PullRenames {
+    let mut renames = reread::PullRenames::new();
+    found.retain(|item, detail| {
+        let key = PrKey::new(&item.repo, item.number);
+        let Some(&id) = ids.get(&key) else {
+            return true;
+        };
+        let expected_names: Vec<_> = names
+            .iter()
+            .filter(|(known_id, _)| *known_id == id)
+            .collect();
+        let base = detail.base_repository.as_ref();
+        let actual = base.and_then(|base| base.github_id());
+        if actual != Some(id) {
+            return actual.is_none()
+                && expected_names
+                    .iter()
+                    .all(|(_, repo)| PrKey::new(repo, item.number) == key);
+        }
+        let Some(current) =
+            base.and_then(|base| ItemRef::parse(&base.name_with_owner, item.number))
+        else {
+            return false;
+        };
+        let current_key = PrKey::new(&current.repo, current.number);
+        let previous: Vec<_> = expected_names
+            .into_iter()
+            .map(|(_, repo)| ItemRef {
+                repo: repo.clone(),
+                number: item.number,
+            })
+            .filter(|old| PrKey::new(&old.repo, old.number) != current_key)
+            .collect();
+        if current_key != key || !previous.is_empty() {
+            renames.insert(item.clone(), reread::PullRename { current, previous });
+        }
+        true
+    });
+    renames
 }
 
 fn read_failure(

@@ -82,7 +82,7 @@ pub struct WebhookChange {
     /// The base repository of an explicit PR in a check payload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_repository: Option<Repository>,
-    /// Login named by an action that can introduce a candidate. Used only to route the re-read.
+    /// Login that can route a re-read for ranking admission or authored pull request history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidate_login: Option<String>,
 }
