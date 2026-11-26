@@ -197,7 +197,7 @@ async fn me_prs_union_of_analyses_watches_openings() {
     w.get(PR).await;
     let all_sources = seed_pr(&w, DEFAULT_TENANT, 483).await;
     let prs = w.state.db.pull_requests();
-    prs.record_opening(DEFAULT_TENANT, "u1", all_sources, at(7))
+    prs.record_opening(DEFAULT_TENANT, "u1", all_sources, at(11))
         .await
         .unwrap();
     watch(&w, DEFAULT_TENANT, all_sources, at(8)).await;
@@ -213,12 +213,13 @@ async fn me_prs_union_of_analyses_watches_openings() {
     assert!(rows[0].get("opened_at").is_some());
     assert!(rows[0].get("analysis").is_none() && rows[0].get("watch").is_none());
     assert_eq!(rows[1]["title"], "Pull request 483");
-    assert_eq!(rows[1]["last_activity_at"], json!(at(10)));
-    assert_eq!(rows[1]["opened_at"], json!(at(7)));
+    assert_eq!(rows[1]["last_activity_at"], json!(at(11)));
+    assert_eq!(rows[1]["opened_at"], json!(at(11)));
     assert_eq!(
         rows[1]["analysis"],
         json!({
             "id": latest, "status": "planning", "head_sha": "c".repeat(40), "head_moved": true,
+            "requested_at": at(10),
         })
     );
     assert_eq!(

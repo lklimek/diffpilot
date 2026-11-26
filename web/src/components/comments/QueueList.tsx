@@ -1,5 +1,5 @@
 import { useState, type RefObject } from "react";
-import type { CommentItem, DecisionKind, QueueEntry } from "../../api/generated/types";
+import type { CommentCounts, CommentItem, DecisionKind, QueueEntry } from "../../api/generated/types";
 import { MenuButton, MenuItem } from "../menu/MenuButton";
 import { clockText } from "../format/time";
 import { CommentTitle, BotHeading } from "./CommentTitle";
@@ -10,7 +10,6 @@ import {
   commentStatus,
   duplicatePrimary,
   followsPrimary,
-  needsYouCount,
   needsYouQueue,
   NOT_ASSESSED,
   QUEUE_STATUS,
@@ -45,6 +44,7 @@ export function itemsAfter(queue: QueueEntry[], entry: QueueEntry): number[] {
 
 interface QueueListProps {
   queue: QueueEntry[];
+  counts: Pick<CommentCounts, "needs_you" | "needs_you_gates" | "not_a_review_point">;
   items: ReadonlyMap<number, CommentItem>;
   status?: QueueStatus;
   onStatus?: (status: QueueStatus) => void;
@@ -209,6 +209,7 @@ export function commentStatusText(item: CommentItem, inPass?: number, since?: st
 /** Pick a status, then open an item or a recommendation group within that view. */
 export function QueueList({
   queue,
+  counts,
   items,
   current,
   onOpen,
@@ -229,8 +230,8 @@ export function QueueList({
   const status = controlledStatus ?? localStatus;
   const all = [...items.values()];
   const questions = inListOrder(needsYouQueue(queue, items));
-  const needs = questions.flatMap((entry) => entry.item_nos);
-  const gates = needs.filter((no) => items.get(no)!.gates.length).length;
+  const needs = new Set(questions.flatMap((entry) => entry.item_nos));
+  const gates = counts.needs_you_gates;
   const subsets = {
     needs_you: questions,
     ...(Object.fromEntries(
@@ -248,7 +249,7 @@ export function QueueList({
     ) as Record<Exclude<QueueStatus, "needs_you">, QueueEntry[]>),
   };
   const count = (key: QueueStatus) =>
-    key === "needs_you" ? needsYouCount(0, queue, items) : subsets[key].length;
+    key === "needs_you" || key === "not_a_review_point" ? counts[key] : subsets[key].length;
   const selected = subsets[status];
   const visible =
     status === "all"
@@ -314,7 +315,7 @@ export function QueueList({
                     )}
                   </span>
                 )}
-                {state === "needs_you" && needs.includes(first.no) && <Marks entry={entry} first={first} />}
+                {state === "needs_you" && needs.has(first.no) && <Marks entry={entry} first={first} />}
               </span>
             </button>
           </Tooltip>

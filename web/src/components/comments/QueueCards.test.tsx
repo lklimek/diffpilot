@@ -264,6 +264,7 @@ describe("QueueList", () => {
     render(
       <QueueList
         queue={[{ item_nos: items.map((i) => i.no), reason: "group" }]}
+        counts={{ needs_you: items.length, needs_you_gates: 0, not_a_review_point: 0 }}
         items={new Map(items.map((i) => [i.no, i]))}
         current={null}
         onOpen={vi.fn()}

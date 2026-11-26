@@ -13,6 +13,7 @@ const showQueue = () => {
   render(
     <QueueList
       queue={inListOrder(overview().queue)}
+      counts={overview().counts}
       items={items}
       current={null}
       onOpen={() => {}}
@@ -146,6 +147,7 @@ describe("QueueList state marks in Needs you (owner 2026-11-23, plan §3.9)", ()
     render(
       <QueueList
         queue={inListOrder(overview().queue)}
+        counts={overview().counts}
         items={new Map(items.map((i) => [i.no, i]))}
         current={null}
         onOpen={() => {}}

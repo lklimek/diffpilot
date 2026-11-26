@@ -15,8 +15,8 @@ use contracts::agent::judge_work::{
 };
 use contracts::agent::strict::StrictSchemaError;
 use contracts::api::dashboard::{
-    ItemKey, ItemTarget, RankingState, RefreshState, RefreshStatus, ScanStep, ScanStepKey,
-    StepState,
+    ItemKey, ItemTarget, RankingLimit, RankingState, RefreshState, RefreshStatus, ScanStep,
+    ScanStepKey, StepState,
 };
 use contracts::common::LlmLanguage;
 use contracts::ids::{JobId, RefreshId};
@@ -160,7 +160,7 @@ enum BatchEnd {
     /// These display ids stayed unjudged after the last run.
     Unjudged(Vec<String>),
     /// A further run of these items exceeded a cap (named) and was not sent.
-    Capped(Vec<String>, String),
+    Capped(Vec<String>, RankingLimit),
 }
 
 /// An item queued for judgement.
@@ -195,6 +195,7 @@ async fn rank(state: AppState, run: RankRun) {
         bulk_rejudge_keys: Vec::new(),
         unclaimed_since: None,
         provisional: None,
+        left_provisional_by: None,
     };
     let end = match ranking.run().await {
         Ok(None) => {
@@ -239,6 +240,7 @@ struct Ranking<'a> {
     unclaimed_since: Option<tokio::time::Instant>,
     /// Which cap left items provisional, as the ranking step's detail shows it while no other detail is given.
     provisional: Option<String>,
+    left_provisional_by: Option<RankingLimit>,
 }
 
 impl<'a> Ranking<'a> {
@@ -255,9 +257,10 @@ impl<'a> Ranking<'a> {
             return Err(RankError::Stale);
         }
         self.counts.judged = record.counts.judged;
-        if self.run.mode == RankMode::Rejudge {
+        if matches!(self.run.mode, RankMode::Rejudge | RankMode::Pending) {
             self.counts.left_provisional = record.counts.left_provisional;
             self.left_provisional_keys = record.progress.left_provisional_keys;
+            self.left_provisional_by = record.progress.left_provisional_by;
         }
         self.zone = ranking_zone(self.state, tenant, user).await?;
         self.language = self.state.db.users().get(user).await?.language;
@@ -297,6 +300,30 @@ impl<'a> Ranking<'a> {
                     .rejudge_targets(&self.run.scope, holder.id, holder.ranking_attempt)
                     .unwrap_or_default();
                 queue.retain(|q| targets.contains(&q.item.key));
+            }
+            let pending = &snapshot.pending_event_items;
+            if self.run.mode == RankMode::Pending {
+                queue
+                    .retain(|q| pending.contains(&q.item.key) && !stored.contains_key(&q.item.key));
+                let previously_capped = self.left_provisional_keys.len();
+                self.left_provisional_keys
+                    .retain(|key| !queue.iter().any(|q| &q.item.key == key));
+                let reconsidered = count(previously_capped - self.left_provisional_keys.len());
+                self.counts.left_provisional =
+                    self.counts.left_provisional.saturating_sub(reconsidered);
+                if self.counts.left_provisional == 0 {
+                    self.left_provisional_by = None;
+                }
+            }
+            if !pending.is_empty()
+                && (self.run.mode == RankMode::Pending
+                    || (per_refresh.is_some()
+                        && !queue.iter().any(|q| q.new && pending.contains(&q.item.key))))
+            {
+                // A scan leaves unsent event keys for a dedicated attempt with the daily allowance.
+                dashboard
+                    .clear_event_ranking(tenant, user, holder.id)
+                    .await?;
             }
             if !first {
                 queue.retain(|q| !capped.contains(&q.item.key));
@@ -379,11 +406,13 @@ impl<'a> Ranking<'a> {
             "ranking: {take} items to judge, {reused} judgements reused"
         )];
         if left > 0 {
-            let note = format!(
-                "{} left provisional: {}",
-                items(left),
-                limit(per_refresh, per_day)
-            );
+            let cap = if per_day < per_refresh {
+                RankingLimit::Daily
+            } else {
+                RankingLimit::PerRefresh
+            };
+            let note = format!("{} left provisional: {}", items(left), limit_note(cap));
+            self.left_provisional_by = Some(cap);
             lines.push(note.clone());
             self.provisional = Some(note);
         }
@@ -404,7 +433,8 @@ impl<'a> Ranking<'a> {
                     not_ranked = ids;
                     "a batch could not be judged".to_owned()
                 }
-                BatchEnd::Capped(ids, limit) => {
+                BatchEnd::Capped(ids, cap) => {
+                    self.left_provisional_by = Some(cap);
                     not_ranked = ids;
                     self.left_provisional_keys.extend(
                         batches[index + 1..]
@@ -413,7 +443,7 @@ impl<'a> Ranking<'a> {
                             .filter(|q| q.new)
                             .map(|q| q.item.key.clone()),
                     );
-                    limit
+                    limit_note(cap)
                 }
             };
             stop = Some((
@@ -531,12 +561,12 @@ impl<'a> Ranking<'a> {
                 items: pending.iter().map(|q| q.item.clone()).collect(),
             };
             let job = JobId::new_random();
-            if let Some(limit) = self.reserve(job, &pending, per_refresh).await? {
-                tracing::info!(refresh = %self.run.refresh_id, batch, generation, items = pending.len(), %limit,
+            if let Some(cap) = self.reserve(job, &pending, per_refresh).await? {
+                tracing::info!(refresh = %self.run.refresh_id, batch, generation, items = pending.len(), ?cap,
                     "dashboard judge batch not sent: the ranking cap is reached");
                 self.left_provisional_keys
                     .extend(pending.iter().filter(|q| q.new).map(|q| q.item.key.clone()));
-                return Ok(BatchEnd::Capped(ids(&pending), limit));
+                return Ok(BatchEnd::Capped(ids(&pending), cap));
             }
             let submitted = self.submit(job, batch, generation, &input).await;
             if !matches!(&submitted, Ok(handle) if handle.job_id == job) {
@@ -564,7 +594,7 @@ impl<'a> Ranking<'a> {
         job_id: JobId,
         items: &[&Queued],
         per_refresh: Option<u32>,
-    ) -> Result<Option<String>, RankError> {
+    ) -> Result<Option<RankingLimit>, RankError> {
         let (tenant, user) = self.scope();
         let _writer = self.state.dashboard.readers().writer(&self.run.scope).await;
         let sent_at = self.state.dashboard.now();
@@ -599,8 +629,8 @@ impl<'a> Ranking<'a> {
                 );
                 Ok(None)
             }
-            SendReservation::OverRefreshCap => Ok(Some(limit(0, 1))),
-            SendReservation::OverDailyCap => Ok(Some(limit(1, 0))),
+            SendReservation::OverRefreshCap => Ok(Some(RankingLimit::PerRefresh)),
+            SendReservation::OverDailyCap => Ok(Some(RankingLimit::Daily)),
             SendReservation::Stale => Err(RankError::Stale),
         }
     }
@@ -914,6 +944,7 @@ impl<'a> Ranking<'a> {
         let dashboard = self.state.db.dashboard();
         let record = dashboard.refresh(tenant, user, self.run.refresh_id).await?;
         let mut progress = record.progress;
+        progress.left_provisional_by = self.left_provisional_by;
         progress
             .left_provisional_keys
             .clone_from(&self.left_provisional_keys);
@@ -997,12 +1028,11 @@ impl<'a> Ranking<'a> {
     }
 }
 
-/// The cap that leaves items provisional, as the dashboard names it: the daily one when less of it is left.
-fn limit(per_refresh: u32, per_day: u32) -> String {
-    if per_day < per_refresh {
-        format!("today's ranking limit ({DAILY_CAP})")
-    } else {
-        format!("this refresh's ranking limit ({REFRESH_CAP})")
+/// Log text for the cap that leaves items provisional.
+fn limit_note(cap: RankingLimit) -> String {
+    match cap {
+        RankingLimit::Daily => format!("today's ranking limit ({DAILY_CAP})"),
+        RankingLimit::PerRefresh => format!("this refresh's ranking limit ({REFRESH_CAP})"),
     }
 }
 

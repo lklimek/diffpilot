@@ -2,7 +2,7 @@ import type { MyAnalysis, PrRef, WatchedPr, PrHistoryItem } from "../../api/gene
 
 export type HistoryRow = Omit<PrHistoryItem, "analysis" | "watch"> & {
   analysis?: Pick<NonNullable<PrHistoryItem["analysis"]>, "id" | "status"> & {
-    requestedAt?: string;
+    requestedAt: string;
     headMoved?: boolean;
   };
   watch?: NonNullable<PrHistoryItem["watch"]>;
@@ -50,6 +50,7 @@ export function historyFromServer({ analysis, ...entry }: PrHistoryItem): Histor
     analysis: analysis && {
       id: analysis.id,
       status: analysis.status,
+      requestedAt: analysis.requested_at,
       headMoved: analysis.head_moved,
     },
   };

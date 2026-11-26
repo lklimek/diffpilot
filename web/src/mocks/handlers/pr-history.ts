@@ -33,10 +33,14 @@ export const getPrHistory = route("listMyPrs", ({ request }) => {
       ...previous,
       pr: row.pr,
       title: row.title,
-      last_activity_at: previous?.last_activity_at ?? row.created_at,
+      last_activity_at:
+        previous && Date.parse(previous.last_activity_at) >= Date.parse(row.created_at)
+          ? previous.last_activity_at
+          : row.created_at,
       analysis: {
         id: row.id,
         status: row.status,
+        requested_at: row.created_at,
         head_sha: row.id === analysis.id ? analysis.pr.head_sha : "",
         head_moved: head_moved && row.id === analysis.id,
       },

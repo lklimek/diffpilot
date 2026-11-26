@@ -179,7 +179,7 @@ fn snapshot(prs: Vec<StoredPr>, issues: Vec<StoredIssue>, todos: Vec<StoredTodo>
         prs_reread_at: None,
         last_event_at: None,
         event_additions: Vec::new(),
-        event_ranking_pending: false,
+        pending_event_items: Vec::new(),
         todos_hidden: false,
         snoozes: Vec::new(),
     }
@@ -350,6 +350,17 @@ impl Harness {
         path: &str,
         body: Option<&str>,
     ) -> (axum::http::StatusCode, Value) {
+        self.request(user, axum::http::Method::POST, path, body)
+            .await
+    }
+
+    async fn request(
+        &self,
+        user: &str,
+        method: axum::http::Method,
+        path: &str,
+        body: Option<&str>,
+    ) -> (axum::http::StatusCode, Value) {
         use axum::body::Body as HttpBody;
         use axum::http::Request;
         use http_body_util::BodyExt;
@@ -371,7 +382,9 @@ impl Harness {
             )
             .await
             .expect("session");
-        let mut request = Request::post(path)
+        let mut request = Request::builder()
+            .method(method)
+            .uri(path)
             .header("cookie", format!("__Host-sr_session={token}"))
             .header("x-csrf-token", "csrf");
         if body.is_some() {
@@ -1302,9 +1315,6 @@ async fn rejudge_while_ranking_is_drained() {
         .replace_current_snapshot(DEFAULT_TENANT, "u1", id, &snap)
         .await
         .expect("add item");
-    refresh::rank_pending(&h.state, &scope("u1"))
-        .await
-        .expect("ranking is live");
     h.complete(&first, succeeded(neutral(&input))).await;
     let (next, input) = h.serve(|i| succeeded(neutral(i))).await;
     assert_eq!(next.round, first.round);
@@ -1746,6 +1756,7 @@ async fn refresh_cap_judges_at_most_48() {
     let snap = snapshot(prs(REFRESH_CAP + 2), vec![], vec![]);
     let (id, done) = h.rank_all("u1", &snap).await;
     assert_eq!((done.judged, done.left_provisional), (REFRESH_CAP, 2));
+    assert_eq!(done.left_provisional_by, Some(RankingLimit::PerRefresh));
     // The day's count (48 of 120) has room: the refresh's limit is the one named.
     let note = "2 items left provisional: this refresh's ranking limit (48)";
     assert!(done.log.iter().any(|l| l.ends_with(note)), "{:?}", done.log);
@@ -2369,6 +2380,7 @@ async fn unclaimed_judge_job_ends_the_ranking() {
         bulk_rejudge_keys: Vec::new(),
         unclaimed_since: Some(long_ago),
         provisional: None,
+        left_provisional_by: None,
     };
     let input = JudgeWorkInput {
         items: vec![candidates(&snap, LlmLanguage::En)[0].item.clone()],
@@ -2458,6 +2470,7 @@ async fn ask_container_does_not_suppress_the_unclaimed_judge_limit() {
         bulk_rejudge_keys: Vec::new(),
         unclaimed_since: Some(long_ago),
         provisional: None,
+        left_provisional_by: None,
     };
     let input = JudgeWorkInput {
         items: vec![candidates(&snap, LlmLanguage::En)[0].item.clone()],
@@ -2621,6 +2634,7 @@ async fn stale_attempt_writes_neither_notes_nor_judgements() {
         bulk_rejudge_keys: Vec::new(),
         unclaimed_since: None,
         provisional: None,
+        left_provisional_by: None,
     };
     let dashboard = h.db().dashboard();
     let cancelled = dashboard
@@ -3072,7 +3086,9 @@ async fn a_retry_beyond_the_cap_is_not_sent() {
 async fn pending_ranking_has_only_the_daily_cap() {
     let h = harness().await;
     sent_earlier(&h, "u1", DAILY_CAP - REFRESH_CAP - 1).await;
-    let id = h.stored("u1", &snapshot(prs(3), vec![], vec![])).await;
+    let mut snap = snapshot(prs(3), vec![], vec![]);
+    snap.pending_event_items = (1..=3).map(key).collect();
+    let id = h.stored("u1", &snap).await;
     let sent_at = h.state.dashboard.now();
     assert_eq!(
         h.db()
@@ -3111,7 +3127,9 @@ async fn pending_ranking_has_only_the_daily_cap() {
             .await,
         (1, 1)
     );
-    assert_eq!(h.ranked("u1", id).await.left_provisional, 2);
+    let status = h.ranked("u1", id).await;
+    assert_eq!(status.left_provisional, 2);
+    assert_eq!(status.left_provisional_by, Some(RankingLimit::Daily));
 }
 
 fn worker_lost() -> JobOutcome {
@@ -3253,6 +3271,7 @@ async fn failed_submit_releases_its_reservation() {
         bulk_rejudge_keys: Vec::new(),
         unclaimed_since: None,
         provisional: None,
+        left_provisional_by: None,
     };
     let (queued, _) = ranking.queue(
         &snap,

@@ -131,6 +131,11 @@
           "description": "Head the analysis was requested for.",
           "$ref": "#/$defs/CommitSha"
         },
+        "requested_at": {
+          "description": "When the reader requested the analysis.",
+          "type": "string",
+          "format": "date-time"
+        },
         "head_moved": {
           "description": "Whether the pull request has moved to a different head.",
           "type": "boolean"
@@ -140,6 +145,7 @@
         "id",
         "status",
         "head_sha",
+        "requested_at",
         "head_moved"
       ]
     },

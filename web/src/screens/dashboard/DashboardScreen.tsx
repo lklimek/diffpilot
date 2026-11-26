@@ -1,3 +1,5 @@
+import { useQuery } from "@tanstack/react-query";
+import { rankingUsageQuery } from "../../api/queries";
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router";
 import { useDashboardTabStatus } from "../../app/tabStatus";
@@ -9,7 +11,6 @@ import { RefreshError } from "../../components/dashboard/refresh-error/RefreshEr
 import { Headline, type ChartUnit } from "../../components/dashboard/headline/Headline";
 import { WorkList } from "../../components/dashboard/work-list/WorkList";
 import { decodeFilters, encodeFilters, type Filter } from "../../components/dashboard/filter-chips/filters";
-import { getStatusCounts } from "../../components/dashboard/work-list/StatusFilter";
 import { Mentions } from "../../components/dashboard/mentions/Mentions";
 import { EmptyWork } from "../../components/dashboard/work-list/EmptyWork";
 import { SidePanel } from "../../components/dashboard/side-panel/SidePanel";
@@ -34,7 +35,14 @@ import {
 } from "./history";
 import { GITHUB_SYNC_SETTINGS_PATH, LLM_USAGE_PATH, PRS_PATH } from "../shell/paths";
 import { ShellActions, useShellSlots } from "../shell/ShellRoute";
-import { commentsHref, railText, rankingFeedback, reviewHref, watchErrorText } from "./state";
+import {
+  commentsHref,
+  railText,
+  rankingFeedback,
+  refreshHoldingSnapshot,
+  reviewHref,
+  watchErrorText,
+} from "./state";
 import { useDashboardPage } from "./useDashboardPage";
 
 const errorText = (error: unknown) =>
@@ -110,23 +118,18 @@ export function DashboardScreen() {
   const actionErrors = [page.refresh.error, page.cancel.error, page.retryRanking.error].filter(
     (error): error is string => error !== null,
   );
-  const ranking = summary && rankingFeedback(summary, page.snapshotRefresh);
+  const holder = summary && refreshHoldingSnapshot(summary, page.snapshotRefresh);
+  const rankingUsage = useQuery({
+    ...rankingUsageQuery,
+    enabled: holder?.left_provisional_by === "daily",
+    refetchInterval: 60_000,
+  });
+  const ranking = summary && rankingFeedback(summary, page.snapshotRefresh, rankingUsage.data?.resets_at);
   const allItems = page.allItems;
   const retryId = ranking?.retryId;
   const retryRanking = retryId ? () => page.retryRanking.run(retryId) : undefined;
-  const counts =
-    summary?.status_counts ??
-    getStatusCounts(allItems ?? [], snapshot?.exclusions?.total ?? snapshot?.excluded ?? 0);
   const scan = view?.scanning;
   const cancelScan = scan ? () => page.cancel.run(scan.id) : undefined;
-  const live =
-    summary && summary.live_repositories !== undefined && summary.not_live_repositories !== undefined
-      ? {
-          live_repositories: summary.live_repositories,
-          not_live_repositories: summary.not_live_repositories,
-          last_event_at: summary.last_event_at,
-        }
-      : undefined;
 
   const main = view && summary && (
     <div className="grid content-start gap-3.5">
@@ -258,7 +261,7 @@ export function DashboardScreen() {
           onKindsChange={page.setFilter}
           filters={filters}
           onFiltersChange={setFilters}
-          statusCounts={counts}
+          statusCounts={summary.status_counts}
           statusDescriptions={ranking?.statusDescriptions}
           exclusions={snapshot.exclusions}
           onWake={(key) => page.wake.mutate({ key })}
@@ -310,9 +313,9 @@ export function DashboardScreen() {
             snapshot={snapshot}
             schedule={summary.schedule}
             snapshotRefresh={page.snapshotRefresh}
-            live={live}
-            outdated={counts.outdated}
-            onRejudgeOutdated={summary.status_counts ? page.refresh.rejudgeOutdated : undefined}
+            live={summary}
+            outdated={summary.status_counts.outdated}
+            onRejudgeOutdated={page.refresh.rejudgeOutdated}
             onCancel={cancelScan}
             cancelling={page.cancel.pending}
             rankingNotices={ranking?.notices}

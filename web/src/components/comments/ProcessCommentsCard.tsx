@@ -10,7 +10,6 @@ import { FactChip, READ_FAILURE } from "./parts";
 
 interface ProcessCommentsCardProps {
   summary: CommentsSummary;
-  needsYou?: number;
   watch?: WatchedPr | null;
   watchBusy?: boolean;
   onWatchChange?: (watching: boolean) => void;
@@ -25,7 +24,6 @@ interface ProcessCommentsCardProps {
 /** V0 "Process PR comments": GitHub facts, questions, agents, assessment, round, and the way in (US1). */
 export function ProcessCommentsCard({
   summary,
-  needsYou = summary.counts.undecided,
   now,
   watch = null,
   watchBusy,
@@ -58,7 +56,7 @@ export function ProcessCommentsCard({
           </dd>
           <dt className="text-muted">Needs you</dt>
           <dd className="m-0">
-            <b>{needsYou}</b>
+            <b>{counts.needs_you}</b>
             {counts.asked_again > 0 && ` (${counts.asked_again} asked again)`}
           </dd>
           <dt className="text-muted">Waiting for agents</dt>

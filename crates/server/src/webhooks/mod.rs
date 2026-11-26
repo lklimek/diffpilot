@@ -41,7 +41,8 @@ use tower::timeout::TimeoutLayer;
 use crate::config::Config;
 use crate::state::AppState;
 
-use drain::{BODY_TIMEOUT, MAX_BYTES, drain_unread_body};
+pub(crate) use drain::drain_unread_body;
+use drain::{BODY_TIMEOUT, MAX_BYTES};
 
 const HANDLERS: usize = 8;
 const CONNECTIONS: usize = 64;
@@ -230,10 +231,7 @@ impl Webhooks {
             log.drop_day = Some(day);
             log.dropped.clear();
         }
-        let key = repo.map(|repo| RepoRef {
-            owner: repo.owner.to_ascii_lowercase(),
-            name: repo.name.to_ascii_lowercase(),
-        });
+        let key = repo.map(crate::dashboard::installations::key);
         let installation = installation.filter(|_| key.is_none());
         log.dropped.len() < DROPPED_LOG_KEYS && log.dropped.insert((key, installation))
     }

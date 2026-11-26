@@ -140,6 +140,8 @@ pub struct PrHistoryAnalysis {
     pub status: AnalysisStatus,
     /// Head the analysis was requested for.
     pub head_sha: CommitSha,
+    /// When the reader requested the analysis.
+    pub requested_at: Timestamp,
     /// Whether the pull request has moved to a different head.
     pub head_moved: bool,
 }

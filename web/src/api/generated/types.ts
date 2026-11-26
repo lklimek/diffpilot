@@ -1634,15 +1634,15 @@ export type CommentCounts = {
 /**
  * Items classified as not a review point.
  */
-not_a_review_point?: number,
+not_a_review_point: number,
 /**
  * Items in the Needs you queue.
  */
-needs_you?: number,
+needs_you: number,
 /**
  * Gated items in the Needs you queue.
  */
-needs_you_gates?: number,
+needs_you_gates: number,
 /**
  * Items with a decision imported since this reader last visited Comments.
  */
@@ -2526,15 +2526,15 @@ export type DashboardSummary = {
 /**
  * Counts of distinct judgement and sync states.
  */
-status_counts?: StatusCounts,
+status_counts: StatusCounts,
 /**
  * Repositories updated by GitHub App webhooks.
  */
-live_repositories?: number,
+live_repositories: number,
 /**
  * Repositories refreshed by manual and scheduled scans.
  */
-not_live_repositories?: number,
+not_live_repositories: number,
 /**
  * Latest GitHub event applied to this dashboard.
  */
@@ -3457,7 +3457,7 @@ export type FactTag = {
 /**
  * Filter for items with this fact.
  */
-filter?: FactFilter,
+filter: FactFilter,
 /**
  * Short text.
  */
@@ -4367,7 +4367,7 @@ export type ImportedGithubDecision = {
 /**
  * Kind of the decision.
  */
-kind: DecisionKind,
+kind: ReviewDecisionKind,
 /**
  * GitHub login of the author.
  */
@@ -6252,6 +6252,10 @@ status: AnalysisStatus,
  */
 head_sha: CommitSha,
 /**
+ * When the reader requested the analysis.
+ */
+requested_at: string,
+/**
  * Whether the pull request has moved to a different head.
  */
 head_moved: boolean, };
@@ -6693,6 +6697,11 @@ from: number,
 to: number, };
 
 /**
+ * A limit on how many items can be sent for ranking.
+ */
+export type RankingLimit = "per_refresh" | "daily";
+
+/**
  * State of the LLM ranking (plan §B.3); the last four end it and leave the refresh `finished`.
  */
 export type RankingState = "waiting_for_analysis" | "running" | "paused" | "failed" | "interrupted" | "cancelled" | "finished";
@@ -6916,6 +6925,10 @@ reused: number,
  * Items left provisional by the per-refresh or daily ranking limit.
  */
 left_provisional: number,
+/**
+ * The cap that left items provisional, when a cap was reached.
+ */
+left_provisional_by?: RankingLimit,
 /**
  * Scan steps in order.
  */

@@ -1,0 +1,3 @@
+# Dashboard fixture filter keys (e.g. fixes_plat-1187), not secrets.
+fixtures/dashboard/api/items.json:generic-api-key:195
+fixtures/dashboard/api/items-provisional.json:generic-api-key:195

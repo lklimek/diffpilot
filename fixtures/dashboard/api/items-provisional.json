@@ -41,10 +41,12 @@
       "updated_at": "2026-11-18T07:14:00Z",
       "tags": [
         {
+          "filter": {"key": "label:production report", "label": "production report"},
           "text": "production report",
           "tip": "Label set on GitHub by the reporter"
         },
         {
+          "filter": {"key": "assigned_to_you", "label": "assigned to you"},
           "text": "assigned to you",
           "tip": "You are an assignee of this issue"
         }
@@ -180,14 +182,17 @@
       "updated_at": "2026-11-17T07:14:00Z",
       "tags": [
         {
+          "filter": {"key": "review_requested", "label": "review requested"},
           "text": "review requested 1 d",
           "tip": "Your review was requested yesterday at 16:05"
         },
         {
+          "filter": {"key": "ci_passing", "label": "CI passing"},
           "text": "CI passing",
           "tip": "6 checks passed on head 9c41e7a"
         },
         {
+          "filter": {"key": "fixes_plat-1187", "label": "fixes PLAT-1187"},
           "text": "fixes PLAT-1187",
           "tip": "Linked with \"Fixes #1187\" in the description"
         }
@@ -337,10 +342,12 @@
       "updated_at": "2026-11-18T07:14:00Z",
       "tags": [
         {
+          "filter": {"key": "review_requested", "label": "review requested"},
           "text": "review requested today",
           "tip": "Your review was requested today at 09:50"
         },
         {
+          "filter": {"key": "ci_passing", "label": "CI passing"},
           "text": "CI passing",
           "tip": "4 checks passed"
         }
@@ -479,14 +486,17 @@
       "updated_at": "2026-11-16T07:14:00Z",
       "tags": [
         {
+          "filter": {"key": "review_requested", "label": "review requested"},
           "text": "review requested 3 d",
           "tip": "Requested on Sun 15 Nov"
         },
         {
+          "filter": {"key": "ci_failing", "label": "CI failing"},
           "text": "CI failing",
           "tip": "test (integration) failed on head d41b7a0"
         },
         {
+          "filter": {"key": "analysed", "label": "analysed"},
           "text": "analysed",
           "tip": "A diffpilot analysis exists for head 52d2da1; the PR has moved to d41b7a0 since"
         }
@@ -640,14 +650,17 @@
       "updated_at": "2026-11-18T07:14:00Z",
       "tags": [
         {
+          "filter": {"key": "ci_failing", "label": "CI failing"},
           "text": "CI failing",
           "tip": "test (e2e) failed on head 5d2a0f3"
         },
         {
+          "filter": {"key": "unresolved_threads", "label": "unresolved threads"},
           "text": "2 unresolved threads",
           "tip": "From @tobias-w, yesterday"
         },
         {
+          "filter": {"key": "your_pr", "label": "your PR"},
           "text": "your PR",
           "tip": "You are the author"
         }
@@ -792,10 +805,12 @@
       "updated_at": "2026-11-16T07:14:00Z",
       "tags": [
         {
+          "filter": {"key": "review_requested", "label": "review requested"},
           "text": "review requested 2 d",
           "tip": "Requested on Mon 16 Nov"
         },
         {
+          "filter": {"key": "ci_passing", "label": "CI passing"},
           "text": "CI passing",
           "tip": "2 checks passed"
         }
@@ -937,10 +952,12 @@
       "updated_at": "2026-11-14T07:14:00Z",
       "tags": [
         {
+          "filter": {"key": "review_requested", "label": "review requested"},
           "text": "review requested 6 d",
           "tip": "Requested on Thu 12 Nov"
         },
         {
+          "filter": {"key": "not_ready", "label": "not ready"},
           "text": "not ready: 3 unresolved threads",
           "tip": "Threads from @olek-d are still open"
         }
@@ -1086,6 +1103,7 @@
       "updated_at": "2026-11-15T07:14:00Z",
       "tags": [
         {
+          "filter": {"key": "assigned_to_you", "label": "assigned to you"},
           "text": "assigned to you",
           "tip": "Assigned on Mon 9 Nov"
         }
@@ -1217,10 +1235,12 @@
       "updated_at": "2026-11-12T07:14:00Z",
       "tags": [
         {
+          "filter": {"key": "review_requested", "label": "review requested"},
           "text": "review requested 9 d",
           "tip": "Requested on Mon 9 Nov"
         },
         {
+          "filter": {"key": "ci_passing", "label": "CI passing"},
           "text": "CI passing",
           "tip": "6 checks passed"
         }
@@ -1354,10 +1374,12 @@
       "updated_at": "2026-11-13T09:00:00Z",
       "tags": [
         {
+          "filter": {"key": "in_progress", "label": "in progress"},
           "text": "in progress",
           "tip": "MemCan status"
         },
         {
+          "filter": {"key": "project:platform", "label": "platform"},
           "text": "platform",
           "tip": "MemCan project"
         }
@@ -1493,10 +1515,12 @@
       "updated_at": "2026-11-10T07:14:00Z",
       "tags": [
         {
+          "filter": {"key": "draft", "label": "draft"},
           "text": "draft",
           "tip": "Draft PR"
         },
         {
+          "filter": {"key": "your_pr", "label": "your PR"},
           "text": "your PR",
           "tip": "You are the author"
         }
@@ -1633,10 +1657,12 @@
       "updated_at": "2026-11-11T07:14:00Z",
       "tags": [
         {
+          "filter": {"key": "assigned_to_you", "label": "assigned to you"},
           "text": "assigned to you",
           "tip": "Assigned on Wed 11 Nov"
         },
         {
+          "filter": {"key": "blocked_by_con-1534", "label": "blocked by CON-1534"},
           "text": "blocked by CON-1534",
           "tip": "CON-1534 is an open pull request in the same repository"
         }
@@ -1765,10 +1791,12 @@
       "updated_at": "2026-10-29T15:30:00Z",
       "tags": [
         {
+          "filter": {"key": "postponed", "label": "postponed"},
           "text": "postponed",
           "tip": "MemCan status"
         },
         {
+          "filter": {"key": "project:consensus", "label": "consensus"},
           "text": "consensus",
           "tip": "MemCan project"
         }

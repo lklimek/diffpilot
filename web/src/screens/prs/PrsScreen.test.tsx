@@ -97,7 +97,7 @@ it("counts active watches in the usage header, excluding the ended watch from th
   expect(await screen.findByText("ended: merged or closed")).toBeVisible();
 });
 
-it("names each finished review link with its PR", async () => {
+it("names review links and shows the request time separately from the latest opening", async () => {
   server.use(
     http.get("/api/v1/me/prs", () =>
       HttpResponse.json({
@@ -105,7 +105,14 @@ it("names each finished review link with its PR", async () => {
           pr: { repo: { owner: "acme", name: "node-client" }, number },
           title: `PR ${number}`,
           last_activity_at: "2026-11-25T10:00:00Z",
-          analysis: { id: `analysis-${number}`, status: "finished", head_sha: "abc123", head_moved: false },
+          opened_at: "2026-11-25T10:00:00Z",
+          analysis: {
+            id: `analysis-${number}`,
+            status: "finished",
+            head_sha: "abc123",
+            head_moved: false,
+            requested_at: "2026-11-24T18:00:00Z",
+          },
         })),
         next_cursor: null,
       }),
@@ -113,6 +120,9 @@ it("names each finished review link with its PR", async () => {
   );
   renderRoute("/prs");
   const list = within(await screen.findByRole("list", { name: "Your pull requests" }));
+  for (const request of list.getAllByText(/^analysis requested$/)) {
+    expect(request.querySelector("time")).toHaveAttribute("dateTime", "2026-11-24T18:00:00Z");
+  }
   expect(list.getByRole("link", { name: "Review acme/node-client #482" })).toHaveAttribute(
     "href",
     "/analyses/analysis-482",

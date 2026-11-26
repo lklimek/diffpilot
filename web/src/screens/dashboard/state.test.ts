@@ -4,6 +4,7 @@ import summaryJson from "../../../../fixtures/dashboard/api/summary.json";
 import itemsJson from "../../../../fixtures/dashboard/api/items.json";
 import scanningJson from "../../../../fixtures/dashboard/api/refresh-scanning.json";
 import failedJson from "../../../../fixtures/dashboard/api/refresh-failed.json";
+import { dateTimeText } from "../../components/format/time";
 import { ApiError } from "../../api/client";
 import { dashboardView, rankingFeedback, railText, reviewHref, watchErrorText } from "./state";
 
@@ -37,24 +38,28 @@ describe("ranking feedback from the stored snapshot", () => {
   });
 
   it("distinguishes daily and per-refresh caps and preserves the older-prompt count", () => {
-    const limited = (detail: string): RefreshStatus => ({
+    const limited = (limit: "daily" | "per_refresh"): RefreshStatus => ({
       ...FINISHED,
       left_provisional: 3,
-      steps: FINISHED.steps.map((step) => (step.key === "ranking" ? { ...step, detail } : step)),
+      left_provisional_by: limit,
+      steps: FINISHED.steps.map((step) =>
+        step.key === "ranking" ? { ...step, detail: "Unsent items" } : step,
+      ),
     });
+    const resetsAt = "2026-11-25T23:00:00Z";
     const daily = rankingFeedback(
-      withLatest(limited("3 items left provisional: today's ranking limit (120)"), {
-        older_prompt_judgements: 2,
-      }),
+      withLatest(limited("daily"), { older_prompt_judgements: 2 }),
+      undefined,
+      resetsAt,
     );
-    expect(daily.notices.map((notice) => notice.label)).toContain("Daily limit reached · resets at 00:00");
-    expect(daily.statusDescriptions.not_judged).toMatch(/3 items.*00:00/);
+    expect(daily.notices.map((notice) => notice.label)).toContain(
+      `Daily limit reached · resets at ${dateTimeText(resetsAt)}`,
+    );
+    expect(daily.statusDescriptions.not_judged).toContain(dateTimeText(resetsAt));
     expect(daily.notices.map(({ detail }) => detail)).toContain(
       "2 items were judged with an older ranking prompt.",
     );
-    const perRefresh = rankingFeedback(
-      withLatest(limited("3 items left provisional: this refresh's ranking limit (48)")),
-    );
+    const perRefresh = rankingFeedback(withLatest(limited("per_refresh")));
     expect(perRefresh.notices.map((notice) => notice.label)).toContain("Per-refresh ranking limit");
   });
 });

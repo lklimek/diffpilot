@@ -398,7 +398,7 @@ describe("v1.4 review status", () => {
       }),
       http.get("/api/v1/prs/acme/node-client/482/comments", () => {
         const data = overview();
-        return HttpResponse.json({ ...data, counts: { ...data.counts, undecided: 98 } });
+        return HttpResponse.json({ ...data, counts: { ...data.counts, undecided: 98, needs_you_gates: 4 } });
       }),
     );
     renderRoute(PR);
@@ -408,7 +408,7 @@ describe("v1.4 review status", () => {
     );
     await userEvent.click(within(panel).getByRole("link", { name: "Open Comments →" }));
     const queue = within(await screen.findByRole("navigation", { name: "Queue" }));
-    expect(queue.getByRole("button", { name: /^Status: Needs you · 11/ })).toBeVisible();
+    expect(queue.getByRole("button", { name: "Status: Needs you · 11, 4 gates" })).toBeVisible();
     expect(screen.getByRole("link", { name: "Questions, 11 need you" })).toBeVisible();
     expect(
       within(screen.getByRole("complementary", { name: "PR panel" })).getByText("Needs you")
@@ -465,6 +465,7 @@ describe("reviewing duplicates and deferred questions", () => {
         return HttpResponse.json({
           ...current,
           assessment: { ...current.assessment, in_pass: undefined, waiting: undefined, since: undefined },
+          counts: { ...current.counts, needs_you: 0, needs_you_gates: 0 },
           queue: [],
         });
       }),

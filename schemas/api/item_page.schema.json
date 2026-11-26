@@ -536,14 +536,7 @@
       "properties": {
         "filter": {
           "description": "Filter for items with this fact.",
-          "anyOf": [
-            {
-              "$ref": "#/$defs/FactFilter"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/FactFilter"
         },
         "text": {
           "description": "Short text.",
@@ -555,6 +548,7 @@
         }
       },
       "required": [
+        "filter",
         "text",
         "tip"
       ]

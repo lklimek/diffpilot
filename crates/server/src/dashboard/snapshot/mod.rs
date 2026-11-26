@@ -6,7 +6,7 @@ mod page;
 mod view;
 
 use contracts::api::dashboard::{
-    DashboardSettings, HistoryEvent, KindCounts, ScanNote, TodosState, TodosStatus,
+    DashboardSettings, HistoryEvent, ItemKey, KindCounts, ScanNote, TodosState, TodosStatus,
 };
 use contracts::time::Timestamp;
 use db::error::DbError;
@@ -72,9 +72,9 @@ pub struct Snapshot {
     /// Times of webhook additions within the current local day.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub event_additions: Vec<Timestamp>,
-    /// Newly added items still need to be handed to a ranking.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub event_ranking_pending: bool,
+    /// New webhook items awaiting judgement by a scan or an event ranking.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_event_items: Vec<ItemKey>,
     /// TODO rows hidden because the current settings hide TODOs (read time only, never stored).
     #[serde(skip)]
     pub todos_hidden: bool,

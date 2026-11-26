@@ -371,8 +371,12 @@ pub(super) async fn scan<T: TokenSource>(
         merge_states_recorded: true,
         prs_reread_at: None,
         last_event_at: input.previous.and_then(|snapshot| snapshot.last_event_at),
+        // store_snapshot carries forward the daily webhook addition timestamps.
         event_additions: Vec::new(),
-        event_ranking_pending: false,
+        pending_event_items: input
+            .previous
+            .map(|snapshot| snapshot.pending_event_items.clone())
+            .unwrap_or_default(),
         todos_hidden: false,
         snoozes: Vec::new(),
     })

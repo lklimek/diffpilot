@@ -76,6 +76,17 @@
           "format": "uint32",
           "minimum": 0
         },
+        "left_provisional_by": {
+          "description": "The cap that left items provisional, when a cap was reached.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RankingLimit"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "steps": {
           "description": "Scan steps in order.",
           "type": "array",
@@ -197,6 +208,21 @@
           "description": "The scan was cancelled before its snapshot was complete; the previous snapshot stays.",
           "type": "string",
           "const": "cancelled"
+        }
+      ]
+    },
+    "RankingLimit": {
+      "description": "A limit on how many items can be sent for ranking.",
+      "oneOf": [
+        {
+          "description": "The current refresh's allowance.",
+          "type": "string",
+          "const": "per_refresh"
+        },
+        {
+          "description": "The reader's daily allowance.",
+          "type": "string",
+          "const": "daily"
         }
       ]
     },

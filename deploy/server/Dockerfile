@@ -89,6 +89,7 @@ COPY --chmod=0755 deploy/server/entrypoint.sh /usr/local/bin/diffpilot-server-en
 ENV SR_DATA_DIR=/var/lib/diffpilot \
     SR_LISTEN_ADDR=0.0.0.0:3000 \
     SR_RUNNER_LISTEN_ADDR=0.0.0.0:3001 \
+    SR_WEBHOOK_LISTEN_ADDR=0.0.0.0:3002 \
     HOME=/nonexistent
 USER 10010:10010
 EXPOSE 3000 3001 3002

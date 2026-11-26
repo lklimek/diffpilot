@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { WorkItem } from "../../../api/generated/types";
-import { ITEMS, NOW } from "../test-fixtures";
+import { ITEMS, NOW, SUMMARY } from "../test-fixtures";
 import { ALL_KINDS, WorkList } from "./WorkList";
 
 const reviewHref = (item: WorkItem) => `/review?pr=${encodeURIComponent(item.url ?? "")}`;
@@ -19,6 +19,7 @@ describe("WorkList: comments of a P0 alarm pull request (owner 2026-11-23)", () 
   });
   const list = (item: WorkItem) => (
     <WorkList
+      statusCounts={SUMMARY.status_counts}
       items={[item]}
       kinds={ALL_KINDS}
       onKindsChange={vi.fn()}
@@ -56,6 +57,7 @@ describe("WorkList: Watch on a private pull request (RW1 reads public repositori
     const hidden: WorkItem = { ...nc482, private: true, comments: undefined };
     render(
       <WorkList
+        statusCounts={SUMMARY.status_counts}
         items={[hidden]}
         kinds={ALL_KINDS}
         onKindsChange={vi.fn()}
@@ -76,6 +78,7 @@ it("a ranked PR without comment counts always has a Comments action", () => {
   const pr = { ...ITEMS.find((item) => item.id === "NC-482")!, comments: undefined };
   render(
     <WorkList
+      statusCounts={SUMMARY.status_counts}
       items={[pr]}
       kinds={ALL_KINDS}
       onKindsChange={vi.fn()}

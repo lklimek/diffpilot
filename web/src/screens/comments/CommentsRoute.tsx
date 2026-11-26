@@ -39,7 +39,6 @@ import { AssessmentBanner } from "../../components/comments/AssessmentBanner";
 import { OpenExternal } from "../../components/dashboard/common/OpenExternal";
 import { WatchControl } from "../../components/watch/WatchControl";
 import { CommentsTabs, type CommentsPage } from "../../components/comments/CommentsTabs";
-import { commentsByNo, needsYouCount } from "../../components/comments/queueStatus";
 import { READ_FAILURE } from "../../components/comments/parts";
 import { StatusPopover } from "../../components/status/StatusPopover";
 import { clockText, dateTimeText } from "../../components/format/time";
@@ -170,8 +169,7 @@ function CommentsVisit({ pr }: { pr: PrRef }) {
     [pr.repo.owner, pr.repo.name, pr.number],
   );
   const o = overviewRead ? overview.data : undefined;
-  const needsYou =
-    o?.counts.needs_you ?? needsYouCount(o?.counts.undecided ?? 0, o?.queue, commentsByNo(items.data));
+  const needsYou = o?.counts.needs_you ?? 0;
   const unseen = o?.counts.imported_unseen ?? 0;
   const importSearch = new URLSearchParams(search);
   if (showImports) importSearch.delete("imported_unseen");

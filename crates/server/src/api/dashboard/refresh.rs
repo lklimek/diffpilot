@@ -307,9 +307,9 @@ async fn summary(
     };
     let stored = dashboard.settings(&scope.tenant_id, &scope.user_id).await?;
     Ok(Json(DashboardSummary {
-        status_counts: Some(status_counts),
-        live_repositories: Some(live_repositories),
-        not_live_repositories: Some(not_live_repositories),
+        status_counts,
+        live_repositories,
+        not_live_repositories,
         last_event_at,
         mentions,
         mention_coverage,

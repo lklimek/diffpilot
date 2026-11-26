@@ -1465,7 +1465,7 @@ async fn fact_tags_carry_stable_filter_keys() {
             .iter()
             .find(|tag| tag.text == text)
             .unwrap_or_else(|| panic!("missing {text:?} tag on {id}"));
-        let filter = tag.filter.as_ref().expect("filter from the API");
+        let filter = &tag.filter;
         assert_eq!(
             (filter.key.as_str(), filter.label.as_str()),
             (key, label),
@@ -1476,7 +1476,7 @@ async fn fact_tags_carry_stable_filter_keys() {
         page.items
             .iter()
             .flat_map(|item| &item.tags)
-            .all(|tag| tag.filter.is_some())
+            .all(|tag| !tag.filter.key.is_empty() && !tag.filter.label.is_empty())
     );
 }
 

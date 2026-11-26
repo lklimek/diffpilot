@@ -253,14 +253,7 @@ pub(crate) async fn rejudge(
     Ok(())
 }
 
-/// Starts ranking on an existing snapshot, or lets the live ranking drain it.
-/// Snapshot writers call this after releasing their writer guard.
-pub async fn rank_pending(state: &AppState, scope: &Scope) -> Result<(), DbError> {
-    let _writer = state.dashboard.readers().writer(scope).await;
-    rank_pending_locked(state, scope, RankMode::Pending).await
-}
-
-/// Hands unserved clicks to a new ranking after the previous attempt ended. The caller holds the writer.
+/// Hands unserved clicks or event items to a new ranking. The caller holds the writer.
 pub(super) async fn continue_rejudges(
     state: &AppState,
     scope: &Scope,
@@ -272,15 +265,8 @@ pub(super) async fn continue_rejudges(
     let pending = async {
         let mode = if readers.has_waiting_rejudges(scope) {
             RankMode::Rejudge
-        } else if state
-            .db
-            .dashboard()
-            .event_ranking_pending(&scope.tenant_id, &scope.user_id)
-            .await?
-        {
-            RankMode::Pending
         } else {
-            return Ok(());
+            RankMode::Pending
         };
         rank_pending_locked(state, scope, mode).await
     };
@@ -295,24 +281,19 @@ async fn rank_pending_locked(
     mode: RankMode,
 ) -> Result<(), DbError> {
     let dashboard = state.db.dashboard();
+    if mode == RankMode::Pending
+        && !dashboard
+            .event_ranking_pending(&scope.tenant_id, &scope.user_id)
+            .await?
+    {
+        return Ok(());
+    }
     let Some((record, _)) = dashboard
         .latest_snapshot::<IgnoredAny>(&scope.tenant_id, &scope.user_id)
         .await?
     else {
         return Ok(());
     };
-    let readers = state.dashboard.readers();
-    if mode == RankMode::Pending && record.state == RefreshState::Ranking {
-        if readers
-            .rejudge_targets(scope, record.id, record.ranking_attempt)
-            .is_none()
-        {
-            dashboard
-                .clear_event_ranking(&scope.tenant_id, &scope.user_id, record.id)
-                .await?;
-        }
-        return Ok(());
-    }
     if record.state == RefreshState::Finished
         && let RestartOutcome::Restarted(record) = dashboard
             .restart_pending_ranking(&scope.tenant_id, &scope.user_id, record.id)
@@ -326,11 +307,6 @@ async fn rank_pending_locked(
             );
         }
         spawn_ranking(state, scope, &record, mode);
-        if mode == RankMode::Pending {
-            dashboard
-                .clear_event_ranking(&scope.tenant_id, &scope.user_id, record.id)
-                .await?;
-        }
     }
     Ok(())
 }
@@ -437,6 +413,7 @@ pub fn status_of(record: &RefreshRecord) -> RefreshStatus {
         judged: record.counts.judged,
         reused: record.counts.reused,
         left_provisional: record.counts.left_provisional,
+        left_provisional_by: record.progress.left_provisional_by,
         steps,
         percent: if record.has_snapshot {
             100

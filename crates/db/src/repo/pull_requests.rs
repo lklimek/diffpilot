@@ -111,6 +111,7 @@ impl PullRequests<'_> {
              )
              SELECT p.id, p.title, p.number, r.owner, r.name, h.last_activity_at, o.last_opened_at,
                  a.id AS analysis_id, a.state AS analysis_state, a.head_sha AS analysis_head,
+                 a.created_at AS analysis_requested_at,
                  a.head_sha <> p.head_sha AS head_moved, w.state AS watch_state, w.since, w.ended_at
              FROM history h
              JOIN pull_requests p ON p.id = h.pull_request_id AND p.tenant_id = ?1
@@ -248,6 +249,10 @@ fn history_item(row: &SqliteRow) -> Result<(i64, PrHistoryItem), DbError> {
                 id: parse_wire(&id, "analyses.id")?,
                 status: parse_wire(row.try_get("analysis_state")?, "analyses.state")?,
                 head_sha: CommitSha(row.try_get("analysis_head")?),
+                requested_at: parse_ts(
+                    row.try_get("analysis_requested_at")?,
+                    "analyses.created_at",
+                )?,
                 head_moved: row.try_get("head_moved")?,
             })
         })

@@ -34,15 +34,6 @@ export function matchesStatus(item: WorkItem, status: WorkStatus): boolean {
   }
 }
 
-export function getStatusCounts(items: WorkItem[], excluded: number): StatusCounts {
-  return {
-    outdated: items.filter((item) => matchesStatus(item, "outdated")).length,
-    not_judged: items.filter((item) => matchesStatus(item, "not_judged")).length,
-    not_live: items.filter((item) => matchesStatus(item, "not_live")).length,
-    excluded,
-  };
-}
-
 export function StatusFilter({
   status,
   counts,

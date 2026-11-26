@@ -133,8 +133,9 @@ impl Loaded {
 
     pub(super) fn import_proposal(&self, record: &ItemRecord) -> Option<ImportedGithubDecision> {
         let import = self.current_import(record)?;
+        let kind = import.kind.review_kind()?;
         (!import.binding || import.evidence.relay.is_some()).then(|| ImportedGithubDecision {
-            kind: import.kind,
+            kind,
             by: import.evidence.by.clone(),
             at: import.evidence.at,
             evidence_url: import.evidence.evidence_url.clone(),

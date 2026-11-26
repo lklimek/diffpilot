@@ -26,7 +26,8 @@ fn content_length(headers: &HeaderMap) -> Option<u64> {
         .ok()
 }
 
-pub(super) async fn drain_unread_body(request: Request, next: Next) -> Response {
+/// Runs the handler and drains the rest of the request within the shared webhook budget.
+pub(crate) async fn drain_unread_body(request: Request, next: Next) -> Response {
     if content_length(request.headers()).is_some_and(|len| len > MAX_BYTES as u64) {
         let mut response = StatusCode::PAYLOAD_TOO_LARGE.into_response();
         close(&mut response);
