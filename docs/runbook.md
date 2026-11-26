@@ -136,8 +136,9 @@ the matching pre-migration full DB-volume backup; never start old binaries again
 1. Run `traefik version` on the proxy host, or run it inside the running Traefik container with `docker exec`.
    Proceed with **3.6.4 or newer** on v3 or **2.11.32 or newer** on v2. Save the current router configuration.
    Keep request-body logging disabled in Traefik and cloudflared, including during troubleshooting.
-2. Leave `SR_GITHUB_WEBHOOK_SECRET` and `SR_GITHUB_WEBHOOK_SECRET_FILE` unset for the first v1.4 deploy. This
-   preserves hourly watch probes until the cutover. Set `SR_GITHUB_WEBHOOK_URL` to
+2. Leave `SR_GITHUB_WEBHOOK_SECRET` and `SR_GITHUB_WEBHOOK_SECRET_FILE` unset for the first v1.4 deploy: if the
+   environment file already has either line, comment it out. This preserves hourly watch probes until the
+   cutover. After the deploy, Settings › GitHub sync must show the webhook as not configured. Set `SR_GITHUB_WEBHOOK_URL` to
    `https://webhooks.manago.cloud/diffpilot/github` so Settings shows the URL to enter in GitHub. Remove
    `SR_MAINTAINER_DELEGATES` from the deployment environment. Members now configure their
    [linked logins](settings.md#linked-logins) in Settings to relay decision proposals.
@@ -207,8 +208,8 @@ the matching pre-migration full DB-volume backup; never start old binaries again
    This checks the full path through the tunnel and Traefik with a GitHub signature.
 
    GitHub can redeliver only the last three days of deliveries. For an existing App with no recent `ping`, check
-   **Advanced → Recent deliveries** after saving the webhook settings. If no fresh ping appears, redeliver a
-   recent successful event and check for a **2xx**, or wait for the next subscribed event and check its response
+   **Advanced → Recent deliveries** after saving the webhook settings. If no fresh ping appears, redeliver any
+   recent delivery (before the cutover they all failed) and expect a **2xx** this time, or wait for the next subscribed event and check its response
    there. GitHub documents [when it sends a ping](https://docs.github.com/en/webhooks/webhook-events-and-payloads#ping)
    and [how to redeliver App webhooks](https://docs.github.com/en/webhooks/testing-and-troubleshooting-webhooks/redelivering-webhooks#redelivering-github-app-webhooks).
 
