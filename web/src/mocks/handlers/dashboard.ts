@@ -178,6 +178,14 @@ const SCENARIOS = {
     const finished = { ...refresh.ranking!, total: refresh.judged };
     return {
       ...capped,
+      items: {
+        ...capped.items,
+        items: capped.items.items.map((item) =>
+          item.id === "WUI-320"
+            ? { ...item, judgement: { state: "capped", judged_at: null, outdated_because: null } }
+            : item,
+        ),
+      },
       summary: {
         ...capped.summary,
         older_prompt_judgements: 2,

@@ -38,6 +38,8 @@ function waitReasonText(reason: WaitReason, now: Date): string {
       return `Waits for the usage limit to reset at ${clockText(reason.until, now)}`;
     case "analysis_running":
       return "Waits for the review analysis to finish";
+    default:
+      return "Waiting";
   }
 }
 
@@ -97,7 +99,7 @@ function Jobs({
           const href = subject ? subjectHref(subject.href) : null;
           return (
             <JobRow key={job.id} running={running} time={running ? job.since : job.queued_at} now={now}>
-              {KIND[job.kind]}
+              {Object.hasOwn(KIND, job.kind) ? KIND[job.kind] : "LLM job"}
               {subject && (
                 <>
                   {" · "}

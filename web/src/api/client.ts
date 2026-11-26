@@ -11,6 +11,7 @@ import type {
   AssessmentSettings,
   AssessmentSettingsUpdate,
   AssessmentComparison,
+  AssessmentAdmissionFailure,
   CredentialStatus,
   DeviceLink,
   AccessToken,
@@ -100,6 +101,24 @@ export class ApiError extends Error {
   ) {
     super(message);
     this.name = "ApiError";
+  }
+}
+
+/** Assessment admission uses a tagged response instead of ApiError's message envelope. */
+export type AssessmentAdmissionIssue =
+  AssessmentAdmissionFailure | { code: "assessment_daily_limit"; resets_at?: undefined };
+
+export class AssessmentAdmissionError extends Error {
+  constructor(readonly issue: AssessmentAdmissionIssue) {
+    super(
+      issue.code === "credential_missing"
+        ? "Link a Codex plan in Settings."
+        : "Daily comment assessment limit reached.",
+    );
+  }
+
+  get code() {
+    return this.issue.code;
   }
 }
 
@@ -250,8 +269,18 @@ export function createApiClient(baseUrl = "") {
     }
   }
 
-  async function errorOf(response: Response): Promise<ApiError> {
+  async function errorOf(response: Response): Promise<ApiError | AssessmentAdmissionError> {
     const body: unknown = await response.json().catch(() => null);
+    if (body && typeof body === "object" && "code" in body) {
+      if (response.status === 409 && body.code === "credential_missing")
+        return new AssessmentAdmissionError({ code: body.code });
+      if (response.status === 429 && body.code === "assessment_daily_limit") {
+        const resetsAt = "resets_at" in body ? body.resets_at : undefined;
+        const resets_at =
+          typeof resetsAt === "string" && Number.isFinite(Date.parse(resetsAt)) ? resetsAt : undefined;
+        return new AssessmentAdmissionError({ code: body.code, resets_at });
+      }
+    }
     if (isErrorBody(body)) return new ApiError(response.status, body.code, body.message);
     return new ApiError(response.status, "internal", "The server gave an unexpected answer. Retry later.");
   }

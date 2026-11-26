@@ -1,5 +1,4 @@
 import type { WorkItem, StatusCounts } from "../../../api/generated/types";
-import { itemJudgement } from "../common/itemJudgement";
 import { buttonClass } from "../../button/button";
 import { MenuButton, MenuItem } from "../../menu/MenuButton";
 
@@ -20,17 +19,14 @@ const DESCRIPTIONS: Partial<Record<WorkStatus, string>> = {
 };
 
 export function matchesStatus(item: WorkItem, status: WorkStatus): boolean {
-  const judgement = itemJudgement(item);
+  const state = item.judgement?.state;
   switch (status) {
     case "all":
       return true;
     case "outdated":
-      return judgement.state === "outdated";
+      return state === "outdated" || state === "judging";
     case "not_judged":
-      return (
-        judgement.judged_at === null &&
-        ["not_judged", "queued", "judging", "capped"].includes(judgement.state)
-      );
+      return state === "not_judged" || state === "queued" || state === "capped";
     case "not_live":
       return Boolean(item.repo) && item.live === false;
     case "excluded":

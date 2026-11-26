@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+import type { JudgementState } from "../../../api/generated/types";
 import { JudgementMark } from "./JudgementMark";
 
 const judged_at = "2026-11-17T12:00:00Z";
@@ -47,4 +48,12 @@ describe("JudgementMark", () => {
     render(<JudgementMark judgement={{ state, judged_at: null, outdated_because: null }} />);
     expect(screen.getByText(/^◌ not judged/)).toHaveClass("border-mv-bd", "text-mv");
   });
+});
+
+it("describes a future judgement state without guessing its meaning", () => {
+  render(
+    <JudgementMark judgement={{ state: "deferred" as JudgementState, judged_at, outdated_because: null }} />,
+  );
+  expect(screen.getByText("Judgement status unavailable")).toBeVisible();
+  expect(screen.queryByText(/not judged/)).toBeNull();
 });

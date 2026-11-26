@@ -34,14 +34,7 @@ import {
 } from "./history";
 import { GITHUB_SYNC_SETTINGS_PATH, LLM_USAGE_PATH, PRS_PATH } from "../shell/paths";
 import { ShellActions, useShellSlots } from "../shell/ShellRoute";
-import {
-  commentsHref,
-  railText,
-  rankingFeedback,
-  reviewHref,
-  watchErrorText,
-  withLegacyDailyCap,
-} from "./state";
+import { commentsHref, railText, rankingFeedback, reviewHref, watchErrorText } from "./state";
 import { useDashboardPage } from "./useDashboardPage";
 
 const errorText = (error: unknown) =>
@@ -118,10 +111,7 @@ export function DashboardScreen() {
     (error): error is string => error !== null,
   );
   const ranking = summary && rankingFeedback(summary, page.snapshotRefresh);
-  const allItems =
-    ranking?.legacyDailyCap && page.items.data?.revision === summary?.revision
-      ? page.allItems?.map(withLegacyDailyCap)
-      : page.allItems;
+  const allItems = page.allItems;
   const retryId = ranking?.retryId;
   const retryRanking = retryId ? () => page.retryRanking.run(retryId) : undefined;
   const counts =

@@ -77,6 +77,13 @@ beforeEach(() => {
 });
 
 describe("QuestionCard (plan §3.2)", () => {
+  it("renders the queued assessment as a paragraph", async () => {
+    show({ ...byNo(14), assessment_state: { state: "queued" } });
+    await userEvent.click(screen.getByRole("button", { name: "LLM assessment" }));
+    const note = screen.getByText("Waiting for assessment.");
+    expect(note.closest("p")).toHaveClass("m-0");
+  });
+
   it("shows context, evidence, the LLM assessment and the recommended option first, focused heading", () => {
     show(byNo(14));
     const heading = screen.getByRole("heading", { level: 2, name: /C14 · Retry may resend/ });

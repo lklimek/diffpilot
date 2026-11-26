@@ -517,9 +517,7 @@ test.describe("My work (msw)", () => {
     await expect(strip(page)).toHaveCount(0);
   });
 
-  test("legacy daily limit caps the unjudged row and the older prompt stays in the scan status", async ({
-    page,
-  }) => {
+  test("daily limit marks the capped row and the older prompt stays in the scan status", async ({ page }) => {
     await open(page, "ranking-daily-cap");
     const info = page.locator("[data-scan-info]");
     await expect(info).toContainText("Daily limit reached · resets at 00:00");

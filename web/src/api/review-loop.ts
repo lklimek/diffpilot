@@ -9,7 +9,7 @@ import {
   useQueryClient,
   type QueryClient,
 } from "@tanstack/react-query";
-import { api, ApiError } from "./client";
+import { api, ApiError, AssessmentAdmissionError, type AssessmentAdmissionIssue } from "./client";
 import { withoutRetried } from "./questionHistory";
 import type {
   CommentItem,
@@ -198,11 +198,16 @@ export function useVisitComments(pr: PrRef) {
   });
 }
 
-async function startCommentAssessment(pr: PrRef): Promise<void> {
+export type AssessmentStartIssue = AssessmentAdmissionIssue | { code: "failed"; message: string };
+
+async function startCommentAssessment(pr: PrRef): Promise<AssessmentStartIssue | null> {
   try {
     await api.startCommentAssessment(pr);
+    return null;
   } catch (error) {
-    if (!(error instanceof ApiError && error.status === 409 && error.code === "conflict")) throw error;
+    if (error instanceof AssessmentAdmissionError) return error.issue;
+    if (error instanceof ApiError && error.status === 409 && error.code === "conflict") return null;
+    return { code: "failed", message: error instanceof ApiError ? error.message : "Try again later." };
   }
 }
 
@@ -211,19 +216,25 @@ export const useStartCommentAssessment = (pr: PrRef) =>
   useMutation({ mutationFn: () => startCommentAssessment(pr) });
 
 /** Read GitHub again (RC3). Only Comments can request a pass for newly read items. */
-export function useReadComments(pr: PrRef, assessNewItems = false) {
+export function useReadComments(pr: PrRef, onAssessment?: (issue: AssessmentStartIssue | null) => void) {
   const client = useQueryClient();
   const invalidate = useInvalidatePr(pr);
   return useMutation({
     mutationFn: async () => {
-      const before = assessNewItems ? client.getQueryData<CommentItem[]>(itemsKey(pr)) : undefined;
+      const before = onAssessment ? client.getQueryData<CommentItem[]>(itemsKey(pr)) : undefined;
       const known = before && new Set(before.map(({ no }) => no));
       await api.readComments(pr);
       await invalidate();
       const fresh = client.getQueryState<CommentItem[]>(itemsKey(pr));
-      if (known && fresh?.status === "success" && fresh.data?.some(({ no }) => !known.has(no))) {
-        await startCommentAssessment(pr);
-        await invalidate();
+      if (
+        onAssessment &&
+        known &&
+        fresh?.status === "success" &&
+        fresh.data?.some(({ no }) => !known.has(no))
+      ) {
+        const issue = await startCommentAssessment(pr);
+        onAssessment(issue);
+        if (!issue) await invalidate();
       }
     },
   });

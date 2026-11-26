@@ -57,9 +57,12 @@ export function dashboardCoverage(
     not_live_repositories: [...repos.values()].filter((live) => live === false).length,
     last_event_at: lastEventAt ?? undefined,
     status_counts: {
-      outdated: items.filter(({ judgement }) => judgement?.state === "outdated").length,
+      outdated: items.filter(
+        ({ judgement }) => judgement?.state === "outdated" || judgement?.state === "judging",
+      ).length,
       not_judged: items.filter(
-        ({ judgement }) => judgement && !judgement.judged_at && judgement.state !== "current",
+        ({ judgement }) =>
+          judgement?.state === "not_judged" || judgement?.state === "queued" || judgement?.state === "capped",
       ).length,
       not_live: items.filter(({ live }) => live === false).length,
       excluded,

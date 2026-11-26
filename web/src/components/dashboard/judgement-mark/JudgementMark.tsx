@@ -57,7 +57,9 @@ export function JudgementMark({
         ? ["◌ not judged yet · queued", "This item is queued for LLM judgement."]
         : state === "capped"
           ? ["◌ not judged · daily limit", "The daily LLM ranking limit has been reached."]
-          : ["◌ not judged yet", "Scored from computed parts and fixed estimates until the LLM judges it."];
+          : state === "not_judged"
+            ? ["◌ not judged yet", "Scored from computed parts and fixed estimates until the LLM judges it."]
+            : ["Judgement status unavailable", "The current judgement status could not be displayed."];
   return (
     <>
       <Tooltip tip={tip}>

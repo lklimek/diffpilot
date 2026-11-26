@@ -318,6 +318,11 @@
     },
     {
       "id": "WUI-320",
+      "judgement": {
+        "state": "not_judged",
+        "judged_at": null,
+        "outdated_because": null
+      },
       "key": "acme~wallet-ui~pr~320",
       "kind": "pr",
       "repo": {
@@ -455,6 +460,11 @@
     },
     {
       "id": "NC-482",
+      "judgement": {
+        "state": "outdated",
+        "judged_at": "2026-11-17T08:20:00Z",
+        "outdated_because": "facts_changed"
+      },
       "key": "acme~node-client~pr~482",
       "kind": "pr",
       "repo": {
@@ -908,6 +918,11 @@
     },
     {
       "id": "CON-1534",
+      "judgement": {
+        "state": "outdated",
+        "judged_at": "2026-11-17T08:20:00Z",
+        "outdated_because": "facts_changed"
+      },
       "key": "acme~consensus~pr~1534",
       "kind": "pr",
       "repo": {
@@ -1052,6 +1067,11 @@
     },
     {
       "id": "PLAT-1210",
+      "judgement": {
+        "state": "outdated",
+        "judged_at": "2026-11-17T08:20:00Z",
+        "outdated_because": "facts_changed"
+      },
       "key": "acme~platform~issue~1210",
       "kind": "issue",
       "repo": {

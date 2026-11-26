@@ -1,7 +1,7 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
-import type { LlmActivity, LlmJob } from "../../api/generated/types";
+import type { LlmActivity, LlmJob, LlmJobKind, WaitReason } from "../../api/generated/types";
 import { clockText } from "../format/time";
 import { UserMenu } from "./UserMenu";
 
@@ -240,4 +240,26 @@ it("keeps the banner silent on idle, running and recovery, and reports a failed 
 
   rerender(<UserMenu {...props} activity={activity} />);
   expect(screen.queryByRole("status")).toBeNull();
+});
+
+it("uses neutral labels for future job kinds and wait reasons", async () => {
+  render(
+    <UserMenu
+      {...props}
+      activity={{
+        ...activity,
+        queued: [
+          {
+            ...queued,
+            kind: "toString" as LlmJobKind,
+            waits_for: { kind: "provider_window" } as unknown as WaitReason,
+          },
+        ],
+      }}
+    />,
+  );
+  await userEvent.click(screen.getByRole("button", { name: /^alice/ }));
+  const list = within(screen.getByRole("list", { name: "Queued (1)" }));
+  expect(list.getByText(/^LLM job/)).toBeVisible();
+  expect(list.getByText("Waiting")).toBeVisible();
 });

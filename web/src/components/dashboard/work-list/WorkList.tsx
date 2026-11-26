@@ -6,7 +6,6 @@ import type { Navigate } from "../common/navigate";
 import { httpUrl } from "../common/OpenExternal";
 import { ToggleGroup } from "../common/ToggleGroup";
 import { WorkItemRow } from "../work-item/WorkItemRow";
-import { itemJudgement } from "../common/itemJudgement";
 import { ExcludedItems, exclusionDescription } from "../excluded-items/ExcludedItems";
 import { FilterChips } from "../filter-chips/FilterChips";
 import {
@@ -92,12 +91,12 @@ const todosPossible = (items: WorkItem[], todos?: TodosState) =>
 export function groupItems(items: WorkItem[]) {
   const alarms = items.filter((item) => item.score.tier === "p0");
   const ranked = items.filter((item) => item.score.tier !== "p0");
-  const judged = (item: WorkItem) => itemJudgement(item).judged_at !== null || item.score.state === "final";
+  const notJudged = (item: WorkItem) => matchesStatus(item, "not_judged");
   const tiers = (["p1", "p2", "p3"] as Exclude<Tier, "p0">[]).map((tier) => ({
     tier,
-    items: ranked.filter((item) => judged(item) && item.score.tier === tier),
+    items: ranked.filter((item) => !notJudged(item) && item.score.tier === tier),
   }));
-  return { alarms, tiers, notJudged: ranked.filter((item) => !judged(item)) };
+  return { alarms, tiers, notJudged: ranked.filter(notJudged) };
 }
 
 /**

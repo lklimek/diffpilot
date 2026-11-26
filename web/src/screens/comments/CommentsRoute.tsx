@@ -6,7 +6,15 @@ import {
 import { AssessmentControls } from "../../components/comments/AssessmentControls";
 import { AssessmentComparisonPanel } from "../../components/comments/AssessmentComparisonReport";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
-import { Outlet, useLocation, useNavigate, useOutletContext, useParams, useSearchParams } from "react-router";
+import {
+  Link,
+  Outlet,
+  useLocation,
+  useNavigate,
+  useOutletContext,
+  useParams,
+  useSearchParams,
+} from "react-router";
 import { ApiError } from "../../api/client";
 import type { CommentItem, PrPage, PrRef, CommentsOverview } from "../../api/generated/types";
 import { useMe } from "../../api/queries";
@@ -20,6 +28,7 @@ import {
   useStartCommentAssessment,
   useVisitComments,
   useWatchPr,
+  type AssessmentStartIssue,
 } from "../../api/review-loop";
 import { useNow } from "../../app/now";
 import { usePrTabSubject } from "../../app/tabStatus";
@@ -33,12 +42,13 @@ import { CommentsTabs, type CommentsPage } from "../../components/comments/Comme
 import { commentsByNo, needsYouCount } from "../../components/comments/queueStatus";
 import { READ_FAILURE } from "../../components/comments/parts";
 import { StatusPopover } from "../../components/status/StatusPopover";
-import { clockText } from "../../components/format/time";
+import { clockText, dateTimeText } from "../../components/format/time";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { prGithubUrl } from "../../components/github/links";
 import { ReviewTopBar } from "../shell/ReviewTopBar";
 import { AnalysisPathLinks } from "../review/AnalysisPathLinks";
 import { PrAskChatProvider } from "../review/askChat";
+import { LLM_USAGE_PATH } from "../shell/paths";
 import { commentsPath, prOfParams, prPath } from "../pr/paths";
 
 /** What every Comments page gets from the layout. */
@@ -108,15 +118,18 @@ function CommentsVisit({ pr }: { pr: PrRef }) {
   const me = useMe();
   const login = me.data?.user?.login ?? "anonymous";
   const { mutate: recordVisit, isSuccess: visited, error: visitError } = useVisitComments(pr);
+  const [assessmentIssue, setAssessmentIssue] = useState<AssessmentStartIssue | null>(null);
   const entryAssessment = useStartCommentAssessment(pr);
   const startAssessment = entryAssessment.mutate;
   const entered = useRef(false);
   useEffect(() => {
     if (entered.current) return;
     entered.current = true;
-    recordVisit(undefined, { onSuccess: () => startAssessment() });
+    recordVisit(undefined, {
+      onSuccess: () => startAssessment(undefined, { onSuccess: setAssessmentIssue }),
+    });
   }, [recordVisit, startAssessment]);
-  const ready = visited && (entryAssessment.isSuccess || entryAssessment.isError);
+  const ready = visited && entryAssessment.isSuccess;
   const overview = useCommentsOverview(pr, ready);
   // Load items after the initial overview identifies the stored PR.
   const overviewRead = ready && overview.isFetchedAfterMount;
@@ -124,7 +137,7 @@ function CommentsVisit({ pr }: { pr: PrRef }) {
   const showImports = search.get("imported_unseen") === "true";
   const imports = useImportedCommentItems(pr, overviewRead && showImports);
   const page = usePrPage(pr);
-  const read = useReadComments(pr, true);
+  const read = useReadComments(pr, setAssessmentIssue);
   const watch = useWatchPr(pr);
   const statusHost = useRef<HTMLDivElement>(null);
   const activeTab = useRef<HTMLAnchorElement>(null);
@@ -192,11 +205,6 @@ function CommentsVisit({ pr }: { pr: PrRef }) {
     // A failed later read keeps the page (and what was typed on it) with the last data, and says so.
     return (
       <>
-        {entryAssessment.isError && (
-          <StatusMessage kind="error">
-            Could not start comment assessment. {errorText(entryAssessment.error)}
-          </StatusMessage>
-        )}
         {failed && (
           <div className="mb-3">
             <StatusMessage kind="error">
@@ -282,6 +290,31 @@ function CommentsVisit({ pr }: { pr: PrRef }) {
           </div>
         )}
         {read.isError && <StatusMessage kind="error">{errorText(read.error)}</StatusMessage>}
+        {assessmentIssue?.code === "credential_missing" && (
+          <StatusMessage kind="empty">
+            <Link className="text-accent underline" to={LLM_USAGE_PATH}>
+              Link a Codex plan in Settings
+            </Link>{" "}
+            to assess comments.
+          </StatusMessage>
+        )}
+        {assessmentIssue?.code === "assessment_daily_limit" && (
+          <StatusMessage kind="empty">
+            Daily comment assessment limit reached.
+            {assessmentIssue.resets_at && (
+              <>
+                {" "}
+                The limit resets at{" "}
+                <time dateTime={assessmentIssue.resets_at}>{dateTimeText(assessmentIssue.resets_at)}</time>.
+              </>
+            )}
+          </StatusMessage>
+        )}
+        {assessmentIssue?.code === "failed" && (
+          <StatusMessage kind="error">
+            Could not start comment assessment. {assessmentIssue.message}
+          </StatusMessage>
+        )}
         {watch.isError && <StatusMessage kind="error">{errorText(watch.error)}</StatusMessage>}
         {o && (
           <>

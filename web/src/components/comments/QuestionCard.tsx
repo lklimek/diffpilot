@@ -176,7 +176,7 @@ function Raised({ item }: { item: CommentItem }) {
 /** The LLM assessment of the item, or why there is none; `prHead` is the pull request's head now. */
 function Assessment({ item, prHead }: { item: CommentItem; prHead: string }) {
   const a = item.assessment;
-  if (item.assessment_state.state === "queued") return "Waiting for assessment.";
+  if (item.assessment_state.state === "queued") return <p className="m-0">Waiting for assessment.</p>;
   if (item.assessment_state.state === "running")
     return <p className="m-0">LLM assessment running for this comment.</p>;
   if (item.assessment_state.state === "not_assessed")
