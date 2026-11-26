@@ -450,7 +450,7 @@ async fn ensure_does_not_restart_a_worker_whose_old_relay_is_still_attached() {
         .mount(&server)
         .await;
     assert!(matches!(
-        launcher.ensure(&pr(), None).await,
+        launcher.ensure(&pr(), None, || Ok(())).await,
         Err(Error::Busy)
     ));
     assert!(
@@ -738,7 +738,7 @@ async fn ensure_recreates_stale_image_or_template_and_keeps_work_volume() {
                 .await;
         }
         mock_runtime(&server).await;
-        launcher.ensure(&pr(), None).await.unwrap();
+        launcher.ensure(&pr(), None, || Ok(())).await.unwrap();
         let requests = server.received_requests().await.unwrap();
         let deleted = requests.iter().position(|r| r.method == "DELETE").unwrap();
         let created = requests
@@ -837,7 +837,7 @@ async fn ensure_evicts_lru_unattached_worker_before_starting() {
         .mount(&server)
         .await;
     mock_runtime(&server).await;
-    launcher.ensure(&new, None).await.unwrap();
+    launcher.ensure(&new, None, || Ok(())).await.unwrap();
     let requests = server.received_requests().await.unwrap();
     let stop = requests
         .iter()
@@ -1067,7 +1067,7 @@ async fn assert_missing_container_volume_is_recoverable(
         .expect(1)
         .mount(server)
         .await;
-    assert!(launcher.ensure(&pr(), None).await.unwrap());
+    assert!(launcher.ensure(&pr(), None, || Ok(())).await.unwrap());
     let requests = server.received_requests().await.unwrap();
     let create = requests
         .iter()
@@ -1162,7 +1162,7 @@ async fn reconcile_keeps_volume_when_shutdown_interrupts_recreation() {
         .await;
     {
         let id = pr();
-        let ensure = launcher.ensure(&id, None);
+        let ensure = launcher.ensure(&id, None, || Ok(()));
         tokio::pin!(ensure);
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             tokio::select! {
@@ -1275,7 +1275,7 @@ async fn fetch_releases_lifecycle_lock_and_reserves_its_identity() {
     {
         let launcher = &shared;
         assert!(matches!(
-            launcher.ensure(&pr(), None).await,
+            launcher.ensure(&pr(), None, || Ok(())).await,
             Err(Error::Busy)
         ));
         assert!(matches!(launcher.remove(&pr()).await, Err(Error::Busy)));
@@ -1393,7 +1393,7 @@ async fn warm_ensure_changes_per_job_memcan_without_recreating() {
     mock_runtime(&server).await;
     let jobs = [None, Some(&old), Some(&rotated), None, Some(&moved)];
     for next in jobs {
-        assert!(!launcher.ensure(&pr(), next).await.unwrap());
+        assert!(!launcher.ensure(&pr(), next, || Ok(())).await.unwrap());
         let name = launcher.settings.name(&pr(), false);
         let relay = launcher.begin_attachment(&name).unwrap();
         launcher.finish_attachment(name, &relay);
@@ -1458,7 +1458,7 @@ async fn ensure_refuses_when_every_running_slot_is_attached() {
         .mount(&server)
         .await;
     assert!(matches!(
-        launcher.ensure(&new, None).await,
+        launcher.ensure(&new, None, || Ok(())).await,
         Err(Error::Busy)
     ));
     assert!(
@@ -1648,7 +1648,7 @@ async fn ensure_keeps_the_older_unattached_reservation_when_newer_idle_worker_ca
         .await;
     mock_runtime(&server).await;
 
-    launcher.ensure(&reserved, None).await.unwrap();
+    launcher.ensure(&reserved, None, || Ok(())).await.unwrap();
     let now = Instant::now();
     launcher.state().used.insert(
         settings.name(&reserved, false),
@@ -1658,7 +1658,7 @@ async fn ensure_keeps_the_older_unattached_reservation_when_newer_idle_worker_ca
         .state()
         .used
         .insert(settings.name(&idle, false), now);
-    launcher.ensure(&incoming, None).await.unwrap();
+    launcher.ensure(&incoming, None, || Ok(())).await.unwrap();
     let stopped: Vec<_> = server
         .received_requests()
         .await
@@ -1717,10 +1717,10 @@ async fn stopped_worker_can_attach_again_before_its_old_relay_exits() {
         .await;
     let name = launcher.settings.name(&pr(), false);
 
-    launcher.ensure(&pr(), None).await.unwrap();
+    launcher.ensure(&pr(), None, || Ok(())).await.unwrap();
     let old_relay = launcher.begin_attachment(&name).unwrap();
     launcher.stop(&pr()).await.unwrap();
-    launcher.ensure(&pr(), None).await.unwrap();
+    launcher.ensure(&pr(), None, || Ok(())).await.unwrap();
     let new_relay = launcher.begin_attachment(&name).unwrap();
 
     launcher.finish_attachment(name.clone(), &old_relay);
@@ -1800,4 +1800,213 @@ async fn slow_worker_configure_does_not_block_an_unrelated_stop() {
     assert!(response.error.is_none());
     assert!(!ensure.is_finished());
     assert!(ensure.await.unwrap().error.is_none());
+}
+
+#[tokio::test]
+async fn disconnected_ensure_cannot_create_a_reservation_after_allocation_unlocks() {
+    use contracts::launcher::{LauncherAction, LauncherRequest};
+    use tokio::net::UnixStream;
+
+    let (engine, launcher) = fake_launcher().await;
+    mock_inspect(&engine, &launcher.settings, &pr(), true).await;
+    mock_runtime(&engine).await;
+    let launcher = Arc::new(launcher);
+    let name = launcher.settings.name(&pr(), false);
+    let worker = launcher.operation(&name);
+    let allocation = launcher.allocation.lock().await;
+    let (socket, mut client) = UnixStream::pair().unwrap();
+    let handler = tokio::spawn(serve::connection(socket, launcher.clone()));
+    serve::write_message(
+        &mut client,
+        &LauncherRequest {
+            id: "stale-ensure".into(),
+            action: LauncherAction::Ensure {
+                container: pr(),
+                memcan: None,
+            },
+        },
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while worker.try_lock().is_ok() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    drop(client);
+    drop(allocation);
+    assert!(handler.await.unwrap().is_err());
+    assert!(engine.received_requests().await.unwrap().is_empty());
+    assert!(launcher.state().ensured.is_empty());
+}
+
+#[tokio::test]
+async fn disconnected_configure_stops_the_worker_and_releases_its_reservation() {
+    use contracts::launcher::{LauncherAction, LauncherRequest};
+    use tokio::{net::UnixStream, sync::Notify};
+    use wiremock::{
+        Mock, Request, ResponseTemplate,
+        matchers::{method, path_regex},
+    };
+
+    let (engine, launcher) = fake_launcher().await;
+    mock_inspect(&engine, &launcher.settings, &pr(), true).await;
+    mock_runtime(&engine).await;
+    let configuring = Arc::new(Notify::new());
+    let entered = Arc::clone(&configuring);
+    Mock::given(method("GET"))
+        .and(path_regex(r"/exec/reset/json$"))
+        .respond_with(move |_: &Request| {
+            entered.notify_one();
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"Running":false,"ExitCode":0}))
+                .set_delay(std::time::Duration::from_millis(200))
+        })
+        .with_priority(1)
+        .mount(&engine)
+        .await;
+    Mock::given(method("POST"))
+        .and(path_regex(r"/containers/v13w3-test-pr-7-3/stop$"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&engine)
+        .await;
+
+    let launcher = Arc::new(launcher);
+    let (socket, mut client) = UnixStream::pair().unwrap();
+    let handler = tokio::spawn(serve::connection(socket, launcher.clone()));
+    serve::write_message(
+        &mut client,
+        &LauncherRequest {
+            id: "abandoned-configure".into(),
+            action: LauncherAction::Ensure {
+                container: pr(),
+                memcan: None,
+            },
+        },
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), configuring.notified())
+        .await
+        .unwrap();
+    assert_eq!(launcher.state().ensured.len(), 1);
+    drop(client);
+
+    assert!(handler.await.unwrap().is_err());
+    assert!(launcher.state().ensured.is_empty());
+    engine.verify().await;
+}
+
+#[tokio::test]
+async fn disconnected_cold_ensure_reclaims_worker_after_finishing_fetch() {
+    use contracts::launcher::{LauncherAction, LauncherRequest};
+    use tokio::{net::UnixStream, sync::Notify};
+    use wiremock::{
+        Mock, Request, ResponseTemplate,
+        matchers::{method, path_regex},
+    };
+
+    let (engine, launcher) = fake_launcher().await;
+    mock_runtime(&engine).await;
+    mock_inspect(&engine, &launcher.settings, &pr(), true).await;
+    let worker = launcher.settings.template(&pr(), false, None).unwrap();
+    Mock::given(method("GET"))
+        .and(path_regex(r"/containers/v13w3-test-pr-7-3/json$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "Config":{"Image":worker.image,"Labels":worker.labels},"State":{"Running":false}
+        })))
+        .with_priority(1)
+        .up_to_n_times(1)
+        .mount(&engine)
+        .await;
+    for (verb, route, response) in [
+        (
+            "GET",
+            r"/containers/json$",
+            ResponseTemplate::new(200).set_body_json(serde_json::json!([])),
+        ),
+        (
+            "POST",
+            r"/containers/v13w3-test-(pr|fetch)-7-3/start$",
+            ResponseTemplate::new(204),
+        ),
+        (
+            "GET",
+            r"/containers/v13w3-test-fetch-7-3/json$",
+            ResponseTemplate::new(404),
+        ),
+        (
+            "POST",
+            r"/containers/create$",
+            ResponseTemplate::new(201)
+                .set_body_json(serde_json::json!({"Id":"fetch","Warnings":[]})),
+        ),
+        (
+            "DELETE",
+            r"/containers/v13w3-test-fetch-7-3$",
+            ResponseTemplate::new(204),
+        ),
+        (
+            "POST",
+            r"/containers/v13w3-test-pr-7-3/stop$",
+            ResponseTemplate::new(204),
+        ),
+    ] {
+        Mock::given(method(verb))
+            .and(path_regex(route))
+            .respond_with(response)
+            .mount(&engine)
+            .await;
+    }
+    let fetching = Arc::new(Notify::new());
+    let entered = fetching.clone();
+    Mock::given(method("POST"))
+        .and(path_regex(r"/containers/v13w3-test-fetch-7-3/wait$"))
+        .respond_with(move |_: &Request| {
+            entered.notify_one();
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"StatusCode":0}))
+                .set_delay(std::time::Duration::from_millis(200))
+        })
+        .mount(&engine)
+        .await;
+    let launcher = Arc::new(launcher);
+    let (socket, mut client) = UnixStream::pair().unwrap();
+    let handler = tokio::spawn(serve::connection(socket, launcher.clone()));
+    serve::write_message(
+        &mut client,
+        &LauncherRequest {
+            id: "abandoned-fetch".into(),
+            action: LauncherAction::Ensure {
+                container: pr(),
+                memcan: None,
+            },
+        },
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), fetching.notified())
+        .await
+        .unwrap();
+    assert_eq!(launcher.state().fetching.len(), 1);
+    drop(client);
+
+    assert!(handler.await.unwrap().is_err());
+    assert!(launcher.state().ensured.is_empty());
+    assert!(launcher.state().fetching.is_empty());
+    let requests = engine.received_requests().await.unwrap();
+    let fetched = requests
+        .iter()
+        .position(|request| {
+            request.method == "DELETE" && request.url.path().ends_with("v13w3-test-fetch-7-3")
+        })
+        .unwrap();
+    let stopped = requests
+        .iter()
+        .position(|request| request.url.path().ends_with("v13w3-test-pr-7-3/stop"))
+        .unwrap();
+    assert!(fetched < stopped);
 }
