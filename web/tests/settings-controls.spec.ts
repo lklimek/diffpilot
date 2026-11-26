@@ -2,7 +2,7 @@ import { expect, test } from "./fixtures";
 import { ANALYSIS_ID } from "./support";
 import { expectAccessible, analyze } from "./screens-support";
 
-test("installation model saves and reports the editor; failed saves remain visible", async ({ page }) => {
+test("linked plan model saves and reports the editor; failed saves remain visible", async ({ page }) => {
   await page.goto("/settings/llm");
   await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-astra");
   await page.getByLabel("Reasoning effort").selectOption("low");
@@ -22,7 +22,7 @@ for (const width of [390, 1280, 2560]) {
     await page.goto("/settings/llm");
     const model = page.getByRole("region", { name: "Model and effort" });
     const control = model.getByLabel("Model", { exact: true });
-    const help = model.getByText("The model used by new jobs across this installation.");
+    const help = model.getByText("The model used by new jobs on your linked plan.");
     await expect(control).toBeVisible();
     const [c, h] = await Promise.all([control.boundingBox(), help.boundingBox()]);
     expect(c && h).toBeTruthy();

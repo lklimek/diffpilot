@@ -30,25 +30,28 @@ import { githubLineUrls, type PrLinkBase } from "../../components/github/links";
 import type { LineGithubLink } from "../../components/code-view/LineGithub";
 import { Tooltip } from "../../components/tooltip/Tooltip";
 
+function readHideContextChanges(key: string): boolean {
+  try {
+    return localStorage.getItem(key) !== "false";
+  } catch {
+    return true;
+  }
+}
+
 /** "Hide comment and import changes" of the review views, remembered per user (default on). */
 export function useHideContextChanges(login: string | null): [boolean, (hide: boolean) => void] {
   const key = `diffpilot.hide-context-changes.${login ?? "anonymous"}`;
-  const [hide, setHide] = useState(() => {
-    try {
-      return localStorage.getItem(key) !== "false";
-    } catch {
-      return true;
-    }
-  });
+  const [preference, setPreference] = useState(() => ({ key, hide: readHideContextChanges(key) }));
+  if (preference.key !== key) setPreference({ key, hide: readHideContextChanges(key) });
   const change = (next: boolean) => {
-    setHide(next);
+    setPreference({ key, hide: next });
     try {
       localStorage.setItem(key, String(next));
     } catch {
       /* Storage unavailable; keep this view's preference. */
     }
   };
-  return [hide, change];
+  return [preference.hide, change];
 }
 
 /** Most lines one range request may ask for (`RangeQuery::MAX_LINES`, http-api.md "Ranges"). */
