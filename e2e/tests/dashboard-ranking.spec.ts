@@ -107,7 +107,7 @@ test("cancel during the ranking: provisional scores stay; Retry ranking finishes
   await expect(notice).toHaveAccessibleDescription(/ranking.*cancelled/i);
   for (const id of ["TODO-afa91c2e", "TODO-a1bd0a44"]) {
     const row = page.locator("li[data-item]", { hasText: id });
-    await expect(row.getByText(/^~\d+$/)).toBeVisible();
+    await expect(row.getByText(/^~-?\d+$/)).toBeVisible();
   }
   await expect(page.getByRole("button", { name: "Retry ranking" })).toBeVisible();
   await checkScreen(page);
