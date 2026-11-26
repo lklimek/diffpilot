@@ -17,7 +17,7 @@ const failures = [
   {
     status: 409,
     body: { code: "credential_missing" },
-    note: /Link a Codex plan in Settings/,
+    note: /Link a Codex account in Settings/,
   },
 ];
 
@@ -26,7 +26,7 @@ function expectAdmissionNote(note: RegExp, resetsAt?: string) {
   const status = message.closest('[role="status"]');
   expect(status).toBeVisible();
   if (resetsAt) expect(status?.querySelector("time")).toHaveAttribute("datetime", resetsAt);
-  else expect(within(status as HTMLElement).getByRole("link")).toHaveAttribute("href", "/settings/llm");
+  else expect(within(status as HTMLElement).getByRole("link")).toHaveAttribute("href", "/settings/account");
   expect(screen.queryByRole("alert")).toBeNull();
 }
 

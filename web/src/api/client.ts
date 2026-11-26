@@ -112,7 +112,7 @@ export class AssessmentAdmissionError extends Error {
   constructor(readonly issue: AssessmentAdmissionIssue) {
     super(
       issue.code === "credential_missing"
-        ? "Link a Codex plan in Settings."
+        ? "Link a Codex account in Settings to assess comments."
         : "Daily comment assessment limit reached.",
     );
   }

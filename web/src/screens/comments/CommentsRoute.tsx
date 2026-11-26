@@ -48,7 +48,7 @@ import { prGithubUrl } from "../../components/github/links";
 import { ReviewTopBar } from "../shell/ReviewTopBar";
 import { AnalysisPathLinks } from "../review/AnalysisPathLinks";
 import { PrAskChatProvider } from "../review/askChat";
-import { LLM_USAGE_PATH } from "../shell/paths";
+import { ACCOUNT_SETTINGS_PATH } from "../shell/paths";
 import { commentsPath, prOfParams, prPath } from "../pr/paths";
 
 /** What every Comments page gets from the layout. */
@@ -292,8 +292,8 @@ function CommentsVisit({ pr }: { pr: PrRef }) {
         {read.isError && <StatusMessage kind="error">{errorText(read.error)}</StatusMessage>}
         {assessmentIssue?.code === "credential_missing" && (
           <StatusMessage kind="empty">
-            <Link className="text-accent underline" to={LLM_USAGE_PATH}>
-              Link a Codex plan in Settings
+            <Link className="text-accent underline" to={ACCOUNT_SETTINGS_PATH}>
+              Link a Codex account in Settings
             </Link>{" "}
             to assess comments.
           </StatusMessage>

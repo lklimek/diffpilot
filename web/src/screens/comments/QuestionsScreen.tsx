@@ -8,7 +8,7 @@ import type {
 } from "../../api/generated/types";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
-import { ApiError } from "../../api/client";
+import { ApiError, AssessmentAdmissionError } from "../../api/client";
 import {
   cachedCommentsReview,
   useAssessAgain,
@@ -56,7 +56,9 @@ import { commentsPath, prPath } from "../pr/paths";
 import { useComments } from "./CommentsRoute";
 
 const errorText = (error: unknown) =>
-  error instanceof ApiError ? error.message : "Something went wrong. Try again.";
+  error instanceof ApiError || error instanceof AssessmentAdmissionError
+    ? error.message
+    : "Something went wrong. Try again.";
 
 const LINES_STEP = 12;
 const KEYS: [string, string][] = [
