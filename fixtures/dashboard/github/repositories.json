@@ -3,6 +3,7 @@
     "id": "R_acme_platform",
     "name": "platform",
     "nameWithOwner": "acme/platform",
+    "fullDatabaseId": "43",
     "owner": {
       "__typename": "Organization",
       "login": "acme"
@@ -20,6 +21,7 @@
     "id": "R_acme_wallet_ui",
     "name": "wallet-ui",
     "nameWithOwner": "acme/wallet-ui",
+    "fullDatabaseId": "42",
     "owner": {
       "__typename": "Organization",
       "login": "acme"
@@ -71,6 +73,7 @@
     "id": "R_acme_consensus",
     "name": "consensus",
     "nameWithOwner": "acme/consensus",
+    "fullDatabaseId": "44",
     "owner": {
       "__typename": "Organization",
       "login": "acme"

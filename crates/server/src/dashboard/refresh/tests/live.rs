@@ -671,8 +671,32 @@ async fn last_ranked_pull_close_keeps_its_repository_live_for_reopening() {
         "a different repository ID must not update the chart"
     );
 
-    pull_delivery(&w, "reopened", "acme/wallet-ui", 311, "alice").await;
-    flush_webhooks(&w, Timestamp::now()).await;
+    // A matching local binding is no proof that GitHub still resolves the name to that repo.
+    w.gate.pull_updates.lock().unwrap().insert(
+        311,
+        json!({
+            "state": "OPEN", "closedAt": null,
+            "baseRepository": { "nameWithOwner": "acme/wallet-ui", "isPrivate": false,
+                "defaultBranchRef": { "name": "main" }, "fullDatabaseId": null },
+        }),
+    );
+    let delivery = pull_delivery(&w, "reopened", "acme/wallet-ui", 311, "alice").await;
+    let receipt = Timestamp::now();
+    flush_webhooks(&w, receipt).await;
+    assert!(
+        item_history(&w, item).await.contains(&closure),
+        "missing ID cannot change the chart"
+    );
+    let retry_at = receipt + SignedDuration::from_secs(30);
+    let pending = github
+        .next_pending(retry_at)
+        .await
+        .unwrap()
+        .expect("identity check is retried");
+    assert_eq!(pending.id, delivery);
+
+    pull_state(&w, 311, "OPEN", None, None);
+    flush_webhooks(&w, retry_at).await;
     assert!(!item_history(&w, item).await.contains(&closure));
     assert!(
         still_live,
