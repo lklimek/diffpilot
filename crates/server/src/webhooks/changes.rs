@@ -188,15 +188,18 @@ pub(super) fn extract(
         _ => return Ok(Changes::Ignore),
     };
     let repo = event_repository(body).ok_or(InvalidPayload)?;
-    let make = |number, head_repository, head_sha| WebhookChange {
-        kind,
-        repository: repo.clone(),
-        head_repository,
-        number,
-        head_sha,
-        action: action.map(str::to_owned),
-        installation_id: installation,
-    };
+    let make =
+        |number, head_repository, head_sha, base_repository, candidate_login| WebhookChange {
+            kind,
+            repository: repo.clone(),
+            head_repository,
+            number,
+            head_sha,
+            action: action.map(str::to_owned),
+            installation_id: installation,
+            base_repository,
+            candidate_login,
+        };
     let changes = if matches!(kind, ChangeKind::Check) {
         let check = &body[event];
         let head_sha = sha(if event == "status" {
@@ -215,11 +218,19 @@ pub(super) fn extract(
                     Some(number),
                     head,
                     sha(&pr["head"]["sha"]).or_else(|| head_sha.clone()),
+                    repository(&pr["base"]["repo"]),
+                    None,
                 ))
             })
             .collect();
         if changes.is_empty() {
-            changes.push(make(None, None, Some(head_sha.ok_or(InvalidPayload)?)));
+            changes.push(make(
+                None,
+                None,
+                Some(head_sha.ok_or(InvalidPayload)?),
+                None,
+                None,
+            ));
         }
         changes
     } else {
@@ -228,10 +239,20 @@ pub(super) fn extract(
             .or_else(|| number(&pr["number"]))
             .or_else(|| number(&body["issue"]["number"]))
             .ok_or(InvalidPayload)?;
+        let candidate_login = match (event, action_name) {
+            ("pull_request", "opened") => pr["user"]["login"].as_str(),
+            ("pull_request", "assigned") => body["assignee"]["login"].as_str(),
+            ("pull_request", "review_requested") => body["requested_reviewer"]["login"].as_str(),
+            _ => None,
+        }
+        .filter(|login| crate::github::work::valid_login(login))
+        .map(str::to_owned);
         vec![make(
             Some(number),
             repository(&pr["head"]["repo"]),
             sha(&pr["head"]["sha"]),
+            None,
+            candidate_login,
         )]
     };
     Ok(Changes::Signal(repo, changes))

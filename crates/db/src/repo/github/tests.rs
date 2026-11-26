@@ -821,3 +821,211 @@ async fn prune_installations_keeps_tracked_rows() {
         None
     );
 }
+
+#[tokio::test]
+async fn dashboard_fanout_matches_repository_ids_in_each_tenant() {
+    use crate::repo::users::GithubProfile;
+
+    let db = test_db().await;
+    let now = Timestamp::now();
+    sqlx::query("INSERT INTO tenants (id, name, created_at) VALUES ('other', 'Other', ?)")
+        .bind(ts(now))
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    db.users()
+        .upsert_member(
+            "other",
+            "u2",
+            &GithubProfile {
+                github_id: 22,
+                login: "bob".into(),
+                name: None,
+                avatar_url: None,
+            },
+            now,
+        )
+        .await
+        .unwrap();
+    let repository = repo(7, "acme", "node-client");
+    db.repos()
+        .upsert("other", &repository.name, Some(8))
+        .await
+        .unwrap();
+    let item = json!({"facts": {"repo": repository.name, "number": 1}});
+    let snapshot_version = 2;
+    let snapshot = json!({"version": snapshot_version, "pull_requests": [item], "issues": []});
+    for (tenant, user) in [("default", "u1"), ("other", "u2")] {
+        sqlx::query(
+            "INSERT INTO dashboard_refreshes (id, user_id, tenant_id, trigger, state, ranking_state, snapshot, started_at)
+             VALUES (?, ?, ?, 'manual', 'finished', 'finished', ?, ?)",
+        ).bind(tenant).bind(user).bind(tenant).bind(snapshot.to_string()).bind(ts(now))
+            .execute(&db.pool).await.unwrap();
+    }
+    let mut change = WebhookChange {
+        kind: ChangeKind::PullRequest,
+        repository,
+        head_repository: None,
+        number: Some(1),
+        head_sha: None,
+        action: None,
+        installation_id: None,
+        base_repository: None,
+        candidate_login: None,
+    };
+    let github = db.github();
+    assert!(
+        github
+            .dashboard_targets(std::slice::from_ref(&change), 1)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let targets = github
+        .dashboard_targets(std::slice::from_ref(&change), snapshot_version)
+        .await
+        .unwrap();
+    assert_eq!(targets.len(), 1);
+    assert_eq!(
+        (&*targets[0].tenant_id, &*targets[0].user_id),
+        ("default", "u1")
+    );
+    change.repository.id = Some(8);
+    let targets = github
+        .dashboard_targets(std::slice::from_ref(&change), snapshot_version)
+        .await
+        .unwrap();
+    assert_eq!(targets.len(), 1);
+    assert_eq!(
+        (&*targets[0].tenant_id, &*targets[0].user_id),
+        ("other", "u2")
+    );
+
+    // The same GitHub repository may legitimately be tracked by more than one tenant.
+    db.repos()
+        .upsert("other", &change.repository.name, Some(7))
+        .await
+        .unwrap();
+    change.repository.id = Some(7);
+    let targets = github
+        .dashboard_targets(&[change], snapshot_version)
+        .await
+        .unwrap();
+    assert_eq!(
+        targets
+            .into_iter()
+            .map(|target| target.tenant_id)
+            .collect::<std::collections::BTreeSet<_>>(),
+        ["default".into(), "other".into()].into()
+    );
+}
+
+#[tokio::test]
+async fn deferred_delivery_yields_to_earlier_eligible_work() {
+    let db = test_db().await;
+    let github = db.github();
+    let now = Timestamp::from_second(Timestamp::now().as_second()).unwrap()
+        + SignedDuration::from_nanos(123_456_789);
+    let later = now + SignedDuration::from_secs(30);
+    let eligible_at = later - SignedDuration::from_nanos(789);
+    let repository = repo(7, "acme", "node-client");
+    let change = WebhookChange {
+        kind: ChangeKind::PullRequest,
+        repository: repository.clone(),
+        head_repository: None,
+        number: Some(1),
+        head_sha: None,
+        action: None,
+        installation_id: None,
+        base_repository: None,
+        candidate_login: None,
+    };
+    let queue = async |id: Uuid, at: Timestamp| {
+        let hash = id.simple().to_string().repeat(2);
+        github
+            .record(
+                &NewDelivery {
+                    id,
+                    hash: &hash,
+                    event: "pull_request",
+                    action: None,
+                    installation_id: None,
+                    effect: Effect::Signal(&repository, std::slice::from_ref(&change)),
+                },
+                at,
+            )
+            .await
+            .unwrap();
+    };
+
+    let first = Uuid::new_v4();
+    queue(first, now - RESUME_WINDOW + SignedDuration::from_secs(10)).await;
+    let pending = github.next_pending(now).await.unwrap().unwrap();
+    let destination = Destination::Watch { pr: 1 };
+    let mut work = DispatchTarget::new(destination.clone(), 0);
+    work.review = true;
+    assert!(
+        github
+            .save_targets(&pending, &[DispatchTarget::new(destination.clone(), 0)])
+            .await
+            .unwrap()
+    );
+    github
+        .settle_target(
+            &destination,
+            &[&pending],
+            DispatchOutcome::Deferred {
+                work,
+                ready_at: later,
+                hold_until: later + SignedDuration::from_mins(1),
+            },
+            now,
+        )
+        .await
+        .unwrap();
+    assert!(github.next_pending(now).await.unwrap().is_none());
+
+    let second = Uuid::new_v4();
+    queue(second, now + SignedDuration::from_secs(10)).await;
+    let eligible = github.next_pending(later).await.unwrap().unwrap();
+    assert_eq!(eligible.id, second);
+    github.finish(&eligible, later).await.unwrap();
+    assert_eq!(
+        github
+            .next_retry(now + SignedDuration::from_secs(15))
+            .await
+            .unwrap(),
+        Some(eligible_at)
+    );
+    let resumed = github
+        .next_pending(eligible_at)
+        .await
+        .unwrap()
+        .expect("a scheduled destination remains eligible across the ingress cutoff");
+    assert_eq!((resumed.id, resumed.attempts), (first, 0));
+    let target = resumed
+        .targets
+        .first()
+        .expect("a target is ready at the stored microsecond deadline");
+    assert_eq!(target.destination, destination);
+    assert!(target.review);
+
+    let redelivery = later + SignedDuration::from_secs(1);
+    queue(first, redelivery).await;
+    github
+        .settle_target(
+            &destination,
+            &[&resumed],
+            DispatchOutcome::Complete,
+            redelivery,
+        )
+        .await
+        .unwrap();
+    let current = github.next_pending(redelivery).await.unwrap().unwrap();
+    assert_eq!(current.id, first);
+    assert_eq!(current.targets[0].destination, destination);
+    assert!(
+        current.targets[0].review,
+        "redelivery preserves merged work and fences the old lease"
+    );
+}

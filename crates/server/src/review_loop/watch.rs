@@ -9,9 +9,10 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{LazyLock, Mutex, PoisonError};
+use std::time::Duration;
 
 use contracts::api::review_loop::{
-    ItemState, PrBadgeView, UserEventKind, WatchList, WatchState, WatchedPr,
+    ItemState, PrBadgeView, ReadFailure, UserEventKind, WatchList, WatchState, WatchedPr,
 };
 use contracts::common::PrRef;
 use contracts::time::Timestamp;
@@ -20,13 +21,15 @@ use db::repo::review_loop::{NewUserEvent, PassCause, PassRecord, WatchOutcome, W
 use jiff::SignedDuration;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::time::Instant;
 
 use super::assess::{self, AssessError, PassQueued, PassReason};
 use super::observe::Snapshot;
 use super::{Loaded, LoopError, PrHandle, ReadOutcome, queue};
 use crate::auth::{Session, UserTokenError};
 use crate::dashboard::{installations, plugin::PrKey};
-use crate::github::work::{UserTokens, WorkClient, WorkError};
+use crate::github::graphql::ReadBudget;
+use crate::github::work::{EventBudget, UserTokens, WorkClient, WorkError};
 use crate::state::AppState;
 
 /// Most pull requests one user watches (plan §2.8).
@@ -49,11 +52,16 @@ static DETECTION: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(Default::defa
 
 /// Whether `user`'s probes wait for GitHub's rate limit at `now`.
 fn waits_for_limit(user: &str, now: Timestamp) -> bool {
+    limit_until(user, now).is_some()
+}
+
+fn limit_until(user: &str, now: Timestamp) -> Option<Timestamp> {
     RATE_LIMITED
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .get(user)
-        .is_some_and(|until| *until > now)
+        .copied()
+        .filter(|until| *until > now)
 }
 
 /// A watch operation failed.
@@ -71,6 +79,9 @@ pub enum WatchError {
     /// GitHub could not be probed.
     #[error("the watched pull requests could not be probed on GitHub")]
     Github(#[from] WorkError),
+    /// A live watch needs a later attempt after an incomplete read.
+    #[error("GitHub did not complete a watched pull request probe")]
+    IncompleteProbe,
     /// The probe values could not be stored.
     #[error("the probe values could not be stored")]
     Json(#[from] serde_json::Error),
@@ -271,7 +282,7 @@ pub(crate) async fn tick_at(state: &AppState, now: Timestamp) -> Result<(), DbEr
         .collect();
     for (user, list) in by_user(&without_live_updates(state, &due).await?) {
         if !waits_for_limit(user, now) {
-            probe(state, user, &list, now).await;
+            probe(state, user, &list, now, ProbeTrigger::Poll).await;
         }
     }
     settle_all(state, None, now).await
@@ -319,7 +330,7 @@ pub async fn plugin_changed(state: &AppState, changed: &HashSet<PrKey>) {
         Ok(watches) => {
             for (user, list) in by_user(&watches) {
                 if !waits_for_limit(user, now) {
-                    probe(state, user, &list, now).await;
+                    probe(state, user, &list, now, ProbeTrigger::Poll).await;
                 }
             }
         }
@@ -333,8 +344,111 @@ pub async fn plugin_changed(state: &AppState, changed: &HashSet<PrKey>) {
     }
 }
 
+const EVENT_PROBE_INTERVAL: SignedDuration = SignedDuration::from_secs(60);
+
+/// Probes a live PR using an available watcher, or returns the wait until another attempt.
+pub(crate) async fn event_probe(
+    state: &AppState,
+    pr: i64,
+    now: Timestamp,
+    review: bool,
+    budgets: &mut HashMap<String, EventBudget>,
+    instant: Instant,
+) -> Result<Option<Duration>, WatchError> {
+    let rl = state.db.review_loop();
+    let watches = rl.watches_of(pr).await?;
+    let Some(first) = watches.first() else {
+        return Ok(None);
+    };
+    if !installations::live(state, &first.tenant_id)
+        .await?
+        .contains(&installations::key(&first.pr.repo))
+    {
+        return Ok(None);
+    }
+    if let Some(due) = watches
+        .iter()
+        .filter_map(|watch| watch.last_probe_at)
+        .max()
+        .map(|at| at + EVENT_PROBE_INTERVAL)
+        .filter(|due| *due > now)
+    {
+        return Ok(Some((due - now).try_into().unwrap_or_default()));
+    }
+    let mut selected = None;
+    let mut earliest_wait = None;
+    for watch in &watches {
+        let budget = budgets.entry(watch.user_id.clone()).or_default();
+        let backoff = limit_until(&watch.user_id, now)
+            .and_then(|reset| Duration::try_from(reset - now).ok())
+            .unwrap_or_default();
+        let delay = backoff.max(budget.blocked_for(instant, now).await);
+        if !delay.is_zero() {
+            earliest_wait = Some(earliest_wait.map_or(delay, |old: Duration| old.min(delay)));
+        } else if selected.is_none() || watch.state != WatchState::Paused {
+            selected = Some((watch, budget.clone()));
+            if watch.state != WatchState::Paused {
+                break;
+            }
+        }
+    }
+    let Some((watch, budget)) = selected else {
+        return Ok(earliest_wait);
+    };
+
+    // Failed attempts still consume this PR's interval.
+    let previous = watch.probe.as_ref().unwrap_or(&Value::Null);
+    match rl.record_probe(&watch.user_id, pr, previous, now).await {
+        Ok(()) => (),
+        Err(DbError::NotFound) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    }
+    match probe(
+        state,
+        &watch.user_id,
+        &[watch],
+        now,
+        ProbeTrigger::Webhook {
+            review,
+            budget: &budget,
+            instant,
+        },
+    )
+    .await
+    {
+        ProbeOutcome::Complete => {
+            settle_all(state, Some(&HashSet::from([pr])), now).await?;
+            Ok(None)
+        }
+        ProbeOutcome::Incomplete => Err(WatchError::IncompleteProbe),
+        ProbeOutcome::Deferred(delay) => Ok(Some(delay.max(EVENT_PROBE_INTERVAL.unsigned_abs()))),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ProbeTrigger<'a> {
+    Poll,
+    Webhook {
+        review: bool,
+        budget: &'a EventBudget,
+        instant: Instant,
+    },
+}
+
+enum ProbeOutcome {
+    Complete,
+    Incomplete,
+    Deferred(Duration),
+}
+
 /// Probes `watches` of `user` and handles each answer; a user without a usable token pair is paused.
-async fn probe(state: &AppState, user: &str, watches: &[&WatchRecord], now: Timestamp) {
+async fn probe(
+    state: &AppState,
+    user: &str,
+    watches: &[&WatchRecord],
+    now: Timestamp,
+    trigger: ProbeTrigger<'_>,
+) -> ProbeOutcome {
     let client = match WorkClient::new(
         state.config.github.api_url.clone(),
         UserTokens {
@@ -345,8 +459,14 @@ async fn probe(state: &AppState, user: &str, watches: &[&WatchRecord], now: Time
         Ok(client) => client,
         Err(error) => {
             tracing::warn!(%error, "the GitHub client for the watch probe could not be created");
-            return;
+            return ProbeOutcome::Incomplete;
         }
+    };
+    let client = match trigger {
+        ProbeTrigger::Poll => client,
+        ProbeTrigger::Webhook {
+            budget, instant, ..
+        } => client.with_event_budget(budget.clone(), instant),
     };
     let answers = match client
         .batched(watches, PROBE_BATCH, "", |watch| lookup(&watch.pr))
@@ -355,23 +475,30 @@ async fn probe(state: &AppState, user: &str, watches: &[&WatchRecord], now: Time
         Ok(answers) => answers,
         Err(WorkError::Token(UserTokenError::SignInRequired) | WorkError::Unauthorized) => {
             pause(state, watches, now).await;
-            return;
+            return ProbeOutcome::Complete;
         }
         Err(WorkError::PrimaryRateLimit { reset }) => {
-            rate_limited(user, reset.unwrap_or(now + RATE_LIMIT_BACKOFF), now);
-            return;
+            return ProbeOutcome::Deferred(backoff_for_rate_limit(user, reset, now));
         }
         Err(WorkError::SecondaryRateLimit { retry_after }) => {
-            let wait = retry_after
+            let reset = retry_after
                 .and_then(|wait| SignedDuration::try_from(wait).ok())
-                .unwrap_or(RATE_LIMIT_BACKOFF);
-            rate_limited(user, now + wait, now);
-            return;
+                .and_then(|wait| now.checked_add(wait));
+            return ProbeOutcome::Deferred(backoff_for_rate_limit(user, reset, now));
+        }
+        Err(WorkError::EventBudget) => {
+            if let ProbeTrigger::Webhook {
+                budget, instant, ..
+            } = trigger
+            {
+                return ProbeOutcome::Deferred(budget.blocked_for(instant, now).await);
+            }
+            return ProbeOutcome::Incomplete;
         }
         Err(error) => {
             tracing::warn!(user, %error, error_chain = ?error,
-                "watched pull requests could not be probed; the next tick tries again");
-            return;
+                "watched pull requests could not be probed; another probe can retry");
+            return ProbeOutcome::Incomplete;
         }
     };
     if RATE_LIMITED
@@ -386,15 +513,34 @@ async fn probe(state: &AppState, user: &str, watches: &[&WatchRecord], now: Time
         tracing::debug!(
             user,
             failed = answers.failed.len(),
-            "some watched pull requests were not probed; the next tick tries again"
+            "some watched pull requests were not probed; another probe can retry"
         );
     }
+    let mut complete = answers.failed.is_empty();
     for (watch, value) in answers.resolved {
-        if let Err(error) = observe(state, watch, value, now).await {
-            tracing::warn!(pr = watch.pull_request_id, user, %error, error_chain = ?error,
-                "a watched pull request's probe could not be handled");
+        match observe(state, watch, value, now, trigger).await {
+            Ok(Some(delay)) => return ProbeOutcome::Deferred(delay),
+            Ok(None) => (),
+            Err(error) => {
+                complete = false;
+                tracing::warn!(pr = watch.pull_request_id, user, %error, error_chain = ?error,
+                    "a watched pull request's probe could not be handled");
+            }
         }
     }
+    if complete {
+        ProbeOutcome::Complete
+    } else {
+        ProbeOutcome::Incomplete
+    }
+}
+
+fn backoff_for_rate_limit(user: &str, reset: Option<Timestamp>, now: Timestamp) -> Duration {
+    let until = reset
+        .filter(|reset| *reset > now)
+        .unwrap_or(now + RATE_LIMIT_BACKOFF);
+    rate_limited(user, until, now);
+    (until - now).try_into().unwrap_or_default()
 }
 
 /// GitHub's rate limit stops `user`'s probes until `until`: logged at `warn` when it starts, quietly while it lasts.
@@ -444,7 +590,8 @@ async fn observe(
     watch: &WatchRecord,
     value: Value,
     now: Timestamp,
-) -> Result<(), WatchError> {
+    trigger: ProbeTrigger<'_>,
+) -> Result<Option<Duration>, WatchError> {
     let rl = state.db.review_loop();
     let (user, pr) = (watch.user_id.as_str(), watch.pull_request_id);
     let Some(pull) = serde_json::from_value::<Option<ProbedRepository>>(value)
@@ -456,17 +603,17 @@ async fn observe(
             pr,
             "a watched pull request was not found or not readable; it is probed again next time"
         );
-        return keep_probe(state, watch, now).await;
+        return keep_probe(state, watch, now).await.map(|()| None);
     };
     if let Some(closed) = pull.state.as_deref().filter(|state| *state != "OPEN") {
-        rl.set_watch_state(user, pr, WatchState::Ended, now).await?;
+        rl.end_pr_watches(pr, now).await?;
         tracing::info!(
             pr,
             user,
             state = closed,
             "watched pull request merged or closed; watching ended"
         );
-        return Ok(());
+        return Ok(None);
     }
     let probe = Probe {
         head: pull.head_ref_oid,
@@ -479,33 +626,69 @@ async fn observe(
         .probe
         .clone()
         .and_then(|value| serde_json::from_value(value).ok());
-    if stored.as_ref() != Some(&probe) {
-        let read = match super::read_if_due(state, &watch.tenant_id, user, &watch.pr, true).await {
+    let changed = stored.as_ref() != Some(&probe);
+    // Editing a review or resolving a thread may leave all probe values unchanged.
+    if changed || matches!(trigger, ProbeTrigger::Webhook { review: true, .. }) {
+        let budget = match trigger {
+            ProbeTrigger::Poll => None,
+            ProbeTrigger::Webhook {
+                budget, instant, ..
+            } => Some(ReadBudget { budget, instant }),
+        };
+        let read = match super::read_if_due_with_budget(
+            state,
+            &watch.tenant_id,
+            user,
+            &watch.pr,
+            true,
+            budget,
+        )
+        .await
+        {
             Ok(read) => read.outcome,
+            Err(LoopError::EventBudget(delay)) => return Ok(Some(delay)),
             Err(LoopError::TooSoon) => {
                 tracing::debug!(
                     pr,
                     "a changed watched pull request was read moments ago; the next probe reads it"
                 );
-                return keep_probe(state, watch, now).await;
+                keep_probe(state, watch, now).await?;
+                return if matches!(trigger, ProbeTrigger::Webhook { .. }) {
+                    Err(WatchError::IncompleteProbe)
+                } else {
+                    Ok(None)
+                };
+            }
+            Err(LoopError::Unreadable(ReadFailure::RateLimited)) => {
+                ReadOutcome::Failed(ReadFailure::RateLimited)
             }
             Err(error) => return Err(error.into()),
         };
         if let ReadOutcome::Failed(failure) = read {
+            if failure == ReadFailure::RateLimited {
+                return Ok(Some(backoff_for_rate_limit(user, None, now)));
+            }
             tracing::debug!(
                 pr,
                 ?failure,
                 "a changed watched pull request could not be read; the next probe tries again"
             );
-            return keep_probe(state, watch, now).await;
+            keep_probe(state, watch, now).await?;
+            return if matches!(trigger, ProbeTrigger::Webhook { .. }) {
+                Err(WatchError::IncompleteProbe)
+            } else {
+                Ok(None)
+            };
         }
-        let _detection = DETECTION.lock().await;
-        rl.set_pass_due(user, pr, Some(now)).await?;
-        tracing::debug!(
-            pr,
-            user,
-            "watched pull request changed; an automatic assessment pass is due"
-        );
+        if changed || matches!(read, ReadOutcome::Read { new } if new > 0) {
+            let _detection = DETECTION.lock().await;
+            rl.set_pass_due(user, pr, Some(now)).await?;
+            tracing::debug!(
+                pr,
+                user,
+                "watched pull request changed; an automatic assessment pass is due"
+            );
+        }
     }
     rl.record_probe(user, pr, &serde_json::to_value(&probe)?, now)
         .await?;
@@ -514,7 +697,7 @@ async fn observe(
             .await?;
         tracing::info!(pr, user, "watching resumed: the probe read GitHub again");
     }
-    Ok(())
+    Ok(None)
 }
 
 /// Records the probe time with the watch's old values: the change stays unconfirmed for the next probe.

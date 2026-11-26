@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::config::GithubConfig;
-use crate::github::graphql::{self, GraphqlError, Page};
+use crate::github::graphql::{self, GraphqlError, Page, ReadBudget};
 
 /// Pages read per connection (1000 threads, reviews or comments); more: the read is incomplete.
 pub const MAX_PAGES: usize = 10;
@@ -275,6 +275,7 @@ async fn pages<P: DeserializeOwned, T>(
     token: &SecretString,
     pr: &PrRef,
     document: &str,
+    budget: Option<ReadBudget<'_>>,
     page_of: impl Fn(P) -> Page<T>,
 ) -> Result<(Vec<T>, bool), ReadError> {
     graphql::pr_pages(
@@ -283,6 +284,7 @@ async fn pages<P: DeserializeOwned, T>(
         pr,
         document,
         MAX_PAGES,
+        budget,
         |data: Data<PageRepository<P>>| {
             data.repository
                 .and_then(|repository| repository.pull_request)
@@ -294,28 +296,41 @@ async fn pages<P: DeserializeOwned, T>(
 }
 
 /// Reads Q-L1–Q-L4 of `pr` with the user's token.
-pub async fn read(
+pub(crate) async fn read(
     config: &GithubConfig,
     token: &SecretString,
     pr: &PrRef,
+    budget: Option<ReadBudget<'_>>,
 ) -> Result<PrRead, ReadError> {
-    let facts: Data<FactsRepository> = graphql::execute(
+    let facts: Data<FactsRepository> = graphql::execute_read(
         config,
         token,
         PR_FACTS,
         json!({"o": pr.repo.owner, "n": pr.repo.name, "pr": pr.number}),
+        budget,
     )
     .await?;
     let repository = facts.repository.ok_or(ReadError::NotFound)?;
     let pull = repository.pull_request.ok_or(ReadError::NotFound)?;
-    let (threads, threads_complete) = pages(config, token, pr, REVIEW_THREADS, |p: ThreadsPull| {
-        p.review_threads
-    })
+    let (threads, threads_complete) = pages(
+        config,
+        token,
+        pr,
+        REVIEW_THREADS,
+        budget,
+        |p: ThreadsPull| p.review_threads,
+    )
     .await?;
     let (reviews, reviews_complete) =
-        pages(config, token, pr, REVIEWS, |p: ReviewsPull| p.reviews).await?;
+        pages(config, token, pr, REVIEWS, budget, |p: ReviewsPull| {
+            p.reviews
+        })
+        .await?;
     let (comments, comments_complete) =
-        pages(config, token, pr, PR_COMMENTS, |p: CommentsPull| p.comments).await?;
+        pages(config, token, pr, PR_COMMENTS, budget, |p: CommentsPull| {
+            p.comments
+        })
+        .await?;
     Ok(PrRead {
         repo_github_id: repository.database_id,
         private: repository.is_private,
@@ -403,6 +418,7 @@ pub(crate) mod tests {
             &github_config(&server),
             &SecretString::from("ghu_token"),
             &pr482(),
+            None,
         )
         .await
         .expect("read");
@@ -434,6 +450,7 @@ pub(crate) mod tests {
             &github_config(&server),
             &SecretString::from("ghu_token"),
             &pr482(),
+            None,
         )
         .await;
         assert!(matches!(result, Err(ReadError::NotFound)), "{result:?}");

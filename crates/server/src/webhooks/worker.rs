@@ -4,30 +4,38 @@ use std::time::Duration;
 
 use contracts::time::Timestamp;
 use db::error::DbError;
-use db::repo::github::{DeliveryError, WebhookChange};
+use db::repo::Db;
+use db::repo::github::{DeliveryError, PendingDelivery};
 use jiff::SignedDuration;
-use tokio::sync::watch;
+use tokio::{sync::watch, time::Instant};
 
-use super::{Webhooks, stop};
+use super::{
+    Webhooks,
+    dispatch::{Dispatcher, MAX_HELD},
+    stop,
+};
+use crate::state::AppState;
 
-const BACKOFF: [SignedDuration; 3] = [
+pub(super) const BACKOFF: [SignedDuration; 3] = [
     SignedDuration::from_secs(10),
     SignedDuration::from_mins(1),
     SignedDuration::from_mins(10),
 ];
 
-pub(super) async fn run(hooks: Webhooks, mut stopped: watch::Receiver<bool>) {
+pub(super) async fn run(hooks: Webhooks, state: AppState, mut stopped: watch::Receiver<bool>) {
     tokio::select! {
         _ = stop(&mut stopped) => {}
-        _ = work(&hooks) => {}
+        _ = work(&hooks, &state) => {}
     }
 }
 
-async fn work(hooks: &Webhooks) {
+async fn work(hooks: &Webhooks, state: &AppState) {
     let db = hooks.db.github();
     resume_with_retry(|| db.resume(Timestamp::now())).await;
+    let mut dispatch = Dispatcher::default();
     loop {
-        match step(hooks, Timestamp::now, dispatch).await {
+        match work_step(state, &mut dispatch).await {
+            Ok(Some(delay)) if delay.is_zero() => tokio::task::yield_now().await,
             Ok(Some(delay)) => {
                 tokio::select! {
                     _ = hooks.wake.notified() => {}
@@ -44,6 +52,34 @@ async fn work(hooks: &Webhooks) {
             }
         }
     }
+}
+
+/// Flushes due windows and admits at most one durable delivery.
+pub(crate) async fn work_step(
+    state: &AppState,
+    dispatch: &mut Dispatcher,
+) -> Result<Option<Duration>, DbError> {
+    dispatch
+        .flush(state, Instant::now(), Timestamp::now())
+        .await?;
+    let now = Timestamp::now();
+    let db = state.db.github();
+    let held = dispatch.in_flight();
+    let mut retry = None;
+    if held.len() < MAX_HELD {
+        if let Some(delivery) = db.next_pending_excluding(now, &held).await? {
+            dispatch.enqueue(state, delivery, Instant::now()).await?;
+            return Ok(Some(Duration::ZERO));
+        }
+        retry = db
+            .next_retry(now)
+            .await?
+            .map(|at| (at - now).try_into().unwrap_or_default());
+    }
+    let window = dispatch
+        .next_due()
+        .map(|due| due.saturating_duration_since(Instant::now()));
+    Ok(retry.into_iter().chain(window).min())
 }
 
 async fn resume_with_retry<F, Attempt>(mut resume: F)
@@ -64,39 +100,27 @@ where
     }
 }
 
-pub(super) async fn step<F, Dispatch>(
-    hooks: &Webhooks,
-    clock: impl Fn() -> Timestamp,
-    dispatch: F,
-) -> Result<Option<Duration>, DbError>
-where
-    F: FnOnce(Vec<WebhookChange>) -> Dispatch,
-    Dispatch: Future<Output = Result<(), DeliveryError>> + Send,
-{
-    let db = hooks.db.github();
-    let now = clock();
-    let Some(mut delivery) = db.next_pending(now).await? else {
-        return Ok(db
-            .next_retry(now)
-            .await?
-            .map(|next| (next - now).try_into().unwrap_or_default()));
-    };
-    match dispatch(std::mem::take(&mut delivery.changes)).await {
-        Ok(()) => db.finish(&delivery, clock()).await?,
+pub(super) async fn complete(
+    db: &Db,
+    delivery: &PendingDelivery,
+    outcome: Result<(), DeliveryError>,
+    now: Timestamp,
+) -> Result<(), DbError> {
+    let github = db.github();
+    match outcome {
+        Ok(()) => github.finish(delivery, now).await?,
         Err(code) => {
-            let now = clock();
             let retry = retry_at(delivery.attempts, now);
-            if db.fail(&delivery, code, retry, now).await? && retry.is_none() {
-                tracing::warn!(delivery_id = %delivery.id, %code, "GitHub webhook delivery exhausted its retries");
+            if github.fail(delivery, code, retry, now).await? && retry.is_none() {
+                warn_exhausted(delivery.id, code);
             }
         }
     }
-    Ok(Some(Duration::ZERO))
+    Ok(())
 }
 
-async fn dispatch(_changes: Vec<WebhookChange>) -> Result<(), DeliveryError> {
-    // B3 supplies the targeted GitHub reads for these durable hints.
-    Ok(())
+pub(super) fn warn_exhausted(delivery_id: uuid::Uuid, code: DeliveryError) {
+    tracing::warn!(%delivery_id, %code, "GitHub webhook delivery exhausted its retries");
 }
 
 fn retry_at(attempts: i64, now: Timestamp) -> Option<Timestamp> {
@@ -134,6 +158,159 @@ mod tests {
                 .matches("GitHub webhook worker could not resume")
                 .count(),
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn work_step_excludes_held_retries_and_stops_at_capacity() {
+        use contracts::api::dashboard::RefreshTrigger;
+        use contracts::common::RepoRef;
+        use db::repo::DEFAULT_TENANT;
+        use db::repo::dashboard::StartOutcome;
+        use db::repo::github::{ChangeKind, Effect, NewDelivery, Repository, WebhookChange};
+        use db::repo::users::GithubProfile;
+        use serde_json::json;
+        use uuid::Uuid;
+
+        let state = crate::state::tests::test_state().await;
+        let now = Timestamp::now();
+        state
+            .db
+            .users()
+            .upsert_member(
+                DEFAULT_TENANT,
+                "u1",
+                &GithubProfile {
+                    github_id: 3,
+                    login: "fixture".into(),
+                    name: None,
+                    avatar_url: None,
+                },
+                now,
+            )
+            .await
+            .unwrap();
+        let dashboard = state.db.dashboard();
+        let StartOutcome::Started { refresh, .. } = dashboard
+            .start_refresh(DEFAULT_TENANT, "u1", RefreshTrigger::Manual, now)
+            .await
+            .unwrap()
+        else {
+            panic!("expected scanning refresh")
+        };
+        let repo = RepoRef {
+            owner: "acme".into(),
+            name: "code".into(),
+        };
+        dashboard
+            .store_snapshot(
+                DEFAULT_TENANT,
+                "u1",
+                refresh.id,
+                &json!({
+                    "version": crate::dashboard::snapshot::SNAPSHOT_VERSION,
+                    "pull_requests": [{"facts": {"repo": repo, "number": 1}}],
+                    "issues": []
+                }),
+                now,
+            )
+            .await
+            .unwrap();
+        let github = state.db.github();
+        let change = WebhookChange {
+            kind: ChangeKind::PullRequest,
+            repository: Repository {
+                name: repo,
+                id: None,
+            },
+            head_repository: None,
+            number: Some(1),
+            head_sha: None,
+            action: None,
+            installation_id: None,
+            base_repository: None,
+            candidate_login: None,
+        };
+        let queue = async |id: Uuid| {
+            let hash = id.simple().to_string().repeat(2);
+            github
+                .record(
+                    &NewDelivery {
+                        id,
+                        hash: &hash,
+                        event: "pull_request",
+                        action: None,
+                        installation_id: None,
+                        effect: Effect::Signal(&change.repository, std::slice::from_ref(&change)),
+                    },
+                    now,
+                )
+                .await
+                .unwrap()
+        };
+        let first = Uuid::new_v4();
+        queue(first).await;
+        let delivery = github.next_pending(now).await.unwrap().unwrap();
+        assert!(
+            github
+                .fail(&delivery, DeliveryError::Dispatch, Some(now), now)
+                .await
+                .unwrap()
+        );
+
+        let mut dispatch = Dispatcher::default();
+        // Hold the first window through all of the intake steps regardless of host load.
+        let seeded = github.next_pending(now).await.unwrap().unwrap();
+        dispatch
+            .enqueue(&state, seeded, Instant::now() + Duration::from_secs(120))
+            .await
+            .unwrap();
+        let wait = work_step(&state, &mut dispatch).await.unwrap().unwrap();
+        assert!(
+            wait > Duration::from_secs(100),
+            "held retry must not wake the worker"
+        );
+        assert_eq!(dispatch.in_flight(), [first]);
+
+        queue(Uuid::new_v4()).await;
+        let delayed = github
+            .next_pending_excluding(now, &dispatch.in_flight())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            github
+                .fail(
+                    &delayed,
+                    DeliveryError::Dispatch,
+                    Some(now + SignedDuration::from_secs(30)),
+                    now
+                )
+                .await
+                .unwrap()
+        );
+        let wait = work_step(&state, &mut dispatch).await.unwrap().unwrap();
+        assert!(wait <= Duration::from_secs(30));
+        assert_eq!(dispatch.in_flight(), [first]);
+
+        for _ in 1..=MAX_HELD {
+            queue(Uuid::new_v4()).await;
+        }
+        for _ in 1..MAX_HELD {
+            assert_eq!(
+                work_step(&state, &mut dispatch).await.unwrap(),
+                Some(Duration::ZERO)
+            );
+        }
+        assert_eq!(dispatch.in_flight().len(), MAX_HELD);
+        assert!(work_step(&state, &mut dispatch).await.unwrap().unwrap() > Duration::ZERO);
+        assert_eq!(dispatch.in_flight().len(), MAX_HELD);
+        assert!(
+            github
+                .next_pending_excluding(Timestamp::now(), &dispatch.in_flight())
+                .await
+                .unwrap()
+                .is_some()
         );
     }
 

@@ -101,6 +101,7 @@ fn pr(number: u32, title: &str) -> StoredPr {
         },
         private: false,
         head_sha: "a".repeat(40),
+        head_repository: None,
         base_sha: None,
         created_at: now() - SignedDuration::from_hours(24 * 3),
         ci_red: Vec::new(),
@@ -177,6 +178,8 @@ fn snapshot(prs: Vec<StoredPr>, issues: Vec<StoredIssue>, todos: Vec<StoredTodo>
         merge_states_recorded: true,
         prs_reread_at: None,
         last_event_at: None,
+        event_additions: Vec::new(),
+        event_ranking_pending: false,
         todos_hidden: false,
         snoozes: Vec::new(),
     }
@@ -231,13 +234,18 @@ async fn add_user(db: &Db, user_id: &str, login: &str, github_id: i64) {
 }
 
 async fn harness() -> Harness {
+    harness_with_url("http://127.0.0.1:9/").await
+}
+
+async fn harness_with_url(url: &str) -> Harness {
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
         .with_env_filter("warn,server=debug")
         .try_init();
     let mut config = test_config();
     // Nothing may reach GitHub: a refresh started here fails before its first call (no sign-in).
-    config.github.api_url = url::Url::parse("http://127.0.0.1:9/").expect("url");
+    config.github.api_url = url::Url::parse(url).expect("url");
+    config.github_webhook_secret = Some("synthetic-webhook-secret-long-enough".into());
     let db = Db::in_memory().await.expect("db");
     add_user(&db, "u1", "alice", 11).await;
     add_user(&db, "u2", "bob", 22).await;
@@ -3717,3 +3725,5 @@ async fn retryable_worker_loss_is_judged_again() {
         RankingState::Finished
     );
 }
+
+mod webhook;

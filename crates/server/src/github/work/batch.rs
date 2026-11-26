@@ -123,7 +123,16 @@ impl<T: TokenSource> WorkClient<T> {
         lookup: &impl Fn(&K) -> String,
     ) -> Result<Vec<(K, Value)>, WorkError> {
         let lookups: Vec<String> = chunk.iter().map(lookup).collect();
-        let mut data = self.graphql(&query(fragments, &lookups)).await?;
+        // Q2 expands fewer than 200 connections per PR (threads, linked issues and the other top-level
+        // connections). Allow two points per PR before sending, then account for GitHub's reported cost.
+        let estimate = if fragments.starts_with(" fragment Pull ") {
+            2 * chunk.len() as u64
+        } else {
+            1
+        };
+        let mut data = self
+            .graphql_costed(&query(fragments, &lookups), estimate)
+            .await?;
         Ok(chunk
             .iter()
             .enumerate()

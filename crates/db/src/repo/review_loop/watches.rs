@@ -192,6 +192,20 @@ impl ReviewLoop<'_> {
         .collect()
     }
 
+    /// Live member watches of one PR, for its event probe.
+    pub async fn watches_of(&self, pr: i64) -> Result<Vec<WatchRecord>, DbError> {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "{WATCH_SELECT} JOIN memberships m ON m.tenant_id = w.tenant_id AND m.user_id = w.user_id
+             WHERE p.id = ? AND w.state <> 'ended' ORDER BY w.user_id"
+        )))
+        .bind(pr)
+        .fetch_all(self.pool)
+        .await?
+        .iter()
+        .map(watch_from_row)
+        .collect()
+    }
+
     /// Stores a probe's values.
     pub async fn record_probe(
         &self,
@@ -236,6 +250,19 @@ impl ReviewLoop<'_> {
         if updated.rows_affected() == 0 {
             return Err(DbError::NotFound);
         }
+        Ok(())
+    }
+
+    /// Ends all watchers of a PR confirmed closed by GitHub.
+    pub async fn end_pr_watches(&self, pr: i64, now: Timestamp) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE pr_watches SET state = 'ended', ended_at = ?
+             WHERE pull_request_id = ? AND state != 'ended'",
+        )
+        .bind(ts(now))
+        .bind(pr)
+        .execute(self.pool)
+        .await?;
         Ok(())
     }
 

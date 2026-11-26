@@ -371,6 +371,8 @@ pub(super) async fn scan<T: TokenSource>(
         merge_states_recorded: true,
         prs_reread_at: None,
         last_event_at: input.previous.and_then(|snapshot| snapshot.last_event_at),
+        event_additions: Vec::new(),
+        event_ranking_pending: false,
         todos_hidden: false,
         snoozes: Vec::new(),
     })

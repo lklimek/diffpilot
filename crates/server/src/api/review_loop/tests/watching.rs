@@ -612,15 +612,10 @@ async fn a_rate_limited_user_is_not_probed_until_the_reset() {
         1,
         "nothing is sent before the reset"
     );
-    watch::tick_at(&w.state, now + SignedDuration::from_mins(46))
-        .await
-        .expect("after the reset");
-    assert_eq!(received(&w.server, PROBE_MARKER).await.len(), 2);
-
     w.server.reset().await;
     serve(&w.server, &[]).await;
     mount_probe(&w.server, probe_answer("2026-11-12T10:40:12Z")).await;
-    watch::tick_at(&w.state, now + SignedDuration::from_mins(47))
+    watch::tick_at(&w.state, now + SignedDuration::from_mins(46))
         .await
         .expect("probed again");
     assert_eq!(received(&w.server, PROBE_MARKER).await.len(), 1);

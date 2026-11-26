@@ -34,6 +34,12 @@ async fn fixture(secret: Option<&str>) -> Webhooks {
     Webhooks::new(Db::in_memory().await.unwrap(), Arc::new(config))
 }
 
+fn worker_state(hooks: &Webhooks) -> crate::state::AppState {
+    let mut config = test_config();
+    config.github_webhook_secret = hooks.config.github_webhook_secret.clone();
+    crate::state::AppState::with_queue(config, hooks.db.clone())
+}
+
 fn request(hooks: &Webhooks, event: &str, id: Uuid, body: &str, secret: &str) -> Request<Body> {
     let (parts, body) = fake_github::signed_webhook(
         PATH,
@@ -236,7 +242,7 @@ async fn absent_secret_server_starts_route_503_logged_once() {
     let hooks = fixture(None).await;
     let (capture, _subscriber) = LogCapture::start_scoped();
     let (_stop, stopped) = watch::channel(false);
-    assert!(hooks.spawn(stopped).is_none());
+    assert!(hooks.spawn(worker_state(&hooks), stopped).is_none());
     for _ in 0..2 {
         let response = send(
             &hooks,
@@ -825,7 +831,7 @@ async fn worker_drains_a_queued_installation_delivery() {
     let id = Uuid::new_v4();
     let delivery = || request(&hooks, "installation", id, &body, SECRET);
     let (stop, stopped) = watch::channel(false);
-    let worker = hooks.spawn(stopped).unwrap();
+    let worker = hooks.spawn(worker_state(&hooks), stopped).unwrap();
     assert_eq!(send(&hooks, delivery()).await.status(), 202);
     timeout(Duration::from_secs(1), async {
         while hooks
@@ -1116,7 +1122,7 @@ async fn webhook_worker_dispatch_failure_uses_backoff_and_warns_once() {
     for (attempt, delay) in [10, 60, 600, 0].into_iter().enumerate() {
         let current = github.next_pending(now).await.unwrap().unwrap();
         assert_eq!((current.id, current.attempts), (id, attempt as i64));
-        super::worker::step(&hooks, || now, async |_| Err(DeliveryError::Dispatch))
+        super::worker::complete(&hooks.db, &current, Err(DeliveryError::Dispatch), now)
             .await
             .unwrap();
         assert!(github.next_pending(now).await.unwrap().is_none());
