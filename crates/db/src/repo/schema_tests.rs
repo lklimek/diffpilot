@@ -370,7 +370,7 @@ async fn tenant_id_on_every_table() {
     let tables: Vec<String> = sqlx::query_scalar(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
            AND name NOT IN ('_sqlx_migrations', 'tenants', 'users', 'llm_selection',
-               'assessment_config', 'assessment_daily_usage',
+               'user_llm_selection', 'assessment_config', 'assessment_daily_usage',
                'github_deliveries', 'app_repositories', 'comment_decision_origins') ORDER BY name",
     )
     .fetch_all(&db.pool)
@@ -387,6 +387,31 @@ async fn tenant_id_on_every_table() {
         .expect("table info");
         assert_eq!(not_null, Some(1), "{table} lacks a NOT NULL tenant_id");
     }
+
+    let owner_columns: Vec<(String, i64, i64)> = sqlx::query_as(
+        "SELECT name, \"notnull\", pk FROM pragma_table_info('user_llm_selection')
+         WHERE name IN ('user_id', 'tenant_id')",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .expect("personal LLM owner");
+    assert_eq!(owner_columns, vec![("user_id".to_owned(), 1, 1)]);
+
+    let owner_fks: Vec<(String, String, String, String)> = sqlx::query_as(
+        "SELECT \"from\", \"table\", \"to\", on_delete FROM pragma_foreign_key_list('user_llm_selection')",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .expect("personal LLM owner foreign key");
+    assert_eq!(
+        owner_fks,
+        vec![(
+            "user_id".into(),
+            "users".into(),
+            "id".into(),
+            "CASCADE".into()
+        )]
+    );
 }
 
 #[tokio::test]
