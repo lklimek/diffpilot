@@ -25,18 +25,13 @@ pub(super) fn render(
     pr: &PrSummary,
     language: LlmLanguage,
 ) -> Result<String, AssessError> {
-    let name = match language {
-        LlmLanguage::En => "English",
-        LlmLanguage::Pl => "Polish (polski)",
-        LlmLanguage::Ru => "Russian (русский)",
-    };
     let answer = if input.question.is_some() {
         QUESTION
     } else {
         NO_QUESTION
     };
     let data = input.data_block()?;
-    Ok(TEMPLATE
+    Ok(localize(TEMPLATE, language)?
         .replace(
             "{{pull_request}}",
             &format!("{}/{}#{}", pr.repo.owner, pr.repo.name, pr.number),
@@ -44,11 +39,26 @@ pub(super) fn render(
         .replace("{{base}}", &pr.base_sha.0)
         .replace("{{head}}", &pr.head_sha.0)
         .replace("{{answer}}", answer)
-        .replace("{{language}}", name)
-        .replace(
-            "{{translated_technical_terms}}",
-            &prompts::translated_technical_terms(language)?,
-        )
         .replace("{{rules}}", &prompts::read_only_rules()?)
         .replacen("{{data}}", &data, 1))
+}
+
+/// The host-supplied report brief with the same language as the native prompt.
+pub(super) fn render_host(language: LlmLanguage) -> Result<String, AssessError> {
+    localize(
+        include_str!("../../../../../prompts/check_pr_comments.md"),
+        language,
+    )
+}
+
+fn localize(template: &str, language: LlmLanguage) -> Result<String, AssessError> {
+    let name = match language {
+        LlmLanguage::En => "English",
+        LlmLanguage::Pl => "Polish (polski)",
+        LlmLanguage::Ru => "Russian (русский)",
+    };
+    Ok(template.replace("{{language}}", name).replace(
+        "{{translated_technical_terms}}",
+        &prompts::translated_technical_terms(language)?,
+    ))
 }

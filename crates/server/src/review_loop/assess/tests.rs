@@ -544,6 +544,12 @@ async fn wait_follower(id: PassId) {
 #[tokio::test]
 async fn assessment_continues_after_an_intervening_question() {
     let f = fixture(HEAD).await;
+    f.state
+        .db
+        .settings()
+        .set_language("u1", LlmLanguage::Pl, Timestamp::now())
+        .await
+        .unwrap();
     let mut items = Vec::new();
     for n in 0..MAX_ITEMS_PER_PASS + 1 {
         items.push(item(&f.state, &format!("T{n}"), "src/rpc/client.rs", (40, 43)).await);
@@ -556,12 +562,25 @@ async fn assessment_continues_after_an_intervening_question() {
     );
     let first = live_pass(&f.state).await;
     assert_eq!(first.sent.len(), MAX_ITEMS_PER_PASS);
+    f.state
+        .db
+        .settings()
+        .set_language("u1", LlmLanguage::Ru, Timestamp::now())
+        .await
+        .unwrap();
     let question = question(&f.state, items[0].id, "Is retry bounded?").await;
     finish_assessment_job(&f.state, &first, None).await;
     wait_follower(first.id).await;
 
     let ask = live_pass(&f.state).await;
     assert_eq!(ask.question, Some(question));
+    let ask_job = f.state.db.jobs().get(ask.job_id.unwrap()).await.unwrap();
+    assert!(
+        ask_job
+            .spec
+            .prompt
+            .contains("Write every text value in Russian (русский)")
+    );
     finish_assessment_job(
         &f.state,
         &ask,
@@ -573,6 +592,19 @@ async fn assessment_continues_after_an_intervening_question() {
     let rest = f.state.db.review_loop().live_passes().await.unwrap();
     assert_eq!(rest.len(), 1, "assessment did not resume after Ask");
     assert_eq!(rest[0].cause, PassCause::Opened);
+    let rest_job = f
+        .state
+        .db
+        .jobs()
+        .get(rest[0].job_id.unwrap())
+        .await
+        .unwrap();
+    assert!(
+        rest_job
+            .spec
+            .prompt
+            .contains("Write every text value in Polish (polski)")
+    );
     assert_eq!(
         rest[0]
             .sent
@@ -1364,6 +1396,12 @@ async fn unchanged_item_reuses_assessment() {
     );
 
     move_head(&f.state, HEAD).await;
+    f.state
+        .db
+        .settings()
+        .set_language("u1", LlmLanguage::Pl, Timestamp::now())
+        .await
+        .unwrap();
     assert_eq!(
         request_pass(&f.state, PR, PassReason::NewComments)
             .await
@@ -1371,6 +1409,12 @@ async fn unchanged_item_reuses_assessment() {
         PassQueued::Queued
     );
     let second = live_pass(&f.state).await;
+    let job = f.state.db.jobs().get(second.job_id.unwrap()).await.unwrap();
+    assert!(
+        job.spec
+            .prompt
+            .contains("Write every text value in Polish (polski)")
+    );
     assert_eq!(
         second.sent.iter().map(|sent| sent.item).collect::<Vec<_>>(),
         vec![moved.id],
@@ -2135,6 +2179,12 @@ async fn automatic_pass_keeps_its_spacing() {
     watch(&f.state).await;
     item(&f.state, "a", "src/rpc/client.rs", (40, 43)).await;
     seed_passes(&f.state, 1, SignedDuration::from_mins(11)).await;
+    f.state
+        .db
+        .settings()
+        .set_language("u1", LlmLanguage::Ru, Timestamp::now())
+        .await
+        .unwrap();
     assert_eq!(
         request_pass(&f.state, PR, PassReason::Watch)
             .await
@@ -2144,6 +2194,12 @@ async fn automatic_pass_keeps_its_spacing() {
     let pass = live_pass(&f.state).await;
     assert_eq!(pass.user_id.as_deref(), Some("u1"));
     assert_eq!(pass.cause, PassCause::Watch);
+    let job = f.state.db.jobs().get(pass.job_id.unwrap()).await.unwrap();
+    assert!(
+        job.spec
+            .prompt
+            .contains("Write every text value in Russian (русский)")
+    );
 }
 
 async fn question(state: &AppState, item: CommentItemId, text: &str) -> QuestionId {
