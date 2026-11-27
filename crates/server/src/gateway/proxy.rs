@@ -1,6 +1,6 @@
 //! Model boundary, streaming SSE tap and response-ID accounting.
 
-use super::{Error, Gateway, auth::Access};
+use super::{Error, Gateway, auth::Access, http::upstream_rejection};
 use axum::{
     body::{Body, Bytes},
     http::{HeaderMap, HeaderValue, StatusCode},
@@ -38,37 +38,44 @@ pub(super) fn validate_body(value: &Value) -> Result<(), Error> {
         "access_programs",
         "request_country",
     ];
-    for field in value.as_object().ok_or(Error::Body)?.keys() {
+    for field in value
+        .as_object()
+        .ok_or(Error::ModelPolicy("body_must_be_object"))?
+        .keys()
+    {
         if !FIELDS.contains(&field.as_str()) {
-            let member = field
-                .chars()
-                .take(64)
-                .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
-                .collect::<String>();
-            tracing::warn!(member, "gateway refused an unsupported model request field");
-            return Err(Error::Body);
+            return Err(Error::ModelPolicy(match field.as_str() {
+                "previous_response_id" => "previous_response_id_unsupported",
+                _ => "unsupported_field",
+            }));
         }
     }
     if value
         .get("tool_choice")
         .is_some_and(|choice| !matches!(choice.as_str(), Some("auto" | "none" | "required")))
     {
-        tracing::warn!("gateway refused an unsupported tool selection");
-        return Err(Error::Body);
+        return Err(Error::ModelPolicy("unsupported_tool_choice"));
     }
-    if value.get("store") != Some(&Value::Bool(false))
-        || value.get("stream") != Some(&Value::Bool(true))
-        || value.get("previous_response_id").is_some()
-    {
-        return Err(Error::Body);
+    if value.get("store") != Some(&Value::Bool(false)) {
+        return Err(Error::ModelPolicy("store_must_be_false"));
+    }
+    if value.get("stream") != Some(&Value::Bool(true)) {
+        return Err(Error::ModelPolicy("stream_must_be_true"));
     }
     if let Some(tools) = value.get("tools") {
         validate_tools(tools, 0)?;
     }
     if let Some(input) = value.get("input") {
-        for item in input.as_array().ok_or(Error::Body)? {
+        for item in input
+            .as_array()
+            .ok_or(Error::ModelPolicy("input_must_be_array"))?
+        {
             if item.get("type").and_then(Value::as_str) == Some("additional_tools") {
-                validate_tools(item.get("tools").ok_or(Error::Body)?, 0)?;
+                validate_tools(
+                    item.get("tools")
+                        .ok_or(Error::ModelPolicy("missing_tools"))?,
+                    0,
+                )?;
             }
         }
     }
@@ -77,24 +84,23 @@ pub(super) fn validate_body(value: &Value) -> Result<(), Error> {
 
 fn validate_tools(value: &Value, depth: usize) -> Result<(), Error> {
     if depth > 16 {
-        return Err(Error::Body);
+        return Err(Error::ModelPolicy("tool_nesting_limit"));
     }
-    for tool in value.as_array().ok_or(Error::Body)? {
+    for tool in value
+        .as_array()
+        .ok_or(Error::ModelPolicy("tools_must_be_array"))?
+    {
         match tool.get("type").and_then(Value::as_str) {
             Some("function" | "custom") => (),
-            Some("namespace") => validate_tools(tool.get("tools").ok_or(Error::Body)?, depth + 1)?,
-            kind => {
-                let kind = kind
-                    .filter(|s| {
-                        s.len() <= 64 && s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
-                    })
-                    .unwrap_or("unknown");
-                tracing::warn!(
-                    tool_type = kind,
-                    "gateway refused hosted or unsupported model tool"
-                );
-                return Err(Error::Body);
+            Some("namespace") => validate_tools(
+                tool.get("tools")
+                    .ok_or(Error::ModelPolicy("missing_tools"))?,
+                depth + 1,
+            )?,
+            Some("web_search" | "web_search_preview") => {
+                return Err(Error::ModelPolicy("hosted_web_search_unsupported"));
             }
+            _ => return Err(Error::ModelPolicy("unsupported_tool")),
         }
     }
     Ok(())
@@ -268,7 +274,10 @@ impl Gateway {
                     );
                     tx.save()?;
                 }
-                return Err(Error::Unlinked);
+                return Ok(upstream_rejection(
+                    Error::Unlinked.into_response(),
+                    StatusCode::UNAUTHORIZED,
+                ));
             }
             access.generation
         } else {
@@ -303,7 +312,12 @@ impl Gateway {
                     },
                 );
             }
-            return Ok((status, output_headers, bytes).into_response());
+            let reply = (status, output_headers, bytes).into_response();
+            return Ok(if status.is_success() {
+                reply
+            } else {
+                upstream_rejection(reply, status)
+            });
         }
         if !status.is_success() {
             {
@@ -328,7 +342,10 @@ impl Gateway {
                 );
                 tx.save()?;
             }
-            return Ok((status, output_headers, bytes).into_response());
+            return Ok(upstream_rejection(
+                (status, output_headers, bytes).into_response(),
+                status,
+            ));
         }
         let store = self.store.clone();
         let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(8);
@@ -344,6 +361,7 @@ impl Gateway {
             let mut stream = response.bytes_stream();
             let mut tap = Tap::default();
             let mut metered = std::collections::BTreeSet::new();
+            let mut upstream_failure_logged = false;
             let mut sender = Some(sender);
             loop {
                 let chunk = tokio::select! {
@@ -388,6 +406,17 @@ impl Gateway {
                     }
                 };
                 for event in events {
+                    let upstream_failed =
+                        event.get("type").and_then(Value::as_str) == Some("response.failed");
+                    if upstream_failed && !upstream_failure_logged {
+                        tracing::warn!(
+                            route = "responses",
+                            reason = "upstream_failed_event",
+                            status = status.as_u16(),
+                            "gateway model request rejected"
+                        );
+                        upstream_failure_logged = true;
+                    }
                     let completed = completion(&event);
                     if completed.is_err() {
                         if let Some(sender) = sender.take() {
@@ -397,9 +426,7 @@ impl Gateway {
                         }
                         return;
                     }
-                    if event.get("type").and_then(Value::as_str) == Some("response.failed")
-                        && let Ok(mut tx) = store.lock(&user).await
-                    {
+                    if upstream_failed && let Ok(mut tx) = store.lock(&user).await {
                         tx.record.last_call = Some(contracts::job::result::LlmCallOutcome {
                             at: contracts::time::Timestamp::now(),
                             status: contracts::job::result::LlmCallStatus::NotWorking {

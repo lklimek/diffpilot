@@ -532,6 +532,15 @@ launcher and gateway have separate service logs. All containers log through Dock
 rotation (server 50 MB x 10, runner 10 MB x 5, proxy 50 MB x 5; `deploy/compose.yaml`); a re-created container
 (`sr up -d` after a change, an upgrade) starts with an empty log.
 
+The Codex gateway logs rejected model requests at warning level. Its `gateway model request rejected` entries
+include a fixed route category, reason code and HTTP status. For a rejected upstream HTTP response, they also
+include the upstream status. Export the entries before recreating the gateway or when the size-based rotation
+would cut into the period under review. Gateway logs rotate at 10 MB x 5.
+
+```sh
+sr logs --since 168h --timestamps codex-gateway | grep -F 'gateway model request rejected'
+```
+
 **Analysis statistics** (one `analysis statistics` line per finished analysis, section "Usage and analysis
 statistics logs"): export them before the server is re-created, and from time to time; the file only grows by new
 lines.

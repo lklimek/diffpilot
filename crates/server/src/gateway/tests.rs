@@ -397,6 +397,106 @@ async fn collect(response: axum::response::Response) -> axum::body::Bytes {
 }
 
 #[tokio::test]
+async fn model_listener_logs_rejection_reasons_without_request_data() {
+    let (_dir, upstream, gateway, user) = fixture().await;
+    seed(&gateway, &user, bundle(now() + 3600)).await;
+    let key = gateway
+        .mint(&ContainerId::Judge { payer: user })
+        .await
+        .expect("key");
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(429).set_body_string("private-upstream-body"))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let logs = crate::test_support::logs::LogCapture::start();
+    for (method, path, body, status, reason) in [
+        (
+            "GET",
+            "/v1/private-path?token=private-query",
+            json!(null),
+            404,
+            "unsupported_route",
+        ),
+        (
+            "GET",
+            "/v1/responses",
+            json!(null),
+            405,
+            "unsupported_method",
+        ),
+        (
+            "GET",
+            "/v1/models?unexpected=private-query",
+            json!(null),
+            400,
+            "invalid_models_query",
+        ),
+        (
+            "POST",
+            "/v1/responses",
+            json!({"store":false,"stream":true,"privateFieldName":"private-field-value"}),
+            400,
+            "unsupported_field",
+        ),
+        (
+            "POST",
+            "/v1/responses",
+            json!({"store":false,"stream":true,"tools":[{"type":"privateToolName"}]}),
+            400,
+            "unsupported_tool",
+        ),
+        (
+            "POST",
+            "/v1/responses",
+            json!({"store":false,"stream":false}),
+            400,
+            "stream_must_be_true",
+        ),
+        (
+            "POST",
+            "/v1/responses",
+            json!({"store":false,"stream":true,"input":[{"text":"private-prompt"}]}),
+            429,
+            "upstream_rejected",
+        ),
+    ] {
+        let response = call(gateway.model_router(), method, path, key.key.expose(), body).await;
+        assert_eq!(response.status().as_u16(), status);
+        let captured = logs.text();
+        let line = captured.lines().last().unwrap_or_default();
+        assert!(line.contains("gateway model request rejected"), "{line}");
+        assert!(line.contains(&format!("reason={reason:?}")), "{line}");
+        assert!(line.contains(&format!("status={status}")), "{line}");
+        if status == 429 {
+            assert!(line.contains("upstream_status=429"), "{line}");
+        }
+    }
+    let captured = logs.text();
+    assert_eq!(
+        captured.matches("gateway model request rejected").count(),
+        7
+    );
+    for sensitive in [
+        "private-path",
+        "private-query",
+        "privateFieldName",
+        "private-field-value",
+        "privateToolName",
+        "private-prompt",
+        "private-upstream-body",
+        key.key.expose(),
+    ] {
+        assert!(
+            !captured.contains(sensitive),
+            "gateway logged sensitive data"
+        );
+    }
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
 async fn listeners_scopes_and_plan_only_link_contract_do_not_cross() {
     let (_d, up, g, _u) = fixture().await;
     for path in [

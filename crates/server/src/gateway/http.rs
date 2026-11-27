@@ -4,8 +4,8 @@ use super::{Error, Gateway};
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{DefaultBodyLimit, Path, Query, Request, State},
-    http::HeaderMap,
+    extract::{DefaultBodyLimit, Path, Query, Request, State, rejection::QueryRejection},
+    http::{HeaderMap, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -31,7 +31,57 @@ pub(super) fn model_router(gateway: Arc<Gateway>) -> Router {
         .route("/v1/responses", post(responses))
         .route("/v1/models", get(models))
         .layer(DefaultBodyLimit::max(4 * 1024 * 1024))
+        .layer(middleware::from_fn(log_rejected_model_request))
         .with_state(gateway)
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct ModelRejection {
+    pub(super) reason: &'static str,
+    pub(super) upstream_status: Option<StatusCode>,
+}
+
+pub(super) fn upstream_rejection(mut response: Response, upstream_status: StatusCode) -> Response {
+    response.extensions_mut().insert(ModelRejection {
+        reason: "upstream_rejected",
+        upstream_status: Some(upstream_status),
+    });
+    response
+}
+
+async fn log_rejected_model_request(request: Request, next: Next) -> Response {
+    // Only named protocol routes enter the log. Unknown paths and all query values are untrusted.
+    let route = match request.uri().path() {
+        "/v1/responses" => "responses",
+        "/v1/responses/compact" => "responses_compact",
+        "/v1/models" => "models",
+        _ => "other",
+    };
+    let response = next.run(request).await;
+    let status = response.status();
+    let rejection = response.extensions().get::<ModelRejection>().copied();
+    if status.is_client_error() || status.is_server_error() || rejection.is_some() {
+        let ModelRejection {
+            reason,
+            upstream_status,
+        } = rejection.unwrap_or(ModelRejection {
+            reason: match status {
+                StatusCode::NOT_FOUND => "unsupported_route",
+                StatusCode::METHOD_NOT_ALLOWED => "unsupported_method",
+                StatusCode::PAYLOAD_TOO_LARGE => "request_too_large",
+                _ => "request_rejected",
+            },
+            upstream_status: None,
+        });
+        tracing::warn!(
+            route,
+            reason,
+            status = status.as_u16(),
+            upstream_status = upstream_status.map(|status| status.as_u16()),
+            "gateway model request rejected"
+        );
+    }
+    response
 }
 
 pub(super) fn admin_router(gateway: Arc<Gateway>) -> Router {
@@ -88,7 +138,7 @@ async fn responses(
     headers: HeaderMap,
     bytes: Bytes,
 ) -> Result<Response, Error> {
-    let body = serde_json::from_slice(&bytes).map_err(|_| Error::Body)?;
+    let body = serde_json::from_slice(&bytes).map_err(|_| Error::ModelPolicy("invalid_json"))?;
     g.proxy(headers, None, Some(body)).await
 }
 #[derive(Deserialize)]
@@ -99,15 +149,27 @@ struct ModelsQuery {
 async fn models(
     State(g): State<Arc<Gateway>>,
     headers: HeaderMap,
-    Query(query): Query<ModelsQuery>,
+    query: Result<Query<ModelsQuery>, QueryRejection>,
 ) -> Result<Response, Error> {
+    // Keep Axum's existing query rejection response, adding a safe diagnostic for the model listener.
+    let Query(query) = match query {
+        Ok(query) => query,
+        Err(error) => {
+            let mut response = error.into_response();
+            response.extensions_mut().insert(ModelRejection {
+                reason: "invalid_models_query",
+                upstream_status: None,
+            });
+            return Ok(response);
+        }
+    };
     if query.client_version.as_ref().is_some_and(|v| {
         v.len() > 64
             || !v
                 .bytes()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'-' | b'_'))
     }) {
-        return Err(Error::Body);
+        return Err(Error::ModelPolicy("invalid_client_version"));
     }
     g.proxy(headers, query.client_version, None).await
 }

@@ -5,6 +5,7 @@ use contracts::job::access::Secret;
 use secrecy::SecretBox;
 use server::gateway::{Error, Gateway};
 use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
+use tracing_subscriber::EnvFilter;
 
 fn setting(name: &'static str) -> Result<String, Error> {
     std::env::var(name).map_err(|_| Error::ConfigurationSetting(name))
@@ -50,9 +51,9 @@ fn judge_address(
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("server::gateway=warn"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
     let model: SocketAddr = setting("SR_GATEWAY_MODEL_ADDR")?
         .parse()
         .map_err(|_| Error::Configuration)?;
