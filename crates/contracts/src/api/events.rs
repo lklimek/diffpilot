@@ -11,10 +11,6 @@ use crate::api::questions::AskQuestion;
 /// One SSE event; the SSE `event` field is the `event` tag, `data` is this JSON.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(tag = "event", rename_all = "snake_case")]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "infrequent SSE snapshots do not justify another allocation per broadcast clone"
-)]
 pub enum AnalysisEvent {
     /// Full analysis snapshot; sent on connect and on every change.
     Analysis {

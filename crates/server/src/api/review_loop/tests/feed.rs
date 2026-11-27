@@ -798,6 +798,16 @@ async fn follow_up_issue_attempt_is_fenced_across_claimants_and_reports() {
     assert_eq!(after[0]["reports"][0]["message"], "Issue creation failed.");
     assert_eq!(after[1]["state"], "waiting");
     assert_eq!(after[2]["state"], "waiting");
+    let item = w.item(L2).await;
+    for action in ["undo", "reopen"] {
+        let (status, value) = w
+            .post(
+                &format!("{PR}/comments/items/C{}/{action}", item["no"]),
+                json!({"item_revision": item["revision"]}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{action}: {value}");
+    }
 
     let (status, _, value) = with_token(&w, &b, "POST", &claim_uri, Some(kinds.clone())).await;
     assert_eq!(status, StatusCode::CREATED, "{value}");

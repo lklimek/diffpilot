@@ -92,7 +92,7 @@ impl ReviewLoop<'_> {
         }
         let touched: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM comment_effects WHERE decision_id = ?
-                AND state IN ('claimed', 'done', 'failed'))",
+                AND (state IN ('claimed', 'done', 'failed') OR issue_attempt_id IS NOT NULL))",
         )
         .bind(&decision)
         .fetch_one(&mut *tx)
@@ -130,6 +130,16 @@ impl ReviewLoop<'_> {
         };
         if record.state == ItemState::Outside {
             return Ok(ActionOutcome::NoDecision);
+        }
+        let issue_pending: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM comment_effects WHERE decision_id = ?
+                AND issue_attempt_id IS NOT NULL AND state IN ('open', 'claimed'))",
+        )
+        .bind(&decision)
+        .fetch_one(&mut *tx)
+        .await?;
+        if issue_pending {
+            return Ok(ActionOutcome::EffectClaimed);
         }
         super::origins::reopen_with_followers(&mut tx, &decision, item, now).await?;
         let record = item_in(&mut tx, item).await?;
