@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AgentCommentReceipt",
+  "description": "Stable receipt for this submission. A replay returns the same receipt.",
+  "type": "object",
+  "properties": {
+    "submission_id": {
+      "description": "DiffPilot's unique submission identifier.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "item_no": {
+      "description": "The C number of a standalone comment. An annotation has no item number of its own.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0
+    },
+    "url": {
+      "description": "Absolute DiffPilot link to the submission.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "submission_id",
+    "url"
+  ]
+}

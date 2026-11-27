@@ -20,6 +20,7 @@ mod decisions;
 mod items;
 mod marks;
 mod origins;
+mod submissions;
 pub(crate) use items::{add_assessment_in, upsert_item_in};
 mod notify;
 mod watches;
@@ -43,6 +44,7 @@ pub use notify::{
     SecretUpdate, SubscriptionRecord,
 };
 pub use origins::{ImportCandidate, NewOrigin};
+pub use submissions::{AgentSubmission, NewAgentComment, NewAgentSubmission};
 pub use watches::{NewUserEvent, WatchOutcome, WatchRecord};
 
 #[cfg(test)]

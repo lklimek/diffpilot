@@ -131,6 +131,7 @@ function item(no: number, fields: Partial<CommentItem> & Pick<CommentItem, "titl
     id: `00000000-0000-4000-8000-${String(no).padStart(12, "0")}`,
     no,
     kind: "thread",
+    origin: fields.kind === "pr_question" ? "diffpilot" : "github",
     stable_key: `thread-${no}`,
     author: "thepastaclaw",
     author_kind: "bot",

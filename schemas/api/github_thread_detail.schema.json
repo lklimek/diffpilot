@@ -12,6 +12,17 @@
       "description": "Repository-relative path.",
       "type": "string"
     },
+    "pr_level": {
+      "description": "Whether this is a PR-level comment without a file path.",
+      "type": "boolean"
+    },
+    "agent_annotations": {
+      "description": "API annotations on this conversation.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/AgentAnnotation"
+      }
+    },
     "item_no": {
       "description": "Number of the review card for this exact GitHub thread, when known.",
       "type": [
@@ -40,6 +51,41 @@
     "comments"
   ],
   "$defs": {
+    "AgentAnnotation": {
+      "description": "Supplemental API text displayed independently beside its source comment.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Submission identifier, used in a direct link to the annotation.",
+          "type": "string",
+          "format": "uuid"
+        },
+        "target_url": {
+          "description": "Canonical link to the exact GitHub comment.",
+          "type": "string"
+        },
+        "agent": {
+          "description": "The authenticated token's name when it submitted the annotation.",
+          "type": "string"
+        },
+        "body": {
+          "description": "Supplemental review text.",
+          "type": "string"
+        },
+        "created_at": {
+          "description": "Submission time.",
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "target_url",
+        "agent",
+        "body",
+        "created_at"
+      ]
+    },
     "GithubThreadComment": {
       "description": "One submitted GitHub review comment.",
       "type": "object",

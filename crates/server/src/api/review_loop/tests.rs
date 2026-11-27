@@ -30,6 +30,7 @@ use crate::github::review_loop::tests::recorded;
 use crate::state::AppState;
 use crate::test_support::session_cookie;
 
+mod agent_submissions;
 mod assessment;
 mod freshness;
 mod marks;

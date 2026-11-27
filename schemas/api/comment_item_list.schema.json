@@ -10,6 +10,17 @@
       "description": "A review-loop item with its assessment, decisions and effects (RC4).",
       "type": "object",
       "properties": {
+        "origin": {
+          "description": "Provenance of the primary comment or question.",
+          "$ref": "#/$defs/CommentOrigin"
+        },
+        "agent_annotations": {
+          "description": "Supplemental API annotations on this item's GitHub conversation.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AgentAnnotation"
+          }
+        },
         "not_a_review_point": {
           "description": "Active internal disposition.",
           "anyOf": [
@@ -246,6 +257,7 @@
         }
       },
       "required": [
+        "origin",
         "id",
         "no",
         "kind",
@@ -263,6 +275,61 @@
         "assessment_state",
         "decisions",
         "ask_answers"
+      ]
+    },
+    "CommentOrigin": {
+      "description": "Origin of the primary comment or question, independent of its author and queue state.",
+      "oneOf": [
+        {
+          "description": "The comment came from GitHub.",
+          "type": "string",
+          "const": "github"
+        },
+        {
+          "description": "An authorized agent submitted the comment to DiffPilot.",
+          "type": "string",
+          "const": "api"
+        },
+        {
+          "description": "DiffPilot generated the PR-level question.",
+          "type": "string",
+          "const": "diffpilot"
+        }
+      ]
+    },
+    "AgentAnnotation": {
+      "description": "Supplemental API text displayed independently beside its source comment.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Submission identifier, used in a direct link to the annotation.",
+          "type": "string",
+          "format": "uuid"
+        },
+        "target_url": {
+          "description": "Canonical link to the exact GitHub comment.",
+          "type": "string"
+        },
+        "agent": {
+          "description": "The authenticated token's name when it submitted the annotation.",
+          "type": "string"
+        },
+        "body": {
+          "description": "Supplemental review text.",
+          "type": "string"
+        },
+        "created_at": {
+          "description": "Submission time.",
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "target_url",
+        "agent",
+        "body",
+        "created_at"
       ]
     },
     "ItemMark": {

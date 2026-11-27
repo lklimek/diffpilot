@@ -1,5 +1,15 @@
 # ADR-023: Processing PR comments — PR page, Comments view, Codex assessment, Watch, decision feed for external agents
 
+## Agent comment submission amendment
+
+An authenticated agent may add a standalone review item or supplemental text to an exact GitHub comment.
+Standalone items use the existing assessment and human decision workflow. Both assessment methods consume
+the same frozen local source identity. Supplemental text stays separate from the source comment's decision
+state and uses the linked conversation even when the comment has no review item. Before assigning a target,
+the server verifies the GitHub source against the admitted PR. GitHub refreshes reconcile GitHub-owned data
+and retain API submissions. The optional permission and retry contract are in the
+[agent API](../contracts/agent-api.md#submit-agent-comments).
+
 ## v1.3 container amendment (2026-11-24)
 
 Every assessment uses a per-(PR,payer) CS1 worker. Both host-supplied claudius/report 4.2 and native prompt

@@ -11,6 +11,7 @@ import { GithubCommentText } from "./GithubCommentText";
 import { GithubDecision } from "./GithubDecision";
 import { itemId, sourceText } from "./parts";
 import { commentStatusText } from "./QueueList";
+import { AgentAnnotations, commentProvenance } from "./AgentAnnotations";
 
 export function CommentOverviewCard({
   item,
@@ -30,13 +31,15 @@ export function CommentOverviewCard({
   const last = item.decisions.at(-1);
   const imported = item.imported_decision || item.state === "outside";
   const status = commentStatusText(item, inPass, since, now);
+  const source = commentProvenance(item);
   return (
     <article
       aria-label={itemId(item)}
       className="min-w-0 rounded-lg border border-border bg-surface px-4 py-3.5"
     >
       <p className="m-0 text-xs text-muted">
-        {sourceText(item)} <OpenExternal href={item.url} label={`Open ${itemId(item)} on GitHub`} />
+        {sourceText(item)} {source && <ProvenanceTag source={source} />}{" "}
+        <OpenExternal href={item.url} label={`Open ${itemId(item)} on GitHub`} />
       </p>
       <h2 ref={heading} tabIndex={-1} className="mt-1 mb-1.5 text-lg font-semibold wrap-anywhere">
         {itemId(item)} · <CommentTitle item={item} />
@@ -70,6 +73,7 @@ export function CommentOverviewCard({
       <blockquote className="m-0 rounded border-l-4 border-border bg-surface-2 px-2.5 py-1.5 whitespace-pre-wrap wrap-anywhere">
         <GithubCommentText text={item.point?.quote ?? item.body} />
       </blockquote>
+      <AgentAnnotations annotations={item.agent_annotations} />
       <DuplicateLinks primary={item} duplicates={duplicates} />
     </article>
   );

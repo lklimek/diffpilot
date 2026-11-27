@@ -7,6 +7,7 @@ import { OpenExternal } from "../dashboard/common/OpenExternal";
 import { navigateOnClick, type Navigate } from "../dashboard/common/navigate";
 import { clockText } from "../format/time";
 import { ProvenanceTag } from "../section/ProvenanceTag";
+import { commentProvenance } from "./AgentAnnotations";
 import {
   CHOICE_LABEL,
   canMark,
@@ -149,6 +150,7 @@ export function CommentsTable(props: CommentsTableProps) {
   };
   const common = (item: CommentItem) => {
     const a = item.assessment;
+    const source = commentProvenance(item);
     return (
       <>
         <td className={TD}>
@@ -160,7 +162,8 @@ export function CommentsTable(props: CommentsTableProps) {
           {item.gone_at && <span className="text-xs text-muted"> not in the latest read from GitHub</span>}
         </td>
         <td className={TD}>
-          {item.kind.replace("_", " ")} · {item.author_kind}
+          {source && <ProvenanceTag source={source} />} {item.kind.replace("_", " ")} ·{" "}
+          {item.origin === "api" ? item.author : item.author_kind}
         </td>
         <td className={TD}>
           {problem(item)}

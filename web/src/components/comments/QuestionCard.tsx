@@ -16,6 +16,7 @@ import { OpenExternal } from "../dashboard/common/OpenExternal";
 import { navigateOnClick, type Navigate } from "../dashboard/common/navigate";
 import { clockText, dateTimeText } from "../format/time";
 import { ProvenanceTag } from "../section/ProvenanceTag";
+import { AgentAnnotations, commentProvenance } from "./AgentAnnotations";
 import { CollapsibleSection } from "../collapsible/CollapsibleSection";
 import { CHOICE_LABEL, decisionLabel, type EffectsPreviewState } from "./decisions";
 import { BotHeading, CommentTitle } from "./CommentTitle";
@@ -286,6 +287,7 @@ function Reask({ event, now, storageKey }: { event: CarryEvent; now: Date; stora
 /** One question (plan §3.2): context, evidence, LLM assessment, recommendation, then the decision. */
 export function QuestionCard(props: QuestionCardProps) {
   const { item, context, now, storageKey } = props;
+  const commentSource = commentProvenance(item);
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => focusQuestionHeading(heading.current), [item.id]);
   const ctx = context.state === "ready" ? context.value : null;
@@ -405,7 +407,7 @@ export function QuestionCard(props: QuestionCardProps) {
       <CollapsibleSection
         title="Comment"
         storageKey={key("comment")}
-        aside={<ProvenanceTag source="github" />}
+        aside={commentSource && <ProvenanceTag source={commentSource} />}
       >
         {item.point && (
           <>
@@ -434,6 +436,7 @@ export function QuestionCard(props: QuestionCardProps) {
         >
           <GithubCommentText text={item.point?.quote ?? item.body} />
         </blockquote>
+        <AgentAnnotations annotations={item.agent_annotations} />
       </CollapsibleSection>
 
       {item.location && (

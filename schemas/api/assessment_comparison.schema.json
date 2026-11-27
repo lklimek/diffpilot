@@ -879,6 +879,29 @@
             "version",
             "quote"
           ]
+        },
+        {
+          "description": "A standalone agent comment supplied by DiffPilot.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "api"
+            },
+            "item": {
+              "description": "Item assigned to this submission.",
+              "$ref": "#/$defs/CommentItemId"
+            },
+            "version": {
+              "description": "Frozen comment body hash.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "item",
+            "version"
+          ]
         }
       ]
     },

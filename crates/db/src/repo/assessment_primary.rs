@@ -208,7 +208,7 @@ pub(super) async fn capture_owner(
         FROM comment_decisions d JOIN assessment_comparison_items c ON c.primary_item_id=d.item_id AND c.tenant_id=d.tenant_id
         JOIN assessment_passes p ON p.id=c.pass_id AND p.primary_method=c.method JOIN memberships m ON m.tenant_id=d.tenant_id AND m.user_id=d.user_id
         WHERE d.id=? AND d.tenant_id=? AND d.via<>'carried' AND NOT EXISTS (SELECT 1 FROM comment_decision_origins o WHERE o.decision_id=d.id) AND c.status='matched' AND d.head=p.head AND d.body_hash=c.primary_item_hash
-        AND (json_extract(c.source,'$.kind')='inline' OR d.source_version=json_extract(c.source,'$.version'))
+        AND (json_extract(c.source,'$.kind') IN ('inline','api') OR d.source_version=json_extract(c.source,'$.version'))
         ON CONFLICT(pass_id,comparison_key,decision_id) DO NOTHING")
         .bind(id.to_string()).bind(id.to_string()).bind(tenant).execute(&mut **tx).await?;
     Ok(())

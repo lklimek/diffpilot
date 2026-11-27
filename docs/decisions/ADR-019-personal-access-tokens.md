@@ -1,5 +1,13 @@
 # ADR-019: Personal access tokens — read-only API access for the user's agents
 
+## Agent comment submission amendment
+
+`review_loop_submit` is an optional, independent scope for the single token-only submission route in the
+[agent API](../contracts/agent-api.md#submit-agent-comments). Existing tokens retain their scopes. The
+middleware applies the same tenant, rate limit, expiry, revocation and audit rules. The authenticated
+token name identifies the agent. The route writes DiffPilot comments and annotations on accessible PRs.
+It grants no permission to record a decision or write to GitHub.
+
 - Status: accepted (owner, 2026-11-18, OD17: "the agent is to see everything; it has those permissions anyway");
   plan `docs/v1.1-dashboard-plan.md` §E.2, §E.5, §F.6, WP11-TOKENS.
 

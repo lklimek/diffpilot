@@ -174,6 +174,8 @@ export function AssessmentComparisonReport({ report }: { report: AssessmentCompa
                       <p>
                         Thread {first.source.thread_id} · version {first.source.version}
                       </p>
+                    ) : first.source.kind === "api" ? (
+                      <p>API comment · version {first.source.version}</p>
                     ) : (
                       <>
                         <p className="break-all">

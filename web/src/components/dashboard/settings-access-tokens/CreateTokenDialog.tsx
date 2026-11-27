@@ -27,7 +27,7 @@ export function nameProblem(name: string, names: string[]): string | null {
 }
 
 /**
- * Modal dialog that creates a token (read, optionally with the review-loop execute scope) and shows its secret
+ * Modal dialog that creates a token with explicitly selected review-loop scopes and shows its secret
  * once, with a copy button. The secret lives
  * only in this dialog's state: never in browser storage or logs, and it is dropped when the dialog closes.
  */
@@ -37,6 +37,7 @@ export function CreateTokenDialog({ names, onCreate, onClose }: CreateTokenDialo
   const [name, setName] = useState("");
   const [days, setDays] = useState(DEFAULT_EXPIRY_DAYS);
   const [execute, setExecute] = useState(false);
+  const [submit, setSubmit] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [secret, setSecret] = useState<string | null>(null);
   const [copied, setCopied] = useState<"copied" | "failed" | null>(null);
@@ -53,9 +54,12 @@ export function CreateTokenDialog({ names, onCreate, onClose }: CreateTokenDialo
     setProblem(refused);
     if (refused) return;
     await action.run(async () => {
+      const scopes: CreateAccessToken["scopes"] = ["read"];
+      if (execute) scopes.push("review_loop_execute");
+      if (submit) scopes.push("review_loop_submit");
       const created = await onCreate({
         name: trimmed,
-        scopes: execute ? ["read", "review_loop_execute"] : ["read"],
+        scopes,
         expires_in_days: days,
       });
       setSecret(created.token);
@@ -150,16 +154,23 @@ export function CreateTokenDialog({ names, onCreate, onClose }: CreateTokenDialo
                 ))}
               </select>
             </div>
-            {execute ? (
-              <p>
-                Scope: <b>read</b> and <b>review_loop_execute</b>. The token reads what you can read here and
-                can claim and report on decisions as described below.
-              </p>
-            ) : (
-              <p>
-                Scope: <b>read</b>. The token reads what you can read here and cannot change anything.
-              </p>
-            )}
+            <p>
+              Scope: <b>read</b>
+              {execute && (
+                <>
+                  {" "}
+                  and <b>review_loop_execute</b>
+                </>
+              )}
+              {submit && (
+                <>
+                  {" "}
+                  and <b>review_loop_submit</b>
+                </>
+              )}
+              . The token reads what you can read here.
+              {!execute && !submit && " It cannot change anything."}
+            </p>
             <label className="flex min-h-6 items-start gap-2">
               <input
                 type="checkbox"
@@ -172,6 +183,19 @@ export function CreateTokenDialog({ names, onCreate, onClose }: CreateTokenDialo
                 decision on PR comments in this diffpilot, yours and other users&apos;, report its effects
                 done, failed or released, and set a push target that diffpilot sends requests to. It still
                 cannot decide.
+              </span>
+            </label>
+            <label className="flex min-h-6 items-start gap-2">
+              <input
+                type="checkbox"
+                checked={submit}
+                className="mt-1"
+                onChange={(e) => setSubmit(e.target.checked)}
+              />
+              <span>
+                Also <b>review_loop_submit</b>: an agent with this token may add comments and annotations in
+                DiffPilot. The token's name identifies the agent. It cannot decide or post these comments on
+                GitHub.
               </span>
             </label>
             {message && (

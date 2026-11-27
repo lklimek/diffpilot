@@ -218,9 +218,78 @@ pub enum CommentStatus {
     NotAssessed,
 }
 
+/// Origin of the primary comment or question, independent of its author and queue state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum CommentOrigin {
+    /// The comment came from GitHub.
+    Github,
+    /// An authorized agent submitted the comment to DiffPilot.
+    Api,
+    /// DiffPilot generated the PR-level question.
+    Diffpilot,
+}
+
+/// Target of a review comment submitted by an agent.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AgentCommentTarget {
+    /// A new review item.
+    Standalone,
+    /// Supplemental text for an exact GitHub comment.
+    Github {
+        /// A GitHub comment node ID or canonical comment link on this PR.
+        comment: String,
+    },
+}
+
+/// Submit a standalone comment or a GitHub comment annotation (agent token only).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SubmitAgentComment {
+    /// Reuse this key to retry this payload on the same PR with the same token.
+    pub submission_key: Uuid,
+    /// Nonempty agent text, at most 6000 characters.
+    pub body: String,
+    /// Where the comment belongs.
+    pub target: AgentCommentTarget,
+}
+
+/// Stable receipt for this submission. A replay returns the same receipt.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct AgentCommentReceipt {
+    /// DiffPilot's unique submission identifier.
+    pub submission_id: Uuid,
+    /// The C number of a standalone comment. An annotation has no item number of its own.
+    pub item_no: Option<u32>,
+    /// Absolute DiffPilot link to the submission.
+    pub url: String,
+}
+
+/// Supplemental API text displayed independently beside its source comment.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct AgentAnnotation {
+    /// Submission identifier, used in a direct link to the annotation.
+    pub id: Uuid,
+    /// Canonical link to the exact GitHub comment.
+    pub target_url: String,
+    /// The authenticated token's name when it submitted the annotation.
+    pub agent: String,
+    /// Supplemental review text.
+    pub body: String,
+    /// Submission time.
+    pub created_at: Timestamp,
+}
+
 /// A review-loop item with its assessment, decisions and effects (RC4).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct CommentItem {
+    /// Provenance of the primary comment or question.
+    pub origin: CommentOrigin,
+    /// Supplemental API annotations on this item's GitHub conversation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<AgentAnnotation>>", optional)]
+    pub agent_annotations: Vec<AgentAnnotation>,
     /// Active internal disposition.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -1325,6 +1394,14 @@ pub struct GithubThreadDetail {
     pub title: String,
     /// Repository-relative path.
     pub path: String,
+    /// Whether this is a PR-level comment without a file path.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(as = "Option<bool>", optional)]
+    pub pr_level: bool,
+    /// API annotations on this conversation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<AgentAnnotation>>", optional)]
+    pub agent_annotations: Vec<AgentAnnotation>,
     /// Number of the review card for this exact GitHub thread, when known.
     pub item_no: Option<u32>,
     /// Whether GitHub returned every page.

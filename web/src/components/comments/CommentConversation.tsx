@@ -1,19 +1,28 @@
 import type { ReactNode } from "react";
-import type { GithubThreadComment } from "../../api/generated/types";
+import type { AgentAnnotation, GithubThreadComment } from "../../api/generated/types";
 import { dateTimeText } from "../format/time";
 import { GithubLink } from "../inspector/text";
 import { GithubThreadBody } from "./GithubThreadPreview";
+import { AgentAnnotations } from "./AgentAnnotations";
 
 /** Displays the source and comments of a conversation without decision controls. */
 export function CommentConversation({
   heading,
   source,
   comments,
+  annotations,
 }: {
   heading: ReactNode;
   source: ReactNode;
   comments: readonly GithubThreadComment[];
+  annotations?: readonly AgentAnnotation[];
 }) {
+  const byUrl = new Map<string, AgentAnnotation[]>();
+  for (const annotation of annotations ?? []) {
+    const list = byUrl.get(annotation.target_url) ?? [];
+    list.push(annotation);
+    byUrl.set(annotation.target_url, list);
+  }
   return (
     <article aria-labelledby="comment-conversation-heading" className="grid gap-3">
       <header>
@@ -40,6 +49,7 @@ export function CommentConversation({
               )}
             </div>
             <GithubThreadBody text={comment.body} />
+            {comment.url && <AgentAnnotations annotations={byUrl.get(comment.url)} showTarget={false} />}
           </li>
         ))}
       </ol>

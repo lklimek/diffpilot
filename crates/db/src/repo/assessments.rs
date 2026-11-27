@@ -499,7 +499,7 @@ impl Assessments<'_> {
         if run.method == pass.config.primary_method
             && result.status == AssessmentRunStatus::Succeeded
         {
-            let owners:Vec<String>=sqlx::query_scalar("SELECT DISTINCT d.id FROM comment_decisions d JOIN assessment_comparison_items c ON c.primary_item_id=d.item_id AND c.tenant_id=d.tenant_id JOIN assessment_passes p ON p.id=c.pass_id AND p.primary_method=c.method WHERE p.id=? AND d.tenant_id=? AND c.status='matched' AND d.head=p.head AND d.body_hash=c.primary_item_hash AND (json_extract(c.source,'$.kind')='inline' OR d.source_version=json_extract(c.source,'$.version'))")
+            let owners:Vec<String>=sqlx::query_scalar("SELECT DISTINCT d.id FROM comment_decisions d JOIN assessment_comparison_items c ON c.primary_item_id=d.item_id AND c.tenant_id=d.tenant_id JOIN assessment_passes p ON p.id=c.pass_id AND p.primary_method=c.method WHERE p.id=? AND d.tenant_id=? AND c.status='matched' AND d.head=p.head AND d.body_hash=c.primary_item_hash AND (json_extract(c.source,'$.kind') IN ('inline','api') OR d.source_version=json_extract(c.source,'$.version'))")
                 .bind(pass.id.to_string()).bind(tenant).fetch_all(&mut *tx).await?;
             for owner in owners {
                 super::assessment_primary::capture_owner(
@@ -528,7 +528,8 @@ impl Assessments<'_> {
                     sqlx::query("UPDATE comment_sources SET read_at=coalesce(read_at,?) WHERE tenant_id=? AND pull_request_id=? AND url=? AND body_hash=?")
                         .bind(ts(Timestamp::now())).bind(tenant).bind(pass.input.pull_request_id).bind(url).bind(version).execute(&mut *tx).await?;
                     if run.method == AssessmentMethod::ClaudiusHost {
-                        sqlx::query("UPDATE comment_items SET gone_at=?,revision=revision+1 WHERE tenant_id=? AND pull_request_id=? AND url=? AND kind IN ('review_body','pr_comment') AND source_id IS NULL AND gone_at IS NULL AND state IN ('assessing','undecided','asked_back','reopened')
+                        sqlx::query("UPDATE comment_items SET gone_at=?,revision=revision+1 WHERE tenant_id=? AND pull_request_id=? AND url=? AND kind IN ('review_body','pr_comment') AND source_id IS NULL
+                                     AND NOT EXISTS(SELECT 1 FROM agent_comment_submissions s WHERE s.item_id = comment_items.id) AND gone_at IS NULL AND state IN ('assessing','undecided','asked_back','reopened')
                                      AND NOT EXISTS(SELECT 1 FROM comment_item_marks m WHERE m.item_id=comment_items.id AND m.undone_at IS NULL)
                                      AND NOT EXISTS(SELECT 1 FROM assessment_comparison_items c WHERE c.pass_id=? AND c.method=? AND c.primary_item_id=comment_items.id AND c.status NOT IN ('missing_row','context','head_mismatch'))")
                             .bind(ts(Timestamp::now())).bind(tenant).bind(pass.input.pull_request_id).bind(url).bind(pass.id.to_string()).bind(wire_name(run.method)?).execute(&mut *tx).await?;
@@ -541,6 +542,7 @@ impl Assessments<'_> {
                     && quote.is_empty()
                 {
                     sqlx::query("UPDATE comment_items SET gone_at=?,revision=revision+1 WHERE tenant_id=? AND pull_request_id=? AND url=? AND kind IN ('review_body','pr_comment') AND source_id IS NULL
+                                     AND NOT EXISTS(SELECT 1 FROM agent_comment_submissions s WHERE s.item_id = comment_items.id)
                                  AND NOT EXISTS(SELECT 1 FROM comment_item_marks m WHERE m.item_id=comment_items.id AND m.undone_at IS NULL)
                                  AND NOT EXISTS(SELECT 1 FROM comment_assessments a WHERE a.item_id=comment_items.id)")
                         .bind(ts(Timestamp::now())).bind(tenant).bind(pass.input.pull_request_id).bind(url).execute(&mut *tx).await?;

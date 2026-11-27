@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
-import { Link, Navigate } from "react-router";
+import { useEffect } from "react";
+import { Link, Navigate, useLocation } from "react-router";
 import { api, ApiError, errorText } from "../../api/client";
 import type { PrRef } from "../../api/generated/types";
 import { useMe } from "../../api/queries";
@@ -23,7 +24,14 @@ export function GithubThreadRoute({ pr, id }: { pr: PrRef; id: string }) {
   });
   usePrTabSubject(pr);
   const detail = thread.data;
-  if (detail?.item_no != null) return <Navigate replace to={itemPath(pr, detail.item_no)} />;
+  const { hash } = useLocation();
+  const linkedAnnotation = hash.startsWith("#agent-comment-");
+  useEffect(() => {
+    if (linkedAnnotation && detail)
+      document.getElementById(hash.slice(1))?.scrollIntoView?.({ block: "nearest" });
+  }, [hash, linkedAnnotation, detail]);
+  if (detail?.item_no != null && !linkedAnnotation)
+    return <Navigate replace to={itemPath(pr, detail.item_no)} />;
   const failure =
     thread.error instanceof ApiError && thread.error.status === 404
       ? "This GitHub thread was not found on this pull request."
@@ -51,13 +59,26 @@ export function GithubThreadRoute({ pr, id }: { pr: PrRef; id: string }) {
           <>
             <CommentConversation
               heading={
-                <>
-                  Review thread on <code className="wrap-anywhere text-base">{detail.path}</code>
-                </>
+                detail.pr_level ? (
+                  "Pull request comment"
+                ) : (
+                  <>
+                    Review thread on <code className="wrap-anywhere text-base">{detail.path}</code>
+                  </>
+                )
               }
-              source={<ProvenanceTag source="github" />}
+              source={<ProvenanceTag source={detail.agent_annotations?.length ? "github_agent" : "github"} />}
               comments={detail.comments}
+              annotations={detail.agent_annotations}
             />
+            {detail.item_no != null && (
+              <Link
+                to={itemPath(pr, detail.item_no)}
+                className="justify-self-start text-sm text-accent underline"
+              >
+                Open review item C{detail.item_no}
+              </Link>
+            )}
             {!detail.complete && (
               <StatusMessage kind="empty">
                 GitHub has more replies. Open the thread on GitHub to read them.

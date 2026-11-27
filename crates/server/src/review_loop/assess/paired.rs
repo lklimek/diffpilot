@@ -72,6 +72,36 @@ pub(super) async fn admit(
             })
         })
     });
+    let pr_ref = contracts::common::PrRef {
+        repo: pr.repo.clone(),
+        number: pr.number,
+    };
+    let comments_path = crate::review_loop::notify::comments_path(&pr_ref);
+    let mut has_api_comments = false;
+    for sent in &review.sent {
+        let Some(item) = items
+            .iter()
+            .find(|item| item.id == sent.item && item.from_api)
+        else {
+            continue;
+        };
+        let mut url = state
+            .config
+            .public_url
+            .join(&comments_path)
+            .map_err(|_| AssessError::Snapshot)?;
+        url.query_pairs_mut()
+            .append_pair("item", &format!("C{}", item.no));
+        data.scope.sources.push(url.to_string());
+        data.comments.push(json!({
+            "id": item.id,
+            "url": url.as_str(),
+            "author": { "login": item.author },
+            "body": item.body,
+            "agentItemId": item.id,
+        }));
+        has_api_comments = true;
+    }
     if data.scope.threads.is_empty() && data.scope.sources.is_empty() {
         return Ok(super::PassQueued::Skipped);
     }
@@ -135,6 +165,7 @@ pub(super) async fn admit(
     for method in methods {
         jobs.push(MethodJob {
             version: match method {
+                AssessmentMethod::ClaudiusHost if has_api_comments => format!("{HOST_VERSION}/api1"),
                 AssessmentMethod::ClaudiusHost => HOST_VERSION.into(),
                 AssessmentMethod::PromptV4 => VERIFY_PROMPT_VERSION.to_string(),
             },
@@ -156,7 +187,13 @@ pub(super) async fn admit(
                     },
                 }),
                 prompt: match method {
-                    AssessmentMethod::ClaudiusHost => prompt::render_host(language)?,
+                    AssessmentMethod::ClaudiusHost => {
+                        let mut prompt = prompt::render_host(language)?;
+                        if has_api_comments {
+                            prompt.push_str("\nLocal rows in comments.json carrying agentItemId are agent submissions, not GitHub statements. Assess each as one pr_comment with its exact CMT ID from ids.json, supplied URL and a verbatim distinct quote. Never infer recorded decisions from these rows.\n");
+                        }
+                        prompt
+                    }
                     AssessmentMethod::PromptV4 => prompt::render(native, pr, language)?,
                 },
                 output_schema: match method {

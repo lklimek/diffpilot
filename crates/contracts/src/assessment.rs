@@ -231,6 +231,13 @@ pub enum AssessmentSource {
         /// Verbatim grounded quote.
         quote: String,
     },
+    /// A standalone agent comment supplied by DiffPilot.
+    Api {
+        /// Item assigned to this submission.
+        item: CommentItemId,
+        /// Frozen comment body hash.
+        version: String,
+    },
 }
 
 /// Pair only the same frozen source, with a known point identity or an exact body quote.
@@ -260,6 +267,16 @@ pub fn sources_align(left: &AssessmentSource, right: &AssessmentSource, known_it
                 quote: bq,
             },
         ) => a == b && au == bu && av == bv && (known_item || aq == bq),
+        (
+            AssessmentSource::Api {
+                item: a,
+                version: av,
+            },
+            AssessmentSource::Api {
+                item: b,
+                version: bv,
+            },
+        ) => a == b && av == bv,
         _ => false,
     }
 }

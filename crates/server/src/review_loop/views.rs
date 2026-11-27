@@ -7,12 +7,13 @@ use contracts::api::analyses::AnalysisSummary;
 use contracts::api::deps::{CrateChanges, DependencyView, RepositoryKind};
 use contracts::api::files::{PartOwner, PrFile};
 use contracts::api::review_loop::{
-    AssessmentProgress, AssessmentState, AuthorKind, CarryOverPage, CodeContext, CodeLine,
-    CommentCounts, CommentItem, CommentItemKind, CommentLog, CommentStatus, CommentsOverview,
-    CommentsSummary, ContextQuery, DecideRest, DecideRestRow, DecisionBatchRow, DecisionVia,
-    EffectState, EffectsPreview, FeedSubscriber, FlowStepRef, GithubRead, ImportedGithubDecision,
-    ItemState, ItemsQuery, KindCount, NotAssessedReason, NoteElsewhere, NoteSource, PrBadge,
-    PrBadgeView, PrPage, QueueEntry, ReadFailure, Round, WatchState,
+    AgentAnnotation, AssessmentProgress, AssessmentState, AuthorKind, CarryOverPage, CodeContext,
+    CodeLine, CommentCounts, CommentItem, CommentItemKind, CommentLog, CommentOrigin,
+    CommentStatus, CommentsOverview, CommentsSummary, ContextQuery, DecideRest, DecideRestRow,
+    DecisionBatchRow, DecisionVia, EffectState, EffectsPreview, FeedSubscriber, FlowStepRef,
+    GithubRead, ImportedGithubDecision, ItemState, ItemsQuery, KindCount, NotAssessedReason,
+    NoteElsewhere, NoteSource, PrBadge, PrBadgeView, PrPage, QueueEntry, ReadFailure, Round,
+    WatchState,
 };
 use contracts::api::tour::{CiState, Tour};
 use contracts::common::{AnnotationType, LineRange, LineSide, PrRef};
@@ -169,6 +170,7 @@ fn item_view(
     status: queue::StatusItem,
     standing: &HashMap<String, &StoredDecision>,
     ask_answers: u32,
+    agent_annotations: Vec<AgentAnnotation>,
 ) -> CommentItem {
     let assessment = loaded
         .assessments
@@ -176,6 +178,14 @@ fn item_view(
         .filter(|_| !record.status_comment);
     let repeat_of = record.repeat_of.and_then(|id| loaded.number_of(id));
     CommentItem {
+        origin: if record.from_api {
+            CommentOrigin::Api
+        } else if record.kind == CommentItemKind::PrQuestion {
+            CommentOrigin::Diffpilot
+        } else {
+            CommentOrigin::Github
+        },
+        agent_annotations,
         status: queue::comment_status(&status),
         not_a_review_point: status.not_a_review_point,
         status_comment: status.status_comment,
@@ -287,6 +297,19 @@ pub async fn items(
     query: &ItemsQuery,
 ) -> Result<Vec<CommentItem>, LoopError> {
     let loaded = Loaded::of(state, handle).await?;
+    let mut annotations: HashMap<u32, Vec<AgentAnnotation>> = HashMap::new();
+    for (conversation, annotation) in state
+        .db
+        .review_loop()
+        .agent_annotations(&session.tenant_id, loaded.handle.id)
+        .await?
+    {
+        if let Some(no) =
+            super::submissions::item_no(&loaded, &conversation, Some(&annotation.target_url))
+        {
+            annotations.entry(no).or_default().push(annotation);
+        }
+    }
     let pass = state.db.review_loop().latest_pass(loaded.handle.id).await?;
     let answers: HashMap<CommentItemId, u32> = state
         .db
@@ -326,7 +349,14 @@ pub async fn items(
         .map(|record| {
             let asked = answers.get(&record.id).copied().unwrap_or(0);
             let status = item_status(&loaded, record, &standing, pass.as_ref(), limited);
-            item_view(&loaded, record, status, &standing, asked)
+            item_view(
+                &loaded,
+                record,
+                status,
+                &standing,
+                asked,
+                annotations.remove(&record.no).unwrap_or_default(),
+            )
         })
         .collect())
 }
