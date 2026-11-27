@@ -27,6 +27,8 @@ use tokio::{
     task::{AbortHandle, JoinSet},
 };
 
+const MODEL_REJECTION_TARGET: &str = "server::gateway::request_rejection";
+
 /// A gateway failure with a redacted public HTTP mapping.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -57,6 +59,9 @@ pub enum Error {
     /// Request violates gateway policy.
     #[error("upstream_rejected")]
     Body,
+    /// Model request validation failed with a fixed diagnostic code.
+    #[error("upstream_rejected")]
+    ModelPolicy(&'static str),
     /// Device linking is unavailable for this account.
     #[error("device-code login is not enabled for this account")]
     DeviceDisabled,
@@ -107,7 +112,7 @@ impl IntoResponse for Error {
             Self::Key => (StatusCode::UNAUTHORIZED, "invalid_virtual_key"),
             Self::Unlinked => (StatusCode::FORBIDDEN, "credential_unlinked"),
             Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
-            Self::Body => (StatusCode::BAD_REQUEST, "upstream_rejected"),
+            Self::Body | Self::ModelPolicy(_) => (StatusCode::BAD_REQUEST, "upstream_rejected"),
             Self::DeviceDisabled => (
                 StatusCode::BAD_REQUEST,
                 "device-code login is not enabled for this account",
@@ -115,11 +120,21 @@ impl IntoResponse for Error {
             Self::Link => (StatusCode::BAD_GATEWAY, "link_failed"),
             _ => (StatusCode::BAD_GATEWAY, "gateway_unavailable"),
         };
-        (
+        let mut response = (
             status,
             axum::Json(serde_json::json!({"error":{"code":code}})),
         )
-            .into_response()
+            .into_response();
+        response.extensions_mut().insert(http::ModelRejection {
+            reason: match self {
+                Self::ModelPolicy(reason) => reason,
+                Self::Http(_) => "upstream_unavailable",
+                Self::Body => "gateway_response_rejected",
+                _ => code,
+            },
+            upstream_status: None,
+        });
+        response
     }
 }
 

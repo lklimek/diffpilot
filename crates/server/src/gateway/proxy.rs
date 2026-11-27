@@ -1,7 +1,8 @@
 //! Model boundary, streaming SSE tap and response-ID accounting.
 
-use super::{Error, Gateway, auth::Access};
+use super::{Error, Gateway, auth::Access, http::upstream_rejection};
 use axum::{
+    Json,
     body::{Body, Bytes},
     http::{HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
@@ -38,37 +39,44 @@ pub(super) fn validate_body(value: &Value) -> Result<(), Error> {
         "access_programs",
         "request_country",
     ];
-    for field in value.as_object().ok_or(Error::Body)?.keys() {
+    for field in value
+        .as_object()
+        .ok_or(Error::ModelPolicy("body_must_be_object"))?
+        .keys()
+    {
         if !FIELDS.contains(&field.as_str()) {
-            let member = field
-                .chars()
-                .take(64)
-                .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
-                .collect::<String>();
-            tracing::warn!(member, "gateway refused an unsupported model request field");
-            return Err(Error::Body);
+            return Err(Error::ModelPolicy(match field.as_str() {
+                "previous_response_id" => "previous_response_id_unsupported",
+                _ => "unsupported_field",
+            }));
         }
     }
     if value
         .get("tool_choice")
         .is_some_and(|choice| !matches!(choice.as_str(), Some("auto" | "none" | "required")))
     {
-        tracing::warn!("gateway refused an unsupported tool selection");
-        return Err(Error::Body);
+        return Err(Error::ModelPolicy("unsupported_tool_choice"));
     }
-    if value.get("store") != Some(&Value::Bool(false))
-        || value.get("stream") != Some(&Value::Bool(true))
-        || value.get("previous_response_id").is_some()
-    {
-        return Err(Error::Body);
+    if value.get("store") != Some(&Value::Bool(false)) {
+        return Err(Error::ModelPolicy("store_must_be_false"));
+    }
+    if value.get("stream") != Some(&Value::Bool(true)) {
+        return Err(Error::ModelPolicy("stream_must_be_true"));
     }
     if let Some(tools) = value.get("tools") {
         validate_tools(tools, 0)?;
     }
     if let Some(input) = value.get("input") {
-        for item in input.as_array().ok_or(Error::Body)? {
+        for item in input
+            .as_array()
+            .ok_or(Error::ModelPolicy("input_must_be_array"))?
+        {
             if item.get("type").and_then(Value::as_str) == Some("additional_tools") {
-                validate_tools(item.get("tools").ok_or(Error::Body)?, 0)?;
+                validate_tools(
+                    item.get("tools")
+                        .ok_or(Error::ModelPolicy("missing_tools"))?,
+                    0,
+                )?;
             }
         }
     }
@@ -77,24 +85,23 @@ pub(super) fn validate_body(value: &Value) -> Result<(), Error> {
 
 fn validate_tools(value: &Value, depth: usize) -> Result<(), Error> {
     if depth > 16 {
-        return Err(Error::Body);
+        return Err(Error::ModelPolicy("tool_nesting_limit"));
     }
-    for tool in value.as_array().ok_or(Error::Body)? {
+    for tool in value
+        .as_array()
+        .ok_or(Error::ModelPolicy("tools_must_be_array"))?
+    {
         match tool.get("type").and_then(Value::as_str) {
             Some("function" | "custom") => (),
-            Some("namespace") => validate_tools(tool.get("tools").ok_or(Error::Body)?, depth + 1)?,
-            kind => {
-                let kind = kind
-                    .filter(|s| {
-                        s.len() <= 64 && s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
-                    })
-                    .unwrap_or("unknown");
-                tracing::warn!(
-                    tool_type = kind,
-                    "gateway refused hosted or unsupported model tool"
-                );
-                return Err(Error::Body);
+            Some("namespace") => validate_tools(
+                tool.get("tools")
+                    .ok_or(Error::ModelPolicy("missing_tools"))?,
+                depth + 1,
+            )?,
+            Some("web_search" | "web_search_preview") => {
+                return Err(Error::ModelPolicy("hosted_web_search_unsupported"));
             }
+            _ => return Err(Error::ModelPolicy("unsupported_tool")),
         }
     }
     Ok(())
@@ -180,7 +187,7 @@ impl Gateway {
         self: &Arc<Self>,
         headers: HeaderMap,
         query: Option<String>,
-        body: Option<Value>,
+        body: Option<Bytes>,
     ) -> Result<Response, Error> {
         let bearer = super::http::bearer(&headers).ok_or(Error::Key)?;
         let key = super::store::digest(bearer.as_bytes());
@@ -214,9 +221,15 @@ impl Gateway {
         .await
         .map_err(|_| Error::Busy)??;
         let (user, key, tx) = self.authenticate(bearer).await?;
-        if let Some(body) = &body {
-            validate_body(body)?;
-        }
+        // The listener bounds the buffer. Parse it only after authenticating and acquiring the request permits.
+        let body = body
+            .map(|bytes| {
+                let Json(value) = Json::<Value>::from_bytes(&bytes)
+                    .map_err(|_| Error::ModelPolicy("invalid_json"))?;
+                validate_body(&value)?;
+                Ok::<_, Error>(value)
+            })
+            .transpose()?;
         let expires_at = tx.record.keys.get(&key).ok_or(Error::Key)?.expires_at;
         let access = self.access_locked(&user, tx, None).await?;
         let models = body.is_none();
@@ -255,20 +268,27 @@ impl Gateway {
                 )
                 .await?;
             if response.status() == StatusCode::UNAUTHORIZED {
-                let mut tx = self.store.lock(&user).await?;
-                // A rejection of an older generation must not poison a newer link/refresh.
-                if tx.record.generation == access.generation {
-                    tx.record.reason = Some(contracts::gateway::RelinkReason::Terminal);
-                    tx.outcome(
-                        "model",
-                        "terminal",
-                        Some(401),
-                        Some("confirmed_unauthorized"),
-                        super::auth::request_id(response.headers()),
-                    );
-                    tx.save()?;
+                let result = async {
+                    let mut tx = self.store.lock(&user).await?;
+                    // A rejection of an older generation must not poison a newer link/refresh.
+                    if tx.record.generation == access.generation {
+                        tx.record.reason = Some(contracts::gateway::RelinkReason::Terminal);
+                        tx.outcome(
+                            "model",
+                            "terminal",
+                            Some(401),
+                            Some("confirmed_unauthorized"),
+                            super::auth::request_id(response.headers()),
+                        );
+                        tx.save()?;
+                    }
+                    Ok::<_, Error>(Error::Unlinked.into_response())
                 }
-                return Err(Error::Unlinked);
+                .await;
+                return Ok(upstream_rejection(
+                    result.unwrap_or_else(Error::into_response),
+                    StatusCode::UNAUTHORIZED,
+                ));
             }
             access.generation
         } else {
@@ -276,7 +296,12 @@ impl Gateway {
         };
         let status = response.status();
         let output_headers = response_headers(response.headers());
-        self.capture_limits(&user, response.headers()).await?;
+        if let Err(error) = self.capture_limits(&user, response.headers()).await {
+            if status.is_success() || status == StatusCode::NOT_MODIFIED {
+                return Err(error);
+            }
+            return Ok(upstream_rejection(error.into_response(), status));
+        }
         if models {
             if status == StatusCode::NOT_MODIFIED {
                 let cache = self.models.lock().await;
@@ -287,7 +312,11 @@ impl Gateway {
                 }
                 return Err(Error::Body);
             }
-            let bytes = bounded_bytes(response, 4 * 1024 * 1024).await?;
+            let bytes = match bounded_bytes(response, 4 * 1024 * 1024).await {
+                Ok(bytes) => bytes,
+                Err(error) if status.is_success() => return Err(error),
+                Err(error) => return Ok(upstream_rejection(error.into_response(), status)),
+            };
             if status.is_success()
                 && let Some(etag) = output_headers
                     .get("x-models-etag")
@@ -303,10 +332,15 @@ impl Gateway {
                     },
                 );
             }
-            return Ok((status, output_headers, bytes).into_response());
+            let reply = (status, output_headers, bytes).into_response();
+            return Ok(if status.is_success() {
+                reply
+            } else {
+                upstream_rejection(reply, status)
+            });
         }
         if !status.is_success() {
-            {
+            let result = async {
                 let mut tx = self.store.lock(&user).await?;
                 tx.record.last_call = Some(contracts::job::result::LlmCallOutcome {
                     at: contracts::time::Timestamp::now(),
@@ -315,20 +349,26 @@ impl Gateway {
                     },
                 });
                 tx.save()?;
+                drop(tx);
+                let bytes = bounded_bytes(response, 4 * 1024 * 1024).await?;
+                if status == StatusCode::TOO_MANY_REQUESTS {
+                    let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+                    let mut tx = self.store.lock(&user).await?;
+                    tx.record.resets_at = Some(
+                        value
+                            .pointer("/error/resets_at")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(super::now() + 1800),
+                    );
+                    tx.save()?;
+                }
+                Ok::<_, Error>((status, output_headers, bytes).into_response())
             }
-            let bytes = bounded_bytes(response, 4 * 1024 * 1024).await?;
-            if status == StatusCode::TOO_MANY_REQUESTS {
-                let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-                let mut tx = self.store.lock(&user).await?;
-                tx.record.resets_at = Some(
-                    value
-                        .pointer("/error/resets_at")
-                        .and_then(Value::as_i64)
-                        .unwrap_or(super::now() + 1800),
-                );
-                tx.save()?;
-            }
-            return Ok((status, output_headers, bytes).into_response());
+            .await;
+            return Ok(upstream_rejection(
+                result.unwrap_or_else(Error::into_response),
+                status,
+            ));
         }
         let store = self.store.clone();
         let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(8);
@@ -344,6 +384,19 @@ impl Gateway {
             let mut stream = response.bytes_stream();
             let mut tap = Tap::default();
             let mut metered = std::collections::BTreeSet::new();
+            let mut rejection_logged = false;
+            let mut log_rejection = |reason: &'static str| {
+                if !rejection_logged {
+                    tracing::warn!(
+                        target: super::MODEL_REJECTION_TARGET,
+                        route = "responses",
+                        reason,
+                        status = status.as_u16(),
+                        "gateway model request rejected"
+                    );
+                    rejection_logged = true;
+                }
+            };
             let mut sender = Some(sender);
             loop {
                 let chunk = tokio::select! {
@@ -366,6 +419,7 @@ impl Gateway {
                 let bytes = match chunk {
                     Ok(bytes) => bytes,
                     Err(_) => {
+                        log_rejection("upstream_stream_interrupted");
                         if let Some(sender) = sender.take() {
                             let _ = sender
                                 .send(Err(std::io::Error::other("model stream interrupted")))
@@ -377,6 +431,7 @@ impl Gateway {
                 let events = match tap.push(&bytes) {
                     Ok(events) => events,
                     Err(_) => {
+                        log_rejection("upstream_event_too_large");
                         if let Some(sender) = sender.take() {
                             let _ = sender
                                 .send(Err(std::io::Error::other(
@@ -388,8 +443,14 @@ impl Gateway {
                     }
                 };
                 for event in events {
+                    let upstream_failed =
+                        event.get("type").and_then(Value::as_str) == Some("response.failed");
+                    if upstream_failed {
+                        log_rejection("upstream_failed_event");
+                    }
                     let completed = completion(&event);
                     if completed.is_err() {
+                        log_rejection("upstream_usage_malformed");
                         if let Some(sender) = sender.take() {
                             let _ = sender
                                 .send(Err(std::io::Error::other("model usage event is malformed")))
@@ -397,9 +458,7 @@ impl Gateway {
                         }
                         return;
                     }
-                    if event.get("type").and_then(Value::as_str) == Some("response.failed")
-                        && let Ok(mut tx) = store.lock(&user).await
-                    {
+                    if upstream_failed && let Ok(mut tx) = store.lock(&user).await {
                         tx.record.last_call = Some(contracts::job::result::LlmCallOutcome {
                             at: contracts::time::Timestamp::now(),
                             status: contracts::job::result::LlmCallStatus::NotWorking {
@@ -434,6 +493,7 @@ impl Gateway {
                         && !metered.contains(&id)
                     {
                         if metered.len() >= 256 || store.meter(&user, &key, &id, usage).await.is_err() {
+                            log_rejection("usage_accounting_failed");
                             if let Some(sender) = sender.take() {
                                 let _ = sender.send(Err(std::io::Error::other("model usage persistence failed"))).await;
                             }

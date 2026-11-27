@@ -433,6 +433,7 @@ impl Locked {
             code,
             request_id,
         } = evidence;
+        let request_id = request_id.as_deref().filter(|_| operation != "model");
         if durable
             && matches!(
                 outcome.as_str(),

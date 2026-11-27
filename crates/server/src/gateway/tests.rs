@@ -397,6 +397,157 @@ async fn collect(response: axum::response::Response) -> axum::body::Bytes {
 }
 
 #[tokio::test]
+async fn model_listener_logs_rejection_reasons_without_request_data() {
+    let (_dir, upstream, gateway, user) = fixture().await;
+    seed(&gateway, &user, bundle(now() + 3600)).await;
+    let key = gateway
+        .mint(&ContainerId::Judge { payer: user })
+        .await
+        .expect("key");
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(429).set_body_string("private-upstream-body"))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let logs = crate::test_support::logs::LogCapture::start();
+    for (method, path, body, status, reason) in [
+        (
+            "GET",
+            "/v1/private-path?token=private-query",
+            json!(null),
+            404,
+            "unsupported_route",
+        ),
+        (
+            "GET",
+            "/v1/responses",
+            json!(null),
+            405,
+            "unsupported_method",
+        ),
+        (
+            "GET",
+            "/v1/models?unexpected=private-query",
+            json!(null),
+            400,
+            "invalid_models_query",
+        ),
+        (
+            "POST",
+            "/v1/responses",
+            json!({"store":false,"stream":true,"privateFieldName":"private-field-value"}),
+            400,
+            "unsupported_field",
+        ),
+        (
+            "POST",
+            "/v1/responses",
+            json!({"store":false,"stream":true,"tools":[{"type":"privateToolName"}]}),
+            400,
+            "unsupported_tool",
+        ),
+        (
+            "POST",
+            "/v1/responses",
+            json!({"store":false,"stream":false}),
+            400,
+            "stream_must_be_true",
+        ),
+        (
+            "POST",
+            "/v1/responses",
+            json!({"store":false,"stream":true,"input":[{"text":"private-prompt"}]}),
+            429,
+            "upstream_rejected",
+        ),
+    ] {
+        let response = call(gateway.model_router(), method, path, key.key.expose(), body).await;
+        assert_eq!(response.status().as_u16(), status);
+        let captured = logs.text();
+        let line = captured.lines().last().unwrap_or_default();
+        assert!(line.contains("gateway model request rejected"), "{line}");
+        assert!(line.contains(&format!("reason={reason:?}")), "{line}");
+        assert!(line.contains(&format!("status={status}")), "{line}");
+        let route = match reason {
+            "unsupported_route" => "other",
+            "invalid_models_query" => "models",
+            _ => "responses",
+        };
+        assert!(line.contains(&format!("route={route:?}")), "{line}");
+        if status == 429 {
+            assert!(line.contains("upstream_status=429"), "{line}");
+        }
+    }
+    let captured = logs.text();
+    assert_eq!(
+        captured.matches("gateway model request rejected").count(),
+        7
+    );
+    for sensitive in [
+        "private-path",
+        "private-query",
+        "privateFieldName",
+        "private-field-value",
+        "privateToolName",
+        "private-prompt",
+        "private-upstream-body",
+        key.key.expose(),
+    ] {
+        assert!(
+            !captured.contains(sensitive),
+            "gateway logged sensitive data"
+        );
+    }
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
+async fn only_a_live_key_can_reach_model_json_parsing() {
+    let (_dir, upstream, gateway, user) = fixture().await;
+    seed(&gateway, &user, bundle(now() + 3600)).await;
+    let key = gateway
+        .mint(&ContainerId::Judge { payer: user })
+        .await
+        .expect("key");
+    let logs = crate::test_support::logs::LogCapture::start();
+    for (bearer, status, reason) in [
+        ("bad-key", StatusCode::UNAUTHORIZED, "invalid_virtual_key"),
+        (key.key.expose(), StatusCode::BAD_REQUEST, "invalid_json"),
+    ] {
+        let response = gateway
+            .model_router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/responses")
+                    .header("authorization", format!("Bearer {bearer}"))
+                    .body(Body::from("{malformed-private-body"))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), status);
+        assert!(
+            logs.text()
+                .lines()
+                .last()
+                .unwrap_or_default()
+                .contains(reason)
+        );
+    }
+    assert!(!logs.text().contains("malformed-private-body"));
+    assert!(
+        upstream
+            .received_requests()
+            .await
+            .expect("requests")
+            .is_empty()
+    );
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
 async fn listeners_scopes_and_plan_only_link_contract_do_not_cross() {
     let (_d, up, g, _u) = fixture().await;
     for path in [
@@ -490,12 +641,18 @@ async fn persistent_upstream_401_is_confirmed_without_refresh_or_revoke() {
         .mint(&ContainerId::Judge { payer: u.clone() })
         .await
         .expect("key");
+    let upstream_id = "req_123456789abcdeffedcba98765432100";
     Mock::given(method("POST"))
         .and(path("/responses"))
-        .respond_with(ResponseTemplate::new(401).set_body_json(json!({"error":"revoked"})))
+        .respond_with(
+            ResponseTemplate::new(401)
+                .insert_header("x-request-id", upstream_id)
+                .set_body_json(json!({"error":"revoked"})),
+        )
         .expect(2)
         .mount(&up)
         .await;
+    let logs = crate::test_support::logs::LogCapture::start();
     let response = call(
         g.model_router(),
         "POST",
@@ -505,6 +662,12 @@ async fn persistent_upstream_401_is_confirmed_without_refresh_or_revoke() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let captured = logs.text();
+    assert!(
+        captured.contains("status=403 upstream_status=401"),
+        "{captured}"
+    );
+    assert!(!captured.contains(upstream_id));
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&collect(response).await).expect("json")["error"]
             ["code"],
@@ -1113,8 +1276,9 @@ async fn retryable_midstream_slowdown_does_not_pause_the_payer() {
         .expect("key");
     let failed = format!(
         "data: {}\n\n",
-        json!({"type":"response.failed","response":{"error":{"code":"slow_down"}}})
-    );
+        json!({"type":"response.failed","response":{"error":{"code":"slow_down","message":"private-remote-detail"}}})
+    ).repeat(2);
+    let logs = crate::test_support::logs::LogCapture::start();
     Mock::given(path("/responses"))
         .respond_with(ResponseTemplate::new(200).set_body_bytes(failed.clone()))
         .expect(1)
@@ -1129,6 +1293,14 @@ async fn retryable_midstream_slowdown_does_not_pause_the_payer() {
     )
     .await;
     assert_eq!(collect(response).await.as_ref(), failed.as_bytes());
+    let captured = logs.text();
+    assert_eq!(
+        captured.matches("gateway model request rejected").count(),
+        1,
+        "{captured}"
+    );
+    assert!(captured.contains("upstream_failed_event"));
+    assert!(!captured.contains("private-remote-detail"));
     assert_eq!(g.usage(&u, None).await.expect("usage").resets_at, None);
     g.shutdown().await;
 }
