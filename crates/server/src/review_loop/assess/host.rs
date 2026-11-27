@@ -51,11 +51,9 @@ pub(super) fn decode(data: &PrData, value: Value) -> Result<Decoded, JobFailureK
             .retain(|id| data.scope.threads.contains(id));
         row.merged_urls
             .retain(|url| data.scope.sources.contains(url));
-        if row
-            .recorded_decision
-            .as_ref()
-            .is_some_and(|recorded| !all_comments(data).any(|comment| grounded(comment, recorded)))
-        {
+        if row.recorded_decision.as_ref().is_some_and(|recorded| {
+            !github_comments(data).any(|comment| grounded(comment, recorded))
+        }) {
             row.recorded_decision = None;
         }
     }
@@ -221,11 +219,18 @@ pub(super) fn comments(thread: &Value) -> impl Iterator<Item = &Value> {
         .flatten()
 }
 
-pub(super) fn all_comments(data: &PrData) -> impl Iterator<Item = &Value> {
+/// GitHub body sources only. Local agent submissions share the prompt's file format.
+pub(super) fn github_bodies(data: &PrData) -> impl Iterator<Item = &Value> {
+    data.comments
+        .iter()
+        .filter(|comment| comment.get("agentItemId").is_none())
+        .chain(&data.reviews)
+}
+
+pub(super) fn github_comments(data: &PrData) -> impl Iterator<Item = &Value> {
     threads(data)
         .flat_map(comments)
-        .chain(&data.comments)
-        .chain(&data.reviews)
+        .chain(github_bodies(data))
         .chain(&data.review_comments)
 }
 

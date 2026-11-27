@@ -217,7 +217,7 @@ test("an execute token claims the decision (RF3) and reports its fix done (RF4);
   const tokens = page.getByRole("region", { name: "Access tokens" });
   await tokens.getByRole("button", { name: "New token" }).click();
   const dialog = page.getByRole("dialog", { name: "New access token" });
-  await dialog.getByLabel("Name").fill("e2e agent");
+  await dialog.getByLabel("Name", { exact: true }).fill("e2e agent");
   await dialog.getByRole("checkbox", { name: /^Also review_loop_execute/ }).check();
   await expect(dialog).toContainText("Scope: read and review_loop_execute.");
   await dialog.getByRole("button", { name: "Create token" }).click();

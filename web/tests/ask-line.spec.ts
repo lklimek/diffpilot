@@ -48,3 +48,23 @@ test("Ask about this line opens the chat about the line from the code view and t
   expect(posts).toEqual([]);
   await expectAccessible(page);
 });
+
+test("marks an asked line without hover as its answer progresses", async ({ page }) => {
+  await page.goto(`/analyses/${ANALYSIS_ID}?scenario=tab-status#f1.2`);
+  const main = page.getByRole("main");
+  const line = main.locator('[data-line="89"][data-side="head"]');
+  await line.getByRole("button", { name: "Ask the LLM about line 89" }).click();
+  await main.getByRole("button", { name: "Ask about this line" }).click();
+  const field = page.getByRole("dialog", { name: "Ask" }).getByRole("textbox", { name: "Your question" });
+  await field.fill("Why is this line needed?");
+  await page.mouse.move(0, 0);
+  await field.press("Enter");
+  const pending = line.getByRole("button", { name: /line 89.*answer in progress/i });
+  await expect(pending).toHaveCSS("opacity", "1");
+  await expect(pending).toHaveText("◷");
+
+  await page.clock.fastForward(16_000);
+  const answered = line.getByRole("button", { name: /line 89.*answer ready/i });
+  await expect(answered).toHaveCSS("opacity", "1");
+  await expect(answered).toHaveText("✓");
+});

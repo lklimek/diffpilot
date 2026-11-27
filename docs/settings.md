@@ -27,7 +27,7 @@ Personal access tokens keep working after Sign out.
 
 ### Access tokens
 
-- **What:** Personal access tokens let agents use diffpilot over HTTP. A read token is read-only. Add review_loop_execute for an agent that claims decisions and reports their effects.
+- **What:** Personal access tokens let agents use diffpilot over HTTP. The read scope gives the agent read-only access to your data. Add review_loop_execute to claim decisions and report their effects, or review_loop_submit to add comments and annotations in DiffPilot.
 - **When used:** When an agent sends Authorization: Bearer srp_… with a request.
 - **Empty or default:** No tokens: agents cannot read your data.
 - **Limits:** Name of 1 to 60 characters; lifetime of 30, 90 (default) or 365 days; at most 10 live tokens. The secret is shown once.
@@ -177,23 +177,6 @@ How you find out: after a refresh, What the scan missed names the accounts searc
 - **Limits:** Up to 20 GitHub logins, optionally ending in [bot]. Your own and linked logins may be listed.
 - **Example:** Add a review bot that runs under a normal user account, so its review requests do not wait on you.
 
-### Show my MemCan TODOs
-
-- **What:** Lists your open MemCan TODOs on My work next to pull requests and issues.
-- **When used:** Every refresh reads them from the MemCan projects below. Switching it off hides them at once.
-- **Empty or default:** On. Without MemCan on the server there are no TODOs and the switch is off.
-- **Example:** Off if you keep your TODOs elsewhere.
-
-When MemCan cannot be reached, the TODO rows of the earlier scan stay and each says not refreshed.
-
-### Extra MemCan projects
-
-- **What:** MemCan projects whose TODOs are read besides the projects named after your repository rows.
-- **When used:** Every refresh with TODOs on.
-- **Empty or default:** Only the repository rows' names are read (dashpay/platform gives platform).
-- **Limits:** Up to 10 names (letters, digits, . _ or -, up to 100).
-- **Example:** home-infra.
-
 ### Run nightly scan
 
 - **What:** Runs once a night and judges only items never judged. Updates in between come from GitHub events and Refresh.
@@ -309,3 +292,20 @@ Worked examples: dashpay/platform uses dashpay/stale_prs_are_bad with policies/p
 - **When used:** Shown as it was last checked. Read-only.
 - **Empty or default:** Without MemCan, analyses run without it and My work shows no TODOs.
 - **Example:** Not configured: the server has no MemCan address.
+
+### Show my MemCan TODOs
+
+- **What:** Lists your open MemCan TODOs on My work next to pull requests and issues.
+- **When used:** Every refresh reads them from the MemCan projects below. Switching it off hides them at once.
+- **Empty or default:** On. Without MemCan on the server there are no TODOs and the switch is off.
+- **Example:** Off if you keep your TODOs elsewhere.
+
+When MemCan cannot be reached, the TODO rows of the earlier scan stay and each says not refreshed.
+
+### Extra MemCan projects
+
+- **What:** MemCan projects whose TODOs are read besides the projects named after your repository rows.
+- **When used:** Every refresh with TODOs on.
+- **Empty or default:** Only the repository rows' names are read (dashpay/platform gives platform).
+- **Limits:** Up to 10 names (letters, digits, . _ or -, up to 100).
+- **Example:** home-infra.

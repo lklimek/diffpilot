@@ -2,12 +2,12 @@ import { Tooltip } from "../tooltip/Tooltip";
 import { useId, useState } from "react";
 import type { CommentItem, DecisionBatchRow, DecisionVia } from "../../api/generated/types";
 import { GithubDecision, GithubProposal } from "./GithubDecision";
-import { commentStatus } from "./queueStatus";
 import { buttonClass } from "../button/button";
 import { OpenExternal } from "../dashboard/common/OpenExternal";
 import { navigateOnClick, type Navigate } from "../dashboard/common/navigate";
 import { clockText } from "../format/time";
 import { ProvenanceTag } from "../section/ProvenanceTag";
+import { commentProvenance } from "./AgentAnnotations";
 import {
   CHOICE_LABEL,
   canMark,
@@ -87,9 +87,11 @@ const TD = "border-b border-border px-2 py-1.5 align-top";
 export function CommentsTable(props: CommentsTableProps) {
   const { items, now } = props;
   const missingId = useId();
-  const isOpen = (i: CommentItem) => ["needs_you", "not_assessed"].includes(commentStatus(i));
+  const isOpen = (i: CommentItem) => ["needs_you", "not_assessed"].includes(i.status);
   const open = items.filter((i) => isOpen(i) && i.kind !== "pr_question");
-  const closed = items.filter((i) => !isOpen(i) && i.state !== "assessing" && i.kind !== "pr_question");
+  const closed = items.filter(
+    (i) => !isOpen(i) && i.status !== "waiting" && i.status !== "assessing" && i.kind !== "pr_question",
+  );
   const [rows, setRows] = useState<Record<string, Row>>({});
   const [showAll, setShowAll] = useState(false);
   const rowOf = (item: CommentItem) => rows[item.id] ?? initial(item);
@@ -150,6 +152,7 @@ export function CommentsTable(props: CommentsTableProps) {
   };
   const common = (item: CommentItem) => {
     const a = item.assessment;
+    const source = commentProvenance(item);
     return (
       <>
         <td className={TD}>
@@ -161,7 +164,8 @@ export function CommentsTable(props: CommentsTableProps) {
           {item.gone_at && <span className="text-xs text-muted"> not in the latest read from GitHub</span>}
         </td>
         <td className={TD}>
-          {item.kind.replace("_", " ")} · {item.author_kind}
+          {source && <ProvenanceTag source={source} />} {item.kind.replace("_", " ")} ·{" "}
+          {item.origin === "api" ? item.author : item.author_kind}
         </td>
         <td className={TD}>
           {problem(item)}

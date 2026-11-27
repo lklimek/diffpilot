@@ -8,7 +8,7 @@ test("link, observe the fake plan, and explicitly unlink from Settings", async (
     if (request.method() !== "GET" && request.url().includes("/api/"))
       writes.push(new URL(request.url()).pathname);
   });
-  await page.goto("/settings");
+  await page.goto("/settings/llm");
   const card = page.getByRole("region", { name: "Codex account" });
   await expect(card).toContainText("Linking may log your Codex out on other machines");
   await expect(card.getByRole("button", { name: "Link Codex account", exact: true })).toBeEnabled();

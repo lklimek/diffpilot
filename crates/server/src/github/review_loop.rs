@@ -24,7 +24,7 @@ reviewDecision updatedAt}}}";
 pub const REVIEW_THREADS: &str = "query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){\
 pullRequest(number:$pr){reviewThreads(first:100,after:$after){totalCount pageInfo{hasNextPage endCursor} \
 nodes{id isResolved isOutdated path line startLine diffSide resolvedBy{login} comments(first:50){totalCount \
-nodes{databaseId state author{login __typename ... on User{databaseId} ... on Bot{databaseId}} body createdAt lastEditedAt url commit{oid} originalCommit{oid} pullRequestReview{id}}}}}}}}";
+nodes{id databaseId state author{login __typename ... on User{databaseId} ... on Bot{databaseId}} body createdAt lastEditedAt url commit{oid} originalCommit{oid} pullRequestReview{id}}}}}}}}";
 
 /// Q-L3: reviews.
 pub const REVIEWS: &str = "query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){\
@@ -83,6 +83,9 @@ pub struct PrFacts {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadComment {
+    /// Stable GraphQL comment ID.
+    #[serde(default)]
+    pub id: Option<String>,
     /// Commit where GitHub places this inline comment.
     #[serde(default)]
     pub commit: Option<CommitRef>,
@@ -299,13 +302,13 @@ async fn pages<P: DeserializeOwned, T>(
     .ok_or(ReadError::NotFound)
 }
 
-/// Reads Q-L1–Q-L4 of `pr` with the user's token.
-pub(crate) async fn read(
+/// Reads Q-L1 with the user's token: the PR, its repository's GitHub id and whether it is private.
+pub(crate) async fn facts(
     config: &GithubConfig,
     token: &SecretString,
     pr: &PrRef,
     budget: Option<ReadBudget<'_>>,
-) -> Result<PrRead, ReadError> {
+) -> Result<(PrFacts, i64, bool), ReadError> {
     let facts: Data<FactsRepository> = graphql::execute_read(
         config,
         token,
@@ -316,6 +319,17 @@ pub(crate) async fn read(
     .await?;
     let repository = facts.repository.ok_or(ReadError::NotFound)?;
     let pull = repository.pull_request.ok_or(ReadError::NotFound)?;
+    Ok((pull, repository.database_id, repository.is_private))
+}
+
+/// Reads Q-L1–Q-L4 of `pr` with the user's token.
+pub(crate) async fn read(
+    config: &GithubConfig,
+    token: &SecretString,
+    pr: &PrRef,
+    budget: Option<ReadBudget<'_>>,
+) -> Result<PrRead, ReadError> {
+    let (pull, repo_github_id, private) = facts(config, token, pr, budget).await?;
     let (threads, threads_complete) = pages(
         config,
         token,
@@ -336,8 +350,8 @@ pub(crate) async fn read(
         })
         .await?;
     Ok(PrRead {
-        repo_github_id: repository.database_id,
-        private: repository.is_private,
+        repo_github_id,
+        private,
         pr: pull,
         threads,
         reviews,

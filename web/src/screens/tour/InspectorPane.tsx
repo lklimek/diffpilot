@@ -43,7 +43,7 @@ import {
 import type { SectionControl } from "../../components/inspector/sectionState";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { useAskChat } from "../review/askChat";
-import { DiffCode } from "./code";
+import { DiffCode, type CodeContext } from "./code";
 import { stepQuery } from "./sequence";
 
 /** The line a comment is being written on, with the displayed lines it was chosen in. */
@@ -78,8 +78,8 @@ interface InspectorPaneProps {
   /** Open / collapsed Inspector sections. */
   sections: SectionControl;
   commentRef: RefObject<HTMLTextAreaElement | null>;
-  /** "Ask about this line" from a code line of the step. */
-  onAskLine?: (target: CommentTarget) => void;
+  /** Line Ask actions and status of the step's classic diff. */
+  askCode?: Pick<CodeContext, "onAskLine" | "askStatus" | "files">;
   onAskRemark?: (annotation: Annotation) => void;
   threadActions?: GithubThreadActions;
   /** "Use as review comment" on a flag of the step; absent while commenting is unavailable. */
@@ -148,7 +148,9 @@ export function InspectorPane(props: InspectorPaneProps) {
           comments: pending.data?.comments ?? [],
           onEditComment: comments.edit,
           onDeleteComment: comments.remove,
-          onAskLine: props.onAskLine,
+          onAskLine: props.askCode?.onAskLine,
+          askStatus: props.askCode?.askStatus,
+          files: props.askCode?.files,
         }}
         query={
           annotation

@@ -42,10 +42,11 @@ fn host_rows(
         .unwrap_or(output);
     let mut report = host::decode(&frozen.data, raw_report.clone())?;
     for row in &mut report.rows {
-        if row
-            .recorded_decision
-            .as_ref()
-            .is_some_and(|d| frozen.own_reply(&d.comment_url))
+        if api_item_for_url(frozen, &row.comment_url).is_some()
+            || row
+                .recorded_decision
+                .as_ref()
+                .is_some_and(|d| frozen.own_reply(&d.comment_url))
         {
             row.recorded_decision = None;
         }
@@ -72,7 +73,18 @@ fn host_rows(
         let Some(source) = source(frozen, row) else {
             continue;
         };
-        let existing = existing(frozen, row);
+        let existing = if let AssessmentSource::Api { item, .. } = &source {
+            let Some(item) = frozen
+                .items
+                .iter()
+                .find(|record| record.id == *item && row.id == format!("CMT-{:03}", record.no))
+            else {
+                continue;
+            };
+            Some(item)
+        } else {
+            existing(frozen, row)
+        };
         let key = comparison_key(&source, existing);
         identities.insert(row.id.clone(), key.clone());
         let duplicate = row
@@ -225,7 +237,9 @@ fn host_rows(
                     recorded,
                 )
             });
-            let carry = existing.and_then(|item| carry(frozen, item, row, import.as_ref()));
+            let carry = existing
+                .filter(|item| !item.from_api)
+                .and_then(|item| carry(frozen, item, row, import.as_ref()));
             writes.push(PrimaryPoint {
                 import,
                 carry,
@@ -344,10 +358,10 @@ fn host_rows(
         ) {
             continue;
         }
-        let Some(url) = raw["comment_url"]
-            .as_str()
-            .filter(|url| frozen.data.scope.sources.iter().any(|s| s == url))
-        else {
+        let Some(url) = raw["comment_url"].as_str().filter(|url| {
+            frozen.data.scope.sources.iter().any(|s| s == url)
+                && api_item_for_url(frozen, url).is_none()
+        }) else {
             continue;
         };
         let id = raw["id"].as_str().unwrap_or_default();
@@ -386,9 +400,10 @@ fn host_rows(
         rows.push(missing);
     }
     for url in &frozen.data.scope.sources {
-        if rows
-            .iter()
-            .any(|r| matches!(&r.source,AssessmentSource::Body {url:source,..} if source==url))
+        if api_item_for_url(frozen, url).is_some()
+            || rows
+                .iter()
+                .any(|r| matches!(&r.source,AssessmentSource::Body {url:source,..} if source==url))
         {
             continue;
         }
@@ -429,7 +444,7 @@ fn host_rows(
         .iter()
         .filter(|r| matches!(r.source_kind, SourceKind::Reply | SourceKind::Status))
     {
-        let Some(recorded) = &row.recorded_decision else {
+        let Some(recorded) = row.recorded_decision.as_ref() else {
             continue;
         };
         let node = host::threads(&frozen.data).find(|thread| {
@@ -451,12 +466,8 @@ fn host_rows(
                 ),
             }
         } else {
-            let Some(raw) = frozen
-                .data
-                .reviews
-                .iter()
-                .chain(&frozen.data.comments)
-                .find(|c| host::url(c) == recorded.comment_url)
+            let Some(raw) =
+                host::github_bodies(&frozen.data).find(|c| host::url(c) == recorded.comment_url)
             else {
                 continue;
             };
@@ -533,6 +544,9 @@ fn find_source<'a>(frozen: &'a Frozen, row: &ReportRow) -> Result<&'a Value, Job
 }
 
 fn source(frozen: &Frozen, row: &ReportRow) -> Option<AssessmentSource> {
+    if let Some(item) = api_item_for_url(frozen, &row.comment_url) {
+        return Some(api_source(item));
+    }
     match row.source_kind {
         SourceKind::Inline => {
             let id = row.thread_id.as_ref()?;
@@ -585,6 +599,7 @@ fn existing<'a>(frozen: &'a Frozen, row: &ReportRow) -> Option<&'a ItemRecord> {
 fn comparison_key(source: &AssessmentSource, existing: Option<&ItemRecord>) -> String {
     match source {
         AssessmentSource::Inline { thread_id, .. } => format!("thread:{thread_id}"),
+        AssessmentSource::Api { item, .. } => format!("item:{item}"),
         AssessmentSource::Body {
             url,
             version,
@@ -853,6 +868,9 @@ fn native_rows(
 }
 
 fn item_source(frozen: &Frozen, item: &ItemRecord) -> Option<AssessmentSource> {
+    if item.from_api {
+        return Some(api_source(item));
+    }
     if item.kind == CommentItemKind::Thread {
         let offered = frozen
             .data
@@ -883,6 +901,26 @@ fn item_source(frozen: &Frozen, item: &ItemRecord) -> Option<AssessmentSource> {
             version: handin::hash(host::body(raw)),
             quote: item.quote.clone().unwrap_or_else(|| item.body.clone()),
         })
+    }
+}
+
+fn api_item_for_url<'a>(frozen: &'a Frozen, url: &str) -> Option<&'a ItemRecord> {
+    let id = frozen.data.comments.iter().find_map(|raw| {
+        (host::url(raw) == url)
+            .then(|| raw["agentItemId"].as_str())
+            .flatten()
+    })?;
+    frozen.items.iter().find(|item| {
+        item.from_api
+            && item.id.0.to_string() == id
+            && frozen.sent.iter().any(|sent| sent.item == item.id)
+    })
+}
+
+fn api_source(item: &ItemRecord) -> AssessmentSource {
+    AssessmentSource::Api {
+        item: item.id,
+        version: item.body_hash.clone(),
     }
 }
 

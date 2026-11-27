@@ -43,6 +43,16 @@ describe("Tour layout (brief §4.3 columns)", () => {
     }
   });
 
+  it("restores old layouts unpinned and remembers both pins independently", () => {
+    window.localStorage.setItem(LAYOUT_STORAGE_KEY, '{"diagram":true}');
+    expect(loadLayout().pinned).toEqual({ why: false, diagram: false });
+    const pinned = { ...loadLayout(), pinned: { why: true, diagram: false } };
+    saveLayout(pinned);
+    expect(loadLayout()).toEqual(pinned);
+    saveLayout({ ...pinned, pinned: { why: false, diagram: true } });
+    expect(loadLayout().pinned).toEqual({ why: false, diagram: true });
+  });
+
   it("lets a column be hidden only while another one stays visible", () => {
     expect(canHide(DEFAULT_LAYOUT, "main")).toBe(true);
     const onlyMain = hideColumn(hideColumn(DEFAULT_LAYOUT, "nav"), "inspector");

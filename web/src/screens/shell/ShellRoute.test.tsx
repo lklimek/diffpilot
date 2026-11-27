@@ -72,6 +72,7 @@ it("takes the activity route's last call and pause as authoritative without fetc
   );
   renderRoute("/review");
   await userEvent.click(await accountButton());
+  await userEvent.click(screen.getByRole("button", { name: /^LLM activity/ }));
   expect(await screen.findByText("Idle")).toBeVisible();
   expect(screen.getByText("Last LLM call outcome unknown.")).toBeVisible();
   expect(settings).not.toHaveBeenCalled();
@@ -89,6 +90,7 @@ it("keeps a reserved job activity route absent without querying legacy sources",
   );
   renderRoute("/review");
   await userEvent.click(await accountButton());
+  await userEvent.click(screen.getByRole("button", { name: /^LLM activity/ }));
   expect(await screen.findByText("Job activity unavailable.")).toBeVisible();
   expect(activity).toHaveBeenCalledOnce();
   expect(settings).not.toHaveBeenCalled();
@@ -160,6 +162,7 @@ it("uses LLM activity events without notification opt-in and refetches only on r
   try {
     renderRoute("/review");
     await userEvent.click(await accountButton());
+    await userEvent.click(screen.getByRole("button", { name: /^LLM activity/ }));
     expect(await screen.findByText("Idle")).toBeVisible();
     const source = FakeEventSource.instances.find(({ url }) => url === "/api/v1/events")!;
     expect(source).toBeDefined();

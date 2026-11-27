@@ -1,13 +1,10 @@
 import { Fragment, useContext, type ReactNode } from "react";
 import { inApp } from "../inApp";
 import { GithubMark } from "../github/GithubMark";
-import { PathLinks } from "./pathLinks";
+import { fileMentionTokens, PathLinks } from "./pathLinks";
 
 // An unfinished fence consumes the rest as literal text; single backticks never match inside a longer run.
 const TOKENS = /^```[^\n`]*\n[\s\S]*?(?:^```(?=\n|$)|(?![\s\S]))|(?<!`)`[^`\n]+`(?!`)/gm;
-
-// Keep URLs and invalid line suffixes as whole tokens so their component paths cannot become links.
-const PATH_TOKEN = /[\p{L}\p{N}_.~/%+@\\:#?=&-]+/gu;
 
 /** Backtick spans, fenced code and analysis file mentions; all other text stays literal. */
 export function CodeText({ text, linkPaths = true }: { text: string; linkPaths?: boolean }) {
@@ -40,12 +37,11 @@ export function CodeText({ text, linkPaths = true }: { text: string; linkPaths?:
     }
     const result: ReactNode[] = [];
     let from = 0;
-    for (const match of value.matchAll(PATH_TOKEN)) {
-      const token = match[0].replace(/[.?:]+$/, "");
-      const anchor = link(token, match.index);
+    for (const { token, index } of fileMentionTokens(value)) {
+      const anchor = link(token, index);
       if (!anchor) continue;
-      result.push(value.slice(from, match.index), anchor);
-      from = match.index + token.length;
+      result.push(value.slice(from, index), anchor);
+      from = index + token.length;
     }
     result.push(value.slice(from));
     return inline ? <code>{result}</code> : result;

@@ -10,6 +10,17 @@
       "description": "A review-loop item with its assessment, decisions and effects (RC4).",
       "type": "object",
       "properties": {
+        "origin": {
+          "description": "Provenance of the primary comment or question.",
+          "$ref": "#/$defs/CommentOrigin"
+        },
+        "agent_annotations": {
+          "description": "Supplemental API annotations on this item's GitHub conversation.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AgentAnnotation"
+          }
+        },
         "not_a_review_point": {
           "description": "Active internal disposition.",
           "anyOf": [
@@ -150,6 +161,10 @@
           "description": "State.",
           "$ref": "#/$defs/ItemState"
         },
+        "status": {
+          "description": "Server classification used by Comments filters and question counts.",
+          "$ref": "#/$defs/CommentStatus"
+        },
         "revision": {
           "description": "Revision; a decision names the revision it saw (409 `item_changed` otherwise).",
           "type": "integer",
@@ -242,6 +257,7 @@
         }
       },
       "required": [
+        "origin",
         "id",
         "no",
         "kind",
@@ -252,12 +268,68 @@
         "body",
         "gates",
         "state",
+        "status",
         "revision",
         "first_seen_head",
         "github",
         "assessment_state",
         "decisions",
         "ask_answers"
+      ]
+    },
+    "CommentOrigin": {
+      "description": "Origin of the primary comment or question, independent of its author and queue state.",
+      "oneOf": [
+        {
+          "description": "The comment came from GitHub.",
+          "type": "string",
+          "const": "github"
+        },
+        {
+          "description": "An authorized agent submitted the comment to DiffPilot.",
+          "type": "string",
+          "const": "api"
+        },
+        {
+          "description": "DiffPilot generated the PR-level question.",
+          "type": "string",
+          "const": "diffpilot"
+        }
+      ]
+    },
+    "AgentAnnotation": {
+      "description": "Supplemental API text displayed independently beside its source comment.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Submission identifier, used in a direct link to the annotation.",
+          "type": "string",
+          "format": "uuid"
+        },
+        "target_url": {
+          "description": "Canonical link to the exact GitHub comment.",
+          "type": "string"
+        },
+        "agent": {
+          "description": "The authenticated token's name when it submitted the annotation.",
+          "type": "string"
+        },
+        "body": {
+          "description": "Supplemental review text.",
+          "type": "string"
+        },
+        "created_at": {
+          "description": "Submission time.",
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "target_url",
+        "agent",
+        "body",
+        "created_at"
       ]
     },
     "ItemMark": {
@@ -621,6 +693,56 @@
           "description": "Resolved on GitHub outside diffpilot; out of the queue, nothing recorded.",
           "type": "string",
           "const": "outside"
+        }
+      ]
+    },
+    "CommentStatus": {
+      "description": "Classification of a comment for the Comments views. Reader skips are recorded on the queue entry.",
+      "oneOf": [
+        {
+          "description": "A bot status comment, outside the decision queue.",
+          "type": "string",
+          "const": "status_comments"
+        },
+        {
+          "description": "A decision is recorded, possibly with effects still running.",
+          "type": "string",
+          "const": "decided"
+        },
+        {
+          "description": "The owner marked the item as not a review point.",
+          "type": "string",
+          "const": "not_a_review_point"
+        },
+        {
+          "description": "A duplicate that follows its primary's decision.",
+          "type": "string",
+          "const": "duplicates"
+        },
+        {
+          "description": "Listed only in the unfiltered view.",
+          "type": "string",
+          "const": "all"
+        },
+        {
+          "description": "A question awaiting an owner decision.",
+          "type": "string",
+          "const": "needs_you"
+        },
+        {
+          "description": "Queued for assessment.",
+          "type": "string",
+          "const": "waiting"
+        },
+        {
+          "description": "In a running assessment pass.",
+          "type": "string",
+          "const": "assessing"
+        },
+        {
+          "description": "Has no current assessment.",
+          "type": "string",
+          "const": "not_assessed"
         }
       ]
     },

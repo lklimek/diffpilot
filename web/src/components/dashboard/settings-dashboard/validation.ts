@@ -1,5 +1,31 @@
 // Client mirror of the dashboard settings rules of plan §F.6; the server stays authoritative (422 names the field).
-import type { DashboardSettings, RepoRef } from "../../../api/generated/types";
+import type { DashboardSettings, DashboardSettingsSection, RepoRef } from "../../../api/generated/types";
+
+/** Compose a section's draft with the latest known values of other sections. */
+export function settingsForSection(
+  section: DashboardSettingsSection,
+  stored: DashboardSettings,
+  edited: DashboardSettings,
+): DashboardSettings {
+  switch (section) {
+    case "repositories":
+      return { ...stored, repositories: edited.repositories };
+    case "memcan":
+      return {
+        ...stored,
+        include_todos: edited.include_todos,
+        memcan_extra_projects: edited.memcan_extra_projects,
+      };
+    case "github-sync":
+      return {
+        ...edited,
+        repositories: stored.repositories,
+        include_todos: stored.include_todos,
+        memcan_extra_projects: stored.memcan_extra_projects,
+        time_zone: edited.time_zone ?? stored.time_zone,
+      };
+  }
+}
 
 /** Built-in release and long-lived branch patterns (plan §C.2 K9), used when a row lists none. */
 export const BUILT_IN_BRANCHES = ["main", "master", "release/*", "hotfix/*", "vX.Y", "vX.Y-dev"];

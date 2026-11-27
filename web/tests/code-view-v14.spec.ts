@@ -176,7 +176,12 @@ test("U49: the review bar shows the current file and keeps its badges on desktop
       await expect(path).toBeInViewport({ ratio: 1 });
       for (const badge of badges) await expect(badge).toBeInViewport({ ratio: 1 });
       if (width >= 1200) await expect(repo).toBeInViewport({ ratio: 1 });
-      previous = await checkReviewLabelWidths(title, repo, previous);
+      // The title joins at 1100 px and the owner at 1440 px, reallocating space between captions.
+      previous = await checkReviewLabelWidths(
+        title,
+        repo,
+        width === 1100 || width === 1440 ? undefined : previous,
+      );
       if (width >= 1200) expect(previous.repo).toBeGreaterThan(45);
       const counts = checks.locator(".review-ci-counts");
       expect(await counts.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
@@ -248,10 +253,17 @@ test("U49/U62: a long PR title truncates without pushing review controls out of 
       expect((await banner.boundingBox())?.height).toBe(48);
       if (width >= 1200) await expect(repo).toBeInViewport({ ratio: 1 });
       if (width >= 1440) await expectInlineOwner(owner, repo);
-      previous = await checkReviewLabelWidths(title, repo, previous);
+      previous = await checkReviewLabelWidths(
+        title,
+        repo,
+        width === 1100 || width === 1440 ? undefined : previous,
+      );
       if (width >= 1200) expect(previous.repo).toBeGreaterThan(45);
       await expectReadableTitle(title, width);
-      if (!previous.title) await expect(repo).toBeHidden();
+      if (!previous.title) {
+        await expect(title).toHaveCSS("display", "none");
+        await expect(repo).toBeInViewport({ ratio: 1 });
+      }
       if (width === 1100) await expect(title).toBeInViewport({ ratio: 1 });
       expect(
         await checks.locator(".review-ci-counts").evaluate((el) => el.scrollWidth <= el.clientWidth),

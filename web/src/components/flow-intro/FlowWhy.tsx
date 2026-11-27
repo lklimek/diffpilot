@@ -2,6 +2,7 @@ import type { Flow } from "../../api/generated/types";
 import { CodeText } from "../section/CodeText";
 import { ProvenanceTag } from "../section/ProvenanceTag";
 import { Tooltip } from "../tooltip/Tooltip";
+import { FlowContextPin, type FlowContextPinProps } from "./FlowContextPin";
 
 /** Whether an analysed flow has an introduction to show ("Why this flow"); pending flows have none. */
 export const hasWhy = (flow: Flow) =>
@@ -29,11 +30,13 @@ export function FlowWhy({
   open,
   onToggle,
   onOpenIntro,
+  pin,
 }: {
   flow: Flow;
   open: boolean;
   onToggle: () => void;
   onOpenIntro: () => void;
+  pin?: FlowContextPinProps;
 }) {
   if (!hasWhy(flow)) return null;
   return (
@@ -70,6 +73,7 @@ export function FlowWhy({
             <ProvenanceTag source="llm" />
           </span>
         )}
+        {pin && <FlowContextPin section="Why this flow" {...pin} />}
       </div>
       {open && (
         <div className="grid gap-1 pt-1 pl-[18px]">

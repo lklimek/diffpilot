@@ -20,6 +20,7 @@ use uuid::Uuid;
 
 const READ: RouteAuth = RouteAuth::SessionOrToken(TokenScope::Read);
 const EXECUTE: RouteAuth = RouteAuth::TokenOnly(TokenScope::ReviewLoopExecute);
+const SUBMIT: RouteAuth = RouteAuth::TokenOnly(TokenScope::ReviewLoopSubmit);
 const PR: &str = "/api/v1/prs/{owner}/{name}/{number}";
 
 #[test]
@@ -30,6 +31,12 @@ fn review_loop_routes_follow_the_plan() {
     let expected: Vec<(Route, HttpMethod, String, RouteAuth)> = vec![
         (routes::GET_PR_PAGE, Get, pr(""), READ),
         (routes::GET_COMMENTS, Get, pr("/comments"), READ),
+        (
+            routes::SUBMIT_AGENT_COMMENT,
+            Post,
+            pr("/comments/submissions"),
+            SUBMIT,
+        ),
         (
             routes::READ_COMMENTS,
             Post,
@@ -193,7 +200,7 @@ fn review_loop_routes_follow_the_plan() {
 fn execute_scope_is_only_on_feed_write_routes() {
     let token_only: BTreeSet<&str> = ROUTES
         .iter()
-        .filter(|route| matches!(route.auth, RouteAuth::TokenOnly(_)))
+        .filter(|route| route.auth == EXECUTE)
         .map(|route| route.name)
         .collect();
     let expected: BTreeSet<&str> = [
@@ -207,10 +214,7 @@ fn execute_scope_is_only_on_feed_write_routes() {
     .map(|route| route.name)
     .collect();
     assert_eq!(token_only, expected);
-    for route in ROUTES
-        .iter()
-        .filter(|route| matches!(route.auth, RouteAuth::TokenOnly(_)))
-    {
+    for route in ROUTES.iter().filter(|route| route.auth == EXECUTE) {
         assert_eq!(route.auth, EXECUTE, "{}", route.path);
         assert!(
             route.path.starts_with("/api/v1/decision-feed/"),
@@ -241,6 +245,10 @@ fn execute_scope_is_only_on_feed_write_routes() {
         json!("review_loop_execute")
     );
     assert_ne!(READ.as_str(), EXECUTE.as_str());
+    let submit: Vec<_> = ROUTES.iter().filter(|route| route.auth == SUBMIT).collect();
+    assert_eq!(submit, vec![&routes::SUBMIT_AGENT_COMMENT]);
+    assert_eq!(TokenScope::ReviewLoopSubmit.as_str(), "review_loop_submit");
+    assert_ne!(SUBMIT.as_str(), EXECUTE.as_str());
 }
 
 fn decision() -> Decision {

@@ -1,5 +1,9 @@
 import { useEffect, useState, type ComponentProps } from "react";
-import type { DashboardSettings, DashboardSettingsView } from "../../../api/generated/types";
+import type {
+  DashboardSettings,
+  DashboardSettingsSection,
+  DashboardSettingsView,
+} from "../../../api/generated/types";
 import { busyTip, buttonClass } from "../../button/button";
 import { useAction } from "../../inspector/action";
 import { Section } from "../../settings/Section";
@@ -15,6 +19,7 @@ import {
   checkEntry,
   fromDraft,
   sameSettings,
+  settingsForSection,
   toDraft,
   validateSettings,
   type ListField,
@@ -25,12 +30,12 @@ import { HelpTip } from "../../settings/HelpTip";
 interface DashboardSettingsCardProps {
   /** The stored settings, their defaults and what the server derived from them. */
   view: DashboardSettingsView;
-  page: "github-sync" | "repositories";
+  page: DashboardSettingsSection;
   repositoryOptions?: Pick<
     ComponentProps<typeof RepositoryTable>,
     "installations" | "installationStatusKnown" | "expanded" | "onExpand" | "details"
   >;
-  /** Saves the whole form (one `PUT`); rejects with the server's message (422 names the field). */
+  /** Saves this page's settings; rejects with the server's message (422 names the field). */
   onSave: (settings: DashboardSettings) => Promise<unknown>;
   /** Called when the form starts or stops differing from the stored settings. */
   onDirtyChange?: (dirty: boolean) => void;
@@ -49,15 +54,10 @@ export function DashboardSettingsCard({
   const [note, setNote] = useState<string | null>(null);
   const action = useAction();
   const own = view.own_login;
-  const settings = () => {
-    const edited = fromDraft(draft);
-    return page === "repositories"
-      ? { ...view.settings, repositories: edited.repositories }
-      : { ...edited, repositories: view.settings.repositories };
-  };
-  const errors = attempted ? validateSettings(settings(), own) : {};
+  const settings = settingsForSection(page, view.settings, fromDraft(draft));
+  const errors = attempted ? validateSettings(settings, own) : {};
   const problems = Object.values(errors);
-  const dirty = !sameSettings(settings(), view.settings);
+  const dirty = !sameSettings(settings, view.settings);
   useEffect(() => onDirtyChange?.(dirty), [dirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
   const edit = (change: Partial<SettingsDraft>) => {
@@ -69,20 +69,17 @@ export function DashboardSettingsCard({
     checkEntry(field, value, items, own);
   const save = async () => {
     if (action.busy) return;
-    const next = settings();
     setAttempted(true);
     setNote(null);
-    if (Object.keys(validateSettings(next, own)).length > 0) return;
-    if (await action.run(() => onSave(next))) setNote("Dashboard settings saved.");
+    if (Object.keys(validateSettings(settings, own)).length > 0) return;
+    if (await action.run(() => onSave(settings))) setNote("Dashboard settings saved.");
   };
   const reset = () => {
     setDraft((d) => toDraft({ ...view.defaults, time_zone: d.time_zone === "" ? null : d.time_zone }));
     setAttempted(false);
     setNote("Defaults filled in. Save to keep them.");
   };
-  const repoProjects = [
-    ...new Set(draft.repositories.map((r) => r.repo.split("/")[1]?.trim() ?? "").filter((n) => n !== "")),
-  ];
+  const repoProjects = [...new Set(view.settings.repositories.map(({ repo }) => repo.name))];
   return (
     <>
       <fieldset disabled={action.busy} className="grid min-w-0 gap-4">
@@ -94,6 +91,18 @@ export function DashboardSettingsCard({
               unreachable={view.unreachable}
               onChange={(repositories) => edit({ repositories })}
               {...repositoryOptions}
+            />
+          </Section>
+        ) : page === "memcan" ? (
+          <Section title="TODO sources">
+            <MemcanGroup
+              includeTodos={draft.include_todos}
+              configured={view.memcan_configured}
+              repoProjects={repoProjects}
+              extraProjects={draft.memcan_extra_projects}
+              errors={errors}
+              checkProject={check("memcan_extra_projects")}
+              onChange={edit}
             />
           </Section>
         ) : (
@@ -142,19 +151,8 @@ export function DashboardSettingsCard({
               <ScheduleGroup
                 enabled={draft.schedule_enabled}
                 time={draft.schedule_time}
-                timeZone={draft.time_zone}
+                timeZone={settings.time_zone ?? ""}
                 errors={errors}
-                onChange={edit}
-              />
-            </Section>
-            <Section title="TODO sources">
-              <MemcanGroup
-                includeTodos={draft.include_todos}
-                configured={view.memcan_configured}
-                repoProjects={repoProjects}
-                extraProjects={draft.memcan_extra_projects}
-                errors={errors}
-                checkProject={check("memcan_extra_projects")}
                 onChange={edit}
               />
             </Section>
@@ -170,10 +168,12 @@ export function DashboardSettingsCard({
       </fieldset>
       <div className="flex flex-wrap justify-end gap-2">
         {dirty && <span className="self-center text-sm font-semibold text-med">Unsaved changes</span>}
-        {page === "github-sync" && (
+        {page !== "repositories" && (
           <Tooltip
             tip={busyTip(
-              "Fills this page with the defaults, keeping your time zone. Save to apply.",
+              page === "github-sync"
+                ? "Fills this page with the defaults, keeping your time zone. Save to apply."
+                : "Fills this page with the defaults. Save to apply.",
               action.busy,
             )}
           >

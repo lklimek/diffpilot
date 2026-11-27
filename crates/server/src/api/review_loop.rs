@@ -1,8 +1,8 @@
 //! Review-loop routes (ADR-023, `docs/contracts/http-api.md` "Review loop"): the PR page, Comments and its pages,
 //! decisions and the owner's item actions. Reads take `Session` (a session or a `read` access token, which is served
 //! what is stored: it never reads GitHub, asks for an assessment pass or marks plug-in presence, so a token read
-//! leaves the database unchanged); every write takes the session and CSRF (T22). The work lives in
-//! `review_loop`.
+//! leaves the database unchanged). Owner actions take the session and CSRF (T22). Agent submissions use
+//! their separate bearer scope. The work lives in `review_loop`.
 
 use std::borrow::Cow;
 
@@ -18,21 +18,21 @@ use contracts::api::review_loop::{
     CarryOverPage, CarryOverQuery, CodeContext, CommentItem, CommentLog, CommentsOverview,
     ContextQuery, DecideRequest, DecideRest, Decision, DecisionBatchRequest, DecisionBatchRow,
     DecisionVia, EffectsPreview, EffectsPreviewRequest, GateMarkRequest, GithubThreadDetail,
-    ItemActionRequest, ItemsQuery, PrPage, ReadFailure,
+    ItemActionRequest, ItemsQuery, PrPage, ReadFailure, SubmitAgentComment,
 };
 use contracts::common::{PrRef, RepoRef};
 use contracts::routes::{
     ASSESS_COMMENT, DECIDE_COMMENT, DECIDE_COMMENT_BATCH, GET_COMMENT_CONTEXT, GET_COMMENT_LOG,
     GET_COMMENTS, GET_DECIDE_REST, GET_GITHUB_THREAD, GET_PR_PAGE, LIST_CARRY_OVERS,
     LIST_COMMENT_ITEMS, MARK_COMMENT_GATE, PREVIEW_COMMENT_EFFECTS, READ_COMMENTS,
-    REOPEN_COMMENT_ITEM, SKIP_COMMENT_ITEM, START_COMMENT_ASSESSMENT, UNDO_COMMENT_DECISION,
-    VISIT_COMMENTS,
+    REOPEN_COMMENT_ITEM, SKIP_COMMENT_ITEM, START_COMMENT_ASSESSMENT, SUBMIT_AGENT_COMMENT,
+    UNDO_COMMENT_DECISION, VISIT_COMMENTS,
 };
 use contracts::time::Timestamp;
 
 use crate::api::dashboard::refresh::mark_present;
 use crate::api::error::{ApiErrorSource, ApiFailure};
-use crate::auth::{Session, SessionCsrf};
+use crate::auth::{Session, SessionCsrf, access_tokens::TokenOnly};
 use crate::github::mirror::MirrorError;
 use crate::review_loop::assess::{self, PassReason};
 use crate::review_loop::{self, ItemAction, LoopError, MIN_REREAD, PrHandle, views};
@@ -95,7 +95,9 @@ impl ApiErrorSource for ReviewLoopApiError {
                 LoopError::Decision { .. }
                 | LoopError::GateRow(_)
                 | LoopError::InvalidCursor
+                | LoopError::BadSubmission
                 | LoopError::BadRange => ApiErrorCode::InvalidRequest,
+                LoopError::SubmissionConflict => ApiErrorCode::Conflict,
                 LoopError::NotApplicable
                 | LoopError::AssessmentRunning
                 | LoopError::FollowerClaimed(_) => ApiErrorCode::Conflict,
@@ -172,6 +174,12 @@ impl ApiErrorSource for ReviewLoopApiError {
                 )),
                 LoopError::RangeTooLarge => Cow::Borrowed("The requested line range is too large."),
                 LoopError::BadRange => Cow::Borrowed("The line range is not valid."),
+                LoopError::BadSubmission => Cow::Borrowed(
+                    "Enter agent text of up to 6000 characters and a valid GitHub comment target.",
+                ),
+                LoopError::SubmissionConflict => Cow::Borrowed(
+                    "This submission key already identifies another payload. Use a new key for a new comment.",
+                ),
                 LoopError::InvalidCursor => {
                     Cow::Borrowed("The page cursor is not valid; start from the first page.")
                 }
@@ -212,6 +220,7 @@ pub fn routes() -> Router<AppState> {
         .route(START_COMMENT_ASSESSMENT.path, post(start_assessment))
         .route(VISIT_COMMENTS.path, post(visit))
         .route(LIST_COMMENT_ITEMS.path, get(items))
+        .route(SUBMIT_AGENT_COMMENT.path, post(submit_agent_comment))
         .route(GET_COMMENT_CONTEXT.path, get(context))
         .route(GET_GITHUB_THREAD.path, get(github_thread))
         .route(ASSESS_COMMENT.path, post(assess_again))
@@ -363,6 +372,25 @@ async fn context(
     Ok(Json(
         views::context(&state, &session, handle, no, &query).await?,
     ))
+}
+
+async fn submit_agent_comment(
+    State(state): State<AppState>,
+    TokenOnly(principal): TokenOnly,
+    path: PrPath,
+    body: Result<Json<SubmitAgentComment>, JsonRejection>,
+) -> ApiResult<Response> {
+    let Path((owner, name, number)) = path?;
+    let Json(body) = body?;
+    let (receipt, created) =
+        review_loop::submissions::submit(&state, &principal, &pr_ref(owner, name, number), body)
+            .await?;
+    let status = if created {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, Json(receipt)).into_response())
 }
 
 async fn github_thread(

@@ -1,19 +1,39 @@
 import type { ReactNode } from "react";
-import type { GithubThreadComment } from "../../api/generated/types";
+import type { AgentAnnotation, GithubThreadComment } from "../../api/generated/types";
 import { dateTimeText } from "../format/time";
 import { GithubLink } from "../inspector/text";
 import { GithubThreadBody } from "./GithubThreadPreview";
+import { AgentAnnotations } from "./AgentAnnotations";
+
+/** GitHub's comment fragment remains the same when the repository path changes. */
+function commentKey(url: string) {
+  const fragment = url.split("#")[1];
+  return fragment && /^(discussion_r|issuecomment-|pullrequestreview-)\d+$/.test(fragment) ? fragment : url;
+}
 
 /** Displays the source and comments of a conversation without decision controls. */
 export function CommentConversation({
   heading,
   source,
   comments,
+  annotations,
 }: {
   heading: ReactNode;
   source: ReactNode;
   comments: readonly GithubThreadComment[];
+  annotations?: readonly AgentAnnotation[];
 }) {
+  const byUrl = new Map<string, AgentAnnotation[]>();
+  for (const annotation of annotations ?? []) {
+    const key = commentKey(annotation.target_url);
+    const list = byUrl.get(key) ?? [];
+    list.push(annotation);
+    byUrl.set(key, list);
+  }
+  const present = new Set(comments.flatMap((comment) => (comment.url ? [commentKey(comment.url)] : [])));
+  const unmatched = (annotations ?? []).filter(
+    (annotation) => !present.has(commentKey(annotation.target_url)),
+  );
   return (
     <article aria-labelledby="comment-conversation-heading" className="grid gap-3">
       <header>
@@ -40,9 +60,18 @@ export function CommentConversation({
               )}
             </div>
             <GithubThreadBody text={comment.body} />
+            {comment.url && (
+              <AgentAnnotations annotations={byUrl.get(commentKey(comment.url))} showTarget={false} />
+            )}
           </li>
         ))}
       </ol>
+      {unmatched.length > 0 && (
+        <section aria-label="Annotations with unavailable GitHub originals">
+          <p className="text-sm text-muted">Original GitHub comment unavailable</p>
+          <AgentAnnotations annotations={unmatched} />
+        </section>
+      )}
     </article>
   );
 }

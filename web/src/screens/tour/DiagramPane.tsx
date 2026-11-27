@@ -13,6 +13,7 @@ import {
 import type { Flow, StepId } from "../../api/generated/types";
 import type { FlowDiagram } from "../../components/flow-diagram/FlowDiagram";
 import { HideButton } from "../../components/button/HideButton";
+import { FlowContextPin, type FlowContextPinProps } from "../../components/flow-intro/FlowContextPin";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { Tooltip } from "../../components/tooltip/Tooltip";
 import { DIAGRAM_MIN_PX } from "./layout";
@@ -45,6 +46,7 @@ interface DiagramPaneProps {
   height?: number | null;
   /** A new height from the handle; null resets to the default. */
   onHeight?: (height: number | null) => void;
+  pin?: FlowContextPinProps;
 }
 
 /** Catches a failed diagram chunk so the rest of the review stays. */
@@ -95,6 +97,7 @@ export function DiagramPane({
   load = loadDiagram,
   height = null,
   onHeight,
+  pin,
 }: DiagramPaneProps) {
   const body = useRef<HTMLDivElement>(null);
   const toggle = useRef<HTMLButtonElement>(null);
@@ -178,6 +181,11 @@ export function DiagramPane({
               focusAfter={() => toggle.current}
             />
           </span>
+        )}
+        {pin && (
+          <div className="pr-2">
+            <FlowContextPin section="flow diagram" {...pin} />
+          </div>
         )}
       </div>
       {open && (

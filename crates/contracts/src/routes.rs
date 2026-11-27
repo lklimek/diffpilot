@@ -67,6 +67,7 @@ impl RouteAuth {
             Self::SessionOrToken(scope) => scope.as_str(),
             Self::TokenOnly(TokenScope::Read) => "token_read",
             Self::TokenOnly(TokenScope::ReviewLoopExecute) => "token_review_loop_execute",
+            Self::TokenOnly(TokenScope::ReviewLoopSubmit) => "token_review_loop_submit",
         }
     }
 }
@@ -604,6 +605,13 @@ pub const LIST_COMMENT_ITEMS: Route = route(
     "/api/v1/prs/{owner}/{name}/{number}/comments/items",
     READ,
 );
+/// Submits agent review text and returns a durable link.
+pub const SUBMIT_AGENT_COMMENT: Route = route(
+    "submitAgentComment",
+    Post,
+    "/api/v1/prs/{owner}/{name}/{number}/comments/submissions",
+    RouteAuth::TokenOnly(TokenScope::ReviewLoopSubmit),
+);
 /// RC5: code context of an item (`ContextQuery`); `{item}` is `C<no>`.
 pub const GET_COMMENT_CONTEXT: Route = route(
     "getCommentContext",
@@ -894,6 +902,7 @@ pub const ROUTES: &[Route] = &[
     START_COMMENT_ASSESSMENT,
     VISIT_COMMENTS,
     LIST_COMMENT_ITEMS,
+    SUBMIT_AGENT_COMMENT,
     GET_COMMENT_CONTEXT,
     GET_GITHUB_THREAD,
     ASSESS_COMMENT,

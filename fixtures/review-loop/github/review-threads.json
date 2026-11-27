@@ -3,7 +3,7 @@
     "method": "POST",
     "url": "https://api.github.com/graphql",
     "body": {
-      "query": "query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){pullRequest(number:$pr){reviewThreads(first:100,after:$after){totalCount pageInfo{hasNextPage endCursor} nodes{id isResolved isOutdated path line startLine diffSide resolvedBy{login} comments(first:50){totalCount nodes{databaseId state author{login __typename ... on User{databaseId} ... on Bot{databaseId}} body createdAt lastEditedAt url commit{oid} originalCommit{oid} pullRequestReview{id}}}}}}}}",
+      "query": "query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){pullRequest(number:$pr){reviewThreads(first:100,after:$after){totalCount pageInfo{hasNextPage endCursor} nodes{id isResolved isOutdated path line startLine diffSide resolvedBy{login} comments(first:50){totalCount nodes{id databaseId state author{login __typename ... on User{databaseId} ... on Bot{databaseId}} body createdAt lastEditedAt url commit{oid} originalCommit{oid} pullRequestReview{id}}}}}}}}",
       "variables": {
         "o": "acme",
         "n": "node-client",
@@ -38,6 +38,7 @@
                   "totalCount": 3,
                   "nodes": [
                     {
+                      "id": "PRRC_fixture482_3000000101",
                       "databaseId": 3000000101,
                       "state": "SUBMITTED",
                       "author": {
@@ -53,6 +54,7 @@
                       }
                     },
                     {
+                      "id": "PRRC_fixture482_3000000102",
                       "databaseId": 3000000102,
                       "state": "SUBMITTED",
                       "author": {
@@ -68,6 +70,7 @@
                       }
                     },
                     {
+                      "id": "PRRC_fixture482_3000000103",
                       "databaseId": 3000000103,
                       "state": "SUBMITTED",
                       "author": {
@@ -98,6 +101,7 @@
                   "totalCount": 1,
                   "nodes": [
                     {
+                      "id": "PRRC_fixture482_3000000201",
                       "databaseId": 3000000201,
                       "state": "SUBMITTED",
                       "author": {
@@ -128,6 +132,7 @@
                   "totalCount": 3,
                   "nodes": [
                     {
+                      "id": "PRRC_fixture482_3000000301",
                       "databaseId": 3000000301,
                       "state": "SUBMITTED",
                       "author": {
@@ -143,6 +148,7 @@
                       }
                     },
                     {
+                      "id": "PRRC_fixture482_3000000302",
                       "databaseId": 3000000302,
                       "state": "SUBMITTED",
                       "author": {
@@ -158,6 +164,7 @@
                       }
                     },
                     {
+                      "id": "PRRC_fixture482_3000000303",
                       "databaseId": 3000000303,
                       "state": "SUBMITTED",
                       "author": {
@@ -190,6 +197,7 @@
                   "totalCount": 3,
                   "nodes": [
                     {
+                      "id": "PRRC_fixture482_3000000401",
                       "databaseId": 3000000401,
                       "state": "SUBMITTED",
                       "author": {
@@ -205,6 +213,7 @@
                       }
                     },
                     {
+                      "id": "PRRC_fixture482_3000000402",
                       "databaseId": 3000000402,
                       "state": "SUBMITTED",
                       "author": {
@@ -220,6 +229,7 @@
                       }
                     },
                     {
+                      "id": "PRRC_fixture482_3000000403",
                       "databaseId": 3000000403,
                       "state": "SUBMITTED",
                       "author": {
@@ -250,6 +260,7 @@
                   "totalCount": 1,
                   "nodes": [
                     {
+                      "id": "PRRC_fixture482_3000000501",
                       "databaseId": 3000000501,
                       "state": "SUBMITTED",
                       "author": {
@@ -280,6 +291,7 @@
                   "totalCount": 1,
                   "nodes": [
                     {
+                      "id": "PRRC_fixture482_3000000601",
                       "databaseId": 3000000601,
                       "state": "SUBMITTED",
                       "author": {
@@ -310,6 +322,7 @@
                   "totalCount": 1,
                   "nodes": [
                     {
+                      "id": "PRRC_fixture482_3000000701",
                       "databaseId": 3000000701,
                       "state": "SUBMITTED",
                       "author": {
@@ -340,6 +353,7 @@
                   "totalCount": 1,
                   "nodes": [
                     {
+                      "id": "PRRC_fixture482_3000000801",
                       "databaseId": 3000000801,
                       "state": "SUBMITTED",
                       "author": {

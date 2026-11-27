@@ -1,9 +1,9 @@
 import { useMemo, type ReactNode } from "react";
 import { useNavigate } from "react-router";
-import type { PrRef } from "../../api/generated/types";
+import type { PrFile, PrRef } from "../../api/generated/types";
 import { useFiles, useTour } from "../../api/queries";
 import { displaySide, filesHash } from "../../components/files/model";
-import { githubLineUrl } from "../../components/github/links";
+import { githubLineUrl, type PrLinkBase } from "../../components/github/links";
 import { PathLinks, pathMatcher } from "../../components/section/pathLinks";
 
 import { analysisPath } from "../pr/paths";
@@ -24,12 +24,38 @@ export function AnalysisPathLinks({
   const matchesHead = !!analysedPr && (head === undefined || head === analysedPr.head_sha);
   // Review screens already read Files; the Comments route needs its own read after checking the head.
   const files = useFiles(analysisId ?? "", analysisId !== null && head !== undefined && matchesHead);
+  return (
+    <FilePathLinks
+      analysisId={analysisId}
+      pr={pr}
+      files={matchesHead ? files.data?.files : undefined}
+      githubPr={analysedPr}
+    >
+      {children}
+    </FilePathLinks>
+  );
+}
+
+/** Resolve mentions from a single known analysis. Without its Files index they remain plain text. */
+export function FilePathLinks({
+  analysisId,
+  pr,
+  files,
+  githubPr,
+  children,
+}: {
+  analysisId: string | null;
+  pr: PrRef;
+  files?: readonly PrFile[];
+  githubPr?: PrLinkBase;
+  children: ReactNode;
+}) {
   const navigate = useNavigate();
-  const filesPath = analysisId === null ? null : analysisPath(pr, analysisId, "files");
   const links = useMemo(() => {
-    if (!filesPath || !analysedPr || !files.data || !matchesHead) return null;
-    const byPath = new Map(files.data.files.map((file) => [file.path, file]));
-    const match = pathMatcher([...byPath.keys()], analysedPr.repo);
+    if (analysisId === null || !files) return null;
+    const filesPath = analysisPath(pr, analysisId, "files");
+    const byPath = new Map(files.map((file) => [file.path, file]));
+    const match = pathMatcher([...byPath.keys()], githubPr?.repo ?? pr.repo);
     return {
       resolve: (mention: string) => {
         const at = match(mention);
@@ -39,9 +65,9 @@ export function AnalysisPathLinks({
         const line = at.line ?? 1;
         const range = at.end === undefined ? at.line : `${line}–${at.end}`;
         const location = range === undefined ? "" : ` at ${at.end === undefined ? "line" : "lines"} ${range}`;
-        if (file.not_rendered) {
+        if (file.not_rendered && githubPr) {
           const href = githubLineUrl(
-            analysedPr,
+            githubPr,
             { path: at.path, side, start: line, end: at.end ?? line },
             false,
           );
@@ -51,13 +77,14 @@ export function AnalysisPathLinks({
             github: true,
           };
         }
+        const target = file.not_rendered ? {} : at;
         return {
-          href: `${filesPath}${filesHash({ ...at, file: at.path, side })}`,
-          tip: `Open ${at.path}${location} in Files`,
+          href: `${filesPath}${filesHash({ ...target, file: at.path, side })}`,
+          tip: `Open ${at.path}${file.not_rendered ? "" : location} in Files`,
         };
       },
       onNavigate: (href: string) => void navigate(href),
     };
-  }, [analysedPr, files.data, filesPath, matchesHead, navigate]);
+  }, [analysisId, pr, files, githubPr, navigate]);
   return <PathLinks.Provider value={links}>{children}</PathLinks.Provider>;
 }

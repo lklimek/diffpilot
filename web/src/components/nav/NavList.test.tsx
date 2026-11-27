@@ -180,6 +180,29 @@ describe("NavList", () => {
     ).toBeInTheDocument();
   });
 
+  it("provides a separate review checkbox for each step that does not navigate", async () => {
+    const onSelect = vi.fn();
+    const onSetStepReviewed = vi.fn();
+    renderNav({
+      current: { block: "step", step_id: "f1.2" },
+      ticked: ["f1.2"],
+      onSelect,
+      onSetStepReviewed,
+    });
+    const first = screen.getByRole("checkbox", { name: /Mark step 1 reviewed/ });
+    const second = screen.getByRole("checkbox", { name: /Mark step 2 reviewed/ });
+    expect(first).not.toBeChecked();
+    expect(second).toBeChecked();
+    first.focus();
+    await userEvent.keyboard(" ");
+    await userEvent.click(second);
+    expect(onSetStepReviewed.mock.calls).toEqual([
+      ["f1.1", true],
+      ["f1.2", false],
+    ]);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
   it("shows the keyboard hints for blocks, flows and help", () => {
     renderNav();
     expect(screen.getByText(/next \/ previous block/)).toHaveTextContent("n p flow · ? help");

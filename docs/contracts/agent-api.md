@@ -13,7 +13,8 @@ decisions of the review loop's feed (§7), and no token decides.
 
 ## 1. Get a token
 Settings → Access tokens → Create (signed in, in the browser): a name (1–60 characters, unique among your tokens),
-scope `read` (and, for an implementing agent, also `review_loop_execute`, §7), expiry 30, 90 (default) or 365
+scope `read` (with optional `review_loop_execute` for executing decisions and `review_loop_submit` for submitting
+comments), expiry 30, 90 (default) or 365
 days. The token is shown **once**:
 
 ```
@@ -314,7 +315,38 @@ message or `Retry-After`) exits 4 with how long to wait instead.
   exposes the same count as `CommentTally.needs_you`. Unassessed unlinked comments are excluded from Needs you.
   Status comments are listed with `status_comment` and excluded from the decision queue, `undecided` and
   `assessment.total`. Access-token reads omit the browser's `imported_unseen` count.
+- Each `CommentItem.status` gives the server's classification for display and filters. The reader's current
+  skip is separate, on `QueueEntry.skipped`. Follow the overview queue and counts for active questions.
 - The new repository coverage read lists repositories tracked by the reader's tenant. The activity read
   exposes peer jobs in the reader's tenant with only kind and a response-local id. `GET /api/v1/me/prs` is a
   reader-specific history. A read token can list it and read a PR page without recording a visit. The PR page,
   Comments overview and item list reads do not start assessment. See [HTTP API](http-api.md#v14-dashboard-comments-and-activity).
+
+## Submit agent comments
+
+`POST /api/v1/prs/{owner}/{name}/{number}/comments/submissions` needs a bearer token with
+`review_loop_submit`. A token with only `read` or `review_loop_execute` cannot submit. The server admits the PR
+through the token owner's GitHub access under the same public-repository policy as Comments. The token can
+submit even if its owner has never opened the PR in DiffPilot.
+
+```json
+{
+  "submission_key": "00000000-0000-4000-8000-000000000001",
+  "body": "The retry can exceed the operation deadline.",
+  "target": {"kind": "standalone"}
+}
+```
+
+- A standalone submission has origin `api` and enters the normal assessment and owner decision workflow. Submit
+  one finding per item. For an annotation use `{"kind":"github","comment":"<node id or canonical link>"}`. The target
+  can be a submitted inline comment or reply, a PR-level comment or a submitted review body on this PR. Comments
+  shows the agent text beside the original with the source label **GitHub + agent**. Its existing review item and
+  decisions stay in place. A conversation without a review item remains read-only.
+- DiffPilot attributes the submission to the configured token name. The body must contain up to 6000 characters
+  of nonempty text. The server uses the configured GitHub API to prove ownership of an annotated comment.
+  A different PR's comment is refused.
+- Submit a UUID once and reuse it for retries. The key is scoped to the token and PR. First acceptance returns
+  201 with `submission_id`, `item_no` (null for annotations) and an absolute `url` in DiffPilot. Repeating the same
+  request returns that receipt with 200. Changing the body or target while keeping the key gives 409.
+- The submission writes only to DiffPilot. The browser controls owner decisions and subsequent effects.
+  GitHub reads preserve standalone submissions and their annotations.

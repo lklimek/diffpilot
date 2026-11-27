@@ -114,6 +114,8 @@ fn token_id(presented: &str) -> Option<AccessTokenId> {
 pub struct TokenPrincipal {
     /// The token's public id.
     pub token_id: AccessTokenId,
+    /// The user's label for this agent token.
+    pub token_name: String,
     /// The token's tenant.
     pub tenant_id: String,
     /// The token's user.
@@ -479,6 +481,7 @@ impl TokenGate {
         audit.user_id = Some(credential.record.user_id.clone());
         let principal = TokenPrincipal {
             token_id: id,
+            token_name: credential.record.name.clone(),
             tenant_id: credential.record.tenant_id.clone(),
             user_id: credential.record.user_id.clone(),
             scopes: credential.record.scopes.clone(),
@@ -702,6 +705,7 @@ pub(crate) async fn stored_token(
     assert!(matches!(created, CreateOutcome::Created(_)), "{created:?}");
     let principal = TokenPrincipal {
         token_id: issued.id,
+        token_name: new.name,
         tenant_id: DEFAULT_TENANT.to_owned(),
         user_id: user_id.to_owned(),
         scopes: new.scopes,

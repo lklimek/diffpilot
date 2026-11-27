@@ -82,7 +82,7 @@ import {
 } from "../tour/review";
 import { FlowsMenu } from "../tour/FlowsMenu";
 import { Workspace } from "../tour/Workspace";
-import { useAskChat, useAskPlace, type AnswerDraft } from "../review/askChat";
+import { useAskChat, useAskLineStatuses, useAskPlace, type AnswerDraft } from "../review/askChat";
 import { rangeText } from "../../components/section/format";
 import { FileCode } from "./FileCode";
 import { analysisPath, analysisProgressPath, commentsPath, prPath } from "../pr/paths";
@@ -194,6 +194,7 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
   const queryClient = useQueryClient();
   const [hideContextChanges, changeContextVisibility] = useHideContextChanges(login);
   const chat = useAskChat();
+  const askStatus = useAskLineStatuses();
   const pending = usePendingReview(analysisId);
   const comments = useCommentActions(analysisId);
   const work = useFlowWork(analysisId);
@@ -625,6 +626,7 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
       });
   };
   const ctx: CodeContext = {
+    askStatus,
     hideContextChanges,
     analysisId,
     pr: tour.analysis.pr,
@@ -700,6 +702,7 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
         comments: pending.data?.comments ?? [],
         pr: tour.analysis.pr,
         files: files.files,
+        askStatus,
         onEditComment: comments.edit,
         onDeleteComment: comments.remove,
       }}

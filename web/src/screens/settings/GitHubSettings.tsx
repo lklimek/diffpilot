@@ -28,7 +28,7 @@ function DashboardSettingsStatus({ error }: { error: unknown }) {
 
 export function GitHubSyncPage({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => void }) {
   const dashboard = useDashboardSettings();
-  const save = useSaveDashboardSettings();
+  const save = useSaveDashboardSettings("github-sync");
   const settings = useSettings();
   const owners = useSetControlledOwners();
   const webhook = useQuery({
@@ -107,7 +107,7 @@ function RepositoryDetails({ repo }: { repo: RepoRef }) {
 
 export function RepositoriesPage({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => void }) {
   const dashboard = useDashboardSettings();
-  const save = useSaveDashboardSettings();
+  const save = useSaveDashboardSettings("repositories");
   const settings = useSettings();
   const catalogue = useQuery({
     queryKey: ["repository-installations"],

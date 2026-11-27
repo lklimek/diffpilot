@@ -8,6 +8,55 @@ import { SETTINGS } from "../../mocks/scenarios";
 
 const server = startMockServer();
 
+it("places Codex on LLM & usage while Account keeps sign-in and tokens", async () => {
+  const router = renderRoute("/settings/account");
+  expect(await screen.findByRole("region", { name: "Access tokens" })).toBeVisible();
+  expect(screen.queryByRole("region", { name: "Codex account" })).toBeNull();
+
+  await userEvent.click(screen.getByRole("link", { name: "LLM & usage" }));
+  expect(router.state.location.pathname).toBe("/settings/llm");
+  expect(await screen.findByRole("region", { name: "Codex account" })).toBeVisible();
+});
+
+it("edits only TODO source settings in MemCan and protects the draft when leaving", async () => {
+  const router = renderRoute("/settings/github-sync");
+  expect(await screen.findByRole("region", { name: "Scope" })).toBeVisible();
+  expect(screen.queryByRole("region", { name: "TODO sources" })).toBeNull();
+
+  await userEvent.click(screen.getByRole("link", { name: "MemCan" }));
+  const sources = within(await screen.findByRole("region", { name: "TODO sources" }));
+  await userEvent.click(sources.getByRole("checkbox", { name: "Show my MemCan TODOs" }));
+  await userEvent.click(screen.getByRole("link", { name: "GitHub sync" }));
+  const prompt = within(await screen.findByRole("alertdialog", { name: "Unsaved settings" }));
+  expect(router.state.location.pathname).toBe("/settings/memcan");
+  await userEvent.click(prompt.getByRole("button", { name: "Stay" }));
+
+  await userEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect(await screen.findByText("Dashboard settings saved.")).toBeVisible();
+  await userEvent.click(screen.getByRole("link", { name: "GitHub sync" }));
+  expect(await screen.findByRole("region", { name: "Nightly scan" })).toBeVisible();
+  await userEvent.click(screen.getByRole("link", { name: "MemCan" }));
+  expect(await screen.findByRole("checkbox", { name: "Show my MemCan TODOs" })).not.toBeChecked();
+});
+
+it.each([
+  ["github-sync", "Scope"],
+  ["repositories", "Repository rules"],
+  ["memcan", "TODO sources"],
+])("saves only the %s dashboard settings section", async (section, heading) => {
+  const sections: (string | null)[] = [];
+  server.use(
+    http.put("/api/v1/settings/dashboard", ({ request }) => {
+      sections.push(new URL(request.url).searchParams.get("section"));
+    }),
+  );
+  renderRoute(`/settings/${section}`);
+  await screen.findByRole("region", { name: heading });
+  await userEvent.click(screen.getByRole("button", { name: "Save" }));
+  await screen.findByText("Dashboard settings saved.");
+  expect(sections).toEqual([section]);
+});
+
 it("redirects old repository links and opens the read-only rules in the requested table row", async () => {
   const router = renderRoute("/settings?repo=acme%2Fnode-client");
   const table = await screen.findByRole("table", { name: "Repositories" });

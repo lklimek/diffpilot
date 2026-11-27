@@ -293,6 +293,7 @@ async fn request(
             continue;
         }
         if reason != PassReason::Ask
+            && !item.from_api
             && matches!(
                 item.kind,
                 CommentItemKind::ReviewBody | CommentItemKind::PrComment
@@ -763,9 +764,10 @@ pub(crate) fn verify_item(item: &ItemRecord) -> VerifyItem {
         location: item.location.clone(),
         commit: None,
         title: item.title.clone(),
-        body: match item.author_kind {
-            AuthorKind::Bot => clean::bot_body(&item.body),
-            _ => item.body.clone(),
+        body: if item.author_kind == AuthorKind::Bot && !item.from_api {
+            clean::bot_body(&item.body)
+        } else {
+            item.body.clone()
         },
         bot_severity: item.bot_severity.clone(),
         bot_status: item.github.bot_status,

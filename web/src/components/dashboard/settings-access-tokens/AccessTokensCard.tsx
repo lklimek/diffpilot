@@ -15,7 +15,7 @@ const MAX_LIVE = 10;
 const COLUMNS: [string, string][] = [
   ["Name", "The name you gave the token."],
   ["Token", "Start of the token (srp_ and its id); the secret part is never shown again."],
-  ["Scope", "What the token may do: read = every read route, as you."],
+  ["Scope", "The token's permissions. Extra scopes allow executing review decisions or submitting comments."],
   ["Created", "When the token was created."],
   ["Last used", "Last request the token was accepted for, recorded at most once a minute."],
   ["Expires", "The token stops working at this time."],
@@ -34,7 +34,7 @@ interface AccessTokensCardProps {
   now?: Date;
 }
 
-/** Personal access tokens (ADR-019): read-only API access for the user's agents; list, create, revoke. */
+/** Personal access tokens (ADR-019) and their permissions. */
 export function AccessTokensCard({ tokens, onCreate, onRevoke, now = new Date() }: AccessTokensCardProps) {
   const [creating, setCreating] = useState(false);
   const [confirming, setConfirming] = useState<string | null>(null);
@@ -65,7 +65,8 @@ export function AccessTokensCard({ tokens, onCreate, onRevoke, now = new Date() 
         My work ranking and everything you can read here, including analyses, reviews and the review loop. A{" "}
         <code>read</code> token changes nothing. Add <code>review_loop_execute</code> only for an implementing
         agent: it can claim decisions from the review loop&apos;s decision feed and report what it did. It
-        never decides.
+        never decides. Add <code>review_loop_submit</code> to let an agent add comments and annotations in
+        DiffPilot.
       </p>
       <p className="text-xs text-muted">
         Tokens are yours alone, expire after 30, 90 or 365 days, and your GitHub sign-in never leaves the

@@ -7,7 +7,6 @@ import { GithubDecision, githubDecisionEvidence } from "./GithubDecision";
 import { DuplicateOfLink } from "./DuplicateLinks";
 import type { Navigate } from "../dashboard/common/navigate";
 import {
-  commentStatus,
   duplicatePrimary,
   followsPrimary,
   needsYouQueue,
@@ -185,7 +184,7 @@ const DESCRIPTION: Partial<Record<QueueStatus, string>> = {
 };
 
 export function commentStatusText(item: CommentItem, inPass?: number, since?: string | null, now?: Date) {
-  switch (commentStatus(item)) {
+  switch (item.status) {
     case "assessing":
       if (inPass === undefined) return `◌ ${queueStatusLabel("assessing", inPass).toLowerCase()}`;
       return since ? `◔ assessing since ${clockText(since, now)}` : "◔ assessing now";
@@ -242,7 +241,7 @@ export function QueueList({
         .map((key) => [
           key,
           all
-            .filter((item) => key === "all" || commentStatus(item) === key)
+            .filter((item) => key === "all" || item.status === key)
             .map((item): QueueEntry => ({
               item_nos: [item.no],
               reason: item.kind === "pr_question" ? "pr_question" : "single",
@@ -282,7 +281,7 @@ export function QueueList({
       );
     const imported = first.imported_decision || first.state === "outside";
     const previous = first.decisions.at(-1);
-    const state = commentStatus(first);
+    const state = first.status;
     const note = imported ? (
       <GithubDecision item={first} showEvidence={false} tip={false} />
     ) : state === "decided" && previous ? (

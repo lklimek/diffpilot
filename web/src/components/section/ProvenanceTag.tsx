@@ -1,7 +1,7 @@
 import { Tooltip } from "../tooltip/Tooltip";
 
-/** Where a piece of content comes from: written by the LLM, or taken from GitHub. */
-export type ProvenanceSource = "llm" | "github";
+/** Where a piece of content comes from. */
+export type ProvenanceSource = "llm" | "github" | "api" | "github_agent";
 
 // Says where text comes from, never that it is correct: not a fact badge (brief §1).
 const TAG: Record<ProvenanceSource, { text: string; tip: string; look: string }> = {
@@ -13,6 +13,16 @@ const TAG: Record<ProvenanceSource, { text: string; tip: string; look: string }>
   github: {
     text: "GitHub",
     tip: "Taken from GitHub as written there.",
+    look: "border border-border text-muted",
+  },
+  api: {
+    text: "API",
+    tip: "Submitted by an agent through the DiffPilot API.",
+    look: "border border-border text-muted",
+  },
+  github_agent: {
+    text: "GitHub + agent",
+    tip: "GitHub conversation with separately attributed agent annotations.",
     look: "border border-border text-muted",
   },
 };

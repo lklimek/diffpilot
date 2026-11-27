@@ -7,7 +7,10 @@ import type {
   DashboardSettingsView,
   SetTimeZoneRequest,
 } from "../../api/generated/types";
-import { validateSettings } from "../../components/dashboard/settings-dashboard/validation";
+import {
+  settingsForSection,
+  validateSettings,
+} from "../../components/dashboard/settings-dashboard/validation";
 import viewJson from "../../../../fixtures/dashboard/api/settings.json";
 import tokensJson from "../../../../fixtures/dashboard/api/access-tokens.json";
 import createdJson from "../../../../fixtures/dashboard/api/access-token-created.json";
@@ -94,12 +97,20 @@ export const getDashboardSettings = route("getDashboardSettings", () =>
 
 /** `PUT /api/v1/settings/dashboard`: the rules of §F.6; 422 `invalid_dashboard_settings` names the first field. */
 export const setDashboardSettings = route("setDashboardSettings", async ({ request }) => {
-  const settings = (await request.json()) as DashboardSettings;
-  const [problem] = Object.values(validateSettings(settings, view.own_login));
+  const [section, ...extra] = new URL(request.url).searchParams.getAll("section");
+  if (
+    extra.length ||
+    (section !== undefined && section !== "github-sync" && section !== "repositories" && section !== "memcan")
+  )
+    return apiError(400, "invalid_request", "The request query is not valid.");
+  const body = (await request.json()) as DashboardSettings;
+  const checked = section ? settingsForSection(section, view.defaults, body) : body;
+  const [problem] = Object.values(validateSettings(checked, view.own_login));
   if (problem) return apiError(422, "invalid_dashboard_settings", problem);
-  if (selected.rejectSave) {
+  if (selected.rejectSave && (section === undefined || section === "github-sync")) {
     return apiError(422, "invalid_dashboard_settings", 'Time zone: "Etc/Unknown" is not a known time zone.');
   }
+  const settings = section ? settingsForSection(section, view.settings, checked) : checked;
   view = { ...view, settings, memcan_projects: memcanProjects(settings) };
   return HttpResponse.json(view);
 });
@@ -128,16 +139,19 @@ export const listAccessTokens = route("listAccessTokens", () =>
 export const createAccessToken = route("createAccessToken", async ({ request }) => {
   const body = (await request.json()) as CreateAccessToken;
   const length = [...body.name].length;
+  const scopes = new Set(body.scopes);
   if (
     length < 1 ||
     length > 60 ||
-    !["read", "read,review_loop_execute", "review_loop_execute,read"].includes(body.scopes.join()) ||
+    scopes.size !== body.scopes.length ||
+    !scopes.has("read") ||
+    [...scopes].some((scope) => !["read", "review_loop_execute", "review_loop_submit"].includes(scope)) ||
     ![30, 90, 365].includes(body.expires_in_days)
   ) {
     return apiError(
       400,
       "invalid_request",
-      "Use a name of 1 to 60 characters, scope read (optionally with review_loop_execute) and 30, 90 or 365 days.",
+      "Use a name of 1 to 60 characters, read with optional review_loop_execute or review_loop_submit, and 30, 90 or 365 days.",
     );
   }
   if (tokens.some((t) => t.name === body.name)) {

@@ -35,6 +35,8 @@ import { buildSegments, type Segment, type Row } from "./rows";
 import { CodeText, useTokens } from "./tokens";
 import { hiddenLines } from "./visibility";
 import { LineGithub, type LineGithubLink } from "./LineGithub";
+import { AskStatusMark, askStatusLabel } from "./AskStatusMark";
+import type { AskLineStatus, AskStatusAtLine } from "../ask/lineStatus";
 
 /** A displayed line: its side and number on that side. */
 export interface LineRef {
@@ -89,6 +91,7 @@ export interface CodeViewProps {
   onLineAction?: (target: CommentTarget, how: { extend: boolean }) => void;
   /** "Ask about this line" on a displayed line (the selected lines when the line is in a selection); none without it. */
   onAskLine?: (target: CommentTarget) => void;
+  askStatus?: AskStatusAtLine;
   /** Load the rest of a deleted block whose `lines` were cut (`lines.length < total_lines`). */
   onLoadDeleted?: (block: DeletedBlock) => void;
   /** "Show in Inspector" of a pinned remark or thread popover; without it the link is not offered. */
@@ -170,6 +173,7 @@ interface LineContext {
   githubLine?: LineGithubLink;
   onLineAction?: (target: CommentTarget, how: { extend: boolean }) => void;
   onAskLine?: (target: CommentTarget) => void;
+  askStatus?: AskStatusAtLine;
   onFocusLine: (key: string) => void;
   onShowInInspector?: (target: MarkerTarget) => void;
   onAskRemark?: (annotation: Annotation) => void;
@@ -206,6 +210,7 @@ interface LineProps {
 
 function Line({ ctx, side, line, text, tokens, row, removed = false, remarks, context }: LineProps) {
   const key = keyOf({ side, line });
+  const askStatus = ctx.askStatus?.(side, line);
   const commenting = ctx.activeKey === key;
   const changed = !context && (row?.changed ?? false);
   const removedLine = removed || (side === "base" && changed);
@@ -386,16 +391,19 @@ function Line({ ctx, side, line, text, tokens, row, removed = false, remarks, co
               onToggle={() => ctx.toggle(key)}
             />
           )}
-          {ctx.onAskLine && !context && (
+          {ctx.onAskLine && !context ? (
             <AskLineButton
               line={line}
               removed={removedLine}
               tabbable={ctx.tabKey === key}
               onFocus={() => ctx.onFocusLine(key)}
               hint={ctx.askLineHint}
+              status={askStatus}
               onAsk={(button) => ctx.onAskLine?.(selectedTarget(button, ctx.path, side, line))}
               className="ml-auto"
             />
+          ) : (
+            askStatus && <AskStatusMark status={askStatus} />
           )}
         </span>
         <code className="pr-4 whitespace-pre">
@@ -642,6 +650,7 @@ export function AskLineButton({
   tabbable,
   onFocus,
   onAsk,
+  status,
   hint = 'Click, then "Ask about this line": opens the Ask chat about this line (or the selected lines). Nothing is sent until you press Ask.',
   className = "",
 }: {
@@ -650,11 +659,13 @@ export function AskLineButton({
   tabbable: boolean;
   onFocus: () => void;
   onAsk: (button: HTMLElement) => void;
+  status?: AskLineStatus;
   /** What the action does in this view. */
   hint?: string;
   className?: string;
 }) {
-  const name = `Ask the LLM about ${removed ? "removed line" : "line"} ${line}`;
+  const subject = `Ask the LLM about ${removed ? "removed line" : "line"} ${line}`;
+  const name = status ? `${subject} · ${askStatusLabel(status)}` : subject;
   return (
     <Popover
       label={name}
@@ -685,13 +696,16 @@ export function AskLineButton({
       <button
         type="button"
         data-ask-line
+        data-ask-line-status={status}
         aria-label={name}
         tabIndex={tabbable ? 0 : -1}
         onFocus={onFocus}
         // Keeps a selection of several lines for the click.
         onMouseDown={(event) => event.preventDefault()}
-        className="inline-flex h-4 w-6 shrink-0 cursor-pointer items-center justify-center rounded border-0 bg-transparent p-0 font-sans text-[11px] font-bold text-muted opacity-0 group-hover/line:h-6 group-hover/line:opacity-100 group-focus-within/line:h-6 group-focus-within/line:opacity-100 hover:bg-accent-bg hover:text-accent aria-expanded:h-6 aria-expanded:opacity-100 before:content-['?']"
-      />
+        className={`inline-flex h-4 w-6 shrink-0 cursor-pointer items-center justify-center rounded border-0 bg-transparent p-0 font-sans text-[11px] font-bold text-muted group-hover/line:h-6 group-hover/line:opacity-100 group-focus-within/line:h-6 group-focus-within/line:opacity-100 hover:bg-accent-bg hover:text-accent aria-expanded:h-6 aria-expanded:opacity-100 ${status ? "" : "opacity-0 before:content-['?']"}`}
+      >
+        {status && <AskStatusMark status={status} inButton />}
+      </button>
     </Popover>
   );
 }
@@ -745,6 +759,7 @@ export function CodeView({
   onSelectAnnotation,
   onLineAction,
   onAskLine,
+  askStatus,
   onLoadDeleted,
   onEditComment,
   onDeleteComment,
@@ -907,6 +922,7 @@ export function CodeView({
     tabKey: focusKey && keys.includes(focusKey) ? focusKey : (keys[0] ?? null),
     onLineAction,
     onAskLine,
+    askStatus,
     onFocusLine: (key) => {
       setFocusKey(key);
       setTouchKey((old) => (old === key ? old : null));
@@ -969,6 +985,13 @@ export function CodeView({
         Number(byLine.has(k)),
     ),
   );
+  const askColumn =
+    onAskLine ||
+    (askStatus &&
+      [...keys, ...contextKeys(before), ...contextKeys(after)].some((key) => {
+        const [side, line] = key.split(":");
+        return askStatus(side as LineSide, Number(line)) !== undefined;
+      }));
 
   const maxLine = Math.max(
     beforeControl || afterControl || leadingControl ? lines.total_lines : lines.to,
@@ -1076,7 +1099,7 @@ export function CodeView({
       style={
         {
           "--ln": `calc(${String(maxLine).length + 2}ch + ${githubLine ? 18 : 0}px)`,
-          "--gutter": `${Math.max(50, 30 + 28 * buttons + (onAskLine ? 26 : 0))}px`,
+          "--gutter": `${Math.max(50, 30 + 28 * buttons + (askColumn ? 26 : 0))}px`,
         } as CSSProperties
       }
       className={`@container min-w-0 max-w-full overflow-auto rounded-md border border-border bg-code-bg py-0.5 font-mono text-[12.5px] leading-[1.55] ${

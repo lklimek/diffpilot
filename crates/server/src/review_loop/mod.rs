@@ -44,6 +44,7 @@ mod observe;
 pub(crate) mod propagation;
 mod queue;
 pub(crate) mod seen;
+pub(crate) mod submissions;
 pub mod views;
 pub mod watch;
 
@@ -111,6 +112,12 @@ pub enum LoopError {
     /// The line range is empty or starts before line 1.
     #[error("the line range is not valid")]
     BadRange,
+    /// The submitted agent text, link or identity is malformed.
+    #[error("provide nonempty agent text and a valid GitHub comment target")]
+    BadSubmission,
+    /// A prior submission used the same key for another payload.
+    #[error("the submission key already identifies another payload")]
+    SubmissionConflict,
     /// The page cursor is not one this server gave.
     #[error("the page cursor is not valid")]
     InvalidCursor,
@@ -180,46 +187,52 @@ pub async fn github_thread(
         return Err(LoopError::NotFound);
     }
     let token = user_access_token(state, &session.user_id).await?;
-    let mut detail =
-        match crate::github::threads::detail(&state.config.github, &token, &handle.pr, id).await {
-            Ok(Some(detail)) => detail,
-            Ok(None) => return Err(LoopError::NotFound),
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    Some(GraphqlErrorType::NotFound | GraphqlErrorType::Forbidden)
-                ) =>
-            {
-                return Err(LoopError::NotFound);
+    let github = &state.config.github;
+    let fetched = if id.starts_with("issue:") || id.starts_with("review:") {
+        crate::github::threads::pr_comment_detail(github, &token, &handle.pr, id).await
+    } else {
+        crate::github::threads::detail(github, &token, &handle.pr, id).await
+    };
+    let mut detail = match fetched {
+        Ok(Some(detail)) => detail,
+        Ok(None) => return Err(LoopError::NotFound),
+        Err(error)
+            if matches!(
+                error.kind(),
+                Some(GraphqlErrorType::NotFound | GraphqlErrorType::Forbidden)
+            ) =>
+        {
+            return Err(LoopError::NotFound);
+        }
+        Err(error) => {
+            if matches!(error, GraphqlError::Unauthorized) {
+                user_token_rejected(state, &session.user_id, &token).await;
             }
-            Err(error) => {
-                if matches!(error, GraphqlError::Unauthorized) {
-                    user_token_rejected(state, &session.user_id, &token).await;
-                }
-                return Err(LoopError::Unreadable(failure_of(&ReadError::Graphql(
-                    error,
-                ))));
-            }
-        };
-    let view = state.db.review_loop().pr_view(handle.id).await?;
-    if let Some(snapshot) = view
-        .row
-        .and_then(|row| row.github_snapshot)
-        .and_then(|data| serde_json::from_value::<Snapshot>(data).ok())
-    {
-        detail.item_no = view
-            .items
-            .iter()
-            .find(|item| {
-                item.kind == CommentItemKind::Thread
-                    && item.gone_at.is_none()
-                    && snapshot
-                        .thread_ids
-                        .get(&item.stable_key)
-                        .is_some_and(|thread| thread == id)
-            })
-            .map(|item| item.no);
+            return Err(LoopError::Unreadable(failure_of(&ReadError::Graphql(
+                error,
+            ))));
+        }
+    };
+    let pr_id = handle.id;
+    let review_loop = state.db.review_loop();
+    let view = review_loop.pr_view(pr_id).await?;
+    if let Some(loaded) = Loaded::from_view(handle, view) {
+        detail.item_no = submissions::item_nos(
+            &loaded,
+            id,
+            detail
+                .comments
+                .first()
+                .and_then(|comment| comment.url.as_deref()),
+        )
+        .next();
     }
+    detail.agent_annotations = review_loop
+        .agent_annotations(&session.tenant_id, pr_id)
+        .await?
+        .into_iter()
+        .filter_map(|(conversation, annotation)| (conversation == id).then_some(annotation))
+        .collect();
     Ok(detail)
 }
 

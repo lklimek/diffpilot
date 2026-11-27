@@ -96,6 +96,9 @@ pub struct ObservedItem {
 /// A stored item.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ItemRecord {
+    /// Whether an authenticated agent submitted this item through the API.
+    #[serde(default)]
+    pub from_api: bool,
     /// Candidate grounded and authorised by the host for this point.
     #[serde(skip)]
     pub import_candidate: Option<super::ImportCandidate>,
@@ -373,6 +376,7 @@ pub enum PassStart {
 const ITEM_COLUMNS: &str = "id, pull_request_id, item_no, kind, stable_key, author, author_kind, url, path,
     start_line, end_line, title, body, body_hash, first_seen_head, first_round, bot_severity, gate_marks, github,
     state, revision, outside, repeat_of, gone_at, updated_at, source_id, quote, duplicate_of, status_comment,
+    EXISTS (SELECT 1 FROM agent_comment_submissions s WHERE s.item_id = comment_items.id) AS from_api,
     CASE WHEN EXISTS (SELECT 1 FROM memberships m WHERE m.tenant_id = comment_items.tenant_id
         AND m.user_id = json_extract(comment_items.import_candidate, '$.user_id'))
         THEN import_candidate END AS import_candidate";
@@ -392,6 +396,7 @@ fn item_from_row(row: &SqliteRow) -> Result<ItemRecord, DbError> {
     };
     let first_round: Option<i64> = row.try_get("first_round")?;
     Ok(ItemRecord {
+        from_api: row.try_get("from_api")?,
         import_candidate: opt_json_col(row, "import_candidate")?,
         active_mark: opt_json_col(row, "active_mark")?,
         source_id: row.try_get("source_id")?,
@@ -706,7 +711,8 @@ impl ReviewLoop<'_> {
     ) -> Result<Vec<u32>, DbError> {
         let rows = sqlx::query(
             "UPDATE comment_items SET gone_at = ?1, revision = revision + 1, updated_at = ?1
-             WHERE pull_request_id = ?2 AND kind <> 'pr_question' AND source_id IS NULL AND gone_at IS NULL
+             WHERE pull_request_id = ?2 AND kind <> 'pr_question' AND source_id IS NULL
+               AND NOT EXISTS(SELECT 1 FROM agent_comment_submissions s WHERE s.item_id = comment_items.id) AND gone_at IS NULL
                AND stable_key NOT IN (SELECT value FROM json_each(?3))
              RETURNING item_no",
         )

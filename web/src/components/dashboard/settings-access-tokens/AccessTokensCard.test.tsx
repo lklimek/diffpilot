@@ -113,6 +113,19 @@ describe("AccessTokensCard (ADR-019, plan §F.6)", () => {
     });
   });
 
+  it("can issue a submission token without granting decision execution", async () => {
+    const { onCreate } = renderCard();
+    await userEvent.click(screen.getByRole("button", { name: "New token" }));
+    await userEvent.type(screen.getByLabelText("Name"), "review agent");
+    await userEvent.click(screen.getByRole("checkbox", { name: /review_loop_submit/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Create token" }));
+    expect(onCreate).toHaveBeenCalledWith({
+      name: "review agent",
+      scopes: ["read", "review_loop_submit"],
+      expires_in_days: 90,
+    });
+  });
+
   it("says what review_loop_execute allows: any current decision in this diffpilot, not only yours", async () => {
     renderCard();
     await userEvent.click(screen.getByRole("button", { name: "New token" }));

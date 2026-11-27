@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SubmitAgentComment",
+  "description": "Submit a standalone comment or a GitHub comment annotation (agent token only).",
+  "type": "object",
+  "properties": {
+    "submission_key": {
+      "description": "Reuse this key to retry this payload on the same PR with the same token.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "body": {
+      "description": "Nonempty agent text, at most 6000 characters.",
+      "type": "string"
+    },
+    "target": {
+      "description": "Where the comment belongs.",
+      "$ref": "#/$defs/AgentCommentTarget"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "submission_key",
+    "body",
+    "target"
+  ],
+  "$defs": {
+    "AgentCommentTarget": {
+      "description": "Target of a review comment submitted by an agent.",
+      "oneOf": [
+        {
+          "description": "A new review item.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "standalone"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "description": "Supplemental text for an exact GitHub comment.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "github"
+            },
+            "comment": {
+              "description": "A GitHub comment node ID or canonical comment link on this PR.",
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "comment"
+          ]
+        }
+      ]
+    }
+  }
+}

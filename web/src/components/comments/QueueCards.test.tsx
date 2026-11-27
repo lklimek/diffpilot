@@ -589,6 +589,30 @@ describe("CommentsTable (US8, US27)", () => {
     return onSubmit;
   };
 
+  it("keeps queued and running items out of the decided table using the server status", () => {
+    const item = byNo(22);
+    render(
+      table(
+        [
+          { ...item, id: "done", no: 40, title: "Settled finding", state: "done", status: "decided" },
+          { ...item, id: "queued", no: 41, title: "Queued finding", state: "undecided", status: "waiting" },
+          {
+            ...item,
+            id: "running",
+            no: 42,
+            title: "Running finding",
+            state: "undecided",
+            status: "assessing",
+          },
+        ],
+        vi.fn(),
+      ),
+    );
+    expect(screen.getByRole("link", { name: "Settled finding" })).toBeVisible();
+    expect(screen.queryByRole("link", { name: "Queued finding" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Running finding" })).toBeNull();
+  });
+
   it("the LLM tags of its column headers take keyboard focus and show their tips (brief §4 rule 3)", () => {
     show();
     const tagged = screen
@@ -702,7 +726,7 @@ describe("CommentsTable (US8, US27)", () => {
   it("an item the latest read no longer shows is listed with that fact and needs no decision (plan §2.1)", async () => {
     render(
       table(
-        listItems().map((i) => (i.no === 22 ? { ...i, gone_at: "2026-11-18T09:00:00Z" } : i)),
+        listItems().map((i) => (i.no === 22 ? { ...i, status: "all", gone_at: "2026-11-18T09:00:00Z" } : i)),
         vi.fn(),
       ),
     );

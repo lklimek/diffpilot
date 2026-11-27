@@ -102,6 +102,47 @@ fn reject(by: &str) -> RecordedDecision {
 }
 
 #[test]
+fn a_local_agent_quote_cannot_make_a_github_decision_ambiguous() {
+    let point = "https://github.com/acme/r/pull/12#issuecomment-21";
+    let reply = "https://github.com/acme/r/pull/12#issuecomment-22";
+    let local = "https://diffpilot.example/pr/acme/r/12/comments?item=C3";
+    let finding = "Bound the retry loop.";
+    let mut decision = reject("owner");
+    decision.comment_url = reply.into();
+    let data: PrData = serde_json::from_value(json!({
+        "manifest":{"repo":"acme/r","pr":12,"head":"abc","base_ref":"main","base_sha":"def",
+            "title":"Retry","body":"","pr_author":"alice","maintainers":["owner"],"bots":[]},
+        "threads":[],"review_comments":[],"reviews":[],"comments":[
+            {"url":point,"author":{"login":"reviewer","databaseId":3},"body":finding,"createdAt":"2026-11-24T00:00:00Z"},
+            {"url":reply,"author":{"login":"owner","databaseId":1},"body":format!("{finding}\n\n{}",decision.quote),
+                "createdAt":"2026-11-25T00:00:00Z"},
+            {"url":local,"author":{"login":"owner"},"body":finding,"agentItemId":"00000000-0000-4000-8000-000000000003"}
+        ],
+        "conventions":{},"ids":{"next_id":4,"items":[]},"scope":{"threads":[],"sources":[point,local]}
+    }))
+    .unwrap();
+    assert!(
+        candidate(
+            &data,
+            &authority(),
+            "payer",
+            Point {
+                url: point,
+                thread: None,
+                quote: finding,
+                written_at: None,
+                shared_url: false
+            },
+            &decision
+        )
+        .unwrap()
+        .binding
+    );
+    assert!(version(&data, point, local).is_none());
+    assert!(version(&data, local, reply).is_none());
+}
+
+#[test]
 fn import_only_binding_authority() {
     let d = reject("outsider");
     assert!(attempt(&authority(), 3, Some(40), &d, None, "T21").is_none());

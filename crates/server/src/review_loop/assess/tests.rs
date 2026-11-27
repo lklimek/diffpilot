@@ -1038,6 +1038,141 @@ async fn paired_primary_failure_never_promotes_the_secondary() {
 }
 
 #[tokio::test]
+async fn both_assessment_methods_accept_the_same_standalone_agent_item() {
+    use contracts::api::access_tokens::AccessTokenId;
+    use contracts::assessment::*;
+    use contracts::ids::UserId;
+    use db::repo::review_loop::{NewAgentComment, NewAgentSubmission};
+
+    let body = "The retry can exceed the operation deadline.";
+    for primary in [AssessmentMethod::ClaudiusHost, AssessmentMethod::PromptV4] {
+        let f = fixture(HEAD).await;
+        let payer = UserId("u1".into());
+        f.state
+            .db
+            .assessments()
+            .set_config(
+                DEFAULT_TENANT,
+                &payer,
+                &AssessmentConfig {
+                    primary_method: primary,
+                    ab_prs: vec!["acme/node-client#482".into()],
+                    ab_until: None,
+                },
+            )
+            .await
+            .unwrap();
+        let rl = f.state.db.review_loop();
+        let token = AccessTokenId("agent123".into());
+        let (submission, fresh) = rl
+            .submit_agent_comment(
+                &NewAgentSubmission {
+                    tenant: DEFAULT_TENANT,
+                    pr: PR,
+                    token_id: &token,
+                    key: uuid::Uuid::new_v4(),
+                    fingerprint: "test",
+                    agent: "review agent",
+                    now: Timestamp::now(),
+                },
+                NewAgentComment::Standalone(Box::new(ObservedItem {
+                    kind: CommentItemKind::PrComment,
+                    author: "review agent".into(),
+                    body: body.into(),
+                    body_hash: crate::review_loop::markers::body_hash(body),
+                    url: None,
+                    location: None,
+                    ..observed("local")
+                })),
+            )
+            .await
+            .unwrap();
+        assert!(fresh);
+        assert_eq!(submission.item_no, Some(1));
+        assert_eq!(
+            request_pass(&f.state, PR, PassReason::Opened)
+                .await
+                .unwrap(),
+            PassQueued::Queued
+        );
+        let pass = live_pass(&f.state).await;
+        for _ in 0..2 {
+            let job = claim_method(&f.state).await;
+            let host =
+                job.spec.assessment.as_ref().unwrap().method == AssessmentMethod::ClaudiusHost;
+            let data = job.spec.pr_data.as_ref().unwrap();
+            assert!(data.scope.threads.is_empty());
+            assert_eq!(data.scope.sources.len(), 1);
+            let url = data.scope.sources[0].clone();
+            assert!(
+                url.ends_with("/pr/acme/node-client/482/comments?item=C1"),
+                "{url}"
+            );
+            let mut result = succeeded(
+                job.id,
+                if host {
+                    Value::Null
+                } else {
+                    json!({"purpose":"Retry calls","items":[entry("C1")],"answer":null})
+                },
+            );
+            result.assessment = job.spec.assessment.map(Box::new);
+            result.attempt = job.attempt;
+            if host {
+                let report = json!({
+                    "schema_version":"4.2.0",
+                    "metadata":{"report_type":"comment_check","input_mode":"host_supplied","pr_number":482,"commit":HEAD},
+                    "comment_assessments":[{
+                        "id":"CMT-001","source_kind":"pr_comment","reviewer":"review agent","comment_url":url,
+                        "source_quote":body,"description":"Retry deadline","reasoning":"The retry has no bound.",
+                        "assessment":"valid","proposed_action":"Fix here","proposed_decision":{"kind":"fix_here"},
+                        "recorded_decision":{"kind":"reject","by":"lklimek","comment_url":url,"quote":body}
+                    },{
+                        "id":"CMT-002","source_kind":"pr_comment","reviewer":"review agent","comment_url":url,
+                        "source_quote":body,"description":"Do not split this local submission",
+                        "reasoning":"The retry has no bound.","assessment":"valid",
+                        "proposed_action":"Fix here","proposed_decision":{"kind":"fix_here"}
+                    }]
+                });
+                result.report = Some(Box::new(serde_json::from_value(report).unwrap()));
+            }
+            f.state
+                .db
+                .jobs()
+                .complete(&result, Timestamp::now())
+                .await
+                .unwrap();
+        }
+        wait_pass(&f.state, pass.id).await;
+        wait_follower(pass.id).await;
+        let items = rl.items(PR).await.unwrap();
+        assert_eq!(items.len(), 1);
+        assert!(items[0].from_api);
+        assert!(items[0].source_id.is_none());
+        assert!(items[0].gone_at.is_none());
+        assert!(rl.latest_assessment(items[0].id).await.unwrap().is_some());
+        assert!(rl.pr_decisions(PR).await.unwrap().is_empty());
+        let comparison = f
+            .state
+            .db
+            .assessments()
+            .comparison(DEFAULT_TENANT, &payer, pass.id, Timestamp::now())
+            .await
+            .unwrap();
+        assert_eq!(comparison.items.len(), 2, "{:?}", comparison.items);
+        assert!(
+            comparison.items.iter().all(|row| {
+                matches!(row.source, AssessmentSource::Api { item, .. } if item == items[0].id)
+                    && row.status == ComparisonItemStatus::Matched
+                    && row.recorded_decision.is_none()
+            }),
+            "{:?}",
+            comparison.items
+        );
+    }
+}
+
+#[tokio::test]
 async fn paired_body_points_allocate_ids_only_for_the_primary_and_keep_direct_duplicates() {
     use contracts::api::review_loop::{CommentSource, CommentSourceKind, SourceRole};
     use contracts::assessment::*;

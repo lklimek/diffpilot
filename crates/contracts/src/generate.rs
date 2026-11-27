@@ -19,7 +19,8 @@ use crate::api::comments::{
 };
 use crate::api::dashboard::{
     DashboardEvent, DashboardSettings, DashboardSettingsView, DashboardSummary, ItemPage,
-    ItemQuery, RefreshStatus, SetTimeZoneRequest, SnoozeRequest, StartRefreshRequest, SummaryQuery,
+    ItemQuery, RefreshStatus, SetDashboardSettingsQuery, SetTimeZoneRequest, SnoozeRequest,
+    StartRefreshRequest, SummaryQuery,
 };
 use crate::api::deps::DependencyView;
 use crate::api::error::{ApiError, LoginError};
@@ -31,13 +32,13 @@ use crate::api::pr::{PrHistory, PrHistoryQuery, ResolvePrRequest, ResolvePrRespo
 use crate::api::questions::{AnchoredAskRequest, AskQuestion, AskRequest};
 use crate::api::review::ReviewState;
 use crate::api::review_loop::{
-    AgentPushPayload, CarryOverPage, CarryOverQuery, ChannelTestResult, Claim, ClaimRequest,
-    CodeContext, CommentItem, CommentLog, CommentsOverview, ContextQuery, DecideRequest,
-    DecideRest, Decision, DecisionBatchRequest, DecisionFeed, EffectReportRequest, EffectsPreview,
-    EffectsPreviewRequest, FeedDecision, FeedEvent, FeedQuery, GateMarkRequest, GithubThreadDetail,
-    IssueAttempt, IssueAttemptRequest, ItemActionRequest, ItemsQuery, MarkedItems,
-    MarkedItemsQuery, NotificationSettings, PrPage, PushTarget, PutChannelRequest,
-    PutPushTargetRequest, UserStreamEvent, WatchList, WebhookPayload,
+    AgentCommentReceipt, AgentPushPayload, CarryOverPage, CarryOverQuery, ChannelTestResult, Claim,
+    ClaimRequest, CodeContext, CommentItem, CommentLog, CommentsOverview, ContextQuery,
+    DecideRequest, DecideRest, Decision, DecisionBatchRequest, DecisionFeed, EffectReportRequest,
+    EffectsPreview, EffectsPreviewRequest, FeedDecision, FeedEvent, FeedQuery, GateMarkRequest,
+    GithubThreadDetail, IssueAttempt, IssueAttemptRequest, ItemActionRequest, ItemsQuery,
+    MarkedItems, MarkedItemsQuery, NotificationSettings, PrPage, PushTarget, PutChannelRequest,
+    PutPushTargetRequest, SubmitAgentComment, UserStreamEvent, WatchList, WebhookPayload,
 };
 use crate::api::settings::{
     GithubWebhook, LlmJobSlots, RankingUsage, RepoSettings, RepositoryInstallations,
@@ -120,6 +121,7 @@ pub const API_SCHEMAS: &[ApiSchema] = &[
         "dashboard_settings_view",
         &[routes::GET_DASHBOARD_SETTINGS],
     ),
+    api_schema::<SetDashboardSettingsQuery>("set_dashboard_settings_query", &[]),
     api_schema::<AnalysisSummary>("analysis_summary", &[routes::GET_ANALYSIS]),
     api_schema::<MyAnalysesQuery>("my_analyses_query", &[]),
     api_schema::<MyAnalyses>("my_analyses", &[routes::LIST_MY_ANALYSES]),
@@ -143,6 +145,8 @@ pub const API_SCHEMAS: &[ApiSchema] = &[
     api_schema::<CommentsOverview>("comments_overview", &[routes::GET_COMMENTS]),
     api_schema::<ItemsQuery>("items_query", &[]),
     api_schema::<Vec<CommentItem>>("comment_item_list", &[routes::LIST_COMMENT_ITEMS]),
+    api_schema::<SubmitAgentComment>("submit_agent_comment", &[]),
+    api_schema::<AgentCommentReceipt>("agent_comment_receipt", &[routes::SUBMIT_AGENT_COMMENT]),
     api_schema::<ContextQuery>("context_query", &[]),
     api_schema::<CodeContext>("code_context", &[routes::GET_COMMENT_CONTEXT]),
     api_schema::<GithubThreadDetail>("github_thread_detail", &[routes::GET_GITHUB_THREAD]),
@@ -399,6 +403,7 @@ fn typescript_types() -> Result<String, GenerateError> {
     collector.visit::<DashboardEvent>();
     collector.visit::<DashboardSettings>();
     collector.visit::<DashboardSettingsView>();
+    collector.visit::<SetDashboardSettingsQuery>();
     collector.visit::<SetTimeZoneRequest>();
     collector.visit::<SnoozeRequest>();
     collector.visit::<AccessToken>();
@@ -408,6 +413,8 @@ fn typescript_types() -> Result<String, GenerateError> {
     collector.visit::<CommentsOverview>();
     collector.visit::<ItemsQuery>();
     collector.visit::<CommentItem>();
+    collector.visit::<SubmitAgentComment>();
+    collector.visit::<AgentCommentReceipt>();
     collector.visit::<ContextQuery>();
     collector.visit::<CodeContext>();
     collector.visit::<GithubThreadDetail>();

@@ -1,5 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ContextType } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { ImpactRef, ReviewState, Step, Tour } from "../../api/generated/types";
 import { expectTrustWording } from "../../__tests__/wording";
@@ -7,6 +8,7 @@ import { FIXTURE_STATES, seedFor } from "../../mocks/fixtures";
 import { findStep } from "../../screens/tour/sequence";
 import { sha256Hex } from "../github/links";
 import { Inspector } from "../inspector/Inspector";
+import { PathLinks } from "../section/pathLinks";
 import { StepBlock } from "./StepBlock";
 
 const stepOf = (tour: Tour, id: string): Step => findStep(tour, id)!.step;
@@ -293,6 +295,68 @@ describe("StepBlock", () => {
       "false",
     );
     expect(screen.queryByText("code of tests/sync_headers.rs")).toBeNull();
+  });
+
+  it("opens only the selected impact reason and retains the original basis", async () => {
+    const step = structuredClone(stepOf(tour, "f2.1"));
+    const first = step.llm.impact[0]!;
+    first.reason = "Summary of the consequence.\nThe unchanged caller relies on the old limit.";
+    step.llm.impact.push({
+      ...first,
+      range: { start_line: 16, end_line: 20 },
+      reason: "Another consequence.\nA different reader uses this value.",
+    });
+    render(<StepBlock step={step} code={null} />);
+    const excerpt = screen.getByRole("button", { name: /^Summary of the consequence/ });
+    expect(excerpt).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText(/The unchanged caller/)).toBeNull();
+    excerpt.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(excerpt).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText(/The unchanged caller.*old limit/)).toBeVisible();
+    expect(screen.getByText(/The unchanged caller.*old limit/).parentElement).toHaveTextContent("(fact)");
+    expect(screen.queryByText(/A different reader/)).toBeNull();
+    await userEvent.keyboard(" ");
+    expect(excerpt).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText(/The unchanged caller/)).toBeNull();
+  });
+
+  it("reveals the disclosure when a file mention becomes a link without a layout resize", async () => {
+    const step = structuredClone(stepOf(tour, "f2.1"));
+    const mention = "src/rpc/client.rs:89";
+    const href = "/files#client";
+    step.llm.impact[0]!.reason = `The caller in ${mention} uses the old limit.`;
+    const client = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(100);
+    const scroll = vi.spyOn(Element.prototype, "scrollWidth", "get").mockImplementation(function (
+      this: Element,
+    ) {
+      return this.querySelector(`a[href="${href}"]`) ? 120 : 100;
+    });
+    try {
+      const show = (links: ContextType<typeof PathLinks>) => (
+        <PathLinks.Provider value={links}>
+          <StepBlock step={step} code={null} />
+        </PathLinks.Provider>
+      );
+      const { rerender } = render(show(null));
+      const impact = screen.getByRole("region", { name: "Impact outside the diff" });
+      expect(within(impact).queryByRole("button")).toBeNull();
+      rerender(
+        show({
+          resolve: (token) => (token === mention ? { href, tip: "Open the caller in Files" } : undefined),
+          onNavigate: vi.fn(),
+        }),
+      );
+      const toggle = within(impact).getByRole("button", { name: /The caller in/ });
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+      expect(within(toggle).queryByRole("link")).toBeNull();
+      toggle.focus();
+      await userEvent.keyboard("{Enter}");
+      expect(within(impact).getByRole("link", { name: mention })).toHaveAttribute("href", href);
+    } finally {
+      scroll.mockRestore();
+      client.mockRestore();
+    }
   });
 
   it("names an impact's file and lines without a toggle when no code is supplied", () => {

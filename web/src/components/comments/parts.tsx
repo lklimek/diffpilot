@@ -76,7 +76,8 @@ const SOURCE: Record<CommentItem["kind"], string> = {
 };
 
 /** "thepastaclaw · bot · inline thread". */
-export function sourceText(item: Pick<CommentItem, "author" | "author_kind" | "kind">): string {
+export function sourceText(item: Pick<CommentItem, "author" | "author_kind" | "kind" | "origin">): string {
+  if (item.origin === "api") return `${item.author} · agent`;
   const kind = item.author_kind === "bot" ? "bot" : item.author_kind === "human" ? "human" : "diffpilot";
   return `${item.author} · ${kind} · ${SOURCE[item.kind] ?? item.kind}`;
 }

@@ -37,6 +37,7 @@ import type {
   WatchList,
 } from "../api/generated/types";
 import {
+  awaitsDecision,
   commentsByNo,
   duplicatePrimary,
   followsPrimary,
@@ -130,6 +131,7 @@ function item(no: number, fields: Partial<CommentItem> & Pick<CommentItem, "titl
     id: `00000000-0000-4000-8000-${String(no).padStart(12, "0")}`,
     no,
     kind: "thread",
+    origin: fields.kind === "pr_question" ? "diffpilot" : "github",
     stable_key: `thread-${no}`,
     author: "thepastaclaw",
     author_kind: "bot",
@@ -138,6 +140,7 @@ function item(no: number, fields: Partial<CommentItem> & Pick<CommentItem, "titl
     bot_severity: "Suggestion",
     gates: [],
     state: "undecided",
+    status: "needs_you",
     revision: 1,
     first_seen_head: HEAD,
     first_round: 4,
@@ -584,7 +587,7 @@ export function commentTally(): CommentTally {
   const list = listItems();
   return {
     total: list.filter((item) => item.kind !== "pr_question" && !item.gone_at).length,
-    needs_you: waitingIn(list).length,
+    needs_you: counts(list).needs_you,
   };
 }
 
@@ -633,21 +636,36 @@ const OPEN_STATES = new Set(["undecided", "reopened", "asked_back"]);
 /** Waiting for a decision: open and still produced by the read (an item with `gone_at` leaves the queue). */
 const isOpen = (i: CommentItem) => OPEN_STATES.has(i.state) && !i.gone_at;
 const isAssessing = (i: CommentItem) => i.state === "assessing" && !i.gone_at;
+
+function mockStatus(item: CommentItem): CommentItem["status"] {
+  if (item.status_comment) return "status_comments";
+  if (item.imported_decision || item.state === "outside") return "decided";
+  if (item.not_a_review_point) return "not_a_review_point";
+  if (followsPrimary(item)) return "duplicates";
+  if (["decided", "executing", "done", "repeat"].includes(item.state)) return "decided";
+  if (item.gone_at) return "all";
+  // A linked item can lack its own assessment and still require an explicit decision.
+  if (
+    duplicatePrimary(item) != null &&
+    (awaitsDecision(item) || (item.gates.length > 0 && item.state === "assessing"))
+  )
+    return "needs_you";
+  if (item.assessment_state.state === "queued") return "waiting";
+  if (item.assessment_state.state === "running") return "assessing";
+  if (item.kind !== "pr_question" && item.assessment_state.state === "not_assessed") return "not_assessed";
+  return awaitsDecision(item) ? "needs_you" : "all";
+}
+
+/** Emits the status field of the API view; mock mutations still work on the stored item. */
+function projectStatus(item: CommentItem): CommentItem {
+  item.status = mockStatus(item);
+  return item;
+}
+
 /** The open items of `list` no standing "Merge with follow-ups" covers (queue.rs `waiting`). */
 function waitingIn(list: CommentItem[]): CommentItem[] {
   const covered = followedUp(list);
-  return list.filter(
-    (item) =>
-      (isOpen(item) || (duplicatePrimary(item) != null && item.gates.length > 0 && isAssessing(item))) &&
-      !covered.has(item.no) &&
-      !item.status_comment &&
-      !item.imported_decision &&
-      !item.not_a_review_point &&
-      !followsPrimary(item) &&
-      (item.kind === "pr_question" ||
-        duplicatePrimary(item) != null ||
-        item.assessment_state.state === "assessed"),
-  );
+  return list.filter((item) => item.status === "needs_you" && !covered.has(item.no));
 }
 
 /** Items as RC4 answers them in the selected state. */
@@ -657,14 +675,17 @@ export function listItems(): CommentItem[] {
   switch (state()) {
     case "empty":
     case "no-agent":
-      return all.filter((i) => !isOpen(i));
+      return all.filter((i) => !isOpen(i)).map(projectStatus);
     case "running":
       return all.map((i) =>
-        isOpen(i) && i.no % 2 === 0
-          ? { ...i, state: "assessing", assessment_state: { state: "running" }, assessment: null }
-          : i,
+        projectStatus(
+          isOpen(i) && i.no % 2 === 0
+            ? { ...i, state: "assessing", assessment_state: { state: "running" }, assessment: null }
+            : i,
+        ),
       );
     default:
+      all.forEach(projectStatus);
       return all;
   }
 }
@@ -1111,7 +1132,7 @@ export function undo(raw: string, revision: number): CommentItem | Refusal {
   if (it.revision !== revision) return changedSince(it);
   if (it.not_a_review_point) {
     endMark(it);
-    return it;
+    return projectStatus(it);
   }
   const last = it.decisions.at(-1);
   if (!last || last.undone_at) return [409, "conflict", `C${it.no} has no decision to undo.`];
@@ -1133,7 +1154,7 @@ export function undo(raw: string, revision: number): CommentItem | Refusal {
     item.state = "undecided";
     item.revision += 1;
   }
-  return it;
+  return projectStatus(it);
 }
 
 /** RC13: a decided or carried item is asked again; effects not yet claimed are cancelled. */
@@ -1147,7 +1168,7 @@ export function reopen(raw: string, revision: number): CommentItem | Refusal {
   cancelUnclaimed(last);
   it.state = "reopened";
   it.revision += 1;
-  return it;
+  return projectStatus(it);
 }
 
 /** RC14: "Skip for now" of the reader at the item's revision. */
@@ -1168,7 +1189,7 @@ export function markGate(raw: string, body: GateMarkRequest): CommentItem | Refu
   const kept = it.gates.filter((g) => !(g.gate === body.gate && g.source === "owner"));
   it.gates = body.marked ? [...kept, { gate: body.gate, source: "owner" }] : kept;
   it.revision += 1;
-  return it;
+  return projectStatus(it);
 }
 
 type PlannedDuplicate = { item: CommentItem; body: DecideRequest; planned: Planned };

@@ -59,6 +59,7 @@ import type {
   CreatedAccessToken,
   DashboardEvent,
   DashboardSettings,
+  DashboardSettingsSection,
   DashboardSettingsView,
   DashboardSummary,
   DependencyView,
@@ -454,8 +455,8 @@ export function createApiClient(baseUrl = "") {
     getRepoSettings: (repo: RepoRef) =>
       call<RepoSettings>("getRepoSettings", { params: { owner: repo.owner, name: repo.name } }),
     getDashboardSettings: () => call<DashboardSettingsView>("getDashboardSettings"),
-    setDashboardSettings: (body: DashboardSettings) =>
-      call<DashboardSettingsView>("setDashboardSettings", { body }),
+    setDashboardSettings: (body: DashboardSettings, section?: DashboardSettingsSection) =>
+      call<DashboardSettingsView>("setDashboardSettings", { body, query: section && { section } }),
     setAskEffort: (reasoning_effort: ReasoningEffort, sessionScope: number) =>
       call<import("./generated/types").LlmSelection>("setAskEffort", {
         body: { reasoning_effort },

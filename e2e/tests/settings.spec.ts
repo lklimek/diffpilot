@@ -47,6 +47,7 @@ test("after a failed LLM call the status is a plain sentence with its time; Retr
   await expect(account).toHaveAttribute("aria-expanded", "false");
   await expect(account).toHaveAccessibleDescription("alice — LLM not working");
   await account.click();
+  await page.getByRole("button", { name: /^LLM activity/ }).click();
   const activity = page.getByRole("region", { name: "LLM activity" });
   await expect(activity.getByText("LLM not working", { exact: true })).toBeVisible();
   await expect(activity.getByText(/^Last LLM call \d\d:\d\d · failed\.$/)).toBeVisible();

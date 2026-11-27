@@ -13,6 +13,26 @@ export interface FileMentionLink {
   github?: boolean;
 }
 
+// Keep URLs and invalid line suffixes as whole tokens so their component paths cannot become links.
+const PATH_TOKEN = /[\p{L}\p{N}_.~/%+@\\:#?=&-]+/gu;
+
+export function* fileMentionTokens(text: string) {
+  for (const match of text.matchAll(PATH_TOKEN)) {
+    yield { token: match[0].replace(/[.?:]+$/, ""), index: match.index };
+  }
+}
+
+/** A cheap preflight for views that otherwise have no Files index. */
+export function hasFileMentionSyntax(text: string): boolean {
+  if (/(?<!`)`[\p{L}\p{N}_-]+`(?!`)/u.test(text)) return true;
+  for (const { token } of fileMentionTokens(text)) {
+    if (token.startsWith("/") || token.includes("://")) continue;
+    if (/^(?:Makefile|Dockerfile|Containerfile|README|LICENSE|COPYING|NOTICE)$/.test(token)) return true;
+    if (/\/|\.[\p{L}\p{N}_]+$|:\d+(?:-\d+)?$|#L\d+$/u.test(token)) return true;
+  }
+  return false;
+}
+
 export const PathLinks = createContext<{
   resolve: (mention: string) => FileMentionLink | undefined;
   onNavigate: (href: string) => void;
@@ -43,7 +63,7 @@ export function pathMatcher(paths: readonly string[], repo: RepoRef) {
 
     const prefix = [`${repo.owner}/${repo.name}/`, `${repo.name}/`].find((root) => path.startsWith(root));
     const normalized = prefix ? path.slice(prefix.length) : path;
-    const file = exact.has(normalized) ? normalized : exact.has(path) ? path : suffixes.get(normalized);
+    const file = exact.has(path) ? path : exact.has(normalized) ? normalized : suffixes.get(normalized);
     if (file) return { path: file, line, end };
   };
 }

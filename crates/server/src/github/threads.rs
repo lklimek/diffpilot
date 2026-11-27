@@ -28,6 +28,13 @@ const THREAD_DETAIL: &str = "query($id:ID!,$after:String){node(id:$id){__typenam
 path pullRequest{number title repository{nameWithOwner isPrivate}} comments(first:100,after:$after){\
 pageInfo{hasNextPage endCursor} nodes{state body url createdAt author{login}}}}}}";
 
+const PR_COMMENT_DETAIL: &str = "query($id:ID!){node(id:$id){__typename ... on IssueComment{body url createdAt author{login} \
+pullRequest{number title repository{nameWithOwner isPrivate}}} ... on PullRequestReview{body url \
+submittedAt state author{login} pullRequest{number title repository{nameWithOwner isPrivate}}}}}";
+
+const REPLY_PARENT: &str = "query($id:ID!){node(id:$id){__typename ... on PullRequestReviewComment{url state replyTo{url} \
+pullRequest{number title repository{nameWithOwner isPrivate}}}}}";
+
 /// `raw` if it is an `https://github.com/…` URL (no other host, port or credentials); the UI renders it as a
 /// link, so nothing else may pass.
 pub fn github_web_url(raw: &str) -> Option<String> {
@@ -123,6 +130,17 @@ struct DetailPr {
     repository: DetailRepo,
 }
 
+impl DetailPr {
+    fn matches(&self, pr: &PrRef) -> bool {
+        self.number == pr.number
+            && !self.repository.is_private
+            && self
+                .repository
+                .name_with_owner
+                .eq_ignore_ascii_case(&format!("{}/{}", pr.repo.owner, pr.repo.name))
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DetailRepo {
@@ -140,6 +158,140 @@ struct DetailComment {
     author: Option<Author>,
 }
 
+#[derive(Deserialize)]
+struct PrCommentData {
+    node: Option<PrCommentNode>,
+}
+
+#[derive(Deserialize)]
+struct ReplyData {
+    node: Option<ReplyNode>,
+}
+
+#[derive(Deserialize)]
+struct CommentLink {
+    url: String,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "__typename", rename_all_fields = "camelCase")]
+enum ReplyNode {
+    PullRequestReviewComment {
+        url: String,
+        state: String,
+        reply_to: Option<CommentLink>,
+        pull_request: DetailPr,
+    },
+    #[serde(other)]
+    Other,
+}
+
+/// Canonical links of the parent and the submitted reply identified by a GitHub node ID.
+pub(crate) async fn reply_parent(
+    config: &GithubConfig,
+    token: &SecretString,
+    pr: &PrRef,
+    id: &str,
+) -> Result<Option<(String, String)>, GraphqlError> {
+    let data: ReplyData =
+        graphql::execute(config, token, REPLY_PARENT, serde_json::json!({"id": id})).await?;
+    let Some(ReplyNode::PullRequestReviewComment {
+        url,
+        state,
+        reply_to: Some(parent),
+        pull_request,
+    }) = data.node
+    else {
+        return Ok(None);
+    };
+    if state == "PENDING" || !pull_request.matches(pr) {
+        return Ok(None);
+    }
+    Ok(github_web_url(&parent.url).zip(github_web_url(&url)))
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "__typename", rename_all_fields = "camelCase")]
+enum PrCommentNode {
+    IssueComment {
+        body: String,
+        url: String,
+        created_at: Timestamp,
+        author: Option<Author>,
+        pull_request: Option<DetailPr>,
+    },
+    PullRequestReview {
+        body: String,
+        url: String,
+        submitted_at: Option<Timestamp>,
+        state: String,
+        author: Option<Author>,
+        pull_request: DetailPr,
+    },
+    #[serde(other)]
+    Other,
+}
+
+/// One exact submitted PR-level comment or review body.
+pub async fn pr_comment_detail(
+    config: &GithubConfig,
+    token: &SecretString,
+    pr: &PrRef,
+    id: &str,
+) -> Result<Option<GithubThreadDetail>, GraphqlError> {
+    let Some((kind, id)) = id.split_once(':') else {
+        return Ok(None);
+    };
+    let data: PrCommentData = graphql::execute(
+        config,
+        token,
+        PR_COMMENT_DETAIL,
+        serde_json::json!({"id": id}),
+    )
+    .await?;
+    let (body, url, at, author, pull) = match (kind, data.node) {
+        (
+            "issue",
+            Some(PrCommentNode::IssueComment {
+                body,
+                url,
+                created_at,
+                author,
+                pull_request: Some(pull),
+            }),
+        ) => (body, url, created_at, author, pull),
+        (
+            "review",
+            Some(PrCommentNode::PullRequestReview {
+                body,
+                url,
+                submitted_at: Some(at),
+                state,
+                author,
+                pull_request,
+            }),
+        ) if state != "PENDING" => (body, url, at, author, pull_request),
+        _ => return Ok(None),
+    };
+    if !pull.matches(pr) {
+        return Ok(None);
+    }
+    Ok(Some(GithubThreadDetail {
+        title: pull.title,
+        path: String::new(),
+        pr_level: true,
+        agent_annotations: Vec::new(),
+        item_no: None,
+        complete: true,
+        comments: vec![GithubThreadComment {
+            author: author.map_or_else(|| "ghost".to_owned(), |author| author.login),
+            body,
+            created_at: at,
+            url: github_web_url(&url),
+        }],
+    }))
+}
+
 /// One submitted conversation from the given PR, read with the viewer's GitHub token.
 pub async fn detail(
     config: &GithubConfig,
@@ -147,7 +299,6 @@ pub async fn detail(
     pr: &PrRef,
     id: &str,
 ) -> Result<Option<GithubThreadDetail>, GraphqlError> {
-    let repo = format!("{}/{}", pr.repo.owner, pr.repo.name);
     let mut after = None;
     let mut result: Option<GithubThreadDetail> = None;
     for _ in 0..MAX_PAGES {
@@ -166,13 +317,7 @@ pub async fn detail(
         else {
             return Ok(None);
         };
-        if pull_request.number != pr.number
-            || pull_request.repository.is_private
-            || !pull_request
-                .repository
-                .name_with_owner
-                .eq_ignore_ascii_case(&repo)
-        {
+        if !pull_request.matches(pr) {
             return Ok(None);
         }
         if result.is_none()
@@ -186,6 +331,8 @@ pub async fn detail(
         let thread = result.get_or_insert_with(|| GithubThreadDetail {
             title: pull_request.title,
             path,
+            pr_level: false,
+            agent_annotations: Vec::new(),
             item_no: None,
             complete: false,
             comments: Vec::new(),

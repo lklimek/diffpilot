@@ -40,6 +40,8 @@ test("a review analysis running first: the ranking waits for it, then ranks", as
   await waitForRefresh(page, (r) => r.id !== previous?.id && r.ranking?.state === "waiting_for_analysis");
   const account = userMenuButton(page);
   await account.click();
+  const activityDisclosure = page.getByRole("button", { name: /^LLM activity/ });
+  await activityDisclosure.click();
   const activity = page.getByRole("region", { name: "LLM activity" });
   const waiting = activity
     .getByRole("list", { name: /^Queued/ })
@@ -58,6 +60,7 @@ test("a review analysis running first: the ranking waits for it, then ranks", as
   const done = await waitForRefresh(page, ranked);
   expect(done.judged).toBe(18);
   if ((await account.getAttribute("aria-expanded")) === "false") await account.click();
+  if ((await activityDisclosure.getAttribute("aria-expanded")) === "false") await activityDisclosure.click();
   await expect(activity).toBeVisible();
   await expect(waiting).toHaveCount(0);
   await expect(page.getByRole("heading", { name: /^Not judged yet/ })).toHaveCount(0);
@@ -86,6 +89,7 @@ test("cancel during the ranking: provisional scores stay; Retry ranking finishes
   expect(running.ranking?.total).toBe(2);
   const account = userMenuButton(page);
   await account.click();
+  await page.getByRole("button", { name: /^LLM activity/ }).click();
   await expect(
     page
       .getByRole("region", { name: "LLM activity" })

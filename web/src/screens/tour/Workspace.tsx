@@ -30,6 +30,8 @@ interface WorkspaceProps {
   onChange: (layout: TourLayout) => void;
   nav: ReactNode;
   main: ReactNode;
+  /** Optional context above the centre's scrolling content. */
+  pinnedContext?: ReactNode;
   inspector: ReactNode;
   /** The scrolling centre (scrolled to the top on a new block). */
   mainRef: RefObject<HTMLDivElement | null>;
@@ -135,6 +137,7 @@ export function Workspace({
   onChange,
   nav,
   main,
+  pinnedContext,
   inspector,
   mainRef,
   titles,
@@ -244,15 +247,25 @@ export function Workspace({
       >
         {body(
           "main",
-          <div
-            ref={mainRef}
-            tabIndex={0}
-            data-scroll-column
-            // With the Inspector hidden the Ask chat floats over the centre: its code can scroll out from under it.
-            className="relative min-h-0 flex-1 overflow-auto overscroll-contain px-5 pt-3 pb-[calc(2.5rem+var(--ask-chat-pad,0px))]"
-          >
-            {main}
-          </div>,
+          <>
+            {pinnedContext && (
+              <section
+                aria-label="Pinned flow context"
+                className="max-h-9/20 flex-none overflow-auto overscroll-contain border-b border-border px-5 pt-3"
+              >
+                {pinnedContext}
+              </section>
+            )}
+            <div
+              ref={mainRef}
+              tabIndex={0}
+              data-scroll-column
+              // With the Inspector hidden the Ask chat floats over the centre: its code can scroll out from under it.
+              className="relative min-h-0 flex-1 overflow-auto overscroll-contain px-5 pt-3 pb-[calc(2.5rem+var(--ask-chat-pad,0px))]"
+            >
+              {main}
+            </div>
+          </>,
         )}
       </main>
       {gutter("inspector")}

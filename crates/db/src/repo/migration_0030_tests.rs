@@ -76,6 +76,7 @@ const NEW: &[&str] = &[
     "assessment_passes",
     "comment_sources",
     "user_llm_selection",
+    "agent_comment_submissions",
 ];
 const WATCH_RUNTIME: &[&str] = &[
     "probe",

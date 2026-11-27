@@ -32,11 +32,11 @@ test("create: the secret is shown once with a copy button and is gone after Done
   await page.goto("/settings");
   await tokens(page).getByRole("button", { name: "New token" }).click();
   const form = page.getByRole("dialog", { name: "New access token" });
-  await expect(form.getByLabel("Name")).toBeFocused();
+  await expect(form.getByLabel("Name", { exact: true })).toBeFocused();
   await expect(form.getByLabel("Expires after")).toHaveValue("90");
   await expect(form).toContainText("Scope: read");
   await expectAccessible(page);
-  await form.getByLabel("Name").fill("ci agent");
+  await form.getByLabel("Name", { exact: true }).fill("ci agent");
   await form.getByLabel("Expires after").selectOption("30");
   await form.getByRole("button", { name: "Create token" }).click();
   const shown = page.getByRole("dialog", { name: "Token created" });
@@ -79,7 +79,7 @@ test("over plain HTTP (no Clipboard API, as Firefox on the LAN deployment) Copy 
   await page.goto("/settings");
   await tokens(page).getByRole("button", { name: "New token" }).click();
   const form = page.getByRole("dialog", { name: "New access token" });
-  await form.getByLabel("Name").fill("lan agent");
+  await form.getByLabel("Name", { exact: true }).fill("lan agent");
   await form.getByRole("button", { name: "Create token" }).click();
   const shown = page.getByRole("dialog", { name: "Token created" });
   const secret = await shown.getByLabel("Your new token").inputValue();
@@ -111,7 +111,7 @@ test("a name in use is refused before sending", async ({ page }) => {
   await page.goto("/settings");
   await tokens(page).getByRole("button", { name: "New token" }).click();
   const form = page.getByRole("dialog", { name: "New access token" });
-  await form.getByLabel("Name").fill("laptop scripts");
+  await form.getByLabel("Name", { exact: true }).fill("laptop scripts");
   await form.getByRole("button", { name: "Create token" }).click();
   await expect(form.getByRole("alert")).toContainText('already have a token called "laptop scripts"');
 });

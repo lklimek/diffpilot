@@ -12,6 +12,7 @@ import { dateTimeText } from "../../components/format/time";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { useMentionBots } from "../dashboard/mentions";
 import { useDashboardItems, useDashboardSummary, useHideMention, useSlackNames } from "../dashboard/queries";
+import { WorkItemPathLinks } from "../dashboard/WorkItemPathLinks";
 import { LLM_USAGE_PATH } from "../shell/paths";
 import { commentsPath, prPath, samePr } from "./paths";
 
@@ -68,14 +69,17 @@ export function PrWork({ pr, now }: { pr: PrRef; now: Date }) {
         <StatusMessage kind="loading">Loading your work…</StatusMessage>
       )}
       {error && <StatusMessage kind="error">{errorText(error)}</StatusMessage>}
-      {ranking &&
-        (ranking.item.score.tier === "p0" ? (
-          <AlarmRow {...ranking} />
-        ) : (
-          <ul aria-label="Ranking" className="min-w-0 list-none rounded-lg border border-border bg-surface">
-            <WorkItemRow {...ranking} />
-          </ul>
-        ))}
+      {ranking && (
+        <WorkItemPathLinks item={ranking.item} expanded={expanded}>
+          {ranking.item.score.tier === "p0" ? (
+            <AlarmRow {...ranking} />
+          ) : (
+            <ul aria-label="Ranking" className="min-w-0 list-none rounded-lg border border-border bg-surface">
+              <WorkItemRow {...ranking} />
+            </ul>
+          )}
+        </WorkItemPathLinks>
+      )}
       <Mentions
         items={mentions}
         withBots={withBots}

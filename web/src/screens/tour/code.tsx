@@ -30,6 +30,7 @@ import { pathOn } from "../../components/files/model";
 import { githubLineUrls, type PrLinkBase } from "../../components/github/links";
 import type { LineGithubLink } from "../../components/code-view/LineGithub";
 import { Tooltip } from "../../components/tooltip/Tooltip";
+import type { AskLineStatusLookup, AskStatusAtLine } from "../../components/ask/lineStatus";
 
 function readHideContextChanges(key: string): boolean {
   try {
@@ -85,6 +86,7 @@ export interface CodeContext {
   onLineSelect?: (target: CommentTarget, how: { extend: boolean }, lines: LinesResponse) => void;
   /** "Ask about this line" (or the selected lines); not offered without it (no step open). */
   onAskLine?: (target: CommentTarget) => void;
+  askStatus?: AskLineStatusLookup;
   /** A pending comment to show open where its line is displayed. */
   revealComment: string | null;
   /** Edit and delete of a pending comment, on GitHub. */
@@ -139,6 +141,7 @@ export function LinesCode({ ctx, lines, ...view }: LinesCodeProps) {
   }
   const data = lines.data;
   const active = ctx.activeLine?.path === data.path ? ctx.activeLine : null;
+  const ask = askLineActions(ctx, data.path, data.side);
   const flash =
     ctx.flash?.file === data.path &&
     ctx.flash.side === data.side &&
@@ -170,7 +173,7 @@ export function LinesCode({ ctx, lines, ...view }: LinesCodeProps) {
           if (ctx.onLineSelect) ctx.onLineSelect(target, how, source);
           else ctx.onComment(target, source);
         }}
-        onAskLine={ctx.onAskLine}
+        {...ask}
         onLoadDeleted={(block) => setOpened((all) => [...all, block.base_start])}
         onShowInInspector={ctx.onShowInInspector}
         onAskRemark={ctx.onAskRemark}
@@ -195,6 +198,20 @@ export function LinesCode({ ctx, lines, ...view }: LinesCodeProps) {
         ))}
     </>
   );
+}
+
+/** Use the exact repository path on the row's commit, including the old path of a renamed file. */
+function askLineActions(
+  { files, onAskLine, askStatus }: Pick<CodeContext, "files" | "onAskLine" | "askStatus">,
+  path: string,
+  side: LineSide,
+): { onAskLine?: CodeContext["onAskLine"]; askStatus?: AskStatusAtLine } {
+  const file = files?.find((candidate) => pathOn(candidate, side) === path);
+  const pathAt = (at: LineSide) => (file ? pathOn(file, at) : path);
+  return {
+    onAskLine: onAskLine && ((target) => onAskLine({ ...target, path: pathAt(target.side) })),
+    askStatus: askStatus && ((at, line) => askStatus(pathAt(at), at, line)),
+  };
 }
 
 function useGithubLines(
@@ -308,7 +325,7 @@ export function DiffCode({
   /** The reviewer's pending comments with edit and delete, marked on their lines. */
   comments?: Pick<
     CodeContext,
-    "comments" | "onEditComment" | "onDeleteComment" | "onAskLine" | "pr" | "files"
+    "comments" | "onEditComment" | "onDeleteComment" | "onAskLine" | "askStatus" | "pr" | "files"
   >;
 }) {
   const diff = useDiff(analysisId, query);
@@ -325,7 +342,7 @@ export function DiffCode({
       comments={comments?.comments}
       onEditComment={comments?.onEditComment}
       onDeleteComment={comments?.onDeleteComment}
-      onAskLine={comments?.onAskLine}
+      {...askLineActions(comments ?? {}, query.path, query.side)}
     />
   );
 }

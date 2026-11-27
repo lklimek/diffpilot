@@ -16,6 +16,8 @@ pub enum TokenScope {
     /// Claim and report decisions of the review-loop feed, and register the token's push target (ADR-023;
     /// `RouteAuth::TokenOnly`); never decides.
     ReviewLoopExecute,
+    /// Submit agent comments and annotations to the review loop.
+    ReviewLoopSubmit,
 }
 
 impl TokenScope {
@@ -24,6 +26,7 @@ impl TokenScope {
         match self {
             Self::Read => "read",
             Self::ReviewLoopExecute => "review_loop_execute",
+            Self::ReviewLoopSubmit => "review_loop_submit",
         }
     }
 }

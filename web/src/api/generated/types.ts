@@ -44,6 +44,57 @@ export type AccessTokenId = string;
 export type AccessTokenSecret = string;
 
 /**
+ * Supplemental API text displayed independently beside its source comment.
+ */
+export type AgentAnnotation = {
+/**
+ * Submission identifier, used in a direct link to the annotation.
+ */
+id: string,
+/**
+ * Canonical link to the exact GitHub comment.
+ */
+target_url: string,
+/**
+ * The authenticated token's name when it submitted the annotation.
+ */
+agent: string,
+/**
+ * Supplemental review text.
+ */
+body: string,
+/**
+ * Submission time.
+ */
+created_at: string, };
+
+/**
+ * Stable receipt for this submission. A replay returns the same receipt.
+ */
+export type AgentCommentReceipt = {
+/**
+ * DiffPilot's unique submission identifier.
+ */
+submission_id: string,
+/**
+ * The C number of a standalone comment. An annotation has no item number of its own.
+ */
+item_no: number | null,
+/**
+ * Absolute DiffPilot link to the submission.
+ */
+url: string, };
+
+/**
+ * Target of a review comment submitted by an agent.
+ */
+export type AgentCommentTarget = { "kind": "standalone" } | { "kind": "github",
+/**
+ * A GitHub comment node ID or canonical comment link on this PR.
+ */
+comment: string, };
+
+/**
  * Event of an agent push message.
  */
 export type AgentPushEvent = "decision_available";
@@ -982,7 +1033,15 @@ version: string,
 /**
  * Verbatim grounded quote.
  */
-quote: string, };
+quote: string, } | { "kind": "api",
+/**
+ * Item assigned to this submission.
+ */
+item: CommentItemId,
+/**
+ * Frozen comment body hash.
+ */
+version: string, };
 
 /**
  * Whether an item has an LLM assessment.
@@ -1685,6 +1744,14 @@ total: number, };
  */
 export type CommentItem = {
 /**
+ * Provenance of the primary comment or question.
+ */
+origin: CommentOrigin,
+/**
+ * Supplemental API annotations on this item's GitHub conversation.
+ */
+agent_annotations?: Array<AgentAnnotation>,
+/**
  * Active internal disposition.
  */
 not_a_review_point?: ItemMark,
@@ -1769,6 +1836,10 @@ gates: Array<GateMark>,
  * State.
  */
 state: ItemState,
+/**
+ * Server classification used by Comments filters and question counts.
+ */
+status: CommentStatus,
 /**
  * Revision; a decision names the revision it saw (409 `item_changed` otherwise).
  */
@@ -1866,6 +1937,11 @@ decisions: Array<Decision<DecisionKind>>,
 carry_events: Array<CarryEvent>, };
 
 /**
+ * Origin of the primary comment or question, independent of its author and queue state.
+ */
+export type CommentOrigin = "github" | "api" | "diffpilot";
+
+/**
  * Point provenance, grounded in the source's cleaned GitHub text.
  */
 export type CommentPoint = {
@@ -1945,6 +2021,11 @@ read_at: string | null, };
  * Stored source kind; inline threads remain independent items.
  */
 export type CommentSourceKind = "review_body" | "pr_comment";
+
+/**
+ * Classification of a comment for the Comments views. Reader skips are recorded on the queue entry.
+ */
+export type CommentStatus = "status_comments" | "decided" | "not_a_review_point" | "duplicates" | "all" | "needs_you" | "waiting" | "assessing" | "not_assessed";
 
 /**
  * Counts of a pull request's review comments in Comments (plan docs/review-workflow-plan.md §2.1): threads,
@@ -2497,6 +2578,11 @@ time_zone: string | null,
  * GitHub logins with the Slack name "Copy for Slack" writes instead of `@login` (at most 100 rows).
  */
 slack_names: Array<SlackName>, };
+
+/**
+ * Which settings page owns the fields a scoped save replaces.
+ */
+export type DashboardSettingsSection = "github-sync" | "repositories" | "memcan";
 
 /**
  * Response of `GET`/`PUT /api/v1/settings/dashboard`.
@@ -4204,6 +4290,14 @@ title: string,
  * Repository-relative path.
  */
 path: string,
+/**
+ * Whether this is a PR-level comment without a file path.
+ */
+pr_level?: boolean,
+/**
+ * API annotations on this conversation.
+ */
+agent_annotations?: Array<AgentAnnotation>,
 /**
  * Number of the review card for this exact GitHub thread, when known.
  */
@@ -7716,6 +7810,15 @@ export type SetControlledOwnersRequest = {
 owners: Array<string>, };
 
 /**
+ * Query of `PUT /api/v1/settings/dashboard`.
+ */
+export type SetDashboardSettingsQuery = {
+/**
+ * The section to replace. Absent replaces the full settings document.
+ */
+section?: DashboardSettingsSection, };
+
+/**
  * Body of `PUT /api/v1/settings/llm/judge-effort`.
  */
 export type SetJudgeEffortRequest = {
@@ -8135,6 +8238,23 @@ impact: Array<ImpactRef>, };
 export type StepState = "waiting" | "running" | "done" | "failed" | "skipped";
 
 /**
+ * Submit a standalone comment or a GitHub comment annotation (agent token only).
+ */
+export type SubmitAgentComment = {
+/**
+ * Reuse this key to retry this payload on the same PR with the same token.
+ */
+submission_key: string,
+/**
+ * Nonempty agent text, at most 6000 characters.
+ */
+body: string,
+/**
+ * Where the comment belongs.
+ */
+target: AgentCommentTarget, };
+
+/**
  * Query of `GET /api/v1/dashboard`.
  */
 export type SummaryQuery = {
@@ -8188,7 +8308,7 @@ export type TodosStatus = "read" | "not_refreshed" | "off" | "not_configured";
 /**
  * What a token may do; a list on each token. Open enum: clients treat unknown values as opaque.
  */
-export type TokenScope = "read" | "review_loop_execute";
+export type TokenScope = "read" | "review_loop_execute" | "review_loop_submit";
 
 /**
  * Response of `GET /api/v1/analyses/{id}/tour`.
