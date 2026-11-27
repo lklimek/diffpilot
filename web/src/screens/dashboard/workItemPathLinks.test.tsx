@@ -10,7 +10,7 @@ import { seedFor } from "../../mocks/fixtures";
 
 const server = startMockServer();
 
-it("checks the expanded PR's current Files index and keeps unknown paths as text", async () => {
+it("links paths in the visible ranking before opening details and keeps unknown paths as text", async () => {
   const page = itemsJson as unknown as ItemPage;
   const original = page.items.find((item) => item.id === "NC-482")!;
   const review = { ...original.review!, head_moved: false };
@@ -35,10 +35,7 @@ it("checks the expanded PR's current Files index and keeps unknown paths as text
 
   renderRoute("/");
   const details = await screen.findByRole("button", { name: "Details of NC-482" });
-  expect(screen.queryByRole("link", { name: "src/rpc/client.rs:92-93" })).toBeNull();
-  expect(reads).toEqual([]);
-
-  await userEvent.click(details);
+  expect(details).toHaveAttribute("aria-expanded", "false");
   const path = `/pr/acme/node-client/482/analyses/${review.analysis_id}/files`;
   expect(await screen.findByRole("link", { name: "src/rpc/client.rs:92-93" })).toHaveAttribute(
     "href",
@@ -56,6 +53,7 @@ it("checks the expanded PR's current Files index and keeps unknown paths as text
   expect(reads).toEqual([review.analysis_id]);
 
   await userEvent.click(details);
+  await userEvent.click(details);
   expect(screen.getByRole("link", { name: "src/rpc/client.rs:92-93" })).toBeVisible();
   expect(reads).toEqual([review.analysis_id]);
 
@@ -69,4 +67,38 @@ it("checks the expanded PR's current Files index and keeps unknown paths as text
   await userEvent.click(await screen.findByRole("button", { name: "Details of NC-482" }));
   expect(screen.queryByRole("link", { name: "src/rpc/client.rs:92-93" })).toBeNull();
   expect(reads).toEqual([review.analysis_id]);
+});
+
+it.each([
+  { why: "The RPC API needs review.", file: null },
+  { why: "Check the Makefile.", file: "Makefile" },
+  { why: "Check `BOOTSTRAP`.", file: "BOOTSTRAP" },
+])("fetches a Files index only when the visible ranking could name a file ($why)", async ({ why, file }) => {
+  const page = itemsJson as unknown as ItemPage;
+  const original = page.items.find((item) => item.id === "NC-482")!;
+  const item = {
+    ...original,
+    review: { ...original.review!, head_moved: false },
+    llm: { ...original.llm!, why, next: "Check the timeout.", alarm: null },
+  };
+  const files = mockFiles(seedFor("default", "tour") as Tour);
+  const reads: string[] = [];
+  server.use(
+    http.get("/api/v1/dashboard/items", () => HttpResponse.json({ ...page, items: [item] })),
+    http.get("/api/v1/analyses/:id/files", ({ params }) => {
+      reads.push(String(params.id));
+      return HttpResponse.json({
+        ...files,
+        current_head: item.review.analysed_head,
+        files: file ? [{ ...files.files[0]!, path: file }] : files.files,
+      });
+    }),
+  );
+  renderRoute("/");
+  if (file) {
+    expect(await screen.findByRole("link", { name: file })).toBeVisible();
+  } else {
+    expect(await screen.findByText(why)).toBeVisible();
+  }
+  expect(reads).toEqual(file ? [item.review.analysis_id] : []);
 });
