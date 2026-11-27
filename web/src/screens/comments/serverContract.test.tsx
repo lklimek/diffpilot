@@ -1,6 +1,6 @@
 // What the review-loop pages show and send, checked against the server's contract (crates/server/src/review_loop/
 // effects.rs `plan`, queue.rs `decide_rest`); the msw mocks model that contract (mocks/effects-plan.ts).
-import { act, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -507,9 +507,9 @@ describe("202 Accepted without a body (RC3 read again, RC6 assess again; review_
     renderRoute(`${PR}/comments`);
     await screen.findByRole("navigation", { name: "Queue" });
     await userEvent.click(await screen.findByRole("button", { name: "Questions waiting" }));
-    await userEvent.click(screen.getByRole("button", { name: "Read GitHub again" }));
     try {
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      fireEvent.click(screen.getByRole("button", { name: "Read GitHub again" }));
       for (const tries of [2, 3, 4]) {
         await waitFor(() => expect(start).toHaveBeenCalledTimes(tries));
         await act(() => vi.advanceTimersByTimeAsync(10_000));

@@ -187,7 +187,7 @@ fn review_loop_routes_follow_the_plan() {
     }
 }
 
-/// ADR-019 amendment, T22, T25: the execute scope opens only the feed's claim, report and push-target routes,
+/// ADR-019 amendment, T22, T25: the execute scope opens only the feed's claim, attempt, report and push-target routes,
 /// never a session route, and no decision route accepts it.
 #[test]
 fn execute_scope_is_only_on_feed_write_routes() {
@@ -198,6 +198,7 @@ fn execute_scope_is_only_on_feed_write_routes() {
         .collect();
     let expected: BTreeSet<&str> = [
         routes::CLAIM_DECISION,
+        routes::RESERVE_ISSUE_ATTEMPT,
         routes::REPORT_EFFECT,
         routes::PUT_PUSH_TARGET,
         routes::DELETE_PUSH_TARGET,

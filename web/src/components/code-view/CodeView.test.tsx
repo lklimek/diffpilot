@@ -956,9 +956,7 @@ describe("CodeView: gutter markers (owner: explained, large enough, the icon's o
     );
     expect(popover).toHaveTextContent("@bob");
     const excerpt = within(popover).getByText("Should we retry non-idempotent calls at all?");
-    // `block` would override the clamp's display and show the whole text.
-    expect(excerpt.className).toMatch(/(^|\s)line-clamp-4(\s|$)/);
-    expect(excerpt.className).not.toMatch(/(^|\s)block(\s|$)/);
+    expect(excerpt).not.toHaveClass("line-clamp-4");
     expect(within(popover).queryByRole("link")).toBeNull();
     await user.click(marker);
     expect(within(popover).getByRole("link", { name: /Open on GitHub/ })).toHaveAttribute("href", thread.url);
