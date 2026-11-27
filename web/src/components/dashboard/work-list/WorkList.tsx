@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useId, useRef, useState, type ComponentType, type ReactNode } from "react";
 import type {
   Exclusions,
   PrRef,
@@ -57,6 +57,8 @@ interface WorkListProps {
   prHref?: (pr: PrRef) => string | undefined;
   /** In-app href of a pull request's Comments (owner 2026-11-23); built by the screen. */
   commentsHref?: (item: WorkItem) => string;
+  /** Provides same-analysis path links for a ranking row when its verified Files index is available. */
+  rankingPathLinks?: ComponentType<{ item: WorkItem; expanded: boolean; children: ReactNode }>;
   onWatch?: (item: WorkItem, watching: boolean) => void;
   /** Keys of the pull requests whose Watch is being saved. */
   watchingKeys?: string[];
@@ -133,6 +135,7 @@ export function WorkList({
   reviewHref,
   prHref,
   commentsHref,
+  rankingPathLinks: RankingPathLinks,
   onWatch,
   watchingKeys = [],
   onNavigate,
@@ -259,23 +262,35 @@ export function WorkList({
     rejudging: rejudgingKeys.includes(item.key),
     usageHref,
   });
-  const row = (item: WorkItem) => (
-    <WorkItemRow
-      key={item.key}
-      item={item}
-      expanded={expanded.has(item.key)}
-      onToggle={() => toggle(item.key)}
-      current={item.key === cursor}
-      reviewHref={item.kind === "pr" ? reviewHref(item) : undefined}
-      {...rowProps(item)}
-      onNavigate={onNavigate}
-      expanderRef={register(item.key)}
-      todos={todos}
-      onSnooze={onSnooze && ((days) => onSnooze(item, days))}
-      snoozing={snoozingKeys.includes(item.key)}
-      now={now}
-    />
+  const withPathLinks = (item: WorkItem, content: ReactNode) => (
+    <Fragment key={item.key}>
+      {RankingPathLinks ? (
+        <RankingPathLinks item={item} expanded={expanded.has(item.key)}>
+          {content}
+        </RankingPathLinks>
+      ) : (
+        content
+      )}
+    </Fragment>
   );
+  const row = (item: WorkItem) =>
+    withPathLinks(
+      item,
+      <WorkItemRow
+        item={item}
+        expanded={expanded.has(item.key)}
+        onToggle={() => toggle(item.key)}
+        current={item.key === cursor}
+        reviewHref={item.kind === "pr" ? reviewHref(item) : undefined}
+        {...rowProps(item)}
+        onNavigate={onNavigate}
+        expanderRef={register(item.key)}
+        todos={todos}
+        onSnooze={onSnooze && ((days) => onSnooze(item, days))}
+        snoozing={snoozingKeys.includes(item.key)}
+        now={now}
+      />,
+    );
   const group = (title: string, rule: string, list: WorkItem[]) => (
     <div key={title} className="mt-1.5">
       <h3 className="flex items-baseline gap-2.5 px-0.5 pt-1 pb-1.5 text-xs font-bold tracking-wide text-muted uppercase">
@@ -356,20 +371,22 @@ export function WorkList({
         )}
         {alarms.length > 0 && (
           <div className="mt-2.5 grid gap-2.5">
-            {alarms.map((item) => (
-              <AlarmRow
-                key={item.key}
-                item={item}
-                current={item.key === cursor}
-                focusRef={register(item.key)}
-                reviewHref={item.kind === "pr" ? reviewHref(item) : undefined}
-                {...rowProps(item)}
-                onNavigate={onNavigate}
-                expanded={expanded.has(item.key)}
-                onToggle={() => toggle(item.key)}
-                now={now}
-              />
-            ))}
+            {alarms.map((item) =>
+              withPathLinks(
+                item,
+                <AlarmRow
+                  item={item}
+                  current={item.key === cursor}
+                  focusRef={register(item.key)}
+                  reviewHref={item.kind === "pr" ? reviewHref(item) : undefined}
+                  {...rowProps(item)}
+                  onNavigate={onNavigate}
+                  expanded={expanded.has(item.key)}
+                  onToggle={() => toggle(item.key)}
+                  now={now}
+                />,
+              ),
+            )}
           </div>
         )}
         {tiers.map(

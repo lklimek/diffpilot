@@ -33,4 +33,9 @@ describe("analysis file mentions", () => {
     expect(pathMatcher([a, b, "src/lib.rs"], repo)("src/lib.rs")?.path).toBe("src/lib.rs");
     expect(pathMatcher([a, b], repo)("src/lib.rs")).toBeUndefined();
   });
+
+  it("resolves an actual repository directory before stripping a same-named prefix", () => {
+    const nested = "node/src/lib.rs";
+    expect(pathMatcher(["src/lib.rs", nested], { owner: "acme", name: "node" })(nested)?.path).toBe(nested);
+  });
 });

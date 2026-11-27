@@ -48,6 +48,7 @@ import {
   watchErrorText,
 } from "./state";
 import { useDashboardPage } from "./useDashboardPage";
+import { WorkItemPathLinks } from "./WorkItemPathLinks";
 
 /** Why a snooze failed: the item left the list (404), the server's reason, or a retry hint. */
 const snoozeErrorText = (error: unknown) =>
@@ -303,6 +304,7 @@ export function DashboardScreen() {
           reviewHref={reviewHref}
           prHref={prHref}
           commentsHref={commentsHref}
+          rankingPathLinks={WorkItemPathLinks}
           onWatch={(item, watching) =>
             item.repo &&
             item.number !== null &&

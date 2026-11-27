@@ -43,7 +43,7 @@ export function pathMatcher(paths: readonly string[], repo: RepoRef) {
 
     const prefix = [`${repo.owner}/${repo.name}/`, `${repo.name}/`].find((root) => path.startsWith(root));
     const normalized = prefix ? path.slice(prefix.length) : path;
-    const file = exact.has(normalized) ? normalized : exact.has(path) ? path : suffixes.get(normalized);
+    const file = exact.has(path) ? path : exact.has(normalized) ? normalized : suffixes.get(normalized);
     if (file) return { path: file, line, end };
   };
 }
