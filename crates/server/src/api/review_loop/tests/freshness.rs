@@ -375,12 +375,12 @@ async fn webhooks_cover_a_pr_still_missing_during_its_first_read() {
     Mock::given(method("POST"))
         .and(path("/api/graphql"))
         .and(body_string_contains("reviewDecision"))
-        .with_priority(1)
         .respond_with(
             ResponseTemplate::new(200)
                 .set_body_json(recorded("pr.json"))
                 .set_delay(Duration::from_secs(1)),
         )
+        .with_priority(1)
         .up_to_n_times(1)
         .mount(&w.server)
         .await;
@@ -396,7 +396,11 @@ async fn webhooks_cover_a_pr_still_missing_during_its_first_read() {
             w.state
                 .db
                 .pull_requests()
-                .find(DEFAULT_TENANT, &pr_482().repo, 482)
+                .find(
+                    DEFAULT_TENANT,
+                    &crate::github::review_loop::tests::pr482().repo,
+                    482,
+                )
                 .await
                 .unwrap()
                 .is_none()

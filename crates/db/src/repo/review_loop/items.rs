@@ -569,14 +569,14 @@ impl ReviewLoop<'_> {
         Ok(())
     }
 
-    /// Creates the PR's review-loop row if missing (idempotent).
+    /// Creates the PR's review-loop row if missing, returning whether a row was inserted.
     pub async fn ensure_pr(
         &self,
         tenant_id: &str,
         pull_request_id: i64,
         now: Timestamp,
-    ) -> Result<(), DbError> {
-        sqlx::query(
+    ) -> Result<bool, DbError> {
+        let inserted = sqlx::query(
             "INSERT INTO comment_prs (pull_request_id, tenant_id, created_at) VALUES (?, ?, ?)
              ON CONFLICT (pull_request_id) DO NOTHING",
         )
@@ -584,8 +584,9 @@ impl ReviewLoop<'_> {
         .bind(tenant_id)
         .bind(ts(now))
         .execute(self.pool)
-        .await?;
-        Ok(())
+        .await?
+        .rows_affected();
+        Ok(inserted != 0)
     }
 
     /// Records a GitHub read: a success replaces the snapshot and clears the failure; a failure keeps the last

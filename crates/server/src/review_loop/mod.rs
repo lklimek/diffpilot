@@ -420,13 +420,15 @@ async fn read_now(
         .pull_requests()
         .find(tenant, &pr.repo, pr.number)
         .await?;
-    if let Some(id) = existing_pr {
+    let first_comments_read = if let Some(id) = existing_pr {
         state
             .db
             .review_loop()
             .ensure_pr(tenant, id, started_at)
-            .await?;
-    }
+            .await?
+    } else {
+        true
+    };
     let read = match reads::read(config, &token, pr, budget).await {
         Ok(read) => read,
         Err(ReadError::Graphql(GraphqlError::EventBudget(delay))) => {
@@ -477,7 +479,7 @@ async fn read_now(
         .upsert(tenant, repo.id, &summary, now)
         .await?;
     state.db.review_loop().ensure_pr(tenant, id, now).await?;
-    if existing_pr.is_none() {
+    if first_comments_read {
         state
             .db
             .github()
