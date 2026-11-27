@@ -208,7 +208,9 @@ export function DecisionLog({
   const [source, setSource] = useState<"diffpilot" | "github" | "all">("diffpilot");
   const imported = log.decisions.filter((decision) => decision.via === "imported_github");
   const loggedImports = new Set(imported.filter((decision) => !decision.undone_at).map((d) => d.item_no));
-  const observations = githubDecisions.filter((item) => !item.imported_decision || !loggedImports.has(item.no));
+  const observations = githubDecisions.filter(
+    (item) => !item.imported_decision || !loggedImports.has(item.no),
+  );
   const githubCount = imported.length + observations.length;
   const decisions =
     source === "github"
