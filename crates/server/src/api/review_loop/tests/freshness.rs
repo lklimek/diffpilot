@@ -178,6 +178,7 @@ async fn pr_page_reconciles_lifecycle_signals_dispatched_before_the_pr_was_store
         .expect("first GitHub request started");
         for (action, state) in [("closed", "closed"), ("reopened", "open")] {
             let mut signal = pr_signal(action, HEAD, HEAD, UPDATED);
+            signal["repository"]["private"] = json!(false);
             signal["pull_request"]["state"] = json!(state);
             signal["pull_request"]["merged"] = json!(false);
             assert_eq!(

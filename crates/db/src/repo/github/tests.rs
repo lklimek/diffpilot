@@ -1117,7 +1117,8 @@ async fn lifecycle_ties_wait_for_a_read_started_after_the_conflicting_receipt() 
         prs.history("default", "u1", None, 1).await.unwrap()[0]
             .1
             .pr_state,
-        Some(Closed)
+        None,
+        "keep unresolved state visible under the default archive filter"
     );
     assert!(
         !prs.record_lifecycle(1, Open, at(2), at(1), Some(7))
