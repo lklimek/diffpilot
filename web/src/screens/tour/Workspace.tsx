@@ -251,7 +251,7 @@ export function Workspace({
             {pinnedContext && (
               <section
                 aria-label="Pinned flow context"
-                className="max-h-[45%] flex-none overflow-auto overscroll-contain border-b border-border px-5 pt-3"
+                className="max-h-9/20 flex-none overflow-auto overscroll-contain border-b border-border px-5 pt-3"
               >
                 {pinnedContext}
               </section>
