@@ -154,6 +154,52 @@ pub(crate) async fn user_id(
     (user.id != 0).then_some(user.id)
 }
 
+/// The root comment of a review reply proven to belong to this pull request.
+pub(crate) async fn review_comment_parent(
+    config: &GithubConfig,
+    token: &SecretString,
+    pr: &PrRef,
+    id: u64,
+) -> Result<Option<u64>, GithubError> {
+    #[derive(Deserialize)]
+    struct Reply {
+        pull_request_url: String,
+        in_reply_to_id: Option<u64>,
+    }
+    let url = endpoint(
+        &config.api_url,
+        &format!(
+            "repos/{}/{}/pulls/comments/{id}",
+            pr.repo.owner, pr.repo.name
+        ),
+    );
+    let response = client()?
+        .get(url)
+        .bearer_auth(token.expose_secret())
+        .header(ACCEPT, "application/vnd.github+json")
+        .header(USER_AGENT, CLIENT_NAME)
+        .header("x-github-api-version", GITHUB_API_VERSION)
+        .send()
+        .await
+        .map_err(GithubError::Http)?;
+    match response.status() {
+        StatusCode::OK => {}
+        StatusCode::NOT_FOUND | StatusCode::FORBIDDEN => return Ok(None),
+        StatusCode::UNAUTHORIZED => return Err(GithubError::Unauthorized),
+        status => return Err(GithubError::Status(status)),
+    }
+    let reply: Reply = response.json().await.map_err(GithubError::Http)?;
+    let expected = format!(
+        "/repos/{}/{}/pulls/{}",
+        pr.repo.owner, pr.repo.name, pr.number
+    );
+    Ok(Url::parse(&reply.pull_request_url)
+        .ok()
+        .is_some_and(|url| url.path().eq_ignore_ascii_case(&expected))
+        .then_some(reply.in_reply_to_id)
+        .flatten())
+}
+
 /// `GET /repos/{owner}/{name}/pulls/{number}` with the user's token.
 pub async fn get_pull(
     config: &GithubConfig,

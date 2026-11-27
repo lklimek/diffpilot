@@ -9,6 +9,7 @@ use contracts::ids::CommitSha;
 use contracts::time::Timestamp;
 use db::error::DbError;
 use db::repo::review_loop::{AgentSubmission, NewAgentComment, NewAgentSubmission, ObservedItem};
+use secrecy::SecretString;
 use url::Url;
 
 use super::{
@@ -19,6 +20,7 @@ use crate::auth::{TokenPrincipal, user_access_token, user_token_rejected};
 use crate::github::graphql::{GraphqlError, GraphqlErrorType};
 use crate::github::review_loop::{self as reads, ReadError};
 use crate::github::threads::github_web_url;
+use crate::github::{rest, threads};
 use crate::state::AppState;
 
 const MAX_BODY_CHARS: usize = 6000;
@@ -38,7 +40,14 @@ pub(super) fn item_no(loaded: &Loaded, conversation: &str, url: Option<&str>) ->
             }),
             CommentItemKind::PrComment | CommentItemKind::ReviewBody => {
                 (conversation.starts_with("issue:") || conversation.starts_with("review:"))
-                    && url.is_some_and(|url| item.url.as_deref() == Some(url))
+                    && url
+                        .zip(item.url.as_deref())
+                        .is_some_and(|(target, actual)| {
+                            target == actual
+                                || comment_identity(target).is_some_and(|id| {
+                                    comment_identity(actual).as_ref() == Some(&id)
+                                })
+                        })
             }
             CommentItemKind::PrQuestion => false,
         };
@@ -214,11 +223,7 @@ impl<'a> Selector<'a> {
             return Err(LoopError::NotFound);
         }
         let fragment = url.fragment().ok_or(LoopError::BadSubmission)?;
-        let valid = ["discussion_r", "issuecomment-", "pullrequestreview-"]
-            .iter()
-            .filter_map(|prefix| fragment.strip_prefix(prefix))
-            .any(|n| n.parse::<u64>().is_ok_and(|id| id > 0));
-        if !valid || url.query().is_some() {
+        if !valid_fragment(fragment) || url.query().is_some() {
             return Err(LoopError::BadSubmission);
         }
         Ok(Self::Fragment(fragment.to_owned()))
@@ -227,12 +232,27 @@ impl<'a> Selector<'a> {
     fn matches(&self, id: Option<&str>, url: &str) -> bool {
         match self {
             Self::Id(wanted) => id.is_some_and(|id| id == *wanted),
-            Self::Fragment(wanted) => Url::parse(url)
-                .ok()
-                .and_then(|url| url.fragment().map(|f| f == wanted))
-                .unwrap_or(false),
+            Self::Fragment(wanted) => comment_identity(url).as_ref() == Some(wanted),
         }
     }
+}
+
+fn valid_fragment(fragment: &str) -> bool {
+    ["discussion_r", "issuecomment-", "pullrequestreview-"]
+        .iter()
+        .filter_map(|prefix| fragment.strip_prefix(prefix))
+        .any(|digits| {
+            digits.bytes().all(|b| b.is_ascii_digit())
+                && digits.parse::<u64>().is_ok_and(|id| id > 0)
+        })
+}
+
+fn comment_identity(url: &str) -> Option<String> {
+    Url::parse(url)
+        .ok()?
+        .fragment()
+        .filter(|fragment| valid_fragment(fragment))
+        .map(str::to_owned)
 }
 
 struct Target {
@@ -300,5 +320,96 @@ async fn github_target(
     }) {
         return Target::new(format!("review:{}", review.id), &review.url);
     }
-    Err(LoopError::NotFound)
+    deep_reply_target(state, agent, handle, selector, &read, &token).await
+}
+
+async fn deep_reply_target(
+    state: &AppState,
+    agent: &TokenPrincipal,
+    handle: &PrHandle,
+    selector: &Selector<'_>,
+    read: &reads::PrRead,
+    token: &SecretString,
+) -> Result<Target, LoopError> {
+    let mut truncated = read
+        .threads
+        .iter()
+        .filter(|thread| thread.comments.nodes.len() < thread.comments.total_count as usize);
+    if truncated.clone().next().is_none() {
+        return Err(LoopError::NotFound);
+    }
+    let github = &state.config.github;
+    let pr = &handle.pr;
+    let (parent, target) = match selector {
+        Selector::Fragment(fragment) => {
+            let id = fragment
+                .strip_prefix("discussion_r")
+                .and_then(|id| id.parse::<u64>().ok())
+                .ok_or(LoopError::NotFound)?;
+            let root = match rest::review_comment_parent(github, token, pr, id).await {
+                Ok(Some(root)) => root,
+                Ok(None) => return Err(LoopError::NotFound),
+                Err(rest::GithubError::Unauthorized) => {
+                    user_token_rejected(state, &agent.user_id, token).await;
+                    return Err(LoopError::Unreadable(ReadFailure::SignInRequired));
+                }
+                Err(_) => return Err(LoopError::Unreadable(ReadFailure::Unavailable)),
+            };
+            (format!("discussion_r{root}"), fragment.clone())
+        }
+        Selector::Id(id) => {
+            let result = threads::reply_parent(github, token, pr, id).await;
+            let (parent, target) = map_lookup(state, agent, token, result).await?;
+            (
+                comment_identity(&parent).ok_or(LoopError::NotFound)?,
+                comment_identity(&target).ok_or(LoopError::NotFound)?,
+            )
+        }
+    };
+    let thread = truncated
+        .find(|thread| {
+            thread
+                .comments
+                .nodes
+                .first()
+                .is_some_and(|root| comment_identity(&root.url).as_ref() == Some(&parent))
+        })
+        .ok_or(LoopError::NotFound)?;
+    let result = threads::detail(github, token, pr, &thread.id).await;
+    let detail = map_lookup(state, agent, token, result).await?;
+    let url = detail
+        .comments
+        .iter()
+        .filter_map(|comment| comment.url.as_deref())
+        .find(|url| comment_identity(url).as_ref() == Some(&target))
+        .ok_or(LoopError::NotFound)?;
+    Target::new(thread.id.clone(), url)
+}
+
+async fn map_lookup<T>(
+    state: &AppState,
+    agent: &TokenPrincipal,
+    token: &SecretString,
+    result: Result<Option<T>, GraphqlError>,
+) -> Result<T, LoopError> {
+    match result {
+        Ok(Some(value)) => Ok(value),
+        Ok(None) => Err(LoopError::NotFound),
+        Err(error)
+            if matches!(
+                error.kind(),
+                Some(GraphqlErrorType::NotFound | GraphqlErrorType::Forbidden)
+            ) =>
+        {
+            Err(LoopError::NotFound)
+        }
+        Err(error) => {
+            if matches!(error, GraphqlError::Unauthorized) {
+                user_token_rejected(state, &agent.user_id, token).await;
+            }
+            Err(LoopError::Unreadable(failure_of(&ReadError::Graphql(
+                error,
+            ))))
+        }
+    }
 }

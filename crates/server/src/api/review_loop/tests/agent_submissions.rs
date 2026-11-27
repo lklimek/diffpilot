@@ -171,3 +171,88 @@ async fn agent_annotations_keep_the_exact_github_target_and_do_not_add_queue_ite
     assert_eq!(annotations[0]["body"], TEXT);
     assert!(w.items().await.iter().all(|item| item["origin"] != "api"));
 }
+
+#[tokio::test]
+async fn agent_annotations_find_replies_after_the_first_page() {
+    use wiremock::matchers::body_partial_json;
+
+    let w = world().await;
+    serve(
+        &w.server,
+        &[("review-threads.json", &|answer| {
+            let nodes = answer["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
+                .as_array_mut()
+                .unwrap();
+            let thread = nodes
+                .iter_mut()
+                .find(|thread| thread["id"] == "PRRT_fixture482_l2")
+                .unwrap();
+            thread["comments"]["totalCount"] = json!(51);
+        })],
+    )
+    .await;
+    let root = "https://github.com/acme/node-client/pull/482#discussion_r3000000201";
+    let last = "https://github.com/acme/node-client/pull/482#discussion_r3000000299";
+    Mock::given(method("GET"))
+        .and(path(
+            "/api/repos/acme/node-client/pulls/comments/3000000299",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "pull_request_url": "https://api.github.com/repos/acme/node-client/pulls/482",
+            "in_reply_to_id": 3000000201_u64
+        })))
+        .mount(&w.server)
+        .await;
+    let id = "PRRC_deep_reply";
+    Mock::given(method("POST"))
+        .and(path("/api/graphql"))
+        .and(body_partial_json(json!({"variables": {"id": id}})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": {"node": {
+            "__typename": "PullRequestReviewComment", "url": last, "state": "SUBMITTED", "replyTo": {"url": root},
+            "pullRequest": {"number": 482, "title": "Retry calls",
+                "repository": {"nameWithOwner": "acme/node-client", "isPrivate": false}}
+        }}})))
+        .with_priority(1)
+        .mount(&w.server)
+        .await;
+    for (after, next, url) in [(None, Some("last"), root), (Some("last"), None, last)] {
+        Mock::given(method("POST"))
+            .and(path("/api/graphql"))
+            .and(body_partial_json(json!({"variables": {"id": "PRRT_fixture482_l2", "after": after}})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": {"node": {
+                "__typename":"PullRequestReviewThread", "path":"src/rpc/client.rs",
+                "pullRequest":{"number":482,"title":"Retry calls",
+                    "repository":{"nameWithOwner":"acme/node-client","isPrivate":false}},
+                "comments":{"pageInfo":{"hasNextPage":next.is_some(),"endCursor":next},
+                    "nodes":[{"state":"SUBMITTED","body":"Original","url":url,"author":{"login":"bob"},
+                        "createdAt":"2026-11-27T10:00:00Z"}]}
+            }}})))
+            .with_priority(1)
+            .mount(&w.server)
+            .await;
+    }
+    let (writer, _) = feed::agent(&w, &[TokenScope::Read, TokenScope::ReviewLoopSubmit]).await;
+    for selector in [last, id] {
+        let (status, receipt) = submit(
+            &w,
+            &writer,
+            &submission(json!({"kind":"github","comment":selector})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{receipt}");
+        assert!(
+            receipt["url"]
+                .as_str()
+                .unwrap()
+                .contains("PRRT_fixture482_l2")
+        );
+    }
+    let card = w.item(L2).await;
+    let annotations = card["agent_annotations"].as_array().unwrap();
+    assert_eq!(annotations.len(), 2);
+    assert!(
+        annotations
+            .iter()
+            .all(|annotation| annotation["target_url"] == last)
+    );
+}

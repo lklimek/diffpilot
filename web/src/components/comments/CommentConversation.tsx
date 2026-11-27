@@ -5,6 +5,12 @@ import { GithubLink } from "../inspector/text";
 import { GithubThreadBody } from "./GithubThreadPreview";
 import { AgentAnnotations } from "./AgentAnnotations";
 
+/** GitHub's comment fragment remains the same when the repository path changes. */
+function commentKey(url: string) {
+  const fragment = url.split("#")[1];
+  return fragment && /^(discussion_r|issuecomment-|pullrequestreview-)\d+$/.test(fragment) ? fragment : url;
+}
+
 /** Displays the source and comments of a conversation without decision controls. */
 export function CommentConversation({
   heading,
@@ -19,9 +25,10 @@ export function CommentConversation({
 }) {
   const byUrl = new Map<string, AgentAnnotation[]>();
   for (const annotation of annotations ?? []) {
-    const list = byUrl.get(annotation.target_url) ?? [];
+    const key = commentKey(annotation.target_url);
+    const list = byUrl.get(key) ?? [];
     list.push(annotation);
-    byUrl.set(annotation.target_url, list);
+    byUrl.set(key, list);
   }
   return (
     <article aria-labelledby="comment-conversation-heading" className="grid gap-3">
@@ -49,7 +56,9 @@ export function CommentConversation({
               )}
             </div>
             <GithubThreadBody text={comment.body} />
-            {comment.url && <AgentAnnotations annotations={byUrl.get(comment.url)} showTarget={false} />}
+            {comment.url && (
+              <AgentAnnotations annotations={byUrl.get(commentKey(comment.url))} showTarget={false} />
+            )}
           </li>
         ))}
       </ol>

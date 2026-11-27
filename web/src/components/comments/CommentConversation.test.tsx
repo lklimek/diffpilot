@@ -15,7 +15,13 @@ it("keeps an agent annotation beside the exact original comment, including a rep
         { author: "alice", body: "Original reply", url: reply, created_at },
       ]}
       annotations={[
-        { id: "agent-annotation", target_url: reply, agent: "Review helper", body: "Agent note", created_at },
+        {
+          id: "agent-annotation",
+          target_url: reply.replace("node-client", "old-node-client"),
+          agent: "Review helper",
+          body: "Agent note",
+          created_at,
+        },
       ]}
     />,
   );

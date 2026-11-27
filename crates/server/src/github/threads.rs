@@ -32,6 +32,9 @@ const PR_COMMENT_DETAIL: &str = "query($id:ID!){node(id:$id){__typename ... on I
 pullRequest{number title repository{nameWithOwner isPrivate}}} ... on PullRequestReview{body url \
 submittedAt state author{login} pullRequest{number title repository{nameWithOwner isPrivate}}}}}";
 
+const REPLY_PARENT: &str = "query($id:ID!){node(id:$id){__typename ... on PullRequestReviewComment{url state replyTo{url} \
+pullRequest{number title repository{nameWithOwner isPrivate}}}}}";
+
 /// `raw` if it is an `https://github.com/…` URL (no other host, port or credentials); the UI renders it as a
 /// link, so nothing else may pass.
 pub fn github_web_url(raw: &str) -> Option<String> {
@@ -158,6 +161,53 @@ struct DetailComment {
 #[derive(Deserialize)]
 struct PrCommentData {
     node: Option<PrCommentNode>,
+}
+
+#[derive(Deserialize)]
+struct ReplyData {
+    node: Option<ReplyNode>,
+}
+
+#[derive(Deserialize)]
+struct CommentLink {
+    url: String,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "__typename", rename_all_fields = "camelCase")]
+enum ReplyNode {
+    PullRequestReviewComment {
+        url: String,
+        state: String,
+        reply_to: Option<CommentLink>,
+        pull_request: DetailPr,
+    },
+    #[serde(other)]
+    Other,
+}
+
+/// Canonical links of the parent and the submitted reply identified by a GitHub node ID.
+pub(crate) async fn reply_parent(
+    config: &GithubConfig,
+    token: &SecretString,
+    pr: &PrRef,
+    id: &str,
+) -> Result<Option<(String, String)>, GraphqlError> {
+    let data: ReplyData =
+        graphql::execute(config, token, REPLY_PARENT, serde_json::json!({"id": id})).await?;
+    let Some(ReplyNode::PullRequestReviewComment {
+        url,
+        state,
+        reply_to: Some(parent),
+        pull_request,
+    }) = data.node
+    else {
+        return Ok(None);
+    };
+    if state == "PENDING" || !pull_request.matches(pr) {
+        return Ok(None);
+    }
+    Ok(github_web_url(&parent.url).zip(github_web_url(&url)))
 }
 
 #[derive(Deserialize)]
