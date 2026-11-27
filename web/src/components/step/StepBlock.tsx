@@ -1,5 +1,5 @@
 import { CodeText } from "../section/CodeText";
-import { useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useContext, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type {
   FileViewedState,
   ImpactRef,
@@ -15,6 +15,7 @@ import { GithubLink } from "../inspector/text";
 import { rangeText, threadsNote } from "../section/format";
 import { ProvenanceTag } from "../section/ProvenanceTag";
 import { Section } from "../section/Section";
+import { PathLinks } from "../section/pathLinks";
 import { AskButton } from "../ask/chat/AskButton";
 import { Tooltip } from "../tooltip/Tooltip";
 import { ReviewToggle } from "./ReviewToggle";
@@ -144,8 +145,10 @@ function ImpactReason({ reason, basis }: Pick<ImpactRef, "reason" | "basis">) {
   const [expanded, setExpanded] = useState(false);
   const excerpt = useRef<HTMLSpanElement>(null);
   const detailsId = useId();
+  const pathLinks = useContext(PathLinks);
   const disclose = hasDetails || clipped || expanded;
 
+  // File mentions can become wider links when Files loads without resizing the line's box.
   useLayoutEffect(() => {
     const element = excerpt.current;
     if (!element || hasDetails) return;
@@ -155,7 +158,7 @@ function ImpactReason({ reason, basis }: Pick<ImpactRef, "reason" | "basis">) {
     const observer = new ResizeObserver(measure);
     observer.observe(element);
     return () => observer.disconnect();
-  }, [basis, firstLine, hasDetails]);
+  }, [basis, firstLine, hasDetails, pathLinks]);
 
   const preview = (linkPaths: boolean) => (
     <>
