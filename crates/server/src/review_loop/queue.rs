@@ -5,9 +5,9 @@
 use std::collections::{BTreeMap, HashMap};
 
 use contracts::api::review_loop::{
-    AssessmentState, CommentItemKind, DecideRequest, GateMark, ImportedGithubDecision, ItemMark,
-    ItemState, LeftOutItem, LeftOutReason, QueueEntry, QueueReason, Recommendation,
-    ReviewDecisionKind,
+    AssessmentState, CommentItemKind, CommentStatus, DecideRequest, GateMark,
+    ImportedGithubDecision, ItemMark, ItemState, LeftOutItem, LeftOutReason, QueueEntry,
+    QueueReason, Recommendation, ReviewDecisionKind,
 };
 
 use super::effects::PrQuestion;
@@ -87,20 +87,6 @@ pub(super) struct StatusItem {
 }
 
 /// The Comments list status, in N1 precedence order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(test, derive(serde::Deserialize), serde(rename_all = "snake_case"))]
-pub(super) enum CommentStatus {
-    StatusComments,
-    Decided,
-    NotAReviewPoint,
-    Duplicates,
-    All,
-    NeedsYou,
-    Waiting,
-    Assessing,
-    NotAssessed,
-}
-
 pub(super) fn comment_status(item: &StatusItem) -> CommentStatus {
     let linked = item.duplicate_of.is_some_and(|no| no != item.no);
     let awaits = item.gone_at.is_none()

@@ -893,6 +893,7 @@ async fn undo_reopen_and_skip() {
     let overview_url = format!("{PR}/comments");
     let before = w.get(&overview_url).await;
     let skipped = w.item(L6).await;
+    assert_eq!(skipped["status"], "needs_you");
     let rest_url = format!("{PR}/comments/decide-rest");
     let in_rest = |value: &Value| {
         value["rows"]
@@ -920,6 +921,7 @@ async fn undo_reopen_and_skip() {
     );
     assert!(!in_rest(&w.get(&rest_url).await));
     assert_eq!(skipped["decisions"], w.item(L6).await["decisions"]);
+    assert_eq!(w.item(L6).await["status"], "needs_you");
     let queue = &after["queue"];
     let last = queue
         .as_array()
@@ -1408,6 +1410,8 @@ async fn bot_status_comment_not_a_question() {
     let overview = w.get(&format!("{PR}/comments")).await;
     let status = w.item("comment:801:1").await;
     let finding = w.item("comment:802:1").await;
+    assert_eq!(status["status"], "status_comments");
+    assert_eq!(finding["status"], "not_assessed");
     assert_eq!(status["status_comment"], true);
     assert!(finding.get("status_comment").is_none());
     assert_eq!(status["assessment_state"]["state"], "not_assessed");

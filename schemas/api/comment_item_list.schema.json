@@ -150,6 +150,10 @@
           "description": "State.",
           "$ref": "#/$defs/ItemState"
         },
+        "status": {
+          "description": "Server classification used by Comments filters and question counts.",
+          "$ref": "#/$defs/CommentStatus"
+        },
         "revision": {
           "description": "Revision; a decision names the revision it saw (409 `item_changed` otherwise).",
           "type": "integer",
@@ -252,6 +256,7 @@
         "body",
         "gates",
         "state",
+        "status",
         "revision",
         "first_seen_head",
         "github",
@@ -621,6 +626,56 @@
           "description": "Resolved on GitHub outside diffpilot; out of the queue, nothing recorded.",
           "type": "string",
           "const": "outside"
+        }
+      ]
+    },
+    "CommentStatus": {
+      "description": "Classification of a comment for the Comments views. Reader skips are recorded on the queue entry.",
+      "oneOf": [
+        {
+          "description": "A bot status comment, outside the decision queue.",
+          "type": "string",
+          "const": "status_comments"
+        },
+        {
+          "description": "A decision is recorded, possibly with effects still running.",
+          "type": "string",
+          "const": "decided"
+        },
+        {
+          "description": "The owner marked the item as not a review point.",
+          "type": "string",
+          "const": "not_a_review_point"
+        },
+        {
+          "description": "A duplicate that follows its primary's decision.",
+          "type": "string",
+          "const": "duplicates"
+        },
+        {
+          "description": "Listed only in the unfiltered view.",
+          "type": "string",
+          "const": "all"
+        },
+        {
+          "description": "A question awaiting an owner decision.",
+          "type": "string",
+          "const": "needs_you"
+        },
+        {
+          "description": "Queued for assessment.",
+          "type": "string",
+          "const": "waiting"
+        },
+        {
+          "description": "In a running assessment pass.",
+          "type": "string",
+          "const": "assessing"
+        },
+        {
+          "description": "Has no current assessment.",
+          "type": "string",
+          "const": "not_assessed"
         }
       ]
     },

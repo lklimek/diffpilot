@@ -1770,6 +1770,10 @@ gates: Array<GateMark>,
  */
 state: ItemState,
 /**
+ * Server classification used by Comments filters and question counts.
+ */
+status: CommentStatus,
+/**
  * Revision; a decision names the revision it saw (409 `item_changed` otherwise).
  */
 revision: number,
@@ -1945,6 +1949,11 @@ read_at: string | null, };
  * Stored source kind; inline threads remain independent items.
  */
 export type CommentSourceKind = "review_body" | "pr_comment";
+
+/**
+ * Classification of a comment for the Comments views. Reader skips are recorded on the queue entry.
+ */
+export type CommentStatus = "status_comments" | "decided" | "not_a_review_point" | "duplicates" | "all" | "needs_you" | "waiting" | "assessing" | "not_assessed";
 
 /**
  * Counts of a pull request's review comments in Comments (plan docs/review-workflow-plan.md §2.1): threads,

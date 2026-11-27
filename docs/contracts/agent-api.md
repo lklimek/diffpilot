@@ -314,6 +314,8 @@ message or `Retry-After`) exits 4 with how long to wait instead.
   exposes the same count as `CommentTally.needs_you`. Unassessed unlinked comments are excluded from Needs you.
   Status comments are listed with `status_comment` and excluded from the decision queue, `undecided` and
   `assessment.total`. Access-token reads omit the browser's `imported_unseen` count.
+- Each `CommentItem.status` gives the server's classification for display and filters. The reader's current
+  skip is separate, on `QueueEntry.skipped`. Follow the overview queue and counts for active questions.
 - The new repository coverage read lists repositories tracked by the reader's tenant. The activity read
   exposes peer jobs in the reader's tenant with only kind and a response-local id. `GET /api/v1/me/prs` is a
   reader-specific history. A read token can list it and read a PR page without recording a visit. The PR page,

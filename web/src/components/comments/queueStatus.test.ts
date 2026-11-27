@@ -1,16 +1,20 @@
 import { describe, expect, it } from "vitest";
 import fixture from "../../../../docs/contracts/fixtures/needs-you-cases.json";
 import type { CommentItem, QueueEntry } from "../../api/generated/types";
-import { commentsByNo, commentStatus, needsYouQueue } from "./queueStatus";
+import { commentsByNo, needsYouQueue } from "./queueStatus";
 
-const items = fixture.items.map((item) => ({ ...fixture.defaults, ...item }) as CommentItem);
+const items = fixture.items.map(
+  (item, index) =>
+    ({ ...fixture.defaults, ...item, status: fixture.expected_statuses[index] }) as CommentItem,
+);
 const queue = fixture.queue as QueueEntry[];
 
 describe("Needs you fixture", () => {
-  it.each(items.map((item, index) => [item.no, item, fixture.expected_statuses[index]] as const))(
-    "classifies C%i like the server",
-    (_no, item, expected) => expect(commentStatus(item)).toBe(expected),
-  );
+  it("uses the server status for queue membership even when the item's facts disagree", () => {
+    const item = { ...items[0]!, status: "needs_you" as const };
+    const queue = [{ item_nos: [item.no], reason: "single" as const }];
+    expect(needsYouQueue(queue, commentsByNo([item])!)).toEqual(queue);
+  });
 
   it("counts only queue members, including gates", () => {
     const byNo = commentsByNo(items)!;

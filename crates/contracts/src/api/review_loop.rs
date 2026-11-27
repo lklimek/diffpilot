@@ -194,6 +194,30 @@ pub enum NotAssessedReason {
     NotRun,
 }
 
+/// Classification of a comment for the Comments views. Reader skips are recorded on the queue entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum CommentStatus {
+    /// A bot status comment, outside the decision queue.
+    StatusComments,
+    /// A decision is recorded, possibly with effects still running.
+    Decided,
+    /// The owner marked the item as not a review point.
+    NotAReviewPoint,
+    /// A duplicate that follows its primary's decision.
+    Duplicates,
+    /// Listed only in the unfiltered view.
+    All,
+    /// A question awaiting an owner decision.
+    NeedsYou,
+    /// Queued for assessment.
+    Waiting,
+    /// In a running assessment pass.
+    Assessing,
+    /// Has no current assessment.
+    NotAssessed,
+}
+
 /// A review-loop item with its assessment, decisions and effects (RC4).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct CommentItem {
@@ -256,6 +280,8 @@ pub struct CommentItem {
     pub gates: Vec<GateMark>,
     /// State.
     pub state: ItemState,
+    /// Server classification used by Comments filters and question counts.
+    pub status: CommentStatus,
     /// Revision; a decision names the revision it saw (409 `item_changed` otherwise).
     pub revision: u32,
     /// Head when diffpilot first read it (not the head the comment was written on).

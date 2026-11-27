@@ -27,7 +27,6 @@ import {
   awaitsDecision,
   duplicatePrimary,
   needsYouQueue,
-  commentStatus,
   queueStatusOf,
   type QueueStatus,
 } from "../../components/comments/queueStatus";
@@ -337,7 +336,7 @@ export function QuestionsScreen() {
   const deferred = new Map<QueueStatus, number>();
   if (!entry) {
     for (const item of items) {
-      const phase = commentStatus(item);
+      const phase = item.status;
       if (
         phase === "assessing" ||
         phase === "waiting" ||
@@ -405,7 +404,7 @@ export function QuestionsScreen() {
         onDraft={setDraft}
       />
     );
-  else if (single?.kind === "pr_question" && commentStatus(single) === "needs_you")
+  else if (single?.kind === "pr_question" && single.status === "needs_you")
     card = (
       <PrQuestionCard
         key={single.id}
@@ -419,7 +418,7 @@ export function QuestionsScreen() {
         onDraft={setDraft}
       />
     );
-  else if (single && !["needs_you", "not_assessed"].includes(commentStatus(single)))
+  else if (single && !["needs_you", "not_assessed"].includes(single.status))
     card = (
       <CommentOverviewCard
         key={single.id}

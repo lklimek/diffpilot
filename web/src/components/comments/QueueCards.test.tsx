@@ -702,7 +702,7 @@ describe("CommentsTable (US8, US27)", () => {
   it("an item the latest read no longer shows is listed with that fact and needs no decision (plan §2.1)", async () => {
     render(
       table(
-        listItems().map((i) => (i.no === 22 ? { ...i, gone_at: "2026-11-18T09:00:00Z" } : i)),
+        listItems().map((i) => (i.no === 22 ? { ...i, status: "all", gone_at: "2026-11-18T09:00:00Z" } : i)),
         vi.fn(),
       ),
     );

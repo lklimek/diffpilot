@@ -8,11 +8,11 @@ use contracts::api::deps::{CrateChanges, DependencyView, RepositoryKind};
 use contracts::api::files::{PartOwner, PrFile};
 use contracts::api::review_loop::{
     AssessmentProgress, AssessmentState, AuthorKind, CarryOverPage, CodeContext, CodeLine,
-    CommentCounts, CommentItem, CommentItemKind, CommentLog, CommentsOverview, CommentsSummary,
-    ContextQuery, DecideRest, DecideRestRow, DecisionBatchRow, DecisionVia, EffectState,
-    EffectsPreview, FeedSubscriber, FlowStepRef, GithubRead, ImportedGithubDecision, ItemState,
-    ItemsQuery, KindCount, NotAssessedReason, NoteElsewhere, NoteSource, PrBadge, PrBadgeView,
-    PrPage, QueueEntry, ReadFailure, Round, WatchState,
+    CommentCounts, CommentItem, CommentItemKind, CommentLog, CommentStatus, CommentsOverview,
+    CommentsSummary, ContextQuery, DecideRest, DecideRestRow, DecisionBatchRow, DecisionVia,
+    EffectState, EffectsPreview, FeedSubscriber, FlowStepRef, GithubRead, ImportedGithubDecision,
+    ItemState, ItemsQuery, KindCount, NotAssessedReason, NoteElsewhere, NoteSource, PrBadge,
+    PrBadgeView, PrPage, QueueEntry, ReadFailure, Round, WatchState,
 };
 use contracts::api::tour::{CiState, Tour};
 use contracts::common::{AnnotationType, LineRange, LineSide, PrRef};
@@ -176,6 +176,7 @@ fn item_view(
         .filter(|_| !record.status_comment);
     let repeat_of = record.repeat_of.and_then(|id| loaded.number_of(id));
     CommentItem {
+        status: queue::comment_status(&status),
         not_a_review_point: status.not_a_review_point,
         status_comment: status.status_comment,
         imported_decision: status.imported_decision,
@@ -405,7 +406,7 @@ fn needs_you(
     let marked = count(
         items
             .values()
-            .filter(|item| queue::comment_status(item) == queue::CommentStatus::NotAReviewPoint)
+            .filter(|item| queue::comment_status(item) == CommentStatus::NotAReviewPoint)
             .count(),
     );
     (needs_you, gates, marked)
