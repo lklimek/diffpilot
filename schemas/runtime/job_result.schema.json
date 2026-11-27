@@ -268,7 +268,7 @@
       "description": "Kind of a failed attempt.",
       "oneOf": [
         {
-          "description": "A required agent skill is unavailable; administrator action is needed.",
+          "description": "The job configuration is invalid; administrator action is needed.",
           "type": "string",
           "const": "configuration"
         },

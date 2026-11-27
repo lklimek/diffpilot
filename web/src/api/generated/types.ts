@@ -511,6 +511,10 @@ failure: string | null,
  */
 created_at: string,
 /**
+ * When the answer became final; null for an open question, a ready output or a failure.
+ */
+answered_at?: string | null,
+/**
  * While `pending` and waiting for the LLM usage limit to reset: when its job is queued again; absent
  * otherwise.
  */

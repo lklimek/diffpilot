@@ -185,10 +185,10 @@ export const reviewLoopHandlers = [
       return isRefusal(result) ? refused(result) : HttpResponse.json(result);
     }),
   ),
-  // RC7: the reader's questions about comment items; answers follow by listing again (no event stream).
+  // RC7: the reader's review history; standalone comments have no analysis event stream.
   route(
     "listPrQuestions",
-    forPr(() => HttpResponse.json(itemQuestions())),
+    forPr(() => HttpResponse.json(overview().analysis ? readStore("questions") : itemQuestions())),
   ),
   route(
     "askPrQuestion",

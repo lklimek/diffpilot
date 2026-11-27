@@ -10,7 +10,7 @@ import {
   type QueryClient,
 } from "@tanstack/react-query";
 import { api, ApiError, AssessmentAdmissionError, errorText, type AssessmentAdmissionIssue } from "./client";
-import { withoutRetried } from "./questionHistory";
+import { awaitsFinalAnswer, QUESTIONS_POLL_MS, withoutRetried } from "./questionHistory";
 import type {
   CommentItem,
   CommentsOverview,
@@ -351,31 +351,32 @@ export function useMarkGate(pr: PrRef) {
   });
 }
 
-/** How often the reader's open questions about comment items are read again (no event stream without an analysis). */
-export const PR_QUESTIONS_POLL_MS = 3_000;
-
-const openQuestion = (q: AskQuestion) => q.state === "pending" || q.state === "answering";
-
-/** The reader's questions about the PR's comment items (RC7), read again while one is open. */
+/** The reader's shared review history and standalone comments, read again while one is open. */
 export const usePrQuestions = (pr: PrRef) =>
   useQuery({
     queryKey: ["pr-questions", ...prKey(pr)],
     queryFn: () => api.listPrQuestions(pr),
     // A failed question asked again shows once, as in the analysis chat.
     select: withoutRetried,
-    refetchInterval: (query) => (query.state.data?.some(openQuestion) ? PR_QUESTIONS_POLL_MS : false),
+    refetchInterval: (query) => (query.state.data?.some(awaitsFinalAnswer) ? QUESTIONS_POLL_MS : false),
   });
 
-/** Asks about a comment item (RC7); the question joins the list at once. */
-export function useAskPrQuestion(pr: PrRef) {
+/** Asks about a comment item (RC7) or continues an analysis thread from Comments. */
+export function useAskPrQuestion(pr: PrRef, analysisId: AnalysisId | null) {
   const client = useQueryClient();
+  const queryKey = ["pr-questions", ...prKey(pr)];
   return useMutation({
-    mutationFn: (body: AnchoredAskRequest) => api.askPrQuestion(pr, body),
-    onSuccess: (question) =>
-      client.setQueryData<AskQuestion[]>(["pr-questions", ...prKey(pr)], (all = []) => [
+    mutationFn: (body: AnchoredAskRequest) =>
+      analysisId && body.anchor.kind !== "comment_item"
+        ? api.askAnchored(analysisId, body)
+        : api.askPrQuestion(pr, body),
+    onSuccess: (question) => {
+      client.setQueryData<AskQuestion[]>(queryKey, (all = []) => [
         ...all.filter((q) => q.id !== question.id),
         question,
-      ]),
+      ]);
+      void client.invalidateQueries({ queryKey });
+    },
   });
 }
 

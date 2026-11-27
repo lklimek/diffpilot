@@ -116,6 +116,31 @@ describe("AskChat (proposal AC3–AC10)", () => {
     expect(chat()).toHaveTextContent("No questions yet.");
   });
 
+  it("keeps each answer's own duration on its existing timestamp", () => {
+    const root = q("root", 1, STEP);
+    const first = q("first", 2, STEP, { parent_id: root.id });
+    const second = q("second", 3, STEP, { parent_id: root.id });
+    const pending = q("pending", 4, STEP, { parent_id: root.id, state: "pending", answer: null });
+    render(
+      <Harness
+        questions={[
+          { ...root, answered_at: "2026-11-19T10:01:14Z" },
+          { ...first, answered_at: "2026-11-19T10:02:08Z" },
+          { ...second, answered_at: "2026-11-19T10:03:32Z" },
+          pending,
+        ]}
+      />,
+    );
+    const thread = within(chat()).getByRole("listitem", { name: "Question: Question root?" });
+    expect(thread).toHaveTextContent("waiting");
+    const times = thread.querySelectorAll("time");
+    expect(times[0]).toHaveAttribute("title", expect.stringMatching(/^Asked by you · .+ · Took 14s$/));
+    expect(times[1]).toHaveAttribute("title", expect.stringMatching(/^.+ · Took 8s$/));
+    expect(times[2]).toHaveAttribute("title", expect.stringMatching(/^.+ · Took 32s$/));
+    expect(times[3]?.title).not.toContain("Took");
+    expect(times[3]?.title).toBeTruthy();
+  });
+
   it("Enter sends the question about the subject; Shift+Enter adds a line; an empty field says so", async () => {
     const onSend = vi.fn(() => Promise.resolve());
     render(<Harness onSend={onSend} />);

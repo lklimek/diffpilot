@@ -693,14 +693,14 @@ pub const LIST_MARKED_ITEMS: Route = route(
 pub const LIST_CARRY_OVERS: Route =
     route("listCarryOvers", Get, "/api/v1/comments/carry-overs", READ);
 /// RC7: asks about a review-comment item (`AnchoredAskRequest` with a `comment_item` anchor; 202 `AskQuestion`):
-/// answered in the Ask session of a finished analysis of the head, else by a `verify_comments` question pass.
+/// answered in a private Verify working thread, with or without a review-ready analysis.
 pub const ASK_PR_QUESTION: Route = route(
     "askPrQuestion",
     Post,
     "/api/v1/prs/{owner}/{name}/{number}/questions",
     SessionCsrf,
 );
-/// RC7: the reader's own questions about the PR's review-comment items, oldest first (`AskQuestion[]`).
+/// RC7: the reader's standalone comment questions and the current review's questions, oldest first (`AskQuestion[]`).
 pub const LIST_PR_QUESTIONS: Route = route(
     "listPrQuestions",
     Get,

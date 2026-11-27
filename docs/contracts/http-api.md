@@ -208,9 +208,11 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
   it again or its result arrives); only final answers enter later context packs. Logging: the provider's failure
   text appears only in the server's warn log, scrubbed of known secrets; no log line carries a secret, a token or
   the question text, and no response, event or stored question carries the provider's text. `GET …/questions`
-  lists only the signed-in user’s questions of the analysis, oldest first, in any state. SSE applies the same filter.
+  lists only the signed-in user's questions, oldest first, in any state. The review-ready analysis of the current
+  head and the PR's Comments list the same history: questions of that analysis and standalone comment questions.
+  An archived analysis lists its own questions. Analysis SSE only streams questions attached to that analysis.
   Each current HTTP/SSE response carries `asked_by` (GitHub login) and `mine` (always true for a current response). These fields
-  are optional only for older payloads. There is no question edit/delete/retry endpoint; another POST is a new
+  are optional only for older payloads. `answered_at` is set when the final answer is stored. There is no question edit/delete/retry endpoint; another POST is a new
   question owned by its sender. Plain text:
   HTML-like tags (`<` followed by a letter, `/` or `!`) are allowed only inside code spans and closed fenced
   blocks; a GitHub URL carries no user info and no explicit port.
@@ -416,12 +418,12 @@ text can be shown; generated, binary and files recorded above the code reader's 
 ```
 
 `AnalysisState.failed.reason` optionally carries an `ApiErrorCode`; the additive `configuration` code means
-administrator action is required. The same kind is carried in `JobFailureKind`. Missing required agent skills
-produce the fixed public sentence below, never the runner's diagnostic text. The UI offers no Retry for this
+administrator action is required. The same kind is carried in `JobFailureKind`. Configuration failures
+produce the fixed public sentence below. The UI offers no Retry for this
 reason. Existing failures without a reason retain their retry behavior.
 
 ```json
-{"state":"failed","flow":null,"reason":"configuration","message":"The server is misconfigured: a required agent skill is missing. Ask the administrator."}
+{"state":"failed","flow":null,"reason":"configuration","message":"The server configuration prevented the job from running. Ask the administrator."}
 ```
 
 The web renders CI source counts independently (including skipped and neutral), only says "all passing" when

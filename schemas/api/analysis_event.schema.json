@@ -1106,6 +1106,15 @@
           "type": "string",
           "format": "date-time"
         },
+        "answered_at": {
+          "description": "When the answer became final; null for an open question, a ready output or a failure.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time",
+          "default": null
+        },
         "resumes_at": {
           "description": "While `pending` and waiting for the LLM usage limit to reset: when its job is queued again; absent\notherwise.",
           "type": [

@@ -570,7 +570,7 @@ it("configuration failure asks the administrator and offers no Retry", () => {
     state: "failed",
     reason: "configuration",
     flow: null,
-    message: "The server is misconfigured: a required agent skill is missing. Ask the administrator.",
+    message: "The server configuration prevented the job from running. Ask the administrator.",
   });
   expect(screen.getByText(/Ask the administrator/)).toBeVisible();
   expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();

@@ -47,6 +47,7 @@ use futures::StreamExt;
 use jiff::SignedDuration;
 use sha2::{Digest, Sha256};
 
+pub(crate) use ask::head_analysis;
 pub use ask::{ItemAskError, answer_landed, ask_about_item, list_questions};
 pub use imports::RelayIds;
 pub(crate) use ingest::guard_posted;

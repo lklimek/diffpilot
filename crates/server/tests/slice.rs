@@ -3520,7 +3520,7 @@ async fn configuration_failure_survives_storage_and_has_no_retry_message() {
     assert_eq!(body["state"]["reason"], "configuration");
     assert_eq!(
         body["state"]["message"],
-        "The server is misconfigured: a required agent skill is missing. Ask the administrator."
+        "The server configuration prevented the job from running. Ask the administrator."
     );
 }
 

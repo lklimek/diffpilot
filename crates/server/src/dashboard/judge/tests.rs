@@ -3795,7 +3795,7 @@ async fn nonretryable_failures_end_ranking_with_their_plain_cause() {
     for (kind, message) in [
         (
             Configuration,
-            "The server is misconfigured: a required agent skill is missing. Ask the administrator.",
+            "The server configuration prevented the job from running. Ask the administrator.",
         ),
         (OutputNotJson, format),
         (CredentialUnusable, link),

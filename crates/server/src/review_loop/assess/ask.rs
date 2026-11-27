@@ -138,7 +138,7 @@ pub async fn ask_about_item(
 }
 
 /// The analysis of `pr` at its current head in the reader's language that accepts questions, if any.
-async fn head_analysis(
+pub(crate) async fn head_analysis(
     state: &AppState,
     user: &str,
     pr: i64,
@@ -163,7 +163,7 @@ async fn head_analysis(
     Ok(ready.then_some(record.id))
 }
 
-/// The reader's questions about comment items of `repo#number`, with or without an analysis, oldest first.
+/// The reader's standalone comment questions and the history of the review-ready analysis of the head.
 pub async fn list_questions(
     state: &AppState,
     session: &Session,
@@ -176,10 +176,11 @@ pub async fn list_questions(
         .find(&session.tenant_id, repo, number)
         .await?
         .ok_or(ItemAskError::UnknownPr)?;
+    let analysis = head_analysis(state, &session.user_id, pr).await?;
     Ok(state
         .db
         .questions()
-        .list_for_pull_request(pr, &session.user_id, Timestamp::now())
+        .list_for_pull_request(pr, analysis, &session.user_id, Timestamp::now())
         .await?)
 }
 
@@ -255,7 +256,7 @@ async fn set_open(
     };
     let now = Timestamp::now();
     let record = state.db.questions().get(question, now).await?;
-    if record.question.state == update_state(&update) || record.answered_at.is_some() {
+    if record.question.state == update_state(&update) || record.question.answered_at.is_some() {
         return Ok(());
     }
     match state.db.questions().update(question, &update, now).await {

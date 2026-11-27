@@ -18,6 +18,7 @@ import type {
   LlmLanguage,
   LlmSelection,
   PendingReview,
+  PrRef,
   QuestionId,
   RangeQuery,
   RepoRef,
@@ -26,7 +27,7 @@ import type {
 } from "./generated/types";
 import { ApiError, api } from "./client";
 import { reviewStates } from "./review-state";
-import { withoutRetried } from "./questionHistory";
+import { awaitsFinalAnswer, QUESTIONS_POLL_MS, withoutRetried } from "./questionHistory";
 
 /** The signed-in user and CSRF token. */
 export const useMe = () =>
@@ -87,7 +88,7 @@ export function mergeFetchedQuestions(
   ];
 }
 
-/** Questions asked about the analysis's steps, with their LLM answers. */
+/** Private Ask history of this review. Standalone comments have no analysis stream. */
 export const useQuestions = (id: AnalysisId) => {
   const client = useQueryClient();
   return useQuery({
@@ -101,6 +102,10 @@ export const useQuestions = (id: AnalysisId) => {
     },
     // Every view (chat, Inspector copy, menu counts) shows a failed question asked again once.
     select: withoutRetried,
+    refetchInterval: (query) =>
+      query.state.data?.some((q) => q.anchor.kind === "comment_item" && awaitsFinalAnswer(q))
+        ? QUESTIONS_POLL_MS
+        : false,
   });
 };
 
@@ -119,10 +124,13 @@ function arrive(client: QueryClient, id: AnalysisId, question: AskQuestion, repl
  * Asks in the Ask chat: a new thread about `anchor`, or a follow-up (`parent_id`) that keeps its thread's anchor.
  * The pending question joins the list; its answer arrives on the event stream.
  */
-export const useAskInChat = (id: AnalysisId) => {
+export const useAskInChat = (id: AnalysisId, pr?: PrRef) => {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (body: AnchoredAskRequest) => api.askAnchored(id, body),
+    mutationFn: (body: AnchoredAskRequest) =>
+      pr && body.parent_id && body.anchor.kind === "comment_item"
+        ? api.askPrQuestion(pr, body)
+        : api.askAnchored(id, body),
     onSuccess: (question) => arrive(client, id, question, false),
   });
 };

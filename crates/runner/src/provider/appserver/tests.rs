@@ -990,6 +990,75 @@ async fn new_plan_starts_without_resuming_unmaterialized_thread() {
 async fn context_pack_ask_starts_without_resuming_unmaterialized_thread() {
     assert_fresh_thread(JobKind::Ask).await;
 }
+
+#[tokio::test]
+async fn standalone_comment_ask_uses_the_payers_durable_verify_thread() {
+    use contracts::job::spec::PullRequestAskTarget;
+
+    for resume in [false, true] {
+        let harness = Harness::new(Mode::Normal).await;
+        let mut spec = secret_job(JobKind::Ask);
+        spec.target = JobTarget::PullRequestAsk(PullRequestAskTarget {
+            pull_request_id: 27,
+            repo: spec.target.checkout().unwrap().clone(),
+        });
+        spec.context_pack = Some("Private question context".into());
+        let working = spec.working_session.as_mut().unwrap();
+        working.kind = Some(ThreadKind::Verify);
+        working.preflight = Some(AskPreflight {
+            seed: SessionSeed::ContextPack,
+            generation: working.analytic_generation,
+            state: PreflightState::NotNeeded,
+        });
+        working.thread_id = resume.then(|| "working".into());
+
+        let (tx, _rx) = mpsc::channel(64);
+        let result = harness.provider.execute_job(&spec, tx).await;
+        let seen = harness.finish().await;
+        let outcome = result.unwrap();
+        let session = outcome.runtime_session.unwrap();
+        let ensure = seen
+            .iter()
+            .find(|r| r["action"]["operation"] == "ensure")
+            .unwrap();
+        assert_eq!(
+            ensure["action"]["container"],
+            json!({"shape": "pr", "pull_request_id": 27, "payer": "payer-17"})
+        );
+        let thread_calls: Vec<_> = seen
+            .iter()
+            .filter(|r| {
+                matches!(
+                    r["method"].as_str(),
+                    Some("thread/start" | "thread/resume" | "thread/fork")
+                )
+            })
+            .collect();
+        assert_eq!(thread_calls.len(), 1);
+        let thread = thread_calls[0];
+        assert_eq!(thread["params"]["cwd"], "/work");
+        assert_eq!(thread["params"]["config"]["mcp_servers"], json!({}));
+        assert_ne!(thread["params"]["ephemeral"], true);
+        if resume {
+            assert_eq!(thread["method"], "thread/resume");
+            assert_eq!(thread["params"]["threadId"], "working");
+            assert_eq!(session.thread_id, "working");
+            assert_eq!(session.outcome, SessionOutcome::Resumed);
+        } else {
+            assert_eq!(thread["method"], "thread/start");
+            assert_eq!(session.outcome, SessionOutcome::Started);
+            let turn = seen.iter().find(|r| r["method"] == "turn/start").unwrap();
+            assert!(
+                turn["params"]["input"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Private question context")
+            );
+        }
+        assert_eq!(session.preflight.unwrap().seed, SessionSeed::ContextPack);
+    }
+}
+
 #[tokio::test]
 async fn verify_pass_never_resumes_ephemeral_thread() {
     assert_fresh_thread(JobKind::VerifyComments).await;

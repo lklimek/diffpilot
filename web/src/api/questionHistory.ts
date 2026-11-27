@@ -8,6 +8,12 @@ export type HistoryQuestion = AskQuestion & { firstAsk?: FirstAsk };
 export const askOrder = (a: FirstAsk, b: FirstAsk): number =>
   Date.parse(a.created_at) - Date.parse(b.created_at) || a.id.localeCompare(b.id);
 
+/** Polling interval for questions whose updates do not arrive on an analysis stream. */
+export const QUESTIONS_POLL_MS = 3_000;
+
+export const awaitsFinalAnswer = (q: AskQuestion) =>
+  q.state === "pending" || q.state === "answering" || (q.state === "answered" && q.answered_at === null);
+
 const key = (q: AskQuestion) => JSON.stringify([q.text, q.anchor, q.parent_id ?? null]);
 
 /** A later ask of the same question replaces a failure unless it has follow-ups. */

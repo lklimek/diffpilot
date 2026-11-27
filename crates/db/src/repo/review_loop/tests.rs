@@ -1872,7 +1872,7 @@ async fn comment_item_question_without_an_analysis() {
     let questions = db.questions();
     assert_eq!(
         questions
-            .list_for_pull_request(PR, "u1", at(4))
+            .list_for_pull_request(PR, None, "u1", at(4))
             .await
             .expect("list")
             .len(),
@@ -1880,7 +1880,7 @@ async fn comment_item_question_without_an_analysis() {
     );
     assert!(
         questions
-            .list_for_pull_request(PR, "u2", at(4))
+            .list_for_pull_request(PR, None, "u2", at(4))
             .await
             .expect("list")
             .is_empty()

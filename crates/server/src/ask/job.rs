@@ -224,7 +224,7 @@ async fn follow_record(state: &AppState, record: QuestionRecord) -> Result<(), F
     let id = record.question.id;
     let analysis = record.analysis_id;
     // A provisional answer is followed on: the job's result is authoritative.
-    if record.question.state == AskState::Failed || record.answered_at.is_some() {
+    if record.question.state == AskState::Failed || record.question.answered_at.is_some() {
         return Ok(());
     }
     let summary = match analysis {

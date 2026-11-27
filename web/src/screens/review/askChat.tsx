@@ -1,7 +1,6 @@
 // The floating Ask chat of a review (proposal AC1–AC14): it lives in the layout shared by Flows and Files, so it
 // survives their navigation. Screens say where the reader is and open it; the chat asks, follows and navigates.
-// The Comments pages draw the same chat over the reader's questions about the PR's comment items (RC7), with or
-// without an analysis.
+// The Comments pages also show this review's history and the PR's standalone comment questions (RC7).
 import {
   createContext,
   useCallback,
@@ -213,7 +212,7 @@ export function AskChatProvider({ analysisId, children }: { analysisId: Analysis
   const tour = useTour(analysisId);
   const questions = useQuestions(analysisId);
   const stream = useQuestionEvents(analysisId);
-  const ask = useAskInChat(analysisId);
+  const ask = useAskInChat(analysisId, tour.data?.analysis.pr);
   const pending = usePendingReview(analysisId);
   const theTour = tour.data;
   // Comment items are named "Comment C14" with the PR's items, read only when a question is about one.
@@ -239,35 +238,47 @@ export function AskChatProvider({ analysisId, children }: { analysisId: Analysis
   return <ChatShell source={source}>{children}</ChatShell>;
 }
 
-/** The tab title's Ask status of a PR's comment-item questions. */
+/** The tab title's Ask status on the Comments view. */
 function PrQuestionActivity({ questions }: { questions: readonly AskQuestion[] | undefined }) {
   useTabActivity("ask", questionsActivity(questions ?? []));
   return null;
 }
 
 /**
- * The chat of the Comments pages: the reader's questions about the PR's comment items, asked on the PR (RC7) and
- * read again while one is open; with an analysis of the head its Ask session answers, else a question pass.
+ * The chat of the Comments pages. New questions use the PR's comment endpoint (RC7); the current analysis
+ * supplies the subjects and links of its questions.
  */
 export function PrAskChatProvider({
   pr,
+  analysisId,
   numbers,
   children,
 }: {
   pr: PrRef;
+  analysisId: AnalysisId | null;
   /** `C<no>` of the PR's items. */
   numbers: ItemNumbers;
   children: ReactNode;
 }) {
   const questions = usePrQuestions(pr);
-  const ask = useAskPrQuestion(pr);
+  const tour = useTour(analysisId ?? "", analysisId !== null).data;
+  const ask = useAskPrQuestion(pr, analysisId);
   const source: ChatSource = {
     key: `pr:${pr.repo.owner}/${pr.repo.name}/${pr.number}`,
     questions,
     ask: (body) => ask.mutateAsync(body),
-    describe: (anchor) => (anchor.kind === "comment_item" ? commentSubject(anchor.item, numbers) : WHOLE_PR),
+    describe: (anchor) =>
+      anchor.kind === "comment_item"
+        ? commentSubject(anchor.item, numbers)
+        : tour
+          ? subjectOf(anchor, tour, numbers)
+          : WHOLE_PR,
     linkOf: (anchor) =>
-      anchor.kind === "comment_item" ? commentLink(pr, anchor.item, numbers) : commentsPath(pr),
+      anchor.kind === "comment_item"
+        ? commentLink(pr, anchor.item, numbers)
+        : analysisId && tour
+          ? linkOf(analysisId, anchor, tour, numbers)
+          : commentsPath(pr),
     commenting: false,
     about: `your private chat about the comments of PR #${pr.number}`,
     notice: null,

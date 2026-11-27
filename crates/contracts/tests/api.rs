@@ -639,6 +639,7 @@ fn sse_event_name_is_the_tag() {
         }),
         failure: None,
         created_at: Timestamp::now(),
+        answered_at: None,
         resumes_at: None,
     };
     for event in [
@@ -673,6 +674,7 @@ fn ask_question_resumes_at_only_while_waiting_for_the_usage_limit() {
         answer: None,
         failure: None,
         created_at: at,
+        answered_at: None,
         resumes_at: None,
     };
     let json = serde_json::to_value(&question).expect("serialises");

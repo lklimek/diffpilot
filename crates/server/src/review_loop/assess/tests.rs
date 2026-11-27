@@ -2313,7 +2313,7 @@ async fn question_without_analysis_is_answered_by_a_question_pass() {
         .state
         .db
         .questions()
-        .list_for_pull_request(PR, "u1", Timestamp::now())
+        .list_for_pull_request(PR, None, "u1", Timestamp::now())
         .await
         .expect("list");
     assert_eq!(questions.len(), 1);

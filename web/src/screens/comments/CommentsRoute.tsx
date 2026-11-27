@@ -16,7 +16,7 @@ import {
   useSearchParams,
 } from "react-router";
 import { ApiError, errorText } from "../../api/client";
-import type { CommentItem, PrRef, CommentsOverview } from "../../api/generated/types";
+import type { AnalysisId, CommentItem, PrRef, CommentsOverview } from "../../api/generated/types";
 import { useMe } from "../../api/queries";
 import {
   useCommentItems,
@@ -68,13 +68,15 @@ export interface CommentsContext {
 /** The layout's data for a Comments page. */
 export const useComments = () => useOutletContext<CommentsContext>();
 
-/** The shared Ask chat over the reader's questions about the PR's comment items, with the live answer counts. */
+/** The shared Ask chat with the live answer counts for comment items. */
 function WithAsk({
   pr,
+  analysisId,
   items,
   children,
 }: {
   pr: PrRef;
+  analysisId: AnalysisId | null;
   items: readonly CommentItem[] | undefined;
   children: (count: (id: string) => number) => ReactNode;
 }) {
@@ -88,7 +90,7 @@ function WithAsk({
     [questions.data],
   );
   return (
-    <PrAskChatProvider key={commentsPath(pr)} pr={pr} numbers={numbers}>
+    <PrAskChatProvider key={commentsPath(pr)} pr={pr} analysisId={analysisId} numbers={numbers}>
       {children(count)}
     </PrAskChatProvider>
   );
@@ -420,7 +422,7 @@ function CommentsVisit({ pr }: { pr: PrRef }) {
           />
         )}
         <AnalysisPathLinks analysisId={analysis} head={o?.head ?? null}>
-          <WithAsk pr={pr} items={items.data}>
+          <WithAsk pr={pr} analysisId={analysis} items={items.data}>
             {body}
           </WithAsk>
         </AnalysisPathLinks>
