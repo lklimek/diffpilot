@@ -68,15 +68,17 @@ pub(super) async fn invalidate_comments(
            )
          )
          UPDATE comment_prs AS c SET github_dirty_at = MAX(COALESCE(c.github_dirty_at, ?2), ?2),
-           (github_head, github_head_at) = (
+           (github_head, github_head_at, github_head_before) = (
              SELECT CASE WHEN fresh THEN a.head ELSE c.github_head END,
-                    CASE WHEN fresh THEN a.head_at ELSE c.github_head_at END
+                    CASE WHEN fresh THEN a.head_at ELSE c.github_head_at END,
+                    CASE WHEN fresh THEN COALESCE(a.prior_head, c.github_snapshot ->> '$.head')
+                         ELSE c.github_head_before END
              FROM (SELECT a.head IS NOT NULL AND (
                julianday(a.head_at) > latest
-               OR (COALESCE(c.github_dirty_at, ?2) <= ?2 AND (
-                 a.head_at IS NULL
-                 OR (julianday(a.head_at) = latest AND a.prior_head = current_head COLLATE NOCASE)
-               ))
+               OR (COALESCE(c.github_dirty_at, ?2) <= ?2
+                   AND a.prior_head = current_head COLLATE NOCASE
+                   AND (julianday(a.head_at) = latest
+                        OR (a.head_at IS NULL AND c.github_head_at IS NULL)))
              ) AS fresh
              FROM (SELECT MAX(COALESCE(julianday(c.github_head_at), 0),
                               COALESCE(julianday(c.github_snapshot ->> '$.updated_at'), 0)) AS latest,

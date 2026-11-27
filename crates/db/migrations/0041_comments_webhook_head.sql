@@ -2,6 +2,7 @@
 ALTER TABLE comment_prs ADD COLUMN github_dirty_at TEXT;
 ALTER TABLE comment_prs ADD COLUMN github_head TEXT;
 ALTER TABLE comment_prs ADD COLUMN github_head_at TEXT;
+ALTER TABLE comment_prs ADD COLUMN github_head_before TEXT;
 
 -- A follow-up issue's creation reservation survives lease expiry and reports.
 ALTER TABLE comment_effects ADD COLUMN issue_attempt_id TEXT;

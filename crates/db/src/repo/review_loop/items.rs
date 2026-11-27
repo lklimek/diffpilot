@@ -615,15 +615,22 @@ impl ReviewLoop<'_> {
             } => sqlx::query(
                 "UPDATE comment_prs SET read_at = ?1, read_failure = NULL, read_failed_at = NULL,
                    github_snapshot = ?2, round_count = ?3,
-                   (github_dirty_at, github_head, github_head_at) = (
+                   (github_dirty_at, github_head, github_head_at, github_head_before) = (
                      SELECT CASE WHEN github_dirty_at <= ?5 AND (github_head IS NULL OR covered)
                                  THEN NULL ELSE github_dirty_at END,
                             CASE WHEN covered THEN NULL ELSE github_head END,
-                            CASE WHEN covered THEN NULL ELSE github_head_at END
+                            CASE WHEN covered THEN NULL ELSE github_head_at END,
+                            CASE WHEN covered THEN NULL ELSE github_head_before END
                      FROM (SELECT github_head = (?2 ->> '$.head') COLLATE NOCASE OR (
-                       (github_snapshot ->> '$.head') != (?2 ->> '$.head') COLLATE NOCASE
-                       AND julianday(?2 ->> '$.updated_at') > julianday(github_head_at)
-                     ) AS covered)
+                       github_dirty_at <= ?5 AND (
+                         observed_at > signal_at
+                         OR ((github_head_before IS NULL
+                              OR github_head_before != (?2 ->> '$.head') COLLATE NOCASE)
+                             AND (signal_at IS NULL OR observed_at >= signal_at))
+                       )
+                     ) AS covered
+                     FROM (SELECT julianday(?2 ->> '$.updated_at') AS observed_at,
+                                  julianday(github_head_at) AS signal_at))
                    )
                  WHERE pull_request_id = ?4",
             )

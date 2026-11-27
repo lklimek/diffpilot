@@ -344,18 +344,29 @@ async fn signal_invalidates_a_pr_whose_first_comments_read_has_not_finished() {
     let pending = rl.pr_state(id).await.unwrap().unwrap();
     assert!(pending.read_at.is_none());
 
+    let mut signal = pr_signal("synchronize", HEAD, NEW_HEAD, UPDATED);
+    signal.as_object_mut().unwrap().remove("before");
     assert_eq!(
-        delivery(
-            &w,
-            "pull_request",
-            pr_signal("synchronize", HEAD, NEW_HEAD, UPDATED)
-        )
-        .await,
+        delivery(&w, "pull_request", signal).await,
         StatusCode::ACCEPTED
     );
     let pending = rl.pr_state(id).await.unwrap().unwrap();
     assert!(pending.github_dirty_at.is_some());
     assert_eq!(pending.github_head.as_deref(), Some(NEW_HEAD));
+
+    serve(
+        &w.server,
+        &[("pr.json", &|answer| {
+            let pull = &mut answer["data"]["repository"]["pullRequest"];
+            pull["headRefOid"] = json!(LATER_HEAD);
+            pull["updatedAt"] = json!(UPDATED);
+        })],
+    )
+    .await;
+    let first = w.get(COMMENTS).await;
+    assert_eq!(first["head"], LATER_HEAD);
+    assert_ne!(first["badge"]["badge"], "github_outdated");
+    assert_eq!(pull_reads(&w).await, 1);
 }
 
 #[tokio::test]
@@ -399,9 +410,9 @@ async fn receive_commit_order_cannot_rewind_the_comments_invalidation() {
         name: crate::github::review_loop::tests::pr482().repo,
     };
     let now = Timestamp::now();
-    for (received, fingerprint, head) in [
-        (now, "a", NEW_HEAD),
-        (now - SignedDuration::from_secs(1), "b", HEAD),
+    for (received, fingerprint, before, head) in [
+        (now, "a", HEAD, NEW_HEAD),
+        (now - SignedDuration::from_secs(1), "b", NEW_HEAD, HEAD),
     ] {
         let changes = [WebhookChange {
             kind: ChangeKind::PullRequest,
@@ -410,7 +421,7 @@ async fn receive_commit_order_cannot_rewind_the_comments_invalidation() {
             number: Some(482),
             head_sha: Some(head.into()),
             synchronize_at: None,
-            synchronize_before: None,
+            synchronize_before: Some(before.into()),
             action: Some("synchronize".into()),
             installation_id: Some(123),
             base_repository: None,
@@ -446,4 +457,203 @@ async fn receive_commit_order_cannot_rewind_the_comments_invalidation() {
         )
     );
     assert_eq!(row.github_head.as_deref(), Some(NEW_HEAD));
+}
+
+async fn comments_with_two_threads(w: &World) {
+    serve(
+        &w.server,
+        &[
+            ("review-threads.json", &|answer| {
+                answer["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
+                    .as_array_mut()
+                    .unwrap()
+                    .retain(|thread| {
+                        matches!(
+                            thread["id"].as_str(),
+                            Some("PRRT_fixture482_l2" | "PRRT_fixture482_l6")
+                        )
+                    });
+            }),
+            ("reviews.json", &|answer| {
+                answer["data"]["repository"]["pullRequest"]["reviews"]["nodes"] = json!([]);
+            }),
+            ("comments.json", &|answer| {
+                answer["data"]["repository"]["pullRequest"]["comments"]["nodes"] = json!([]);
+            }),
+        ],
+    )
+    .await;
+    w.get(COMMENTS).await;
+    w.assess(L2, recommend(DecisionKind::FixHere, "correctness"), vec![])
+        .await;
+}
+
+#[tokio::test]
+async fn folded_duplicate_does_not_require_a_separate_assessment() {
+    let w = world().await;
+    comments_with_two_threads(&w).await;
+    assert_eq!(w.get(COMMENTS).await["badge"]["badge"], "assessment_needed");
+
+    propagation::link(&w, L6).await;
+    let follower = w.item(L6).await;
+    assert_eq!(follower["assessment_state"]["state"], "not_assessed");
+    assert_eq!(w.get(COMMENTS).await["badge"]["badge"], "questions_waiting");
+
+    let (status, body) = w
+        .post(
+            &format!("{COMMENTS}/items/C{}/gates", follower["no"]),
+            json!({"gate":"G-DATA", "marked":true, "item_revision":follower["revision"]}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(w.get(COMMENTS).await["badge"]["badge"], "assessment_needed");
+}
+
+#[tokio::test]
+async fn watched_pr_badge_counts_current_skips_of_its_reader() {
+    let w = world().await;
+    comments_with_two_threads(&w).await;
+    let other_cookie = crate::test_support::other_user_cookie(&w.state).await;
+    let id = w.pr_id().await;
+    for user in ["u1", "u2"] {
+        w.state
+            .db
+            .review_loop()
+            .watch(DEFAULT_TENANT, user, id, 20, Timestamp::now())
+            .await
+            .unwrap();
+    }
+    let watch_path = "/api/v1/watches";
+    assert_eq!(
+        w.get(watch_path).await["watches"][0]["badge"]["badge"],
+        "questions_waiting"
+    );
+
+    let item = w.item(L2).await;
+    let (status, _) = w
+        .post(
+            &format!("{COMMENTS}/items/C{}/skip", item["no"]),
+            json!({"item_revision": item["revision"]}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_ne!(
+        w.get(watch_path).await["watches"][0]["badge"]["badge"],
+        "questions_waiting"
+    );
+    assert_eq!(w.get(COMMENTS).await["counts"]["needs_you"], 0);
+
+    let other = w
+        .app
+        .clone()
+        .oneshot(
+            Request::get(watch_path)
+                .header(COOKIE, other_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(other.status(), StatusCode::OK);
+    let other: Value =
+        serde_json::from_slice(&other.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(other["watches"][0]["badge"]["badge"], "questions_waiting");
+}
+
+const LATER_HEAD: &str = "cccccccccccccccccccccccccccccccccccccccc";
+
+#[tokio::test]
+async fn in_flight_read_leaves_same_second_newer_head_pending_until_an_authoritative_read() {
+    let w = covered().await;
+    w.get(COMMENTS).await;
+    let id = w.pr_id().await;
+    let rl = w.state.db.review_loop();
+    let started = Timestamp::now() - SignedDuration::from_secs(1);
+    assert_eq!(
+        delivery(
+            &w,
+            "pull_request",
+            pr_signal("synchronize", HEAD, NEW_HEAD, UPDATED)
+        )
+        .await,
+        StatusCode::ACCEPTED
+    );
+    let pending = rl.pr_state(id).await.unwrap().unwrap();
+    let mut snapshot = pending.github_snapshot.unwrap();
+    snapshot["head"] = json!(LATER_HEAD);
+    snapshot["updated_at"] = json!(UPDATED);
+    let read = ReadResult::Read {
+        snapshot,
+        round_count: pending.round_count,
+    };
+    rl.record_read_started(id, &read, started, Timestamp::now())
+        .await
+        .unwrap();
+    assert_eq!(w.get(COMMENTS).await["badge"]["badge"], "github_outdated");
+
+    rl.record_read(id, &read, Timestamp::now()).await.unwrap();
+    let current = w.get(COMMENTS).await;
+    assert_eq!(current["head"], LATER_HEAD);
+    assert_ne!(current["badge"]["badge"], "github_outdated");
+    assert!(
+        rl.pr_state(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .github_dirty_at
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn current_head_reconciles_a_synchronize_without_an_update_time() {
+    let w = covered().await;
+    w.get(COMMENTS).await;
+    w.age_read().await;
+    let mut signal = pr_signal("synchronize", HEAD, NEW_HEAD, UPDATED);
+    signal["pull_request"]["updated_at"] = Value::Null;
+    assert_eq!(
+        delivery(&w, "pull_request", signal).await,
+        StatusCode::ACCEPTED
+    );
+    assert_eq!(w.get(COMMENTS).await["badge"]["badge"], "github_outdated");
+
+    let id = w.pr_id().await;
+    let rl = w.state.db.review_loop();
+    let pending = rl.pr_state(id).await.unwrap().unwrap();
+    rl.record_read(
+        id,
+        &ReadResult::Read {
+            snapshot: pending.github_snapshot.unwrap(),
+            round_count: pending.round_count,
+        },
+        Timestamp::now(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(w.get(COMMENTS).await["badge"]["badge"], "github_outdated");
+    w.age_read().await;
+
+    serve(
+        &w.server,
+        &[("pr.json", &|answer| {
+            answer["data"]["repository"]["pullRequest"]["headRefOid"] = json!(LATER_HEAD);
+        })],
+    )
+    .await;
+    flush(&w).await;
+    let current = w.get(COMMENTS).await;
+    assert_eq!(current["head"], LATER_HEAD);
+    assert_ne!(current["badge"]["badge"], "github_outdated");
+    assert!(
+        w.state
+            .db
+            .review_loop()
+            .pr_state(w.pr_id().await)
+            .await
+            .unwrap()
+            .unwrap()
+            .github_dirty_at
+            .is_none()
+    );
 }

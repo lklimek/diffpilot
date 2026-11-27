@@ -212,7 +212,7 @@ pub async fn list(state: &AppState, session: &Session) -> Result<WatchList, Loop
             pr: record.pr.clone(),
             id: record.pull_request_id,
         };
-        let badge = match super::views::badge(state, handle, &my_work).await {
+        let badge = match super::views::badge(state, handle, &session.user_id, &my_work).await {
             Ok(badge) => badge,
             Err(error) => {
                 tracing::debug!(

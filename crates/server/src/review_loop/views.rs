@@ -664,11 +664,14 @@ fn badge_of(
 pub(crate) async fn badge(
     state: &AppState,
     handle: PrHandle,
+    reader: &str,
     my_work: &MyWork,
 ) -> Result<PrBadgeView, LoopError> {
     let loaded = Loaded::of(state, handle).await?;
-    let pass = state.db.review_loop().latest_pass(loaded.handle.id).await?;
-    let queue_items = loaded.queue_items(&[]);
+    let rl = state.db.review_loop();
+    let pass = rl.latest_pass(loaded.handle.id).await?;
+    let skips = rl.skips(reader, loaded.handle.id).await?;
+    let queue_items = loaded.queue_items(&skips);
     let entries = queue::queue(&queue_items);
     let needs_you = needs_you(&loaded, &entries, pass.as_ref(), false).0;
     Ok(badge_of(
@@ -716,6 +719,7 @@ fn comments_badge(
     } else if loaded.items.iter().any(|item| {
         waits(item)
             && item.kind != CommentItemKind::PrQuestion
+            && loaded.follower_link(item).is_none()
             && loaded
                 .assessments
                 .get(&item.no)
