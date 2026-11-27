@@ -296,6 +296,35 @@ async fn agent_annotations_keep_the_exact_github_target_and_do_not_add_queue_ite
 }
 
 #[tokio::test]
+async fn cached_agent_annotation_rejects_a_recreated_repository() {
+    let w = world().await;
+    w.items().await;
+    let (writer, _) = feed::agent(&w, &[TokenScope::Read, TokenScope::ReviewLoopSubmit]).await;
+    let target = json!({"kind":"github","comment":"PRRC_fixture482_3000000201"});
+    assert_eq!(
+        submit(&w, &writer, &submission(target.clone())).await.0,
+        StatusCode::CREATED
+    );
+    serve(
+        &w.server,
+        &[("pr.json", &|answer| {
+            let id = &mut answer["data"]["repository"]["databaseId"];
+            *id = json!(id.as_i64().unwrap() + 1);
+        })],
+    )
+    .await;
+    let (status, response) = submit(&w, &writer, &submission(target)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{response}");
+    assert_eq!(
+        w.item(L2).await["agent_annotations"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn agent_annotations_find_replies_after_the_first_page() {
     use wiremock::matchers::body_partial_json;
 

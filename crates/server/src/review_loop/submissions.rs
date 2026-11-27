@@ -4,7 +4,7 @@ use contracts::api::review_loop::{
     AgentCommentReceipt, AgentCommentTarget, AuthorKind, CommentItemKind, ItemGithubFacts,
     ReadFailure, SubmitAgentComment,
 };
-use contracts::common::PrRef;
+use contracts::common::{PrRef, RepoRef};
 use contracts::ids::CommitSha;
 use contracts::time::Timestamp;
 use db::error::DbError;
@@ -185,21 +185,39 @@ async fn check_current_access(
             Ok(facts) => facts,
             Err(error) => return Err(github_read_error(state, agent, &token, error).await),
         };
+    check_repository(
+        state,
+        &agent.tenant_id,
+        &handle.pr.repo,
+        repository_id,
+        private,
+    )
+    .await?;
+    Ok(CommitSha(facts.head_ref_oid))
+}
+
+async fn check_repository(
+    state: &AppState,
+    tenant: &str,
+    expected: &RepoRef,
+    repository_id: i64,
+    private: bool,
+) -> Result<(), LoopError> {
     if private {
         return Err(LoopError::PrivateRepository);
     }
     let known = state
         .db
         .repos()
-        .bound_names(&agent.tenant_id, &[repository_id])
+        .bound_names(tenant, &[repository_id])
         .await?;
     if !known.iter().any(|(_, repo)| {
-        repo.owner.eq_ignore_ascii_case(&handle.pr.repo.owner)
-            && repo.name.eq_ignore_ascii_case(&handle.pr.repo.name)
+        repo.owner.eq_ignore_ascii_case(&expected.owner)
+            && repo.name.eq_ignore_ascii_case(&expected.name)
     }) {
         return Err(LoopError::NotFound);
     }
-    Ok(CommitSha(facts.head_ref_oid))
+    Ok(())
 }
 
 async fn receipt(
@@ -325,9 +343,14 @@ async fn github_target(
         Ok(read) => read,
         Err(error) => return Err(github_read_error(state, agent, &token, error).await),
     };
-    if read.private {
-        return Err(LoopError::PrivateRepository);
-    }
+    check_repository(
+        state,
+        &agent.tenant_id,
+        &handle.pr.repo,
+        read.repo_github_id,
+        read.private,
+    )
+    .await?;
     for thread in &read.threads {
         if let Some(comment) = thread.comments.nodes.iter().find(|comment| {
             comment.state.as_deref() != Some("PENDING")
