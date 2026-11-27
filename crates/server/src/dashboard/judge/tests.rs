@@ -3631,6 +3631,7 @@ async fn stating(
         summary: Some("Stage owner".to_owned()),
         details: Vec::new(),
         facts: Vec::new(),
+        actions: Vec::new(),
         ready_to_merge: None,
         whose_move: Some(whose),
         github_updated_at: None,

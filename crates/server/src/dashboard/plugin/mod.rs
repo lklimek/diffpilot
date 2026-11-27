@@ -102,6 +102,8 @@ pub struct PrStatement {
     pub details: Vec<String>,
     /// Labelled values.
     pub facts: Vec<Fact>,
+    /// Ordered actionable statements for Comments.
+    pub actions: Vec<String>,
     /// Opinion on Ready to merge; `None`: no opinion.
     pub ready_to_merge: Option<Readiness>,
     /// Whose move it is (Waiting on others, K15 W3b); `None`: no opinion.
@@ -619,6 +621,7 @@ impl Overlay {
                 summary: statement.summary.clone(),
                 details: statement.details.clone(),
                 facts: statement.facts.clone(),
+                actions: statement.actions.clone(),
             })
             .collect()
     }

@@ -236,6 +236,21 @@
           "const": "blocked_failing"
         },
         {
+          "description": "A newer GitHub head is known and the shown Comments snapshot is from an older head.",
+          "type": "string",
+          "const": "github_outdated"
+        },
+        {
+          "description": "Review items need an assessment.",
+          "type": "string",
+          "const": "assessment_needed"
+        },
+        {
+          "description": "An assessment pass is queued or running.",
+          "type": "string",
+          "const": "assessing"
+        },
+        {
           "description": "B2.",
           "type": "string",
           "const": "questions_waiting"

@@ -1,9 +1,10 @@
 //! Resolves webhook hints against member snapshots and linked GitHub logins.
 
 use contracts::common::RepoRef;
-use sqlx::FromRow;
+use contracts::time::Timestamp;
+use sqlx::{FromRow, SqliteConnection};
 
-use super::{Github, WebhookChange};
+use super::{Github, WebhookChange, ts};
 use crate::error::DbError;
 
 /// A current dashboard item or a candidate for a targeted read.
@@ -34,9 +35,59 @@ struct Target {
     candidate: bool,
 }
 
+// Match only previously read PRs by the same repository identity used by watch routing.
+pub(super) async fn invalidate_comments(
+    conn: &mut SqliteConnection,
+    hints: &str,
+    now: Timestamp,
+) -> Result<(), DbError> {
+    sqlx::query(
+        "WITH signals AS (
+           SELECT value ->> '$.repository.id' AS repo_id,
+                  value ->> '$.repository.name.owner' AS owner,
+                  value ->> '$.repository.name.name' AS name,
+                  value ->> '$.number' AS number,
+                  CASE WHEN value ->> '$.action' = 'synchronize'
+                         AND value ->> '$.kind' = 'pull_request'
+                       THEN value ->> '$.head_sha' END AS head,
+                  value ->> '$.synchronize_at' AS head_at
+           FROM json_each(?1)
+           WHERE value ->> '$.kind' IN ('pull_request','pull_request_review')
+         ), affected AS (
+           SELECT p.id, s.head, s.head_at
+           FROM signals s JOIN repos r ON r.github_id = s.repo_id
+             OR ((s.repo_id IS NULL OR r.github_id IS NULL)
+                 AND r.owner = s.owner COLLATE NOCASE AND r.name = s.name COLLATE NOCASE)
+           JOIN pull_requests p ON p.repo_id = r.id AND p.number = s.number
+           WHERE EXISTS (
+             SELECT 1 FROM app_repositories ar WHERE ar.suspended = 0
+               AND (ar.repository_id = r.github_id OR (
+                 ar.owner = r.owner COLLATE NOCASE AND ar.name = r.name COLLATE NOCASE
+                 AND (ar.repository_id IS NULL OR r.github_id IS NULL)))
+           )
+         )
+         UPDATE comment_prs AS c SET github_dirty_at = ?2,
+           (github_head, github_head_at) = (
+             SELECT CASE WHEN fresh THEN a.head ELSE c.github_head END,
+                    CASE WHEN fresh THEN a.head_at ELSE c.github_head_at END
+             FROM (SELECT a.head IS NOT NULL
+               AND (a.head_at IS NULL OR (
+                 julianday(a.head_at) >= COALESCE(julianday(c.github_head_at), 0)
+                 AND julianday(a.head_at) >= COALESCE(julianday(c.github_snapshot ->> '$.updated_at'), 0)
+               )) AS fresh)
+           )
+         FROM affected a WHERE c.pull_request_id = a.id AND c.read_at IS NOT NULL",
+    )
+    .bind(hints)
+    .bind(ts(now))
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
 impl Github<'_> {
-    /// Finds watched PRs and whether their review or comments changed.
-    pub async fn watch_targets(
+    /// Finds watched or previously read PRs and whether their review or comments changed.
+    pub async fn review_targets(
         &self,
         changes: &[WebhookChange],
     ) -> Result<Vec<(i64, bool)>, DbError> {
@@ -54,8 +105,9 @@ impl Github<'_> {
                OR ((s.repo_id IS NULL OR r.github_id IS NULL)
                    AND r.owner = s.owner COLLATE NOCASE AND r.name = s.name COLLATE NOCASE)
              JOIN pull_requests p ON p.repo_id = r.id AND p.number = s.number
-             JOIN pr_watches w ON w.pull_request_id = p.id AND w.state != 'ended'
-             JOIN memberships m ON m.tenant_id = w.tenant_id AND m.user_id = w.user_id
+             WHERE EXISTS (SELECT 1 FROM comment_prs c WHERE c.pull_request_id = p.id AND c.read_at IS NOT NULL)
+                OR EXISTS (SELECT 1 FROM pr_watches w JOIN memberships m USING (tenant_id, user_id)
+                           WHERE w.pull_request_id = p.id AND w.state != 'ended')
              GROUP BY p.id",
         )
         .bind(serde_json::to_string(changes)?)

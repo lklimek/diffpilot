@@ -460,18 +460,59 @@ describe("v1.4 review status", () => {
       expect(screen.queryByText("PR Hygiene")).toBeNull();
       await userEvent.click(trigger);
       const panel = within(screen.getByRole("dialog", { name: "Pull request status" }));
-      expect(await panel.findByRole("heading", { name: /^PR Hygiene/ })).toBeVisible();
+      if (path === PR) {
+        expect(await panel.findByRole("heading", { name: /^PR Hygiene/ })).toBeVisible();
+      } else {
+        expect(await panel.findByText("Waiting on author")).toBeVisible();
+      }
       expect(await panel.findByRole("heading", { name: /^thepastaclaw status/ })).toBeVisible();
       expect(panel.getByText(/CI: 2 passed, 1 pending/)).toBeVisible();
       expect(panel.getAllByText(/data of/)).toHaveLength(2);
       expect(panel.getByText(/Bot rounds: 4/)).toBeVisible();
       await userEvent.tab();
-      expect(panel.getAllByRole("link")[0]).toHaveFocus();
+      expect(
+        path === PR ? panel.getAllByRole("link")[0] : panel.getByText("Waiting on author").closest("summary"),
+      ).toHaveFocus();
       await userEvent.keyboard("{Escape}");
       expect(trigger).toHaveFocus();
       expect(trigger).toHaveAttribute("aria-expanded", "false");
     },
   );
+
+  it("shows one PR Hygiene action until its disclosure opens", async () => {
+    server.use(
+      http.get("/api/v1/prs/acme/node-client/482", () => {
+        const page = prPage();
+        return HttpResponse.json({
+          ...page,
+          plugin_notes: page.plugin_notes.map((note) =>
+            note.plugin === "pr-hygiene"
+              ? {
+                  ...note,
+                  actions: [
+                    "Resolve the open thread",
+                    "Find a maintainer",
+                    "Address requested review changes",
+                  ],
+                  details: ["Merge conflict: No", "Engine state: waiting"],
+                }
+              : note,
+          ),
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    renderRoute(`${PR}/comments`);
+    await user.click(await screen.findByRole("button", { name: "Questions waiting" }));
+    const panel = within(screen.getByRole("dialog", { name: "Pull request status" }));
+    const summary = await panel.findByText("Resolve the open thread");
+    expect(panel.getByText("Find a maintainer")).not.toBeVisible();
+    await user.click(summary);
+    expect(panel.getByText("Find a maintainer")).toBeVisible();
+    expect(panel.getByText("Address requested review changes")).toBeVisible();
+    expect(panel.queryByText("Merge conflict: No")).toBeNull();
+    expect(panel.getByRole("link", { name: "Source for PR Hygiene (new tab)" })).toBeVisible();
+  });
 
   it("decides linked duplicate items with their primary and undoes the same decision together", async () => {
     setScenario("comments-v14");

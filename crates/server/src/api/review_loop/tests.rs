@@ -31,6 +31,7 @@ use crate::state::AppState;
 use crate::test_support::session_cookie;
 
 mod assessment;
+mod freshness;
 mod marks;
 mod pr_history;
 mod propagation;
@@ -887,7 +888,20 @@ async fn undo_reopen_and_skip() {
     assert_eq!(status, StatusCode::OK, "{reopened}");
     assert_eq!(reopened["state"], "reopened");
 
+    w.assess(L6, recommend(DecisionKind::FixHere, "correctness"), vec![])
+        .await;
+    let overview_url = format!("{PR}/comments");
+    let before = w.get(&overview_url).await;
     let skipped = w.item(L6).await;
+    let rest_url = format!("{PR}/comments/decide-rest");
+    let in_rest = |value: &Value| {
+        value["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["row"]["item_no"] == skipped["no"])
+    };
+    assert!(in_rest(&w.get(&rest_url).await));
     let (status, _) = w
         .post(
             &format!("{PR}/comments/items/C{}/skip", skipped["no"]),
@@ -895,7 +909,18 @@ async fn undo_reopen_and_skip() {
         )
         .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    let queue = w.get(&format!("{PR}/comments")).await["queue"].clone();
+    let after = w.get(&overview_url).await;
+    assert_eq!(
+        after["counts"]["needs_you"].as_u64().unwrap() + 1,
+        before["counts"]["needs_you"].as_u64().unwrap()
+    );
+    assert_eq!(
+        w.get(PR).await["comments"]["counts"]["needs_you"],
+        after["counts"]["needs_you"]
+    );
+    assert!(!in_rest(&w.get(&rest_url).await));
+    assert_eq!(skipped["decisions"], w.item(L6).await["decisions"]);
+    let queue = &after["queue"];
     let last = queue
         .as_array()
         .and_then(|q| q.last())

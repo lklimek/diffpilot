@@ -1157,7 +1157,7 @@ pub struct GithubRead {
     pub comments: u32,
     /// The latest attempt failed.
     pub failure: Option<ReadFailure>,
-    /// Next automatic read.
+    /// Next timed GitHub read, when polling is the fallback.
     pub next_read_at: Option<Timestamp>,
 }
 
@@ -1225,6 +1225,12 @@ pub struct CommentCounts {
 pub enum PrBadge {
     /// B1.
     BlockedFailing,
+    /// A newer GitHub head is known and the shown Comments snapshot is from an older head.
+    GithubOutdated,
+    /// Review items need an assessment.
+    AssessmentNeeded,
+    /// An assessment pass is queued or running.
+    Assessing,
     /// B2.
     QuestionsWaiting,
     /// B3.
@@ -1273,7 +1279,7 @@ pub struct QueueEntry {
     pub item_nos: Vec<u32>,
     /// Reason.
     pub reason: QueueReason,
-    /// The reader skipped it ("Skip for now") at its current revision; skipped entries come last. Absent when not.
+    /// The reader skipped it at its current revision and it belongs in Skipped. Absent when active.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[ts(as = "Option<bool>", optional)]
     pub skipped: bool,

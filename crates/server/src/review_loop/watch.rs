@@ -25,7 +25,7 @@ use tokio::time::Instant;
 
 use super::assess::{self, AssessError, PassQueued, PassReason};
 use super::observe::Snapshot;
-use super::{Loaded, LoopError, PrHandle, ReadOutcome, queue};
+use super::{Loaded, LoopError, PrHandle, ReadOutcome, freshness, queue};
 use crate::auth::{Session, UserTokenError};
 use crate::dashboard::{installations, plugin::PrKey};
 use crate::github::graphql::ReadBudget;
@@ -346,7 +346,7 @@ pub async fn plugin_changed(state: &AppState, changed: &HashSet<PrKey>) {
 
 const EVENT_PROBE_INTERVAL: SignedDuration = SignedDuration::from_secs(60);
 
-/// Probes a live PR using an available watcher, or returns the wait until another attempt.
+/// Refreshes a covered PR for its watch or an active Comments reader, returning any required delay.
 pub(crate) async fn event_probe(
     state: &AppState,
     pr: i64,
@@ -358,7 +358,7 @@ pub(crate) async fn event_probe(
     let rl = state.db.review_loop();
     let watches = rl.watches_of(pr).await?;
     let Some(first) = watches.first() else {
-        return Ok(None);
+        return refresh_readers(state, pr, now, budgets, instant).await;
     };
     if !installations::live(state, &first.tenant_id)
         .await?
@@ -422,6 +422,75 @@ pub(crate) async fn event_probe(
         }
         ProbeOutcome::Incomplete => Err(WatchError::IncompleteProbe),
         ProbeOutcome::Deferred(delay) => Ok(Some(delay.max(EVENT_PROBE_INTERVAL.unsigned_abs()))),
+    }
+}
+
+async fn refresh_readers(
+    state: &AppState,
+    id: i64,
+    now: Timestamp,
+    budgets: &mut HashMap<String, EventBudget>,
+    instant: Instant,
+) -> Result<Option<Duration>, WatchError> {
+    let Some(user) = state.comments_readers.reader(id) else {
+        return Ok(None);
+    };
+    let db = state.db.review_loop();
+    if !db
+        .pr_state(id)
+        .await?
+        .is_some_and(|row| row.github_dirty_at.is_some())
+    {
+        return Ok(None);
+    }
+    let stored = state.db.pull_requests().get(id).await?;
+    let tenant = &stored.tenant_id;
+    let pr = PrRef {
+        repo: stored.pr.repo,
+        number: stored.pr.number,
+    };
+    if !state.db.github().dashboard_member(tenant, &user).await?
+        || !freshness::covered(state, tenant, &pr.repo).await?
+    {
+        return Ok(None);
+    }
+    let budget = budgets.entry(user.clone()).or_default();
+    let limit = limit_until(&user, now)
+        .and_then(|until| Duration::try_from(until - now).ok())
+        .unwrap_or_default()
+        .max(budget.blocked_for(instant, now).await);
+    if !limit.is_zero() {
+        return Ok(Some(limit));
+    }
+
+    let read = super::read_if_due_with_budget(
+        state,
+        tenant,
+        &user,
+        &pr,
+        true,
+        Some(ReadBudget { budget, instant }),
+    )
+    .await;
+    match read {
+        Err(LoopError::TooSoon) => Ok(Some(super::MIN_REREAD.unsigned_abs())),
+        Err(LoopError::EventBudget(delay)) => Ok(Some(delay)),
+        Err(error) => Err(error.into()),
+        Ok(read) if read.outcome == ReadOutcome::Failed(ReadFailure::RateLimited) => {
+            Ok(Some(backoff_for_rate_limit(&user, None, now)))
+        }
+        Ok(read) if matches!(read.outcome, ReadOutcome::Failed(_)) => {
+            Err(WatchError::IncompleteProbe)
+        }
+        Ok(_)
+            if db
+                .pr_state(id)
+                .await?
+                .is_some_and(|row| row.github_dirty_at.is_some()) =>
+        {
+            Err(WatchError::IncompleteProbe)
+        }
+        Ok(_) => Ok(None),
     }
 }
 

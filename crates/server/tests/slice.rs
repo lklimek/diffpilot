@@ -2313,14 +2313,12 @@ async fn restart_with_failing_preparation_cancels_live_jobs() {
     let progress = ProgressHub::default();
     let queue: Arc<QueueExecutor> =
         Arc::new(QueueExecutor::new(h.state.db.clone(), progress.clone()));
-    let state = AppState {
-        progress,
-        ..AppState::new(
-            config(h._dir.path(), &h.github, None),
-            h.state.db.clone(),
-            queue.clone(),
-        )
-    };
+    let mut state = AppState::new(
+        config(h._dir.path(), &h.github, None),
+        h.state.db.clone(),
+        queue.clone(),
+    );
+    state.progress = progress;
     let pending = queue
         .submit(JobRequest {
             spec: {

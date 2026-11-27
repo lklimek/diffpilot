@@ -11,8 +11,8 @@ use contracts::api::review_loop::{
     CommentCounts, CommentItem, CommentItemKind, CommentLog, CommentsOverview, CommentsSummary,
     ContextQuery, DecideRest, DecideRestRow, DecisionBatchRow, DecisionVia, EffectState,
     EffectsPreview, FeedSubscriber, FlowStepRef, GithubRead, ImportedGithubDecision, ItemState,
-    ItemsQuery, KindCount, NotAssessedReason, NoteElsewhere, NoteSource, PrBadgeView, PrPage,
-    QueueEntry, Round, WatchState,
+    ItemsQuery, KindCount, NotAssessedReason, NoteElsewhere, NoteSource, PrBadge, PrBadgeView,
+    PrPage, QueueEntry, Round, WatchState,
 };
 use contracts::api::tour::{CiState, Tour};
 use contracts::common::{AnnotationType, LineRange, LineSide, PrRef};
@@ -25,8 +25,8 @@ use db::repo::review_loop::{
 
 use super::badge::{self, BadgeInputs, MyWork};
 use super::observe::Snapshot;
-use super::queue;
 use super::{Loaded, LoopError, PrHandle, READ_INTERVAL};
+use super::{freshness, queue};
 use crate::auth::Session;
 use crate::dashboard::plugin;
 use crate::github::mirror;
@@ -329,20 +329,31 @@ pub async fn items(
         .collect())
 }
 
-fn read_view(loaded: &Loaded) -> GithubRead {
+async fn read_view(
+    state: &AppState,
+    session: &Session,
+    loaded: &Loaded,
+) -> Result<GithubRead, DbError> {
     let (threads, reviews, comments) = loaded
         .snapshot
         .as_ref()
         .map_or((0, 0, 0), |snapshot| snapshot.counts);
-    GithubRead {
+    let timed = !session.is_access_token()
+        && (loaded.snapshot.is_none()
+            || !freshness::covered(state, &session.tenant_id, &loaded.handle.pr.repo).await?);
+    let last_attempt = loaded
+        .row
+        .read_at
+        .max(loaded.row.read_failure.map(|(_, at)| at));
+    Ok(GithubRead {
         read_at: loaded.row.read_at,
         threads,
         complete: loaded.snapshot.as_ref().is_some_and(|s| s.complete),
         reviews,
         comments,
         failure: loaded.row.read_failure.map(|(failure, _)| failure),
-        next_read_at: loaded.row.read_at.map(|at| at + READ_INTERVAL),
-    }
+        next_read_at: last_attempt.filter(|_| timed).map(|at| at + READ_INTERVAL),
+    })
 }
 
 fn effects_open(stored: &StoredDecision) -> bool {
@@ -403,16 +414,17 @@ pub(crate) fn dashboard_needs_you(
     view: db::repo::review_loop::PrTallyView,
 ) -> Result<u32, DbError> {
     let loaded = Loaded::from_view(handle, view.pr).ok_or(DbError::NotFound)?;
-    let entries = queue::queue(&loaded.queue_items(&[]));
+    let entries = queue::queue(&loaded.queue_items(&view.skips));
     Ok(needs_you(&loaded, &entries, view.latest_pass.as_ref(), false).0)
 }
 
 fn counts(
     loaded: &Loaded,
-    waiting: usize,
+    entries: &[QueueEntry],
     (needs_you, needs_you_gates, marked): (u32, u32, u32),
 ) -> CommentCounts {
     let standing = loaded.standing();
+    let active = entries.iter().filter(|entry| !entry.skipped);
     CommentCounts {
         not_a_review_point: marked,
         needs_you,
@@ -422,12 +434,12 @@ fn counts(
             .snapshot
             .as_ref()
             .map_or(0, |snapshot| snapshot.unresolved_threads),
-        undecided: count(waiting),
+        undecided: count(active.clone().map(|entry| entry.item_nos.len()).sum()),
         asked_again: count(
-            loaded
-                .items
-                .iter()
-                .filter(|item| item.state == ItemState::Reopened && waits(item))
+            active
+                .filter(|entry| {
+                    entry.reason == contracts::api::review_loop::QueueReason::AskedAgain
+                })
                 .count(),
         ),
         waiting_for_agents: count(standing.values().filter(|s| effects_open(s)).count()),
@@ -667,6 +679,60 @@ pub(crate) async fn badge(
     ))
 }
 
+fn comments_badge(
+    mut badge: PrBadgeView,
+    loaded: &Loaded,
+    snapshot: &Snapshot,
+    pass: Option<&PassRecord>,
+) -> PrBadgeView {
+    let fresh = loaded
+        .row
+        .github_head
+        .as_deref()
+        .is_none_or(|head| snapshot.head.eq_ignore_ascii_case(head));
+    if badge.badge == Some(PrBadge::BlockedFailing) {
+        if !fresh {
+            badge
+                .facts
+                .push("GitHub reported a new head. Showing the previous Comments read.".to_owned());
+        }
+        return badge;
+    }
+    if snapshot.state != "OPEN" {
+        return badge;
+    }
+    let state = if !fresh {
+        Some((
+            PrBadge::GithubOutdated,
+            "GitHub reported a new head. Showing the previous Comments read.",
+        ))
+    } else if live_pass(pass).is_some() {
+        Some((
+            PrBadge::Assessing,
+            "An assessment pass is queued or running.",
+        ))
+    } else if loaded.items.iter().any(|item| {
+        waits(item)
+            && item.kind != CommentItemKind::PrQuestion
+            && loaded
+                .assessments
+                .get(&item.no)
+                .is_none_or(|stored| stored.assessment.head.0 != snapshot.head)
+    }) {
+        Some((
+            PrBadge::AssessmentNeeded,
+            "Review items need a diffpilot assessment at this head.",
+        ))
+    } else {
+        None
+    };
+    if let Some((state, fact)) = state {
+        badge.badge = Some(state);
+        badge.facts = vec![fact.to_owned()];
+    }
+    badge
+}
+
 async fn latest_analysis(
     state: &AppState,
     session: &Session,
@@ -710,7 +776,6 @@ pub async fn overview(
     let skips = rl.skips(&session.user_id, loaded.handle.id).await?;
     let queue_items = loaded.queue_items(&skips);
     let entries = queue::queue(&queue_items);
-    let waiting = entries.iter().map(|entry| entry.item_nos.len()).sum();
     let pass = rl.latest_pass(loaded.handle.id).await?;
     let watch = reader_watch(state, session, loaded.handle.id).await?;
     let limited = watch
@@ -731,7 +796,7 @@ pub async fn overview(
     let analysis = latest_analysis(state, session, loaded.handle.id)
         .await?
         .map(|summary| summary.id);
-    let mut counts = counts(&loaded, waiting, needs_you);
+    let mut counts = counts(&loaded, &entries, needs_you);
     if !session.is_access_token() {
         counts.imported_unseen = Some(count(
             rl.unseen_comment_imports(&session.tenant_id, &session.user_id, loaded.handle.id, true)
@@ -750,12 +815,12 @@ pub async fn overview(
         },
         head: CommitSha(snapshot.head.clone()),
         purpose: loaded.row.purpose.clone(),
-        read: read_view(&loaded),
+        read: read_view(state, session, &loaded).await?,
         counts,
         rounds: rounds(&loaded, &events),
         assessment: progress(&loaded, pass.as_ref(), limited),
         queue: entries,
-        badge,
+        badge: comments_badge(badge, &loaded, snapshot, pass.as_ref()),
         analysis,
     })
 }
@@ -770,9 +835,9 @@ pub async fn pr_page(
     let loaded = Loaded::of(state, handle).await?;
     let snapshot = loaded.snapshot.as_ref();
     let rl = state.db.review_loop();
-    let queue_items = loaded.queue_items(&[]);
+    let skips = rl.skips(&session.user_id, loaded.handle.id).await?;
+    let queue_items = loaded.queue_items(&skips);
     let entries = queue::queue(&queue_items);
-    let waiting = entries.iter().map(|entry| entry.item_nos.len()).sum();
     let pass = rl.latest_pass(loaded.handle.id).await?;
     let my_work = badge::my_work(state, &session.tenant_id, &session.user_id).await?;
     let pr = &loaded.handle.pr;
@@ -815,10 +880,10 @@ pub async fn pr_page(
         badge: badge.clone(),
         analysis: latest_analysis(state, session, loaded.handle.id).await?,
         comments: CommentsSummary {
-            counts: counts(&loaded, waiting, needs_you),
+            counts: counts(&loaded, &entries, needs_you),
             rounds: snapshot.map_or(0, |s| count(s.rounds.len())),
             assessment: progress(&loaded, pass.as_ref(), limited),
-            read: read_view(&loaded),
+            read: read_view(state, session, &loaded).await?,
         },
     })
 }
@@ -967,9 +1032,14 @@ pub async fn preview(
 }
 
 /// RC17.
-pub async fn decide_rest(state: &AppState, handle: PrHandle) -> Result<DecideRest, LoopError> {
+pub async fn decide_rest(
+    state: &AppState,
+    user: &str,
+    handle: PrHandle,
+) -> Result<DecideRest, LoopError> {
     let loaded = Loaded::of(state, handle).await?;
-    let queue_items = loaded.queue_items(&[]);
+    let skips = state.db.review_loop().skips(user, loaded.handle.id).await?;
+    let queue_items = loaded.queue_items(&skips);
     let (proposed, left_out) = queue::decide_rest(&queue_items);
     let mut rows = Vec::new();
     let mut left_out = left_out;

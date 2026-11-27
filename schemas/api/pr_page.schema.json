@@ -349,6 +349,13 @@
           "items": {
             "$ref": "#/$defs/Fact"
           }
+        },
+        "actions": {
+          "description": "Ordered actionable statements for the PR Hygiene disclosure in Comments.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "required": [
@@ -537,6 +544,21 @@
           "description": "B1.",
           "type": "string",
           "const": "blocked_failing"
+        },
+        {
+          "description": "A newer GitHub head is known and the shown Comments snapshot is from an older head.",
+          "type": "string",
+          "const": "github_outdated"
+        },
+        {
+          "description": "Review items need an assessment.",
+          "type": "string",
+          "const": "assessment_needed"
+        },
+        {
+          "description": "An assessment pass is queued or running.",
+          "type": "string",
+          "const": "assessing"
         },
         {
           "description": "B2.",
@@ -1747,7 +1769,7 @@
           ]
         },
         "next_read_at": {
-          "description": "Next automatic read.",
+          "description": "Next timed GitHub read, when polling is the fallback.",
           "type": [
             "string",
             "null"

@@ -146,6 +146,7 @@ pub(super) fn needs_you(entries: &[QueueEntry], items: &HashMap<u32, StatusItem>
     let mut gates = 0u32;
     for item in entries
         .iter()
+        .filter(|entry| !entry.skipped)
         .flat_map(|entry| &entry.item_nos)
         .filter_map(|no| items.get(no))
     {
@@ -309,7 +310,10 @@ pub fn decide_rest(
     let mut left_out = Vec::new();
     let mut waiting = waiting(items);
     waiting.sort_by_key(|item| item.no);
-    for item in waiting.into_iter().filter(|item| item.question.is_none()) {
+    for item in waiting
+        .into_iter()
+        .filter(|item| item.question.is_none() && !item.skipped)
+    {
         let outcome = if item.gated {
             Err(LeftOutReason::Gate)
         } else if item.state == ItemState::Reopened {

@@ -38,6 +38,8 @@ pub struct AppState {
     pub plugins: PluginHost,
     /// Decision feed streams and their presence (ADR-023).
     pub feed: FeedHub,
+    /// Browser readers of webhook-driven Comments pages.
+    pub(crate) comments_readers: crate::review_loop::freshness::CommentsReaders,
     /// Coalesces reads after agent reports within this application (ADR-023).
     pub report_reads: ReportReads,
     /// Numeric resolutions of linked GitHub logins across assessment reads.
@@ -80,6 +82,7 @@ impl AppState {
             stopping: tokio::sync::watch::Sender::new(false),
             dashboard: DashboardHub::default(),
             feed: FeedHub::default(),
+            comments_readers: Default::default(),
             report_reads: ReportReads::default(),
             relay_ids: Default::default(),
             notify: NotifyHub::default(),

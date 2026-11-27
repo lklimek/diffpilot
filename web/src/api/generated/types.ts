@@ -4098,7 +4098,7 @@ comments: number,
  */
 failure: ReadFailure | null,
 /**
- * Next automatic read.
+ * Next timed GitHub read, when polling is the fallback.
  */
 next_read_at: string | null, };
 
@@ -5959,7 +5959,11 @@ details: Array<string>,
 /**
  * Labelled values (PR Hygiene: stage, whose move, lateness).
  */
-facts: Array<Fact>, };
+facts: Array<Fact>,
+/**
+ * Ordered actionable statements for the PR Hygiene disclosure in Comments.
+ */
+actions?: Array<string>, };
 
 /**
  * Whether a plug-in's statements are shown.
@@ -6011,7 +6015,7 @@ path: string, };
 /**
  * PR state badge (plan §3.9 B1–B5); first match wins.
  */
-export type PrBadge = "blocked_failing" | "questions_waiting" | "executing" | "waiting_for_bot_round" | "ready_to_merge";
+export type PrBadge = "blocked_failing" | "github_outdated" | "assessment_needed" | "assessing" | "questions_waiting" | "executing" | "waiting_for_bot_round" | "ready_to_merge";
 
 /**
  * The badge with the facts behind it (tooltip).
@@ -6652,7 +6656,7 @@ item_nos: Array<number>,
  */
 reason: QueueReason,
 /**
- * The reader skipped it ("Skip for now") at its current revision; skipped entries come last. Absent when not.
+ * The reader skipped it at its current revision and it belongs in Skipped. Absent when active.
  */
 skipped?: boolean, };
 

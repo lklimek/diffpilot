@@ -39,7 +39,7 @@ interface DecisionFormProps {
   /** Opens the shared Ask chat about this item; absent: Ask is not available (`askUnavailable` says why). */
   onAsk?: () => void;
   askUnavailable?: string;
-  onSkip: () => void;
+  onSkip?: () => void;
   busy: boolean;
   /** The server's refusal of the last submit. */
   error: string | null;
@@ -379,11 +379,13 @@ export function DecisionForm(props: DecisionFormProps) {
             Ask about this comment <Kbd decorative>a</Kbd>
           </button>
         </Tooltip>
-        <Tooltip tip="Keeps this question undecided and opens the next one (s).">
-          <button type="button" onClick={onSkip} className={buttonClass("plain")}>
-            Skip for now <Kbd decorative>s</Kbd>
-          </button>
-        </Tooltip>
+        {onSkip && (
+          <Tooltip tip="Keeps this question undecided and opens the next one (s).">
+            <button type="button" onClick={onSkip} className={buttonClass("plain")}>
+              Skip for now <Kbd decorative>s</Kbd>
+            </button>
+          </Tooltip>
+        )}
         {extra}
       </div>
     </form>

@@ -300,6 +300,21 @@ export function useItemAction(pr: PrRef) {
   });
 }
 
+/** Skip every item of a question at its displayed revision, then refresh the reader's queue. */
+export function useSkipCommentItems(pr: PrRef) {
+  const invalidate = useInvalidatePr(pr);
+  return useMutation({
+    mutationFn: async (items: Pick<CommentItem, "no" | "revision">[]) => {
+      const results = await Promise.allSettled(
+        items.map(({ no, revision }) => api.skipCommentItem(pr, no, { item_revision: revision })),
+      );
+      const failure = results.find((result) => result.status === "rejected");
+      if (failure) throw failure.reason;
+    },
+    onSettled: invalidate,
+  });
+}
+
 /**
  * Undo of the reader's decision `decision` on item `C<no>` (RC12) at the item's current revision: the items are
  * read again first, so an Undo right after deciding never sends the revision from before that decision. When the

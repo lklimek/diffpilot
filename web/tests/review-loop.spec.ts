@@ -83,6 +83,40 @@ test("decide_from_the_middle_opens_the_next_question", async ({ page }) => {
   ).toBeFocused();
 });
 
+test("Skipped questions can be opened by keyboard without deciding the current question", async ({
+  page,
+}) => {
+  await page.goto(`${PR}/comments?item=C15`);
+  await page.getByRole("button", { name: /Skip for now/ }).click();
+  const next = page.getByRole("heading", { name: /C11 · Backoff cap is not configurable/ });
+  await expect(next).toBeVisible();
+  const queue = page.getByRole("navigation", { name: "Queue" });
+  await expect(queue.getByRole("button", { name: /^Status: Needs you · 10/ })).toBeVisible();
+  const skipped = queue.getByRole("group", { name: "Skipped" });
+  await skipped.getByText("Skipped (1)").press("Enter");
+  await expect(next).toBeVisible();
+  await skipped.getByRole("button", { name: /^C15(?!\d)/ }).press("Enter");
+  await expect(page.getByRole("heading", { name: /C15 · Debug log prints/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Decide", exact: true })).toBeVisible();
+});
+
+test("PR Hygiene actions disclose by keyboard without showing diagnostics", async ({ page }) => {
+  await page.goto(`${PR}/comments`);
+  await page.getByRole("button", { name: "Questions waiting" }).click();
+  const status = page.getByRole("dialog", { name: "Pull request status" });
+  const preview = status.locator("summary").filter({ hasText: "Waiting on author" });
+  const action = status.getByText("Resolve the open review threads");
+  await expect(preview).toBeVisible();
+  await expect(action).toBeHidden();
+  await preview.press("Enter");
+  await expect(action).toBeVisible();
+  await expect(status.getByRole("link", { name: "Source for PR Hygiene (new tab)" })).toBeVisible();
+  for (const colorScheme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme });
+    await expectAccessible(page);
+  }
+});
+
 test("sections_collapse_by_keyboard", async ({ page }) => {
   await page.goto(`${PR}/comments?item=C14`);
   const section = page.getByRole("button", { name: "The discussed code" });

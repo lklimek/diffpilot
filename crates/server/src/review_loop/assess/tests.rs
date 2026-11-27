@@ -2578,7 +2578,7 @@ async fn stored_texts_pass_the_current_guard_when_read() {
         },
         id: PR,
     };
-    let rest = super::super::views::decide_rest(&f.state, handle)
+    let rest = super::super::views::decide_rest(&f.state, "u1", handle)
         .await
         .expect("rows");
     let row = rest.rows.first().expect("a row");

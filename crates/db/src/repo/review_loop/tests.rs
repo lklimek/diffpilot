@@ -955,7 +955,10 @@ async fn comment_tallies_count_current_comments_per_read_pull_request_and_name_w
     )
     .await
     .expect("read");
-    let mut views = rl.comment_tally_views(T, &[PR, 2]).await.expect("batch");
+    let mut views = rl
+        .comment_tally_views(T, "u1", &[PR, 2])
+        .await
+        .expect("batch");
     let ready = views.remove(&PR).expect("read PR").expect("valid rows");
     assert_eq!(
         ready.pr.items.len(),

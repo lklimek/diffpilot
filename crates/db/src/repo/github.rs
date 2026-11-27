@@ -75,6 +75,9 @@ pub struct WebhookChange {
     pub number: Option<u32>,
     /// Head commit for mapping check events.
     pub head_sha: Option<String>,
+    /// GitHub's PR update time for a signed synchronize event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synchronize_at: Option<Timestamp>,
     /// GitHub action selected by the receiver.
     pub action: Option<String>,
     /// GitHub App installation.
@@ -281,7 +284,16 @@ impl Github<'_> {
                 if !tracked.bind(&mut tx).await? {
                     return Ok(Outcome::NotAllowed);
                 }
-                (serde_json::to_string(changes)?, None)
+                let hints = serde_json::to_string(changes)?;
+                if changes.iter().any(|change| {
+                    matches!(
+                        change.kind,
+                        ChangeKind::PullRequest | ChangeKind::PullRequestReview
+                    )
+                }) {
+                    dispatch::invalidate_comments(&mut tx, &hints, now).await?;
+                }
+                (hints, None)
             }
             Admitted::Installation(installation, update) => {
                 let Some(applied) =

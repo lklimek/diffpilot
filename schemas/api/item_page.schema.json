@@ -1023,6 +1023,13 @@
           "items": {
             "$ref": "#/$defs/Fact"
           }
+        },
+        "actions": {
+          "description": "Ordered actionable statements for the PR Hygiene disclosure in Comments.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "required": [

@@ -36,6 +36,7 @@ mod clean;
 mod context;
 mod effects;
 pub mod feed;
+pub(crate) mod freshness;
 mod handin;
 mod markers;
 pub mod notify;
@@ -50,7 +51,7 @@ pub use effects::DecisionError;
 use effects::{EffectItem, PrQuestion, PrScope};
 use observe::{BotRule, Observed, Snapshot};
 
-/// A page reads GitHub again when its last read is older than this (plan §4.1).
+/// Browser polling can read GitHub again at this interval in repositories without webhook coverage.
 pub const READ_INTERVAL: SignedDuration = SignedDuration::from_secs(60);
 /// "Read GitHub again" is refused within this time of the last read (RC3: 429).
 pub const MIN_REREAD: SignedDuration = SignedDuration::from_secs(10);
@@ -176,8 +177,8 @@ async fn last_attempt(state: &AppState, id: i64) -> Result<Option<Timestamp>, Db
     }))
 }
 
-/// The pull request for a page: read from GitHub first when its last read is older than [`READ_INTERVAL`] (or
-/// always with `force`). Browser reads use the reader's GitHub token without scheduling assessment.
+/// The pull request for a page: read from GitHub initially, periodically without coverage, or on a manual refresh.
+/// Browser reads use the reader's GitHub token without scheduling assessment.
 /// Access-token requests read stored data without updating the database (ADR-019).
 pub async fn ensure_read(
     state: &AppState,
@@ -188,11 +189,53 @@ pub async fn ensure_read(
     if session.is_access_token() {
         return find(state, &session.tenant_id, pr).await;
     }
+    if !force
+        && let Ok(handle) = find(state, &session.tenant_id, pr).await
+        && state
+            .db
+            .review_loop()
+            .pr_state(handle.id)
+            .await?
+            .is_some_and(|row| row.github_snapshot.is_some())
+        && freshness::covered(state, &session.tenant_id, &pr.repo).await?
+    {
+        return Ok(handle);
+    }
     Ok(
         read_if_due(state, &session.tenant_id, &session.user_id, pr, force)
             .await?
             .handle,
     )
+}
+
+/// Refreshes an invalidated snapshot when a reader enters Comments after its event was processed.
+pub(crate) async fn refresh_on_visit(
+    state: &AppState,
+    session: &Session,
+    handle: &PrHandle,
+) -> Result<(), LoopError> {
+    state.comments_readers.touch(session, handle.id);
+    if !freshness::covered(state, &session.tenant_id, &handle.pr.repo).await? {
+        return Ok(());
+    }
+    let _guard = read_lock(&session.tenant_id, &handle.pr).await;
+    if state
+        .db
+        .review_loop()
+        .pr_state(handle.id)
+        .await?
+        .is_some_and(|row| row.github_dirty_at.is_some())
+    {
+        read_now(
+            state,
+            &session.tenant_id,
+            &session.user_id,
+            &handle.pr,
+            None,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 /// What [`read_if_due`] did.
@@ -318,6 +361,7 @@ async fn read_now(
         Err(error) => return Err(error.into()),
     };
     let config = &state.config.github;
+    let started_at = Timestamp::now();
     let read = match reads::read(config, &token, pr, budget).await {
         Ok(read) => read,
         Err(ReadError::Graphql(GraphqlError::EventBudget(delay))) => {
@@ -549,12 +593,13 @@ async fn read_now(
     state
         .db
         .review_loop()
-        .record_read(
+        .record_read_started(
             id,
             &ReadResult::Read {
                 snapshot,
                 round_count,
             },
+            started_at,
             Timestamp::now(),
         )
         .await?;

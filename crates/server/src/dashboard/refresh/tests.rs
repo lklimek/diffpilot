@@ -1938,6 +1938,7 @@ async fn dashboard_tally_equals_comments_count() {
     let rl = w.state.db.review_loop();
     let now = Timestamp::now();
     rl.ensure_pr(DEFAULT_TENANT, 1, now).await.expect("row");
+    let mut question = None;
     for (key, kind, state) in [
         ("dedupe-a", CommentItemKind::Thread, ItemState::Undecided),
         ("dedupe-b", CommentItemKind::Thread, ItemState::Done),
@@ -1981,18 +1982,22 @@ async fn dashboard_tally_equals_comments_count() {
             panic!("new item")
         };
         if kind == CommentItemKind::PrQuestion || key == "dedupe-c" {
-            rl.set_gates(
-                (DEFAULT_TENANT, "u1"),
-                item.id,
-                item.revision,
-                &[GateMark {
-                    gate: Gate::Funds,
-                    source: GateSource::Owner,
-                }],
-                now,
-            )
-            .await
-            .expect("gate");
+            let marked = rl
+                .set_gates(
+                    (DEFAULT_TENANT, "u1"),
+                    item.id,
+                    item.revision,
+                    &[GateMark {
+                        gate: Gate::Funds,
+                        source: GateSource::Owner,
+                    }],
+                    now,
+                )
+                .await
+                .expect("gate");
+            if kind == CommentItemKind::PrQuestion {
+                question = Some((item.id, marked.revision));
+            }
         }
     }
     assert_eq!(
@@ -2065,9 +2070,10 @@ async fn dashboard_tally_equals_comments_count() {
     assert_eq!(overview.body["counts"]["needs_you"], tally.needs_you);
     assert_eq!(page.body["comments"]["counts"]["needs_you_gates"], 1);
     assert_eq!(overview.body["counts"]["needs_you_gates"], 1);
-    assert_eq!(overview.body["badge"]["badge"], "questions_waiting");
+    assert_eq!(overview.body["badge"]["badge"], "assessment_needed");
+    assert_eq!(page.body["badge"]["badge"], "questions_waiting");
     assert!(
-        overview.body["badge"]["facts"]
+        page.body["badge"]["facts"]
             .as_array()
             .unwrap()
             .contains(&json!("1 undecided question"))
@@ -2120,6 +2126,15 @@ async fn dashboard_tally_equals_comments_count() {
     let other_row = page.items.iter().find(|item| item.id == other.id).unwrap();
     assert!(other_row.watched);
     assert!(other_row.comments.is_none());
+
+    let (item, revision) = question.expect("PR-level question");
+    rl.skip(DEFAULT_TENANT, "u1", item, revision, now)
+        .await
+        .expect("skip");
+    assert_eq!(comments(&w.items("").await)[0].1.needs_you, 0);
+    let skipped = w.send("GET", &format!("{pr}/comments"), "", &auth).await;
+    assert_eq!(skipped.body["counts"]["needs_you"], 0);
+    assert_eq!(skipped.body["badge"]["badge"], "assessment_needed");
 }
 
 #[tokio::test]

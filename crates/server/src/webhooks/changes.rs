@@ -195,6 +195,13 @@ pub(super) fn extract(
             head_repository,
             number,
             head_sha,
+            synchronize_at: if event == "pull_request" && action_name == "synchronize" {
+                body["pull_request"]["updated_at"]
+                    .as_str()
+                    .and_then(|at| at.parse().ok())
+            } else {
+                None
+            },
             action: action.map(str::to_owned),
             installation_id: installation,
             base_repository,
@@ -247,10 +254,15 @@ pub(super) fn extract(
         }
         .filter(|login| crate::github::work::valid_login(login))
         .map(str::to_owned);
+        let head_sha = if event == "pull_request" && action_name == "synchronize" {
+            sha(&body["after"]).or_else(|| sha(&pr["head"]["sha"]))
+        } else {
+            sha(&pr["head"]["sha"])
+        };
         vec![make(
             Some(number),
             repository(&pr["head"]["repo"]),
-            sha(&pr["head"]["sha"]),
+            head_sha,
             None,
             candidate_login,
         )]

@@ -20,7 +20,7 @@ pub enum Destination {
         /// The member whose token and snapshot are used.
         user: String,
     },
-    /// A watched pull request.
+    /// Review-loop state of a pull request with a watch or a stored Comments read.
     Watch {
         /// The stored PR id, scoped to its tenant.
         pr: i64,

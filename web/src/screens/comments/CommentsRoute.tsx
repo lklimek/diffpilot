@@ -311,6 +311,7 @@ function CommentsVisit({ pr }: { pr: PrRef }) {
               rounds={o.rounds.length}
               notes={page.data?.plugin_notes}
               ci={page.data?.ci}
+              variant="comments"
               read={o.read}
               now={now}
               itemId={display}

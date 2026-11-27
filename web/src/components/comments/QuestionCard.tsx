@@ -43,7 +43,8 @@ interface QuestionCardProps {
   /** The carry-over event that asked this repeat again (US9), when it is one. */
   reask?: CarryEvent;
   /** "Question 2 of 9". */
-  position: { index: number; total: number };
+  position?: { index: number; total: number };
+  skipped?: boolean;
   /** PR number and its one-sentence purpose (LLM, or the analysis's PR context). */
   prNumber: number;
   purpose: string | null;
@@ -65,7 +66,7 @@ interface QuestionCardProps {
   /** Opens the chat at this item's threads. */
   onOpenAnswers?: () => void;
   onDecide: (request: DecideRequest) => void;
-  onSkip: () => void;
+  onSkip?: () => void;
   /** The server's plan of the decision drafted on the card (RC16). */
   preview: EffectsPreviewState;
   /** The drafted decision to plan; null while an input is missing. */
@@ -296,7 +297,12 @@ export function QuestionCard(props: QuestionCardProps) {
       className="rounded-lg border border-border bg-surface px-4 py-3.5"
     >
       <p className="m-0 text-xs text-muted">
-        {itemId(item)} · {props.position.index} of {props.position.total} · {sourceText(item)}
+        {itemId(item)}
+        {props.skipped
+          ? " · Skipped"
+          : props.position && ` · ${props.position.index} of ${props.position.total}`}
+        {" · "}
+        {sourceText(item)}
         <Raised item={item} />
       </p>
       <h2
