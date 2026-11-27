@@ -16,16 +16,18 @@ function ActivityDisclosure(props: ComponentProps<typeof LlmActivityList>) {
   const count = activity && `${activity.running.length}/${activity.running.length + activity.queued.length}`;
   return (
     <>
-      <button
-        type="button"
-        className={ACTION}
-        aria-expanded={open}
-        aria-controls={id}
-        onClick={() => setOpen(!open)}
-      >
-        <span>LLM activity{count && <span className="tabular-nums">: {count}</span>}</span>
-        <span aria-hidden>{open ? "▾" : "›"}</span>
-      </button>
+      <Tooltip tip={open ? "Hide job details." : "Show running and queued jobs."}>
+        <button
+          type="button"
+          className={ACTION}
+          aria-expanded={open}
+          aria-controls={id}
+          onClick={() => setOpen(!open)}
+        >
+          <span>LLM activity{count && <span className="tabular-nums">: {count}</span>}</span>
+          <span aria-hidden>{open ? "▾" : "›"}</span>
+        </button>
+      </Tooltip>
       <div id={id} hidden={!open}>
         {open && <LlmActivityList {...props} />}
       </div>
