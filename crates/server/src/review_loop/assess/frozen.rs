@@ -80,7 +80,7 @@ impl Frozen {
         let confirmed = crate::github::threads::github_web_url(url)
             .is_some_and(|url| self.own_reply_urls.contains(&url));
         confirmed
-            || host::all_comments(&self.data).any(|comment| {
+            || host::github_comments(&self.data).any(|comment| {
                 host::url(comment) == url
                     && self.own_reply_texts.contains(host::body(comment).trim())
             })

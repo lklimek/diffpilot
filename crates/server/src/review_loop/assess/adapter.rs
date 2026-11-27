@@ -444,11 +444,7 @@ fn host_rows(
         .iter()
         .filter(|r| matches!(r.source_kind, SourceKind::Reply | SourceKind::Status))
     {
-        let Some(recorded) = row
-            .recorded_decision
-            .as_ref()
-            .filter(|recorded| api_item_for_url(frozen, &recorded.comment_url).is_none())
-        else {
+        let Some(recorded) = row.recorded_decision.as_ref() else {
             continue;
         };
         let node = host::threads(&frozen.data).find(|thread| {
@@ -470,12 +466,8 @@ fn host_rows(
                 ),
             }
         } else {
-            let Some(raw) = frozen
-                .data
-                .reviews
-                .iter()
-                .chain(&frozen.data.comments)
-                .find(|c| host::url(c) == recorded.comment_url)
+            let Some(raw) =
+                host::github_bodies(&frozen.data).find(|c| host::url(c) == recorded.comment_url)
             else {
                 continue;
             };

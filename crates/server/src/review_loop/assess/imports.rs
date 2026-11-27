@@ -223,7 +223,7 @@ fn target_of(data: &PrData, d: &RecordedDecision, kind: DecisionKind) -> Option<
 }
 
 fn source<'a>(data: &'a PrData, url: &str) -> Option<&'a Value> {
-    host::all_comments(data).find(|comment| host::url(comment) == url)
+    host::github_comments(data).find(|comment| host::url(comment) == url)
 }
 
 fn evidence_version(point: &Value, evidence: &Value) -> String {
@@ -309,7 +309,7 @@ pub(super) fn candidate(
                         .is_none_or(|c| c.is_whitespace() || ")]>.,'\"".contains(c))
             })
         };
-        let other_mentions = data.comments.iter().chain(&data.reviews).any(|other| {
+        let other_mentions = host::github_bodies(data).any(|other| {
             let url = host::url(other);
             !url.is_empty()
                 && url != point.url
