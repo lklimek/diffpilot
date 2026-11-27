@@ -426,7 +426,7 @@ function CommentsVisit({ pr }: { pr: PrRef }) {
             onNavigate={go}
           />
         )}
-        <AnalysisPathLinks analysisId={analysis} head={o?.head ?? null}>
+        <AnalysisPathLinks analysisId={analysis} pr={pr} head={o?.head ?? null}>
           <WithAsk pr={pr} analysisId={o ? (o.ask_analysis ?? null) : undefined} items={items.data}>
             {body}
           </WithAsk>

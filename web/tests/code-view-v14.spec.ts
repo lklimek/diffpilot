@@ -332,7 +332,7 @@ test("U52: a mention in an LLM remark opens and reveals a folded Files range", a
   await marker.click();
   await expect(links.first()).toHaveAttribute(
     "href",
-    /\/files#lines\?file=src%2Frpc%2Fclient\.rs&side=head&line=12&end=14$/,
+    `/pr/acme/node-client/482/analyses/${ANALYSIS_ID}/files#lines?file=src%2Frpc%2Fclient.rs&side=head&line=12&end=14`,
   );
   await links.first().click();
   await expect(page.locator('[data-line="12"][data-selected-line]')).toBeInViewport();

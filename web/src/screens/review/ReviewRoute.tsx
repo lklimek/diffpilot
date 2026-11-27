@@ -8,7 +8,7 @@ export function ReviewRoute() {
   const { analysisId = "" } = useParams();
   const pr = useOutletContext<PrRef>();
   return (
-    <AnalysisPathLinks key={analysisId} analysisId={analysisId}>
+    <AnalysisPathLinks key={analysisId} analysisId={analysisId} pr={pr}>
       <AskChatProvider analysisId={analysisId}>
         <Outlet context={pr} />
       </AskChatProvider>

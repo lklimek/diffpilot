@@ -145,7 +145,7 @@ test("Pull requests history lists the user's analysis and filters by watch", asy
   );
   await expect(row.getByRole("link", { name: "Review acme/node-client #482", exact: true })).toHaveAttribute(
     "href",
-    `/analyses/${id}`,
+    `${PR_PAGE_PATH}/analyses/${id}`,
   );
   await checkScreen(page);
 
