@@ -205,7 +205,11 @@ export function ThreadMarker({
                   />
                 )}
                 {isGithubUrl(t.url) && (
-                  <GithubLink url={t.url} tip="Open the thread on GitHub (new tab)">
+                  <GithubLink
+                    url={t.url}
+                    tip="Open the thread on GitHub (new tab)"
+                    className="inline-flex min-h-6 items-center"
+                  >
                     Open on GitHub
                   </GithubLink>
                 )}

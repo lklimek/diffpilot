@@ -83,7 +83,7 @@ export function OpenThreadInComments({ id, actions }: { id: string; actions: Git
   const href = actions.href(id);
   return (
     <a
-      className="text-accent underline"
+      className="inline-flex min-h-6 items-center text-accent underline"
       href={href}
       onClick={(event) => inApp(event, () => actions.navigate(href))}
     >

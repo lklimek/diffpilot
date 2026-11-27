@@ -356,7 +356,11 @@ function Thread({ thread, actions }: { thread: GithubThread; actions?: GithubThr
         </div>
       )}
       <p className="flex flex-wrap gap-x-3">
-        <GithubLink url={thread.url} tip="Open the thread on GitHub (new tab)">
+        <GithubLink
+          url={thread.url}
+          tip="Open the thread on GitHub (new tab)"
+          className="inline-flex min-h-6 items-center"
+        >
           Open the thread on GitHub
         </GithubLink>
         {actions && <OpenThreadInComments id={thread.id} actions={actions} />}
