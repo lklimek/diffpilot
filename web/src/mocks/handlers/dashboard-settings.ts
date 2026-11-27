@@ -7,7 +7,10 @@ import type {
   DashboardSettingsView,
   SetTimeZoneRequest,
 } from "../../api/generated/types";
-import { validateSettings } from "../../components/dashboard/settings-dashboard/validation";
+import {
+  settingsForSection,
+  validateSettings,
+} from "../../components/dashboard/settings-dashboard/validation";
 import viewJson from "../../../../fixtures/dashboard/api/settings.json";
 import tokensJson from "../../../../fixtures/dashboard/api/access-tokens.json";
 import createdJson from "../../../../fixtures/dashboard/api/access-token-created.json";
@@ -94,12 +97,20 @@ export const getDashboardSettings = route("getDashboardSettings", () =>
 
 /** `PUT /api/v1/settings/dashboard`: the rules of §F.6; 422 `invalid_dashboard_settings` names the first field. */
 export const setDashboardSettings = route("setDashboardSettings", async ({ request }) => {
-  const settings = (await request.json()) as DashboardSettings;
-  const [problem] = Object.values(validateSettings(settings, view.own_login));
+  const [section, ...extra] = new URL(request.url).searchParams.getAll("section");
+  if (
+    extra.length ||
+    (section !== undefined && section !== "github-sync" && section !== "repositories" && section !== "memcan")
+  )
+    return apiError(400, "invalid_request", "The request query is not valid.");
+  const body = (await request.json()) as DashboardSettings;
+  const checked = section ? settingsForSection(section, view.defaults, body) : body;
+  const [problem] = Object.values(validateSettings(checked, view.own_login));
   if (problem) return apiError(422, "invalid_dashboard_settings", problem);
-  if (selected.rejectSave) {
+  if (selected.rejectSave && (section === undefined || section === "github-sync")) {
     return apiError(422, "invalid_dashboard_settings", 'Time zone: "Etc/Unknown" is not a known time zone.');
   }
+  const settings = section ? settingsForSection(section, view.settings, checked) : checked;
   view = { ...view, settings, memcan_projects: memcanProjects(settings) };
   return HttpResponse.json(view);
 });

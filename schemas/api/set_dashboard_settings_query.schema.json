@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SetDashboardSettingsQuery",
+  "description": "Query of `PUT /api/v1/settings/dashboard`.",
+  "type": "object",
+  "properties": {
+    "section": {
+      "description": "The section to replace. Absent replaces the full settings document.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DashboardSettingsSection"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "DashboardSettingsSection": {
+      "description": "Which settings page owns the fields a scoped save replaces.",
+      "oneOf": [
+        {
+          "description": "GitHub scope, scan rules, schedule and Slack names.",
+          "type": "string",
+          "const": "github-sync"
+        },
+        {
+          "description": "Repository rules.",
+          "type": "string",
+          "const": "repositories"
+        },
+        {
+          "description": "MemCan TODO sources.",
+          "type": "string",
+          "const": "memcan"
+        }
+      ]
+    }
+  }
+}

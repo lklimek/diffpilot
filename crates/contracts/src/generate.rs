@@ -19,7 +19,8 @@ use crate::api::comments::{
 };
 use crate::api::dashboard::{
     DashboardEvent, DashboardSettings, DashboardSettingsView, DashboardSummary, ItemPage,
-    ItemQuery, RefreshStatus, SetTimeZoneRequest, SnoozeRequest, StartRefreshRequest, SummaryQuery,
+    ItemQuery, RefreshStatus, SetDashboardSettingsQuery, SetTimeZoneRequest, SnoozeRequest,
+    StartRefreshRequest, SummaryQuery,
 };
 use crate::api::deps::DependencyView;
 use crate::api::error::{ApiError, LoginError};
@@ -120,6 +121,7 @@ pub const API_SCHEMAS: &[ApiSchema] = &[
         "dashboard_settings_view",
         &[routes::GET_DASHBOARD_SETTINGS],
     ),
+    api_schema::<SetDashboardSettingsQuery>("set_dashboard_settings_query", &[]),
     api_schema::<AnalysisSummary>("analysis_summary", &[routes::GET_ANALYSIS]),
     api_schema::<MyAnalysesQuery>("my_analyses_query", &[]),
     api_schema::<MyAnalyses>("my_analyses", &[routes::LIST_MY_ANALYSES]),
@@ -401,6 +403,7 @@ fn typescript_types() -> Result<String, GenerateError> {
     collector.visit::<DashboardEvent>();
     collector.visit::<DashboardSettings>();
     collector.visit::<DashboardSettingsView>();
+    collector.visit::<SetDashboardSettingsQuery>();
     collector.visit::<SetTimeZoneRequest>();
     collector.visit::<SnoozeRequest>();
     collector.visit::<AccessToken>();

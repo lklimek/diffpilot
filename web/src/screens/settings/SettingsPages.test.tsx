@@ -39,6 +39,24 @@ it("edits only TODO source settings in MemCan and protects the draft when leavin
   expect(await screen.findByRole("checkbox", { name: "Show my MemCan TODOs" })).not.toBeChecked();
 });
 
+it.each([
+  ["github-sync", "Scope"],
+  ["repositories", "Repository rules"],
+  ["memcan", "TODO sources"],
+])("saves only the %s dashboard settings section", async (section, heading) => {
+  const sections: (string | null)[] = [];
+  server.use(
+    http.put("/api/v1/settings/dashboard", ({ request }) => {
+      sections.push(new URL(request.url).searchParams.get("section"));
+    }),
+  );
+  renderRoute(`/settings/${section}`);
+  await screen.findByRole("region", { name: heading });
+  await userEvent.click(screen.getByRole("button", { name: "Save" }));
+  await screen.findByText("Dashboard settings saved.");
+  expect(sections).toEqual([section]);
+});
+
 it("redirects old repository links and opens the read-only rules in the requested table row", async () => {
   const router = renderRoute("/settings?repo=acme%2Fnode-client");
   const table = await screen.findByRole("table", { name: "Repositories" });

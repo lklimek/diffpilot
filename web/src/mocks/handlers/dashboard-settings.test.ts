@@ -25,6 +25,20 @@ const SETTINGS = "/api/v1/settings/dashboard";
 const TOKENS = "/api/v1/settings/access-tokens";
 
 describe("msw dashboard settings (plan §F.6) and access tokens (ADR-019)", () => {
+  it("saves only a requested dashboard settings section from an earlier snapshot", async () => {
+    const { settings } = (await call<DashboardSettingsView>(SETTINGS)).body;
+    const sync = await call<DashboardSettingsView>(`${SETTINGS}?section=github-sync`, "PUT", {
+      ...settings,
+      schedule_time: "07:15",
+    });
+    expect(sync.status).toBe(200);
+    const memcan = await call<DashboardSettingsView>(`${SETTINGS}?section=memcan`, "PUT", {
+      ...settings,
+      include_todos: false,
+    });
+    expect(memcan.body.settings).toMatchObject({ schedule_time: "07:15", include_todos: false });
+  });
+
   it("PUT checks every rule and names the first failing field; a save recomputes the MemCan projects", async () => {
     const { settings } = (await call<DashboardSettingsView>(SETTINGS)).body;
     expect(await call(SETTINGS, "PUT", { ...settings, linked_logins: ["alice"] })).toMatchObject({

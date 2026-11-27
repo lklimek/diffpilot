@@ -4,12 +4,14 @@
 
 use std::borrow::Cow;
 
-use axum::extract::State;
-use axum::extract::rejection::JsonRejection;
+use axum::extract::rejection::{JsonRejection, QueryRejection};
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, put};
 use axum::{Json, Router};
-use contracts::api::dashboard::{DashboardSettings, DashboardSettingsView, SetTimeZoneRequest};
+use contracts::api::dashboard::{
+    DashboardSettings, DashboardSettingsView, SetDashboardSettingsQuery, SetTimeZoneRequest,
+};
 use contracts::api::error::ApiErrorCode;
 use contracts::api::settings::MemcanState;
 use contracts::routes::{GET_DASHBOARD_SETTINGS, SET_DASHBOARD_SETTINGS, SET_DASHBOARD_TIME_ZONE};
@@ -25,6 +27,9 @@ use crate::state::AppState;
 /// A dashboard settings request failed.
 #[derive(Debug, thiserror::Error)]
 pub enum DashboardSettingsError {
+    /// Malformed section query.
+    #[error("the request query is not valid")]
+    Query(#[from] QueryRejection),
     /// Malformed JSON body.
     #[error("the request body is not valid")]
     Json(#[from] JsonRejection),
@@ -39,6 +44,7 @@ pub enum DashboardSettingsError {
 impl ApiErrorSource for DashboardSettingsError {
     fn code(&self) -> ApiErrorCode {
         match self {
+            Self::Query(rejection) => rejection.code(),
             Self::Json(rejection) => rejection.code(),
             Self::Invalid(_) => ApiErrorCode::InvalidDashboardSettings,
             Self::Db(error) => error.code(),
@@ -47,6 +53,7 @@ impl ApiErrorSource for DashboardSettingsError {
 
     fn public_message(&self) -> Cow<'static, str> {
         match self {
+            Self::Query(rejection) => rejection.public_message(),
             Self::Json(rejection) => rejection.public_message(),
             Self::Invalid(rule) => Cow::Owned(rule.to_string()),
             Self::Db(error) => error.public_message(),
@@ -82,23 +89,36 @@ async fn read(
 async fn save(
     State(state): State<AppState>,
     SessionCsrf(session): SessionCsrf,
+    query: Result<Query<SetDashboardSettingsQuery>, QueryRejection>,
     body: Result<Json<DashboardSettings>, JsonRejection>,
 ) -> SettingsResult<Json<DashboardSettingsView>> {
+    let Query(query) = query.map_err(failure)?;
     let Json(settings) = body.map_err(failure)?;
     let own_login = own_login(&state, &session).await?;
-    let settings = settings::validated(settings, &own_login).map_err(failure)?;
-    state
-        .db
-        .dashboard()
-        .save_settings(
-            &session.tenant_id,
-            &session.user_id,
-            &settings,
-            Timestamp::now(),
-        )
-        .await
-        .map_err(failure)?;
-    tracing::info!(user_id = %session.user_id, "dashboard settings saved");
+    let dashboard = state.db.dashboard();
+    let tenant = &session.tenant_id;
+    let user = &session.user_id;
+    let now = Timestamp::now();
+    let settings = match query.section {
+        Some(section) => {
+            // Validate only the fields this request owns. The repository merges them with its latest row.
+            let owned = DashboardSettings::default().with_section(section, settings);
+            let owned = settings::validated(owned, &own_login).map_err(failure)?;
+            dashboard
+                .save_settings_section(tenant, user, section, owned, now)
+                .await
+                .map_err(failure)?
+        }
+        None => {
+            let settings = settings::validated(settings, &own_login).map_err(failure)?;
+            dashboard
+                .save_settings(tenant, user, &settings, now)
+                .await
+                .map_err(failure)?;
+            settings
+        }
+    };
+    tracing::info!(user_id = %user, section = ?query.section, "dashboard settings saved");
     Ok(Json(view(&state, &session, settings, own_login).await?))
 }
 
@@ -261,6 +281,16 @@ mod tests {
             self.save_as(&self.cookie, settings).await
         }
 
+        async fn save_section(&self, section: &str, settings: Value) -> (StatusCode, Value) {
+            self.send(
+                "PUT",
+                &format!("{}?section={section}", SET_DASHBOARD_SETTINGS.path),
+                &[("cookie", &self.cookie), ("x-csrf-token", "csrf")],
+                Some(settings),
+            )
+            .await
+        }
+
         async fn set_zone(&self, zone: &str) -> (StatusCode, Value) {
             self.send(
                 "PUT",
@@ -355,6 +385,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn scoped_settings_saves_preserve_changes_after_the_forms_loaded() {
+        let h = harness().await;
+        let stale = h.read().await["settings"].clone();
+
+        let mut sync = stale.clone();
+        sync["schedule_enabled"] = json!(false);
+        sync["schedule_time"] = json!("07:15");
+        sync["linked_logins"] = json!(["alice-ci"]);
+        let (status, saved) = h.save_section("github-sync", sync).await;
+        assert_eq!(status, StatusCode::OK, "{saved}");
+        assert_eq!(saved["settings"]["schedule_time"], "07:15");
+        assert_eq!(h.set_zone("Europe/Warsaw").await.0, StatusCode::NO_CONTENT);
+
+        let mut repositories = stale.clone();
+        repositories["repositories"] = filled()["repositories"].clone();
+        let mut memcan = stale;
+        memcan["include_todos"] = json!(false);
+        memcan["memcan_extra_projects"] = json!(["release-notes"]);
+        memcan["lookback_days"] = json!(0); // Unowned by this page, so ignored and never stored.
+        let ((repo_status, saved_repos), (todo_status, saved_todos)) = tokio::join!(
+            h.save_section("repositories", repositories),
+            h.save_section("memcan", memcan),
+        );
+        for (status, view) in [(repo_status, &saved_repos), (todo_status, &saved_todos)] {
+            assert_eq!(status, StatusCode::OK, "{view}");
+            assert_eq!(view["settings"]["schedule_time"], "07:15");
+            assert_eq!(view["settings"]["schedule_enabled"], false);
+            assert_eq!(view["settings"]["time_zone"], "Europe/Warsaw");
+            assert_eq!(view["settings"]["linked_logins"], json!(["alice-ci"]));
+        }
+        assert_eq!(
+            saved_repos["settings"]["repositories"],
+            filled()["repositories"]
+        );
+        assert_eq!(saved_todos["settings"]["include_todos"], false);
+        let current = h.read().await;
+        assert_eq!(
+            current["settings"]["repositories"],
+            filled()["repositories"]
+        );
+        assert_eq!(current["settings"]["include_todos"], false);
+        assert_eq!(
+            current["memcan_projects"],
+            json!(["platform", "legacy-tools", "release-notes"])
+        );
+        assert_eq!(current["settings"]["lookback_days"], 7);
+
+        let mut stale_sync = defaults();
+        stale_sync["ready_label"] = json!("new label");
+        let (status, saved) = h.save_section("github-sync", stale_sync).await;
+        assert_eq!(status, StatusCode::OK, "{saved}");
+        assert_eq!(saved["settings"]["ready_label"], "new label");
+        assert_eq!(saved["settings"]["time_zone"], "Europe/Warsaw");
+        assert_eq!(saved["settings"]["repositories"], filled()["repositories"]);
+        assert_eq!(saved["settings"]["include_todos"], false);
+
+        let mut invalid = defaults();
+        invalid["memcan_extra_projects"] = json!(["not a project name"]);
+        let (status, error) = h.save_section("memcan", invalid).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{error}");
+        assert_eq!(error["code"], "invalid_dashboard_settings");
+        let (status, error) = h.save_section("unknown", defaults()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+        assert_eq!(error["code"], "invalid_request");
+        assert_eq!(h.read().await["settings"], saved["settings"]);
+
+        let (status, replaced) = h.save(defaults()).await;
+        assert_eq!(status, StatusCode::OK, "{replaced}");
+        assert_eq!(replaced["settings"], defaults());
+    }
+
+    #[tokio::test]
     async fn a_broken_rule_is_422_naming_the_field_and_nothing_is_stored() {
         let h = harness().await;
         let mut clash = filled();
@@ -401,6 +503,7 @@ mod tests {
         let cookie = h.cookie.clone();
         for (method, path, body) in [
             ("PUT", SET_DASHBOARD_SETTINGS.path, filled()),
+            ("PUT", "/api/v1/settings/dashboard?section=memcan", filled()),
             (
                 "PUT",
                 SET_DASHBOARD_TIME_ZONE.path,

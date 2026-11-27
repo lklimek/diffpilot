@@ -1215,6 +1215,57 @@ impl Default for DashboardSettings {
     }
 }
 
+/// Which settings page owns the fields a scoped save replaces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "kebab-case")]
+pub enum DashboardSettingsSection {
+    /// GitHub scope, scan rules, schedule and Slack names.
+    GithubSync,
+    /// Repository rules.
+    Repositories,
+    /// MemCan TODO sources.
+    Memcan,
+}
+
+/// Query of `PUT /api/v1/settings/dashboard`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct SetDashboardSettingsQuery {
+    /// The section to replace. Absent replaces the full settings document.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub section: Option<DashboardSettingsSection>,
+}
+
+impl DashboardSettings {
+    /// Replaces the fields that belong to `section` with the corresponding submitted fields.
+    pub fn with_section(self, section: DashboardSettingsSection, submitted: Self) -> Self {
+        match section {
+            DashboardSettingsSection::GithubSync => Self {
+                linked_logins: submitted.linked_logins,
+                enumerate_owners: submitted.enumerate_owners,
+                lookback_days: submitted.lookback_days,
+                ready_label: submitted.ready_label,
+                skip_authors: submitted.skip_authors,
+                known_bots: submitted.known_bots,
+                schedule_enabled: submitted.schedule_enabled,
+                schedule_time: submitted.schedule_time,
+                time_zone: submitted.time_zone.or(self.time_zone),
+                slack_names: submitted.slack_names,
+                ..self
+            },
+            DashboardSettingsSection::Repositories => Self {
+                repositories: submitted.repositories,
+                ..self
+            },
+            DashboardSettingsSection::Memcan => Self {
+                include_todos: submitted.include_todos,
+                memcan_extra_projects: submitted.memcan_extra_projects,
+                ..self
+            },
+        }
+    }
+}
+
 /// Review bots without a `[bot]` suffix: the default known bots.
 pub const DEFAULT_KNOWN_BOTS: [&str; 3] = ["thepastaclaw", "Claudius-Maginificent", "DCG-Claude"];
 

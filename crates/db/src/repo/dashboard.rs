@@ -9,8 +9,8 @@
 //! or restarted ranking is [`RankingUpdate::Stale`]. The send ledger tracks ranking caps independently.
 
 use contracts::api::dashboard::{
-    DashboardSettings, ItemKey, RankingLimit, RankingState, RefreshFailure, RefreshState,
-    RefreshTrigger, ScanStep, ScheduledOutcome,
+    DashboardSettings, DashboardSettingsSection, ItemKey, RankingLimit, RankingState,
+    RefreshFailure, RefreshState, RefreshTrigger, ScanStep, ScheduledOutcome,
 };
 use contracts::ids::{JobId, RefreshId};
 use contracts::time::Timestamp;
@@ -525,14 +525,7 @@ impl Dashboard<'_> {
         tenant_id: &str,
         user_id: &str,
     ) -> Result<Option<StoredDashboardSettings>, DbError> {
-        sqlx::query("SELECT * FROM dashboard_settings WHERE tenant_id = ? AND user_id = ?")
-            .bind(tenant_id)
-            .bind(user_id)
-            .fetch_optional(self.pool)
-            .await?
-            .as_ref()
-            .map(settings_of)
-            .transpose()
+        read_settings(self.pool, tenant_id, user_id).await
     }
 
     /// Saves validated settings (upsert); keeps the recorded scheduled run.
@@ -544,6 +537,38 @@ impl Dashboard<'_> {
         now: Timestamp,
     ) -> Result<(), DbError> {
         let mut tx = write_tx(self.pool).await?;
+        Self::write_settings(&mut tx, tenant_id, user_id, settings, now).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Merges a validated section into the user's latest settings and returns the stored values.
+    pub async fn save_settings_section(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        section: DashboardSettingsSection,
+        submitted: DashboardSettings,
+        now: Timestamp,
+    ) -> Result<DashboardSettings, DbError> {
+        let mut tx = write_tx(self.pool).await?;
+        let current = read_settings(&mut *tx, tenant_id, user_id)
+            .await?
+            .map(|row| row.settings)
+            .unwrap_or_default();
+        let settings = current.with_section(section, submitted);
+        Self::write_settings(&mut tx, tenant_id, user_id, &settings, now).await?;
+        tx.commit().await?;
+        Ok(settings)
+    }
+
+    async fn write_settings(
+        tx: &mut SqliteConnection,
+        tenant_id: &str,
+        user_id: &str,
+        settings: &DashboardSettings,
+        now: Timestamp,
+    ) -> Result<(), DbError> {
         let saved = sqlx::query(
             "INSERT INTO dashboard_settings (user_id, tenant_id, linked_logins, enumerate_owners, repositories,
                  lookback_days, ready_label, skip_authors, known_bots, include_todos, memcan_extra_projects,
@@ -588,9 +613,8 @@ impl Dashboard<'_> {
         .bind(tenant_id)
         .bind(user_id)
         .bind(serde_json::to_string(&settings.linked_logins)?)
-        .execute(&mut *tx)
+        .execute(tx)
         .await?;
-        tx.commit().await?;
         Ok(())
     }
 
@@ -1824,6 +1848,21 @@ fn record_of(row: &SqliteRow) -> Result<RefreshRecord, DbError> {
         scanned_at: optional_ts(row, "scanned_at")?,
         finished_at: optional_ts(row, "finished_at")?,
     })
+}
+
+async fn read_settings<'c>(
+    executor: impl SqliteExecutor<'c>,
+    tenant_id: &str,
+    user_id: &str,
+) -> Result<Option<StoredDashboardSettings>, DbError> {
+    sqlx::query("SELECT * FROM dashboard_settings WHERE tenant_id = ? AND user_id = ?")
+        .bind(tenant_id)
+        .bind(user_id)
+        .fetch_optional(executor)
+        .await?
+        .as_ref()
+        .map(settings_of)
+        .transpose()
 }
 
 fn settings_of(row: &SqliteRow) -> Result<StoredDashboardSettings, DbError> {

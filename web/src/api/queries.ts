@@ -10,6 +10,7 @@ import type {
   CreateAccessToken,
   CreateCommentRequest,
   DashboardSettings,
+  DashboardSettingsSection,
   Feedback,
   FeedbackId,
   FeedbackRequest,
@@ -563,11 +564,11 @@ export const useSetLlm = () => useLlmSetting(api.setLlm, applySelection);
 export const useDashboardSettings = () =>
   useQuery({ queryKey: ["dashboard-settings"], queryFn: api.getDashboardSettings });
 
-/** Saves the dashboard settings; the answer replaces the cached view. */
-export function useSaveDashboardSettings() {
+/** Saves one settings section; the answer replaces the cached view. */
+export function useSaveDashboardSettings(section: DashboardSettingsSection) {
   const client = useQueryClient();
   return (settings: DashboardSettings) =>
-    api.setDashboardSettings(settings).then((view) => {
+    api.setDashboardSettings(settings, section).then((view) => {
       client.setQueryData(["dashboard-settings"], view);
       return view;
     });

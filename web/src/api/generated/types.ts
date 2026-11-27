@@ -2580,6 +2580,11 @@ time_zone: string | null,
 slack_names: Array<SlackName>, };
 
 /**
+ * Which settings page owns the fields a scoped save replaces.
+ */
+export type DashboardSettingsSection = "github-sync" | "repositories" | "memcan";
+
+/**
  * Response of `GET`/`PUT /api/v1/settings/dashboard`.
  */
 export type DashboardSettingsView = {
@@ -7803,6 +7808,15 @@ export type SetControlledOwnersRequest = {
  * GitHub owner logins (users or organisations), at most [`SetControlledOwnersRequest::MAX_OWNERS`].
  */
 owners: Array<string>, };
+
+/**
+ * Query of `PUT /api/v1/settings/dashboard`.
+ */
+export type SetDashboardSettingsQuery = {
+/**
+ * The section to replace. Absent replaces the full settings document.
+ */
+section?: DashboardSettingsSection, };
 
 /**
  * Body of `PUT /api/v1/settings/llm/judge-effort`.

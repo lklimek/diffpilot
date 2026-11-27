@@ -140,7 +140,7 @@ export function LlmPage({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => 
 export function MemcanPage({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => void }) {
   const settings = useSettings();
   const dashboard = useDashboardSettings();
-  const save = useSaveDashboardSettings();
+  const save = useSaveDashboardSettings("memcan");
   return (
     <>
       <Section title="MemCan status">

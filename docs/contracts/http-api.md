@@ -765,8 +765,14 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
   `last_run.at` is the scheduled instant of that local date; `needs_sign_in` and `failed` are shown until a later
   refresh succeeds.
 - **Settings (R6, R6b, R7).** An absent settings row means `DashboardSettings::default()` (plan §F.6). PUT
-  validates every rule of §F.6 server-side (the client mirrors them) and answers 422 `invalid_dashboard_settings`
-  naming the first failing field. `skip_authors` are excluded authors (every pull request and issue they author is left
+  without `section` replaces and validates the complete document. With `?section=github-sync` (scope, scan rules,
+  schedule and Slack names), `?section=repositories` (repository rules), or `?section=memcan` (TODO sources),
+  PUT still accepts a `DashboardSettings` body and only validates and replaces fields owned by that section.
+  It merges those fields with the latest stored settings in a single transaction and returns the resulting
+  `DashboardSettingsView`. In a scoped GitHub sync save, a null `time_zone` keeps any stored zone, including
+  one from the browser's first-visit request. An unknown section answers 400 `invalid_request`. Validation failures
+  answer 422 `invalid_dashboard_settings` naming the first failing field. `skip_authors` are excluded authors
+  (every pull request and issue they author is left
   out of the dashboard, whatever its relation to the user; they are not bots); `known_bots` are the
   logins treated as bots besides GitHub `Bot` accounts and `[bot]` logins (absent in a request: the defaults,
   `thepastaclaw`, `Claudius-Maginificent`, `DCG-Claude`). `slack_names` is the user's Slack names table (G18, at

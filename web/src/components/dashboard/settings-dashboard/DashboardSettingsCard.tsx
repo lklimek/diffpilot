@@ -1,5 +1,9 @@
 import { useEffect, useState, type ComponentProps } from "react";
-import type { DashboardSettings, DashboardSettingsView } from "../../../api/generated/types";
+import type {
+  DashboardSettings,
+  DashboardSettingsSection,
+  DashboardSettingsView,
+} from "../../../api/generated/types";
 import { busyTip, buttonClass } from "../../button/button";
 import { useAction } from "../../inspector/action";
 import { Section } from "../../settings/Section";
@@ -15,6 +19,7 @@ import {
   checkEntry,
   fromDraft,
   sameSettings,
+  settingsForSection,
   toDraft,
   validateSettings,
   type ListField,
@@ -25,40 +30,15 @@ import { HelpTip } from "../../settings/HelpTip";
 interface DashboardSettingsCardProps {
   /** The stored settings, their defaults and what the server derived from them. */
   view: DashboardSettingsView;
-  page: "github-sync" | "repositories" | "memcan";
+  page: DashboardSettingsSection;
   repositoryOptions?: Pick<
     ComponentProps<typeof RepositoryTable>,
     "installations" | "installationStatusKnown" | "expanded" | "onExpand" | "details"
   >;
-  /** Saves the whole form (one `PUT`); rejects with the server's message (422 names the field). */
+  /** Saves this page's settings; rejects with the server's message (422 names the field). */
   onSave: (settings: DashboardSettings) => Promise<unknown>;
   /** Called when the form starts or stops differing from the stored settings. */
   onDirtyChange?: (dirty: boolean) => void;
-}
-
-/** The endpoint saves the whole record. Each page edits only its own fields. */
-function pageSettings(
-  page: DashboardSettingsCardProps["page"],
-  stored: DashboardSettings,
-  edited: DashboardSettings,
-): DashboardSettings {
-  switch (page) {
-    case "repositories":
-      return { ...stored, repositories: edited.repositories };
-    case "memcan":
-      return {
-        ...stored,
-        include_todos: edited.include_todos,
-        memcan_extra_projects: edited.memcan_extra_projects,
-      };
-    case "github-sync":
-      return {
-        ...edited,
-        repositories: stored.repositories,
-        include_todos: stored.include_todos,
-        memcan_extra_projects: stored.memcan_extra_projects,
-      };
-  }
 }
 
 /** Per-user dashboard settings of plan §F.6, saved together with Save. */
@@ -74,7 +54,7 @@ export function DashboardSettingsCard({
   const [note, setNote] = useState<string | null>(null);
   const action = useAction();
   const own = view.own_login;
-  const settings = pageSettings(page, view.settings, fromDraft(draft));
+  const settings = settingsForSection(page, view.settings, fromDraft(draft));
   const errors = attempted ? validateSettings(settings, own) : {};
   const problems = Object.values(errors);
   const dirty = !sameSettings(settings, view.settings);
@@ -171,7 +151,7 @@ export function DashboardSettingsCard({
               <ScheduleGroup
                 enabled={draft.schedule_enabled}
                 time={draft.schedule_time}
-                timeZone={draft.time_zone}
+                timeZone={settings.time_zone ?? ""}
                 errors={errors}
                 onChange={edit}
               />
