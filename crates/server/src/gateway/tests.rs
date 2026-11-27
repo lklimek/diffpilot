@@ -469,6 +469,12 @@ async fn model_listener_logs_rejection_reasons_without_request_data() {
         assert!(line.contains("gateway model request rejected"), "{line}");
         assert!(line.contains(&format!("reason={reason:?}")), "{line}");
         assert!(line.contains(&format!("status={status}")), "{line}");
+        let route = match reason {
+            "unsupported_route" => "other",
+            "invalid_models_query" => "models",
+            _ => "responses",
+        };
+        assert!(line.contains(&format!("route={route:?}")), "{line}");
         if status == 429 {
             assert!(line.contains("upstream_status=429"), "{line}");
         }
@@ -590,12 +596,18 @@ async fn persistent_upstream_401_is_confirmed_without_refresh_or_revoke() {
         .mint(&ContainerId::Judge { payer: u.clone() })
         .await
         .expect("key");
+    let upstream_id = "req_123456789abcdeffedcba98765432100";
     Mock::given(method("POST"))
         .and(path("/responses"))
-        .respond_with(ResponseTemplate::new(401).set_body_json(json!({"error":"revoked"})))
+        .respond_with(
+            ResponseTemplate::new(401)
+                .insert_header("x-request-id", upstream_id)
+                .set_body_json(json!({"error":"revoked"})),
+        )
         .expect(2)
         .mount(&up)
         .await;
+    let logs = crate::test_support::logs::LogCapture::start();
     let response = call(
         g.model_router(),
         "POST",
@@ -605,6 +617,12 @@ async fn persistent_upstream_401_is_confirmed_without_refresh_or_revoke() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let captured = logs.text();
+    assert!(
+        captured.contains("status=403 upstream_status=401"),
+        "{captured}"
+    );
+    assert!(!captured.contains(upstream_id));
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&collect(response).await).expect("json")["error"]
             ["code"],
@@ -1213,8 +1231,9 @@ async fn retryable_midstream_slowdown_does_not_pause_the_payer() {
         .expect("key");
     let failed = format!(
         "data: {}\n\n",
-        json!({"type":"response.failed","response":{"error":{"code":"slow_down"}}})
-    );
+        json!({"type":"response.failed","response":{"error":{"code":"slow_down","message":"private-remote-detail"}}})
+    ).repeat(2);
+    let logs = crate::test_support::logs::LogCapture::start();
     Mock::given(path("/responses"))
         .respond_with(ResponseTemplate::new(200).set_body_bytes(failed.clone()))
         .expect(1)
@@ -1229,6 +1248,14 @@ async fn retryable_midstream_slowdown_does_not_pause_the_payer() {
     )
     .await;
     assert_eq!(collect(response).await.as_ref(), failed.as_bytes());
+    let captured = logs.text();
+    assert_eq!(
+        captured.matches("gateway model request rejected").count(),
+        1,
+        "{captured}"
+    );
+    assert!(captured.contains("upstream_failed_event"));
+    assert!(!captured.contains("private-remote-detail"));
     assert_eq!(g.usage(&u, None).await.expect("usage").resets_at, None);
     g.shutdown().await;
 }

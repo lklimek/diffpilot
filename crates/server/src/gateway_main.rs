@@ -51,9 +51,15 @@ fn judge_address(
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("server::gateway=warn"));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    let filter = std::env::var("RUST_LOG")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .and_then(|value| EnvFilter::try_new(value).ok())
+        .unwrap_or_else(|| EnvFilter::new("error,server::gateway::request_rejection=warn"));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_ansi(false)
+        .init();
     let model: SocketAddr = setting("SR_GATEWAY_MODEL_ADDR")?
         .parse()
         .map_err(|_| Error::Configuration)?;

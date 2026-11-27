@@ -27,6 +27,8 @@ use tokio::{
     task::{AbortHandle, JoinSet},
 };
 
+const MODEL_REJECTION_TARGET: &str = "server::gateway::request_rejection";
+
 /// A gateway failure with a redacted public HTTP mapping.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

@@ -74,6 +74,7 @@ async fn log_rejected_model_request(request: Request, next: Next) -> Response {
             upstream_status: None,
         });
         tracing::warn!(
+            target: super::MODEL_REJECTION_TARGET,
             route,
             reason,
             status = status.as_u16(),

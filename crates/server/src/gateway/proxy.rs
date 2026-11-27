@@ -261,21 +261,25 @@ impl Gateway {
                 )
                 .await?;
             if response.status() == StatusCode::UNAUTHORIZED {
-                let mut tx = self.store.lock(&user).await?;
-                // A rejection of an older generation must not poison a newer link/refresh.
-                if tx.record.generation == access.generation {
-                    tx.record.reason = Some(contracts::gateway::RelinkReason::Terminal);
-                    tx.outcome(
-                        "model",
-                        "terminal",
-                        Some(401),
-                        Some("confirmed_unauthorized"),
-                        super::auth::request_id(response.headers()),
-                    );
-                    tx.save()?;
+                let result = async {
+                    let mut tx = self.store.lock(&user).await?;
+                    // A rejection of an older generation must not poison a newer link/refresh.
+                    if tx.record.generation == access.generation {
+                        tx.record.reason = Some(contracts::gateway::RelinkReason::Terminal);
+                        tx.outcome(
+                            "model",
+                            "terminal",
+                            Some(401),
+                            Some("confirmed_unauthorized"),
+                            super::auth::request_id(response.headers()),
+                        );
+                        tx.save()?;
+                    }
+                    Ok::<_, Error>(Error::Unlinked.into_response())
                 }
+                .await;
                 return Ok(upstream_rejection(
-                    Error::Unlinked.into_response(),
+                    result.unwrap_or_else(Error::into_response),
                     StatusCode::UNAUTHORIZED,
                 ));
             }
@@ -285,7 +289,12 @@ impl Gateway {
         };
         let status = response.status();
         let output_headers = response_headers(response.headers());
-        self.capture_limits(&user, response.headers()).await?;
+        if let Err(error) = self.capture_limits(&user, response.headers()).await {
+            if status.is_success() || status == StatusCode::NOT_MODIFIED {
+                return Err(error);
+            }
+            return Ok(upstream_rejection(error.into_response(), status));
+        }
         if models {
             if status == StatusCode::NOT_MODIFIED {
                 let cache = self.models.lock().await;
@@ -296,7 +305,11 @@ impl Gateway {
                 }
                 return Err(Error::Body);
             }
-            let bytes = bounded_bytes(response, 4 * 1024 * 1024).await?;
+            let bytes = match bounded_bytes(response, 4 * 1024 * 1024).await {
+                Ok(bytes) => bytes,
+                Err(error) if status.is_success() => return Err(error),
+                Err(error) => return Ok(upstream_rejection(error.into_response(), status)),
+            };
             if status.is_success()
                 && let Some(etag) = output_headers
                     .get("x-models-etag")
@@ -320,7 +333,7 @@ impl Gateway {
             });
         }
         if !status.is_success() {
-            {
+            let result = async {
                 let mut tx = self.store.lock(&user).await?;
                 tx.record.last_call = Some(contracts::job::result::LlmCallOutcome {
                     at: contracts::time::Timestamp::now(),
@@ -329,21 +342,24 @@ impl Gateway {
                     },
                 });
                 tx.save()?;
+                drop(tx);
+                let bytes = bounded_bytes(response, 4 * 1024 * 1024).await?;
+                if status == StatusCode::TOO_MANY_REQUESTS {
+                    let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+                    let mut tx = self.store.lock(&user).await?;
+                    tx.record.resets_at = Some(
+                        value
+                            .pointer("/error/resets_at")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(super::now() + 1800),
+                    );
+                    tx.save()?;
+                }
+                Ok::<_, Error>((status, output_headers, bytes).into_response())
             }
-            let bytes = bounded_bytes(response, 4 * 1024 * 1024).await?;
-            if status == StatusCode::TOO_MANY_REQUESTS {
-                let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-                let mut tx = self.store.lock(&user).await?;
-                tx.record.resets_at = Some(
-                    value
-                        .pointer("/error/resets_at")
-                        .and_then(Value::as_i64)
-                        .unwrap_or(super::now() + 1800),
-                );
-                tx.save()?;
-            }
+            .await;
             return Ok(upstream_rejection(
-                (status, output_headers, bytes).into_response(),
+                result.unwrap_or_else(Error::into_response),
                 status,
             ));
         }
@@ -361,7 +377,19 @@ impl Gateway {
             let mut stream = response.bytes_stream();
             let mut tap = Tap::default();
             let mut metered = std::collections::BTreeSet::new();
-            let mut upstream_failure_logged = false;
+            let mut rejection_logged = false;
+            let mut log_rejection = |reason: &'static str| {
+                if !rejection_logged {
+                    tracing::warn!(
+                        target: super::MODEL_REJECTION_TARGET,
+                        route = "responses",
+                        reason,
+                        status = status.as_u16(),
+                        "gateway model request rejected"
+                    );
+                    rejection_logged = true;
+                }
+            };
             let mut sender = Some(sender);
             loop {
                 let chunk = tokio::select! {
@@ -384,6 +412,7 @@ impl Gateway {
                 let bytes = match chunk {
                     Ok(bytes) => bytes,
                     Err(_) => {
+                        log_rejection("upstream_stream_interrupted");
                         if let Some(sender) = sender.take() {
                             let _ = sender
                                 .send(Err(std::io::Error::other("model stream interrupted")))
@@ -395,6 +424,7 @@ impl Gateway {
                 let events = match tap.push(&bytes) {
                     Ok(events) => events,
                     Err(_) => {
+                        log_rejection("upstream_event_too_large");
                         if let Some(sender) = sender.take() {
                             let _ = sender
                                 .send(Err(std::io::Error::other(
@@ -408,17 +438,12 @@ impl Gateway {
                 for event in events {
                     let upstream_failed =
                         event.get("type").and_then(Value::as_str) == Some("response.failed");
-                    if upstream_failed && !upstream_failure_logged {
-                        tracing::warn!(
-                            route = "responses",
-                            reason = "upstream_failed_event",
-                            status = status.as_u16(),
-                            "gateway model request rejected"
-                        );
-                        upstream_failure_logged = true;
+                    if upstream_failed {
+                        log_rejection("upstream_failed_event");
                     }
                     let completed = completion(&event);
                     if completed.is_err() {
+                        log_rejection("upstream_usage_malformed");
                         if let Some(sender) = sender.take() {
                             let _ = sender
                                 .send(Err(std::io::Error::other("model usage event is malformed")))
@@ -461,6 +486,7 @@ impl Gateway {
                         && !metered.contains(&id)
                     {
                         if metered.len() >= 256 || store.meter(&user, &key, &id, usage).await.is_err() {
+                            log_rejection("usage_accounting_failed");
                             if let Some(sender) = sender.take() {
                                 let _ = sender.send(Err(std::io::Error::other("model usage persistence failed"))).await;
                             }
