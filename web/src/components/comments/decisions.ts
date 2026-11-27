@@ -27,6 +27,7 @@ export const CHOICE_LABEL: Record<Choice, string> = {
   reject: "Reject",
   handled_in_pr: "Handled in another PR",
   follow_up_pr: "Create follow-up PR",
+  follow_up_issue: "Create follow-up issue",
   upstream_issue: "Upstream issue",
   todo: "TODO",
   accept: "Accept despite the gate",
@@ -48,6 +49,7 @@ const ITEM_CHOICES: Choice[] = [
   "reject",
   "handled_in_pr",
   "follow_up_pr",
+  "follow_up_issue",
   "upstream_issue",
   "todo",
   "resolve",
@@ -83,12 +85,13 @@ export function githubProposal(item: CommentItem) {
 }
 
 /** What a choice needs typed in. */
-export type Need = "reason" | "pr" | "title" | "upstream" | "todo" | null;
+export type Need = "reason" | "pr" | "title" | "issue-title" | "upstream" | "todo" | null;
 
 export const NEED_LABEL: Record<NonNullable<Need>, string> = {
   reason: "Reason (posted as the public reply)",
   pr: "Existing pull request",
   title: "Title of the new follow-up PR (optional)",
+  "issue-title": "Title of the new follow-up issue",
   upstream: 'Upstream issue or PR URL, or "create"',
   todo: "TODO title",
 };
@@ -105,6 +108,8 @@ export function needOf(choice: Choice, gate: Gate | null = null): Need {
       return "pr";
     case "follow_up_pr":
       return "title";
+    case "follow_up_issue":
+      return "issue-title";
     case "upstream_issue":
       return "upstream";
     case "todo":
@@ -143,6 +148,8 @@ export function missingInput(
       return /^#?\d+$/.test(value) ? null : "Enter the number of the existing pull request, e.g. #490.";
     case "upstream":
       return value ? null : 'Enter the upstream issue URL, or "create".';
+    case "issue-title":
+      return value ? null : "Enter the issue title.";
     case "todo":
       return value ? null : "Enter the TODO title.";
     default:
@@ -158,6 +165,8 @@ function targetOf(choice: Choice, value: string): DecisionTarget | null {
       return { type: "existing_pr", number: Number(text.replace("#", "")) };
     case "follow_up_pr":
       return { type: "follow_up_pr", title: text || null };
+    case "follow_up_issue":
+      return { type: "follow_up_issue", title: text };
     case "upstream_issue":
       return { type: "upstream_issue", url: text.toLowerCase() === "create" ? null : text };
     case "todo":
@@ -228,6 +237,7 @@ function effectText(kind: EffectKind, params: PlannedEffect["params"], count: nu
         ? `creates one draft follow-up PR listing ${names(params.item_nos)} (no link needed; it does not exist yet).`
         : `creates a new draft follow-up PR${title}${of} (no link needed; it does not exist yet).`;
     case "upstream_issue":
+      if (params.title) return `creates a follow-up issue${title}${of} in this PR's repository.`;
       return params.url
         ? `links the upstream issue ${params.url}${of} and adds a "Known limitation" line.`
         : `creates the upstream issue${of} and adds a "Known limitation" line.`;
@@ -347,6 +357,7 @@ export function recommendedValue(item: Pick<CommentItem, "assessment">): string 
   const target = rec.target;
   if (target?.type === "existing_pr") return `#${target.number}`;
   if (target?.type === "follow_up_pr") return target.title ?? "";
+  if (target?.type === "follow_up_issue") return target.title;
   if (target?.type === "upstream_issue") return target.url ?? "create";
   if (target?.type === "todo") return target.title;
   return rec.kind === "reject" ? rec.reason : "";

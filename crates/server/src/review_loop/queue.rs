@@ -278,7 +278,9 @@ pub fn proposed(
         .filter(|reason| !reason.is_empty());
     let incomplete = match recommendation.kind {
         K::Reject => reason.is_none(),
-        K::HandledInPr | K::UpstreamIssue | K::Todo => recommendation.target.is_none(),
+        K::HandledInPr | K::FollowUpIssue | K::UpstreamIssue | K::Todo => {
+            recommendation.target.is_none()
+        }
         K::MergeWithFollowUps | K::AnotherRound | K::DismissStaleReviews | K::KeepReviews => true,
         K::Resolve | K::FixHere | K::FollowUpPr => false,
     };

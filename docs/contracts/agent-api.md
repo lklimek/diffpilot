@@ -223,9 +223,9 @@ decides; the owner's `comment` on a decision is an instruction for it and is nev
    `conflict`: the effect already ended (done, failed or cancelled); 400 `invalid_request` for `done` while the
    `after` effect is not done. A `failed` effect cancels the effects that wait for it, your claim on them included.
    `pr_comment` effects of one batch that name the same `review_id` answer one review: post them as one PR-level
-   comment listing their items, and report that comment's link for each. The planned text of such an effect starts
-   with a line naming the review (`@<author>, re [your review](<review link>):`, for a bot
-   `Re [<bot>'s review](<review link>):`, no @-mention); the combined comment starts with it once. About 10 s after
+   comment, with the source review link and each item's source title or short quotation. Report that comment's
+   link for each effect. A planned PR-level reply starts with its source. The combined comment names the shared
+   review once. About 10 s after
    a `done` report diffpilot reads the pull request from GitHub and marks each done effect it finds there (thread
    resolved, reply or PR-level comment at the reported link, review dismissed) "seen on GitHub".
 7. **Lease.** A claim not renewed within 30 minutes returns to the feed for any agent.
@@ -250,7 +250,8 @@ decides; the owner's `comment` on a decision is an instruction for it and is nev
 pull request branch. Its script `scripts/sr_decisions.py` (Python standard library) uses RF1–RF4 only: `check`,
 `list`, `wait` (RF2 stream, reconnects), `show`, `claim`, `renew`, `text` (an effect's text or a GitHub string,
 byte-exact, in a new file outside the checkout), `combine` (one PR-level comment per review for the `pr_comment`
-effects of claimed decisions, the line naming the review once), `footer` (appends the footer to a body the agent
+effects of claimed decisions, the line naming the review once), `create-issue` (creates or recovers a claimed
+same-repository follow-up issue by the effect's marker), `footer` (appends the footer to a body the agent
 writes), `resolve` (every review thread of a run in one `gh api graphql` call, done only for threads GitHub returns as
 `isResolved`) and `report` (one idempotency key per report attempt, reused when the same report is sent again;
 `--verify-head` refuses a fix's `done` unless the pull request head contains the reported commit). Exit codes: see

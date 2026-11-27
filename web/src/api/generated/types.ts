@@ -2815,7 +2815,7 @@ export type DecisionId = string;
 /**
  * A review decision or an internal mark accepted by the decide routes.
  */
-export type DecisionKind = "resolve" | "fix_here" | "reject" | "handled_in_pr" | "follow_up_pr" | "upstream_issue" | "todo" | "merge_with_follow_ups" | "another_round" | "dismiss_stale_reviews" | "keep_reviews" | "not_a_review_point";
+export type DecisionKind = "resolve" | "fix_here" | "reject" | "handled_in_pr" | "follow_up_pr" | "follow_up_issue" | "upstream_issue" | "todo" | "merge_with_follow_ups" | "another_round" | "dismiss_stale_reviews" | "keep_reviews" | "not_a_review_point";
 
 /**
  * The target a decision needs.
@@ -2828,7 +2828,11 @@ number: number, } | { "type": "follow_up_pr",
 /**
  * Title.
  */
-title: string | null, } | { "type": "upstream_issue",
+title: string | null, } | { "type": "follow_up_issue",
+/**
+ * Title.
+ */
+title: string, } | { "type": "upstream_issue",
 /**
  * Issue URL.
  */
@@ -7376,7 +7380,7 @@ head_moved: boolean, };
 /**
  * A review decision (D1–D7 and P1–P4) eligible for external use.
  */
-export type ReviewDecisionKind = "resolve" | "fix_here" | "reject" | "handled_in_pr" | "follow_up_pr" | "upstream_issue" | "todo" | "merge_with_follow_ups" | "another_round" | "dismiss_stale_reviews" | "keep_reviews";
+export type ReviewDecisionKind = "resolve" | "fix_here" | "reject" | "handled_in_pr" | "follow_up_pr" | "follow_up_issue" | "upstream_issue" | "todo" | "merge_with_follow_ups" | "another_round" | "dismiss_stale_reviews" | "keep_reviews";
 
 /**
  * The user's diffpilot analysis of a pull request item.

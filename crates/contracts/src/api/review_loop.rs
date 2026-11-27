@@ -533,6 +533,8 @@ decision_kinds! {
     HandledInPr,
     /// D5: create a follow-up pull request.
     FollowUpPr,
+    /// Create a follow-up issue in the pull request's repository.
+    FollowUpIssue,
     /// D6: upstream issue (link or create).
     UpstreamIssue,
     /// D7: TODO, out of scope for this pull request.
@@ -560,6 +562,11 @@ pub enum DecisionTarget {
     FollowUpPr {
         /// Title.
         title: Option<String>,
+    },
+    /// The follow-up issue's title.
+    FollowUpIssue {
+        /// Title.
+        title: String,
     },
     /// D6: an issue URL, or null to create one.
     UpstreamIssue {

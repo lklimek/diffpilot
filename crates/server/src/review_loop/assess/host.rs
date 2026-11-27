@@ -8,7 +8,7 @@ use contracts::job::result::JobFailureKind;
 use serde_json::Value;
 
 /// Version of prompts/check_pr_comments.md, independent of the upstream report schema.
-pub(super) const PROMPT_VERSION: u32 = 3;
+pub(super) const PROMPT_VERSION: u32 = 4;
 use std::collections::HashSet;
 
 pub(super) struct Decoded {

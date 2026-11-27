@@ -1098,7 +1098,7 @@ pub(crate) fn question_of(record: &ItemRecord) -> Option<(PrQuestion, u32)> {
 
 fn effect_item(record: &ItemRecord, snapshot: &Snapshot, gates: &[Gate]) -> EffectItem {
     EffectItem {
-        quote: record.quote.clone(),
+        quote: record.quote.clone().or_else(|| Some(record.title.clone())),
         no: record.no,
         kind: record.kind,
         author: record.author.clone(),

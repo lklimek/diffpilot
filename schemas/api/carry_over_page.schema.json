@@ -243,6 +243,11 @@
           "const": "follow_up_pr"
         },
         {
+          "description": "Create a follow-up issue in the pull request's repository.",
+          "type": "string",
+          "const": "follow_up_issue"
+        },
+        {
           "description": "D6: upstream issue (link or create).",
           "type": "string",
           "const": "upstream_issue"

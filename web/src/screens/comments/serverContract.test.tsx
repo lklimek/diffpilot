@@ -65,20 +65,20 @@ function askStaleDismissal(): CommentItem {
   return question;
 }
 
-/** effects.rs `EffectItem::on_review`: a PR-level comment answering a review starts with a line naming it. */
+/** Source heading and quote for the grounded review item used in the preview cases. */
 function onReview(item: CommentItem, text: string): string {
   if (item.kind !== "review_body" || !item.url) return text;
   const line =
     item.author_kind === "human"
       ? `@${item.author}, re [your review](${item.url}):`
       : `Re [${item.author}'s review](${item.url}):`;
-  return `${line}\n${text}`;
+  return `${line}\n> Doc comment names the old default\n${text}`;
 }
 
 /** The server's default reply texts (effects.rs `plan`); an edited `reply_text` replaces them. */
 function postedReply(item: CommentItem, request: DecideRequest): string | null {
   const edited = request.reply_text?.trim() || null;
-  const reply = (text: string) => edited ?? onReview(item, text);
+  const reply = (text: string) => onReview(item, edited ?? text);
   const reason = request.reason?.trim() ?? "";
   const gate: Gate | null = request.override?.type === "blocker_gate" ? request.override.gate : null;
   switch (request.kind) {
@@ -175,6 +175,38 @@ describe("Reply preview is what the server posts (plan §3.2 item 8; effects.rs 
     expect(await screen.findByText("resolves the thread.")).toBeVisible();
     const next = screen.getByRole("button", { name: "What happens next" }).closest("section, div")!;
     expect(within(next.parentElement!).queryByText(/replies/)).toBeNull();
+  });
+
+  it("creates a titled follow-up issue in the current repository and leaves an unticked thread open", async () => {
+    const item = byNo(22);
+    const sent = sentDecisions();
+    await open(22);
+    await userEvent.click(screen.getByRole("radio", { name: "Create follow-up issue" }));
+    const title = screen.getByRole("textbox", { name: "Title of the new follow-up issue" });
+    expect(title).toHaveValue(`Follow-up: ${item.title}`);
+    expect(screen.getByText(/creates the issue in acme\/node-client/)).toBeVisible();
+    await userEvent.clear(title);
+    await userEvent.type(title, "Bound retries");
+    await userEvent.click(screen.getByRole("checkbox", { name: "Resolve this thread" }));
+    expect(await screen.findByText(/creates a follow-up issue "Bound retries"/)).toBeVisible();
+    const decide = screen.getByRole("button", { name: "Decide" });
+    await waitFor(() => expect(decide).not.toHaveAttribute("aria-disabled"));
+    await userEvent.click(decide);
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]).toMatchObject({
+      kind: "follow_up_issue",
+      target: { type: "follow_up_issue", title: "Bound retries" },
+      resolve_ticked: false,
+    });
+    await waitFor(() =>
+      expect(byNo(22).decisions.at(-1)?.effects).toMatchObject([
+        {
+          kind: "upstream_issue",
+          params: { title: "Bound retries", text: expect.stringContaining(item.url!) },
+        },
+        { kind: "reply", after: 1 },
+      ]),
+    );
   });
 });
 

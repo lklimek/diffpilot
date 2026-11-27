@@ -7,6 +7,7 @@ import json
 import os
 import socket
 import stat
+import subprocess
 import threading
 import time
 import uuid
@@ -957,6 +958,42 @@ def serve_claimed(fake, did: str, fd: dict, claim=None) -> None:
     held = as_claimed(fd)["decision"]
     fake.on("GET", decision_path(did), (200, {}, held))
     fake.on("POST", claim_path(did), claim or claim_server(held))
+
+
+@pytest.mark.parametrize("lost_response", [False, True])
+def test_create_issue_recovers_the_same_issue_without_repeating_the_write(env, fake, capsys, monkeypatch, lost_response):
+    fd = feed_decision(effects=[effect(E1, 1, "upstream_issue", title="Bound retries")])
+    fd["decision"]["kind"] = "follow_up_issue"
+    serve_claimed(fake, DEC, fd)
+    title = env["tmp"] / "title"
+    title.write_text("Bound retries", encoding="utf-8")
+    body = env["tmp"] / "body"
+    body.write_text("Preserve `RetryBudget`.", encoding="utf-8")
+    url = "https://github.com/acme/widget/issues/97"
+    repo_issues = []
+    writes = []
+
+    def gh(argv):
+        if argv[1:3] == ["issue", "create"]:
+            assert argv[:6] == ["gh", "issue", "create", "--repo", "github.com/acme/widget", "--title=Bound retries"]
+            posted = Path(argv[-1]).read_text(encoding="utf-8")
+            writes.append(posted)
+            repo_issues.append({"body": posted, "html_url": url})
+            return subprocess.CompletedProcess(argv, int(lost_response), "" if lost_response else url, "")
+        assert argv[:6] == ["gh", "api", "--hostname", "github.com", "--paginate", "--slurp"]
+        assert argv[6].startswith("repos/acme/widget/issues?")
+        return subprocess.CompletedProcess(argv, 0, json.dumps([repo_issues]), "")
+
+    monkeypatch.setattr(sr_decisions, "_gh", gh)
+    args = ("create-issue", DEC, E1, "--repo", "acme/widget", "--title-file", str(title), "--body-file", str(body))
+    for _ in range(2):
+        code, out, errout = run(capsys, *args)
+        assert code == 0, errout
+        assert out.strip() == url
+    assert len(writes) == 1
+    assert "https://github.com/acme/widget/pull/482#discussion_r1" in writes[0]
+    assert f"<!-- diffpilot-follow-up:{E1} -->" in writes[0]
+    assert writes[0].rstrip().endswith(sr_decisions.DEFAULT_FOOTER)
 
 
 def test_combine_claims_each_decision_and_writes_one_comment_for_one_review(env, fake, capsys):

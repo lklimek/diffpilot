@@ -258,6 +258,8 @@ test("v1.4 queue filters, duplicate decisions, and GitHub provenance", async ({ 
   );
   await expect(queue.getByRole("button", { name: /^C9 / })).toContainText("no reason given");
   await page.getByRole("link", { name: "Decision log and agents" }).click();
+  await expect(page.getByText(/Rejected on GitHub by @alice/)).toHaveCount(0);
+  await page.getByRole("combobox", { name: "Decision source" }).selectOption("github");
   await expect(page.getByText(/Rejected on GitHub by @alice/)).toBeVisible();
 });
 

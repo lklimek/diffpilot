@@ -213,6 +213,30 @@ describe("DecisionLog (V3)", () => {
     expectTrustWording(text());
   });
 
+  it("hides GitHub decisions by default and filters the log by source", async () => {
+    const stored = log();
+    const imported: Decision = {
+      ...stored.decisions[0]!,
+      id: "imported",
+      via: "imported_github",
+      decided_by: "external-maintainer",
+      kind: "resolve",
+      override: null,
+    };
+    const withImport = { ...stored, decisions: [...stored.decisions, imported] };
+    render(<DecisionLog log={withImport} pr={PR} now={NOW} storageKey="t" origin="http://agentic:3000" />);
+    expect(screen.queryByText(/by external-maintainer/)).toBeNull();
+    const source = screen.getByRole("combobox", { name: "Decision source" });
+    expect(source).toHaveDisplayValue("DiffPilot");
+    expect(screen.getByRole("option", { name: "GitHub (1)" })).toBeInTheDocument();
+    await userEvent.selectOptions(source, "github");
+    expect(screen.getByText(/by external-maintainer/)).toBeVisible();
+    expect(screen.queryByText(/Accept despite the gate/)).toBeNull();
+    await userEvent.selectOptions(source, "all");
+    expect(screen.getByText(/by external-maintainer/)).toBeVisible();
+    expect(screen.getByText(/Accept despite the gate/)).toBeVisible();
+  });
+
   it("shows mark history and offers Undo only for the active entry", async () => {
     const active: MarkLogEntry = {
       id: "mark-active",

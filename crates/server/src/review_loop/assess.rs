@@ -70,7 +70,7 @@ pub const PASS_SPACING: SignedDuration = SignedDuration::from_mins(10);
 /// Logical passes per payer per UTC day; manual and automatic passes share the cap, and an A/B pair counts once.
 pub const DAILY_PASSES_PER_USER: u32 = 80;
 /// Version of the native comment assessment prompt and output schema.
-pub const VERIFY_PROMPT_VERSION: u32 = 6;
+pub const VERIFY_PROMPT_VERSION: u32 = 7;
 /// Legacy history window used to read the previous pass end for automatic spacing.
 const DAY: SignedDuration = SignedDuration::from_hours(24);
 

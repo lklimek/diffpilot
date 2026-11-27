@@ -433,6 +433,7 @@ export function QuestionsScreen() {
   else if (single)
     card = (
       <QuestionCard
+        repository={`${pr.repo.owner}/${pr.repo.name}`}
         key={single.id}
         item={single}
         duplicates={duplicates.get(single.no) ?? []}

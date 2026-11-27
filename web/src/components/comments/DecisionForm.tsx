@@ -34,6 +34,7 @@ const INPUT = "w-full rounded-md border border-muted bg-surface px-2 py-1 text-t
 
 interface DecisionFormProps {
   item: CommentItem;
+  repository?: string;
   /** Submits the decision. */
   onDecide: (request: DecideRequest) => void;
   /** Opens the shared Ask chat about this item; absent: Ask is not available (`askUnavailable` says why). */
@@ -60,9 +61,14 @@ interface DecisionFormProps {
  * confirms it against the changed item.
  */
 export function DecisionForm(props: DecisionFormProps) {
-  const { item, onDecide, onAsk, askUnavailable, onSkip, busy, error, storageKey, extra } = props;
+  const { item, repository, onDecide, onAsk, askUnavailable, onSkip, busy, error, storageKey, extra } = props;
   const id = useId();
   const choices = choicesFor(item);
+  const shortcuts: Choice[] = choices.filter((choice) => choice !== "follow_up_issue");
+  const shortcut = (choice: Choice) => {
+    const number = shortcuts.indexOf(choice) + 1;
+    return number > 0 && number <= 8 ? number : null;
+  };
   const recommended = item.assessment?.recommendation.kind ?? null;
   const initialChoice = githubProposal(item)?.kind ?? choices[0]!;
   const initialValue = initialChoice === recommended ? recommendedValue(item) : "";
@@ -108,9 +114,9 @@ export function DecisionForm(props: DecisionFormProps) {
   const blocked = decideBlocked(props.preview, draft);
   const effects = previewFor(props.preview, item.no);
   const planned = effects ? plannedReply(effects) : null;
-  const shownReply = marking ? null : (edited ?? planned);
+  const shownReply = marking ? null : (planned ?? edited);
   // The reply shown is of the previous draft until the server planned this one.
-  const updating = props.preview.state === "ready" && props.preview.updating && edited === null;
+  const updating = props.preview.state === "ready" && props.preview.updating;
 
   const pick = (next: Choice) => {
     touch();
@@ -119,7 +125,7 @@ export function DecisionForm(props: DecisionFormProps) {
     setValue(
       next === recommended
         ? recommendedValue(item)
-        : next === "follow_up_pr"
+        : next === "follow_up_pr" || next === "follow_up_issue"
           ? `Follow-up: ${item.title}`
           : "",
     );
@@ -142,10 +148,11 @@ export function DecisionForm(props: DecisionFormProps) {
   };
 
   useCardKeys({
-    options: choices.length,
+    options: shortcuts.length,
     choose: (index) => {
-      pick(choices[index]!);
-      radios.current[index]?.focus();
+      const selected = shortcuts[index]!;
+      pick(selected);
+      radios.current[choices.indexOf(selected)]?.focus();
     },
     decide: submit,
     ask: onAsk,
@@ -183,7 +190,7 @@ export function DecisionForm(props: DecisionFormProps) {
                   className="mt-1"
                 />
                 <span aria-hidden="true" className="min-w-3 font-mono text-muted">
-                  {i < 8 ? i + 1 : null}
+                  {shortcut(c)}
                 </span>
                 <span>
                   {CHOICE_LABEL[c]}
@@ -215,7 +222,7 @@ export function DecisionForm(props: DecisionFormProps) {
                 type="text"
                 value={value}
                 aria-invalid={problem !== null || undefined}
-                aria-describedby={need === "title" ? `${id}-value-d` : undefined}
+                aria-describedby={need === "title" || need === "issue-title" ? `${id}-value-d` : undefined}
                 inputMode={need === "pr" ? "numeric" : undefined}
                 onChange={(e) => {
                   touch();
@@ -226,6 +233,12 @@ export function DecisionForm(props: DecisionFormProps) {
               {need === "title" && (
                 <p id={`${id}-value-d`} className="mt-0.5 text-xs text-muted">
                   The agent creates the PR; no link is needed, it does not exist yet.
+                </p>
+              )}
+              {need === "issue-title" && (
+                <p id={`${id}-value-d`} className="mt-0.5 text-xs text-muted">
+                  The agent creates the issue in {repository ?? "this PR's repository"} and links the review
+                  comment.
                 </p>
               )}
             </div>

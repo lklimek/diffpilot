@@ -117,15 +117,17 @@ describe("mock effect function (effects.rs plan)", () => {
     const body = byNo(23);
     const p = planned(body, request("reject", { reason: "No.", reply_text: " Edited. " }));
     expect(shape(p)).toEqual([["pr_comment", null]]);
-    expect(p.reply_text).toBe("Edited.");
+    expect(p.reply_text).toBe(`${C23_LINE}\n> Doc comment names the old default\nEdited.`);
   });
 
   it("a PR-level comment answering a review names it: a person by an @-mention, a bot without one", () => {
     const fixed = "Per maintainer decision, this is fixed in this pull request.";
-    expect(planned(byNo(23), request("fix_here")).reply_text).toBe(`${C23_LINE}\n${fixed}`);
+    expect(planned(byNo(23), request("fix_here")).reply_text).toBe(
+      `${C23_LINE}\n> Doc comment names the old default\n${fixed}`,
+    );
     const bot = { ...byNo(23), author: "coderabbitai", author_kind: "bot" as const };
     expect(planned(bot, request("fix_here")).effects[1]!.params.text).toBe(
-      `Re [coderabbitai's review](${C23_URL}):\n${fixed}`,
+      `Re [coderabbitai's review](${C23_URL}):\n> Doc comment names the old default\n${fixed}`,
     );
     expect(planned(byNo(22), request("fix_here")).reply_text).toBe(fixed);
   });
@@ -150,7 +152,10 @@ describe("mock effect function (effects.rs plan)", () => {
     expect(p1.effects[0]!.params.item_nos).toEqual([22, 23]);
     expect(p1.effects.filter((e) => e.params.text !== null).map((e) => [e.kind, e.params.text])).toEqual([
       ["reply", "Per maintainer decision, this moves to a follow-up pull request."],
-      ["pr_comment", `${C23_LINE}\nPer maintainer decision, this moves to a follow-up pull request.`],
+      [
+        "pr_comment",
+        `${C23_LINE}\n> Doc comment names the old default\nPer maintainer decision, this moves to a follow-up pull request.`,
+      ],
     ]);
     const dismiss = { ...merge, stable_key: "pr:3:dismiss" };
     expect(planned(dismiss, request("dismiss_stale_reviews")).effects[0]!.params.text).toBe(DISMISS_MESSAGE);

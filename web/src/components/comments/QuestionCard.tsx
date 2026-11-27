@@ -47,6 +47,7 @@ interface QuestionCardProps {
   skipped?: boolean;
   /** PR number and its one-sentence purpose (LLM, or the analysis's PR context). */
   prNumber: number;
+  repository?: string;
   purpose: string | null;
   context: ContextState;
   /** In-app link of a flow step (opened in a new tab). */
@@ -571,6 +572,7 @@ export function QuestionCard(props: QuestionCardProps) {
       <DecisionForm
         key={item.id}
         item={item}
+        repository={props.repository}
         preview={props.preview}
         onDraft={props.onDraft}
         onDecide={props.onDecide}
