@@ -15,6 +15,8 @@ import { CodeText, useTokens } from "./tokens";
 import { CHANGE_LOOK, changeLineText } from "./changeLook";
 import { AskLineButton, moveLineFocus, selectedTarget } from "./CodeView";
 import { LineGithub, type LineGithubLink } from "./LineGithub";
+import { AskStatusMark } from "./AskStatusMark";
+import type { AskStatusAtLine } from "../ask/lineStatus";
 
 /** Props of the classic diff ("Show old code", inspector section 1). */
 export interface ClassicDiffProps {
@@ -31,6 +33,7 @@ export interface ClassicDiffProps {
   onDeleteComment?: (commentId: string) => Promise<void>;
   /** "Ask about this line": a new or unchanged line at the head, a removed line at the base; none without it. */
   onAskLine?: (target: CommentTarget) => void;
+  askStatus?: AskStatusAtLine;
 }
 
 interface AskLines {
@@ -38,6 +41,7 @@ interface AskLines {
   tabKey: string;
   onFocus: (key: string) => void;
   onAsk?: (target: CommentTarget) => void;
+  status?: AskStatusAtLine;
   githubLine?: LineGithubLink;
   path: string;
 }
@@ -110,6 +114,7 @@ function Hunk({
         const mine = lineComments(l, comments);
         const open = mine !== null && comments.open.has(mine[0]);
         const at = askRef(l);
+        const askStatus = at ? ask?.status?.(at.side, at.line) : undefined;
         const github = at && ask?.githubLine?.(at.side, at.line, l.kind !== "context");
         const number = (value: number | null, side: LineSide) => {
           const column = side === "base" ? "col-start-2" : "col-start-3";
@@ -137,7 +142,7 @@ function Hunk({
               data-diff-line={l.kind}
               data-ask-side={at?.side}
               data-ask-number={at?.line}
-              className={`group/line grid min-w-full ${ask?.onAsk ? "grid-cols-[max-content_1.5rem_2ch_max-content]" : "grid-cols-[max-content_2ch_max-content]"} ${mine ? "min-h-6 items-center" : ""} ${kind.look}`}
+              className={`group/line grid min-w-full ${ask?.onAsk || ask?.status ? "grid-cols-[max-content_1.5rem_2ch_max-content]" : "grid-cols-[max-content_2ch_max-content]"} ${mine ? "min-h-6 items-center" : ""} ${kind.look}`}
             >
               <span
                 className={`grid items-center ${ask?.githubLine ? "grid-cols-[18px_5ch_5ch]" : "grid-cols-[0_5ch_5ch]"}`}
@@ -154,19 +159,20 @@ function Hunk({
                   />
                 )}
               </span>
-              {ask?.onAsk &&
-                (at ? (
+              {(ask?.onAsk || ask?.status) &&
+                (at && ask.onAsk ? (
                   <AskLineButton
                     line={at.line}
                     removed={at.side === "base"}
                     tabbable={ask.tabKey === at.key}
                     onFocus={() => ask.onFocus(at.key)}
+                    status={askStatus}
                     onAsk={(button) =>
                       ask.onAsk?.(selectedTarget(button, ask.path, at.side, at.line, ASK_ROWS))
                     }
                   />
                 ) : (
-                  <span />
+                  <span className="text-center">{askStatus && <AskStatusMark status={askStatus} />}</span>
                 ))}
               <span className={`text-center font-bold select-none ${kind.signLook}`}>
                 <span aria-hidden>{kind.sign}</span>
@@ -214,6 +220,7 @@ export function ClassicDiff({
   onEditComment,
   onDeleteComment,
   onAskLine,
+  askStatus,
 }: ClassicDiffProps) {
   const id = useId();
   const [focusKey, setFocusKey] = useState<string | null>(null);
@@ -236,11 +243,12 @@ export function ClassicDiff({
   const tokens = useTokens(highlight, diff.path, fragments);
   const keys = diff.hunks.flatMap((h) => h.lines.flatMap((l) => askRef(l)?.key ?? []));
   const ask: AskLines | undefined =
-    onAskLine || githubLine
+    onAskLine || githubLine || askStatus
       ? {
           tabKey: focusKey && keys.includes(focusKey) ? focusKey : (keys[0] ?? ""),
           onFocus: setFocusKey,
           onAsk: onAskLine,
+          status: askStatus,
           path: diff.path,
           githubLine,
         }

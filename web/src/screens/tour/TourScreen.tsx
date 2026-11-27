@@ -87,7 +87,7 @@ import { analysisPath, analysisProgressPath, commentsPath, githubThreadPath, prP
 import { useNow } from "../../app/now";
 import { FlowsMenu } from "./FlowsMenu";
 import { Workspace } from "./Workspace";
-import { useAskChat, useAskPlace, type AnswerDraft } from "../review/askChat";
+import { useAskChat, useAskLineStatuses, useAskPlace, type AnswerDraft } from "../review/askChat";
 import { StepCode } from "./StepCode";
 import {
   checksHref,
@@ -197,6 +197,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   useForgetReanalysedFlows(analysisId, tour);
   const questions = useQuestions(analysisId);
   const chat = useAskChat();
+  const askStatus = useAskLineStatuses();
   const now = useNow();
   const workAllowed = ["planning", "running", "paused"].includes(tour.analysis.state.state);
   // A finished analysis takes a request for any flow shown failed (a stored flow today's checks reject, or one
@@ -592,6 +593,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
     navigate: (href) => void navigate(href),
   };
   const ctx: CodeContext = {
+    askStatus,
     hideContextChanges,
     analysisId,
     pr: tour.analysis.pr,
@@ -1093,7 +1095,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
             reanalyseHref={prPath(tour.analysis.pr)}
             sections={sections}
             commentRef={commentRef}
-            onAskLine={ctx.onAskLine}
+            askCode={ctx}
             onAskRemark={askRemark}
             threadActions={threadActions}
             onFlagAsComment={onFlagAsComment}

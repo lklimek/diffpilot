@@ -52,6 +52,73 @@ function captureAsk() {
 }
 
 describe("Ask chat in the review (proposal AC1, AC4, AC6, AC8, AC11)", () => {
+  it("marks the asked line across the review, including after the answer and a reload", async () => {
+    const analysisPath = `/pr/acme/node-client/482/analyses/${ID}`;
+    const file = "src/rpc/client.rs";
+    const asked: AskQuestion = {
+      id: "line-question",
+      anchor: { kind: "step", step_id: "f1.2", lines: { start_line: 89, end_line: 89 } },
+      step_id: "f1.2",
+      mine: true,
+      text: "What reaches this line?",
+      state: "pending",
+      answer: null,
+      failure: null,
+      created_at: "2026-11-16T10:15:00Z",
+      answered_at: null,
+    };
+    let history: AskQuestion[] = [];
+    server.use(
+      http.get("/api/v1/analyses/:id/questions", () => HttpResponse.json(history)),
+      http.post("/api/v1/analyses/:id/questions", () => {
+        history = [asked];
+        return HttpResponse.json(asked, { status: 202 });
+      }),
+    );
+    const router = await openTour("#f1.2");
+    const main = () => screen.getByRole("main");
+    const action = (name: RegExp) => within(main()).getByRole("button", { name });
+    await user().click(action(/^Ask the LLM about line 89$/));
+    await user().click(within(main()).getByRole("button", { name: "Ask about this line" }));
+    expect(action(/^Ask the LLM about line 89$/)).toBeVisible();
+    expect(main().querySelector("[data-ask-line-status]")).toBeNull();
+    await user().type(within(chat()).getByRole("textbox", { name: "Your question" }), `${asked.text}{Enter}`);
+    expect(
+      await within(main()).findByRole("button", { name: /line 89.*answer in progress/i }),
+    ).toHaveAttribute("data-ask-line-status", "running");
+    expect(action(/^Ask the LLM about line 90$/)).toBeVisible();
+
+    const completed: AskQuestion = {
+      ...asked,
+      state: "answered",
+      answer: { answer: `See \`${file}:89\` and missing.rs.`, evidence: [] },
+      answered_at: "2026-11-16T10:15:01Z",
+    };
+    history = [completed];
+    act(() => {
+      FakeEventSource.latest(`/api/v1/analyses/${ID}/events`).emit({
+        event: "question",
+        question: completed,
+      });
+    });
+    expect(await within(main()).findByRole("button", { name: /line 89.*answer ready/i })).toHaveAttribute(
+      "data-ask-line-status",
+      "answered",
+    );
+
+    const href = `${analysisPath}/files#lines?file=src%2Frpc%2Fclient.rs&side=head&line=89`;
+    const fileLink = within(chat()).getByRole("link", { name: `${file}:89` });
+    expect(fileLink).toHaveAttribute("href", href);
+    expect(within(chat()).queryByRole("link", { name: "missing.rs" })).toBeNull();
+    await user().click(fileLink);
+    expect(router.state.location.pathname).toBe(`${analysisPath}/files`);
+    expect(await within(main()).findByRole("button", { name: /line 89.*answer ready/i })).toBeVisible();
+
+    cleanup();
+    renderRoute(href);
+    expect(await screen.findByRole("button", { name: /line 89.*answer ready/i })).toBeVisible();
+  });
+
   it("is hidden until the first Ask, then stays open from Flows to Files with its subject following the view", async () => {
     const router = await openTour("#f1.5");
     expect(screen.queryByRole("dialog", { name: "Ask" })).toBeNull();

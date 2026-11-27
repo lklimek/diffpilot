@@ -59,6 +59,7 @@ import { filesHash } from "../../components/files/model";
 import { analysisPath, commentsPath, itemPath } from "../pr/paths";
 import { blockFragment } from "../tour/sequence";
 import { chatGeometry } from "./chatGeometry";
+import { indexAskLineStatus, type AskLineStatusLookup } from "../../components/ask/lineStatus";
 
 /** What a screen does for the chat: evidence links and "Use as review comment" open in its own columns. */
 export interface ChatActions {
@@ -102,9 +103,12 @@ const NONE: AskChatControl = {
   announce: () => {},
 };
 const Context = createContext<AskChatControl>(NONE);
+const AskLineStatuses = createContext<AskLineStatusLookup | undefined>(undefined);
 
 /** The review's chat; a no-op outside a review layout (component tests of a screen). */
 export const useAskChat = () => useContext(Context);
+/** A projection of this review's existing private question history, with no separate request. */
+export const useAskLineStatuses = () => useContext(AskLineStatuses);
 
 /** Says where the reader is while the screen shows it. */
 export function useAskPlace(place: AskAnchor | null): void {
@@ -215,6 +219,10 @@ export function AskChatProvider({ analysisId, children }: { analysisId: Analysis
   const ask = useAskInChat(analysisId, tour.data?.analysis.pr);
   const pending = usePendingReview(analysisId);
   const theTour = tour.data;
+  const lineStatuses = useMemo(
+    () => (theTour ? indexAskLineStatus(theTour, questions.data) : undefined),
+    [theTour, questions.data],
+  );
   // Comment items are named "Comment C14" with the PR's items, read only when a question is about one.
   const aboutItems = (questions.data ?? []).some((q) => q.anchor.kind === "comment_item");
   const items = useCommentItems(theTour?.analysis.pr ?? null, aboutItems);
@@ -235,7 +243,11 @@ export function AskChatProvider({ analysisId, children }: { analysisId: Analysis
       : null,
     activity: theTour ? <ReviewActivity tour={theTour} questions={questions.data} /> : null,
   };
-  return <ChatShell source={source}>{children}</ChatShell>;
+  return (
+    <AskLineStatuses.Provider value={lineStatuses}>
+      <ChatShell source={source}>{children}</ChatShell>
+    </AskLineStatuses.Provider>
+  );
 }
 
 /** The tab title's Ask status on the Comments view. */
