@@ -139,8 +139,7 @@ async fn responses(
     headers: HeaderMap,
     bytes: Bytes,
 ) -> Result<Response, Error> {
-    let body = serde_json::from_slice(&bytes).map_err(|_| Error::ModelPolicy("invalid_json"))?;
-    g.proxy(headers, None, Some(body)).await
+    g.proxy(headers, None, Some(bytes)).await
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

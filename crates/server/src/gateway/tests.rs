@@ -503,6 +503,51 @@ async fn model_listener_logs_rejection_reasons_without_request_data() {
 }
 
 #[tokio::test]
+async fn only_a_live_key_can_reach_model_json_parsing() {
+    let (_dir, upstream, gateway, user) = fixture().await;
+    seed(&gateway, &user, bundle(now() + 3600)).await;
+    let key = gateway
+        .mint(&ContainerId::Judge { payer: user })
+        .await
+        .expect("key");
+    let logs = crate::test_support::logs::LogCapture::start();
+    for (bearer, status, reason) in [
+        ("bad-key", StatusCode::UNAUTHORIZED, "invalid_virtual_key"),
+        (key.key.expose(), StatusCode::BAD_REQUEST, "invalid_json"),
+    ] {
+        let response = gateway
+            .model_router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/responses")
+                    .header("authorization", format!("Bearer {bearer}"))
+                    .body(Body::from("{malformed-private-body"))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), status);
+        assert!(
+            logs.text()
+                .lines()
+                .last()
+                .unwrap_or_default()
+                .contains(reason)
+        );
+    }
+    assert!(!logs.text().contains("malformed-private-body"));
+    assert!(
+        upstream
+            .received_requests()
+            .await
+            .expect("requests")
+            .is_empty()
+    );
+    gateway.shutdown().await;
+}
+
+#[tokio::test]
 async fn listeners_scopes_and_plan_only_link_contract_do_not_cross() {
     let (_d, up, g, _u) = fixture().await;
     for path in [

@@ -2,6 +2,7 @@
 
 use super::{Error, Gateway, auth::Access, http::upstream_rejection};
 use axum::{
+    Json,
     body::{Body, Bytes},
     http::{HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
@@ -186,7 +187,7 @@ impl Gateway {
         self: &Arc<Self>,
         headers: HeaderMap,
         query: Option<String>,
-        body: Option<Value>,
+        body: Option<Bytes>,
     ) -> Result<Response, Error> {
         let bearer = super::http::bearer(&headers).ok_or(Error::Key)?;
         let key = super::store::digest(bearer.as_bytes());
@@ -220,9 +221,15 @@ impl Gateway {
         .await
         .map_err(|_| Error::Busy)??;
         let (user, key, tx) = self.authenticate(bearer).await?;
-        if let Some(body) = &body {
-            validate_body(body)?;
-        }
+        // The listener bounds the buffer. Parse it only after authenticating and acquiring the request permits.
+        let body = body
+            .map(|bytes| {
+                let Json(value) = Json::<Value>::from_bytes(&bytes)
+                    .map_err(|_| Error::ModelPolicy("invalid_json"))?;
+                validate_body(&value)?;
+                Ok::<_, Error>(value)
+            })
+            .transpose()?;
         let expires_at = tx.record.keys.get(&key).ok_or(Error::Key)?.expires_at;
         let access = self.access_locked(&user, tx, None).await?;
         let models = body.is_none();
