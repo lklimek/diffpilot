@@ -2,13 +2,7 @@ import type { ReactNode } from "react";
 import { useNavigate } from "react-router";
 import { AppNav, type AppSection, type AppNavChild } from "../../components/app-shell/AppNav";
 import { ShellTopBar } from "../../components/app-shell/ShellTopBar";
-import { MY_WORK_PATH, PRS_PATH, SETTINGS_PATH } from "./paths";
-
-const HREFS: Record<AppSection, string> = {
-  "my-work": MY_WORK_PATH,
-  prs: PRS_PATH,
-  settings: SETTINGS_PATH,
-};
+import { APP_NAV_HREFS, MY_WORK_PATH } from "./paths";
 
 interface ShellLayoutProps {
   /** The section shown. */
@@ -48,7 +42,7 @@ export function ShellLayout({
       <div className="flex flex-1">
         <AppNav
           current={current}
-          hrefs={HREFS}
+          hrefs={APP_NAV_HREFS}
           myWorkCount={myWorkCount}
           settingsPages={settingsPages}
           onNavigate={go}

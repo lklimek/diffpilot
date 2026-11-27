@@ -1,9 +1,11 @@
-import type { PluginStatus, ReadyToMergeItem } from "../../../api/generated/types";
+import type { PluginStatus, PrRef, ReadyToMergeItem } from "../../../api/generated/types";
 import { CopyListButton } from "../common/CopyListButton";
 import { OpenExternal, openLabel } from "../common/OpenExternal";
 import { FactTags, SizePill } from "../common/Tags";
 import { PluginStatusNote } from "../plugin-status/PluginStatusNote";
 import { AsideSection } from "../side-panel/AsideSection";
+import { WorkTitleLink } from "../common/WorkTitleLink";
+import type { Navigate } from "../common/navigate";
 
 const prs = (n: number) => `${n} ${n === 1 ? "PR" : "PRs"}`;
 
@@ -17,10 +19,14 @@ export function ReadyToMerge({
   items,
   pending,
   plugins,
+  prHref,
+  onNavigate,
 }: {
   items: ReadyToMergeItem[];
   pending: number | null;
   plugins?: PluginStatus[];
+  prHref?: (pr: PrRef) => string | undefined;
+  onNavigate?: Navigate;
 }) {
   if (pending === null) {
     return (
@@ -49,7 +55,13 @@ export function ReadyToMerge({
                 <span className="font-mono text-[12.5px] font-semibold">{item.id}</span>
                 <OpenExternal href={item.url} label={openLabel(item)} />
               </div>
-              <div className="[overflow-wrap:anywhere]">{item.title}</div>
+              <WorkTitleLink
+                className="block min-h-6 [overflow-wrap:anywhere]"
+                href={prHref?.(item)}
+                onNavigate={onNavigate}
+              >
+                {item.title}
+              </WorkTitleLink>
               <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted">
                 <SizePill mark={item.change_size} />
                 <FactTags tags={item.tags} />

@@ -272,6 +272,7 @@ async fn pr_page(
     mark_present(&state, &session);
     let handle = handle_of(&state, &session, path).await?;
     let pr_id = handle.id;
+    review_loop::reconcile_lifecycle_on_visit(&state, &session, &handle).await?;
     let page = views::pr_page(&state, &session, handle).await?;
     if !session.is_access_token()
         && let Err(error) = state

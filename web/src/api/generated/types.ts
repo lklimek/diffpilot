@@ -6366,6 +6366,10 @@ pr: PrRef,
  */
 title: string,
 /**
+ * The last known GitHub lifecycle state; absent until GitHub reports it.
+ */
+pr_state?: PrLifecycleState,
+/**
  * Latest activity across all included sources.
  */
 last_activity_at: string,
@@ -6411,6 +6415,11 @@ since: string,
  * When the watch ended, if it did.
  */
 ended_at: string | null, };
+
+/**
+ * A pull request's lifecycle state on GitHub.
+ */
+export type PrLifecycleState = "open" | "closed" | "merged";
 
 /**
  * Response of RC1: the PR page.

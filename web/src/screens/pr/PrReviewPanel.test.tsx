@@ -188,7 +188,7 @@ describe("Pull requests and Review the code (U59–U61)", () => {
     expect(within(found).queryByRole("link", { name: /resume/i })).toBeNull();
     expect(within(found).getByRole("link", { name: "Open review" })).toHaveAttribute(
       "href",
-      `/analyses/${analysis.id}`,
+      `/pr/acme/node-client/482/analyses/${analysis.id}`,
     );
     expect(router.state.location.pathname).toBe(PR);
   });
@@ -206,7 +206,7 @@ describe("Pull requests and Review the code (U59–U61)", () => {
     );
     expect(within(moved).getByRole("link", { name: "Open the old analysis" })).toHaveAttribute(
       "href",
-      `/analyses/${analysis.id}`,
+      `/pr/acme/node-client/482/analyses/${analysis.id}`,
     );
     let body: unknown;
     server.events.on("request:start", async ({ request }) => {
@@ -293,6 +293,6 @@ it("only promises personal state when the server confirms it exists", async () =
   expect(found).toHaveTextContent("Your ticks, answers and last viewed block are kept");
   expect(within(found).getByRole("link", { name: "Open review" })).toHaveAttribute(
     "href",
-    `/analyses/${analysis.id}`,
+    `/pr/acme/node-client/482/analyses/${analysis.id}`,
   );
 });

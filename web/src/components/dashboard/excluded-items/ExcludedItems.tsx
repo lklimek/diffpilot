@@ -1,16 +1,24 @@
-import type { ExcludedItem, ExclusionCount, ExclusionReason, Exclusions } from "../../../api/generated/types";
+import type {
+  ExcludedItem,
+  ExclusionCount,
+  ExclusionReason,
+  Exclusions,
+  PrRef,
+} from "../../../api/generated/types";
 import { navigateOnClick, type Navigate } from "../common/navigate";
 import { Tooltip } from "../../tooltip/Tooltip";
 import { helpHref, type HelpTopic } from "../../settings/settingsHelp";
 import { OpenExternal, openLabel } from "../common/OpenExternal";
 import { buttonClass, busyTip } from "../../button/button";
 import { dateTimeText } from "../../format/time";
+import { WorkTitleLink } from "../common/WorkTitleLink";
 
 interface ExcludedItemsProps {
   /** The snapshot's exclusions; absent when the snapshot did not record them. */
   exclusions: Exclusions | null | undefined;
   guideOrigin?: string;
   onNavigate?: Navigate;
+  prHref?: (pr: PrRef) => string | undefined;
   /** "Wake now" of a snoozed item (its key); without it no button. */
   onWake?: (key: string) => void;
   /** Keys of the snoozed items being woken. */
@@ -89,6 +97,7 @@ export function ExcludedItems({
   exclusions,
   guideOrigin,
   onNavigate,
+  prHref,
   onWake,
   wakingKeys = [],
 }: ExcludedItemsProps) {
@@ -109,6 +118,7 @@ export function ExcludedItems({
           items={items.filter((item) => item.reason === reason)}
           guideOrigin={guideOrigin}
           onNavigate={onNavigate}
+          prHref={prHref}
           onWake={onWake}
           wakingKeys={wakingKeys}
         />
@@ -128,6 +138,7 @@ function Group({
   items,
   guideOrigin,
   onNavigate,
+  prHref,
   onWake,
   wakingKeys,
 }: {
@@ -136,6 +147,7 @@ function Group({
   items: ExcludedItem[];
   guideOrigin?: string;
   onNavigate?: Navigate;
+  prHref?: (pr: PrRef) => string | undefined;
   onWake?: (key: string) => void;
   wakingKeys: string[];
 }) {
@@ -165,7 +177,17 @@ function Group({
             <li key={item.key} className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
               <OpenExternal href={item.url} label={openLabel(item)} />
               <span className="shrink-0 font-mono">{item.id}</span>
-              <span className="min-w-0 truncate">{item.title}</span>
+              <WorkTitleLink
+                className="min-w-0 truncate"
+                href={
+                  item.kind === "pr" && item.repo && item.number !== null
+                    ? prHref?.({ repo: item.repo, number: item.number })
+                    : undefined
+                }
+                onNavigate={onNavigate}
+              >
+                {item.title}
+              </WorkTitleLink>
               {item.author && <span className="shrink-0 text-muted">by @{item.author}</span>}
               {item.merged_into && (
                 <span className="shrink-0 text-muted">merged into {item.merged_into}</span>

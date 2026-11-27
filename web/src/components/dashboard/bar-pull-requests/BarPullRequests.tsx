@@ -1,7 +1,9 @@
 import { useId } from "react";
 import { HideButton } from "../../button/HideButton";
-import { GithubMark } from "../../github/GithubMark";
 import { Tooltip } from "../../tooltip/Tooltip";
+import { OpenExternal } from "../common/OpenExternal";
+import { WorkTitleLink } from "../common/WorkTitleLink";
+import type { Navigate } from "../common/navigate";
 
 /** One pull request behind a bar of the net chart. */
 export interface BarPullRequest {
@@ -9,6 +11,8 @@ export interface BarPullRequest {
   id: string;
   /** Its title when the snapshot knows it. */
   title: string | null;
+  /** DiffPilot PR page, when the PR identity is valid. */
+  href?: string;
   /** GitHub link; null keeps the id as text. */
   url: string | null;
   /** How a closed one ended; absent for opened ones. */
@@ -18,8 +22,10 @@ export interface BarPullRequest {
 interface BarPullRequestsProps {
   /** The bar's day or week (`Tue 17 Nov`, `Week of 16 Nov (so far)`). */
   period: string;
+  unit?: "day" | "week";
   opened: BarPullRequest[];
   closed: BarPullRequest[];
+  onNavigate?: Navigate;
   onHide: () => void;
   /** The chart, focused again when Hide is used by keyboard. */
   focusAfter?: () => HTMLElement | SVGElement | null | undefined;
@@ -28,9 +34,42 @@ interface BarPullRequestsProps {
 const OUTCOME = { merged: "merged", closed_unmerged: "closed without merge" } as const;
 
 /** The pull requests opened and closed in one bar of the net chart, linked to GitHub; Hide closes it. */
-export function BarPullRequests({ period, opened, closed, onHide, focusAfter }: BarPullRequestsProps) {
+export function BarPullRequests({
+  period,
+  unit = "week",
+  opened,
+  closed,
+  onNavigate,
+  onHide,
+  focusAfter,
+}: BarPullRequestsProps) {
   const titleId = useId();
   const name = `Pull requests of ${period}`;
+  const openedIds = new Set(opened.map((pr) => pr.id.toLowerCase()));
+  const closedIds = new Set(closed.map((pr) => pr.id.toLowerCase()));
+  const groups =
+    unit === "day"
+      ? [
+          {
+            label: "Opened and closed",
+            tip: "Pull requests you opened and closed in this working day",
+            items: closed.filter((pr) => openedIds.has(pr.id.toLowerCase())),
+          },
+          {
+            label: "Opened only",
+            tip: "Pull requests you opened in this working day that did not close in it",
+            items: opened.filter((pr) => !closedIds.has(pr.id.toLowerCase())),
+          },
+          {
+            label: "Closed from earlier days",
+            tip: "Your pull requests opened earlier and merged or closed in this working day",
+            items: closed.filter((pr) => !openedIds.has(pr.id.toLowerCase())),
+          },
+        ]
+      : [
+          { label: "Opened", tip: "Pull requests you opened", items: opened },
+          { label: "Closed", tip: "Your pull requests merged or closed without merge", items: closed },
+        ];
   return (
     <section
       aria-labelledby={titleId}
@@ -40,8 +79,9 @@ export function BarPullRequests({ period, opened, closed, onHide, focusAfter }: 
         <h4 id={titleId} className="text-[13px] font-semibold">
           {name}
         </h4>
-        <Group label="Opened" tip="Pull requests you opened" items={opened} />
-        <Group label="Closed" tip="Your pull requests merged or closed without merge" items={closed} />
+        {groups.map((group) => (
+          <Group key={group.label} {...group} onNavigate={onNavigate} />
+        ))}
       </div>
       <HideButton
         name={`Hide pull requests of ${period}`}
@@ -53,7 +93,17 @@ export function BarPullRequests({ period, opened, closed, onHide, focusAfter }: 
   );
 }
 
-function Group({ label, tip, items }: { label: string; tip: string; items: BarPullRequest[] }) {
+function Group({
+  label,
+  tip,
+  items,
+  onNavigate,
+}: {
+  label: string;
+  tip: string;
+  items: BarPullRequest[];
+  onNavigate?: Navigate;
+}) {
   const heading = `${label} (${items.length})`;
   return (
     <div role="group" aria-label={heading}>
@@ -67,24 +117,29 @@ function Group({ label, tip, items }: { label: string; tip: string; items: BarPu
       ) : (
         <ul className="m-0 mt-1 flex list-none flex-col gap-1 p-0">
           {items.map((pr) => (
-            <li key={`${pr.id} ${pr.outcome ?? ""}`} className="flex min-w-0 items-baseline gap-2">
-              {pr.url ? (
-                <Tooltip tip={`Open ${pr.id} on GitHub (new tab)`}>
-                  <a
-                    href={pr.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex min-h-6 shrink-0 items-center font-mono text-accent underline"
-                  >
-                    {pr.id}
-                    <GithubMark />
-                  </a>
-                </Tooltip>
-              ) : (
-                <span className="shrink-0 font-mono">{pr.id}</span>
+            <li key={`${pr.id} ${pr.outcome ?? ""}`} className="flex min-h-6 min-w-0 items-baseline gap-2">
+              <WorkTitleLink
+                href={pr.title ? undefined : pr.href}
+                onNavigate={onNavigate}
+                className="max-w-[45%] shrink-0 font-mono break-all"
+              >
+                {pr.id}
+              </WorkTitleLink>
+              {(pr.title || pr.url) && (
+                <span className="inline-flex min-w-0 items-baseline gap-1.5">
+                  {pr.title && (
+                    <WorkTitleLink
+                      href={pr.href}
+                      onNavigate={onNavigate}
+                      className="min-w-0 truncate leading-6"
+                    >
+                      {pr.title}
+                    </WorkTitleLink>
+                  )}
+                  <OpenExternal href={pr.url} label={`Open ${pr.id} on GitHub`} />
+                </span>
               )}
-              {pr.title && <span className="min-w-0 truncate">{pr.title}</span>}
-              {pr.outcome && <span className="shrink-0 text-muted">{OUTCOME[pr.outcome]}</span>}
+              {pr.outcome && <span className="min-w-0 text-muted">{OUTCOME[pr.outcome]}</span>}
             </li>
           ))}
         </ul>

@@ -1,3 +1,4 @@
+import type { PrRef } from "../../api/generated/types";
 import { AnalysisStateBanner } from "../../components/progress/AnalysisStateBanner";
 import { FlowWork } from "../../components/progress/FlowWork";
 import { isIdle } from "../../components/progress/idle";
@@ -7,7 +8,14 @@ import { flagComment } from "../../components/comment/prefill";
 import { flagTarget, remarkTarget, summariseRemarks } from "../../components/remark-pills/remarks";
 import { useSectionState } from "../../components/inspector/sectionState";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Navigate, useParams, useLocation, useNavigate, useNavigationType } from "react-router";
+import {
+  useOutletContext,
+  Navigate,
+  useParams,
+  useLocation,
+  useNavigate,
+  useNavigationType,
+} from "react-router";
 import { api, ApiError, errorText } from "../../api/client";
 import type {
   AnalysisId,
@@ -75,7 +83,7 @@ import {
   blockFromHash,
   evidenceFromHash,
 } from "./sequence";
-import { commentsPath, githubThreadPath, prPath } from "../pr/paths";
+import { analysisPath, analysisProgressPath, commentsPath, githubThreadPath, prPath } from "../pr/paths";
 import { useNow } from "../../app/now";
 import { FlowsMenu } from "./FlowsMenu";
 import { Workspace } from "./Workspace";
@@ -103,13 +111,20 @@ const onStep = (c: PendingComment, step: Step) =>
 /** The review screen (brief §4.3): top bar, three columns, one block at a time. */
 export function TourScreen() {
   const { analysisId = "" } = useParams();
+  const pr = useOutletContext<PrRef>();
+  const location = useLocation();
   const me = useMe();
   const tour = useTour(analysisId);
   const review = useReviewStateStore(analysisId);
   const login = me.data?.user?.login ?? null;
 
   if (tour.error instanceof ApiError && tour.error.code === "analysis_not_finished") {
-    return <Navigate to={`/analyses/${encodeURIComponent(analysisId)}/progress`} replace />;
+    return (
+      <Navigate
+        to={{ pathname: analysisProgressPath(pr, analysisId), search: location.search, hash: location.hash }}
+        replace
+      />
+    );
   }
   // A transient failure of a background refetch keeps the last good tour (and the drafts and state of the open
   // review); an answer such as 401 or 404 does not change on retry.
@@ -265,7 +280,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
     (current.block === "flow_intro" ? tour.flows.find((f) => f.id === current.flow_id) : undefined);
   const stepLines = useLines(analysisId, step && stepQuery(step));
   // The Files view at the current place: a step's lines, a flow's first step, else its first file.
-  const filesPath = `/analyses/${analysisId}/files`;
+  const filesPath = analysisPath(tour.analysis.pr, analysisId, "files");
   const filesStep = step ?? (current.block === "flow_intro" ? flow?.steps[0] : undefined);
   const filesHref = filesStep ? `${filesPath}${filesHash(stepFilesLink(filesStep))}` : filesPath;
   // Lines of the step the code view hides ("hide comment and import changes"); `c` and the reveal skip them.
@@ -868,7 +883,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
       parked={background === false && pendingFlows.length > 0 && isIdle(tour.analysis.state)}
       busy={work.background.isPending}
       onBackground={(enabled) => work.background.mutate(enabled)}
-      progressHref={`/analyses/${analysisId}/progress`}
+      progressHref={analysisProgressPath(tour.analysis.pr, analysisId)}
       error={work.background.error ? errorText(work.background.error) : undefined}
     />
   );
@@ -879,7 +894,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         busy={work.resume.isPending || work.retry.isPending}
         onResume={() => work.resume.mutate()}
         onRetry={() => work.retry.mutate()}
-        progressHref={`/analyses/${analysisId}/progress`}
+        progressHref={analysisProgressPath(tour.analysis.pr, analysisId)}
         error={
           work.resume.error || work.retry.error ? errorText(work.resume.error || work.retry.error) : undefined
         }
@@ -1008,9 +1023,9 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         onHelp={() => setHelpOpen(true)}
         view={{
           current: "flows",
-          flowsHref: `${location.pathname}${location.hash}`,
+          flowsHref: `${analysisPath(tour.analysis.pr, analysisId)}${location.search}${location.hash}`,
           filesHref,
-          depsHref: `/analyses/${analysisId}/deps`,
+          depsHref: analysisPath(tour.analysis.pr, analysisId, "deps"),
           commentsHref: commentsPath(tour.analysis.pr),
           prPageHref: prPath(tour.analysis.pr),
           onNavigate: (href) => void navigate(href),

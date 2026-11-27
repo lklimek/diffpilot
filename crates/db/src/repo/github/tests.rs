@@ -293,7 +293,7 @@ async fn failed_delivery_reprocessed_on_redelivery() {
         event: "pull_request",
         action: Some("opened"),
         installation_id: Some(42),
-        effect: Effect::Signal(&repository, &[]),
+        effect: Effect::Signal(&repository, &[], None),
     };
     let now = Timestamp::now();
     assert_eq!(
@@ -454,7 +454,7 @@ async fn untracked_burst_does_not_take_write_lock_or_store_rows() {
             event: "status",
             action: None,
             installation_id: Some(11),
-            effect: Effect::Signal(&foreign, &[]),
+            effect: Effect::Signal(&foreign, &[], None),
         };
         assert_eq!(
             db.github().record(&delivery, now).await.unwrap(),
@@ -954,7 +954,7 @@ async fn deferred_delivery_yields_to_earlier_eligible_work() {
                     event: "pull_request",
                     action: None,
                     installation_id: None,
-                    effect: Effect::Signal(&repository, std::slice::from_ref(&change)),
+                    effect: Effect::Signal(&repository, std::slice::from_ref(&change), None),
                 },
                 at,
             )
@@ -1031,5 +1031,258 @@ async fn deferred_delivery_yields_to_earlier_eligible_work() {
     assert!(
         current.targets[0].review,
         "redelivery preserves merged work and fences the old lease"
+    );
+}
+
+#[tokio::test]
+async fn lifecycle_deliveries_update_the_bound_pr_and_ignore_stale_redelivery() {
+    use PrLifecycleState::{Closed, Merged, Open};
+
+    let db = test_db().await;
+    let bound = repo(7, "acme", "node-client");
+    let foreign = repo(8, "acme", "node-client");
+    let now = Timestamp::now();
+    for (i, (repository, state, seconds, outcome, expected)) in [
+        (&bound, Closed, 1, Outcome::Queued, Closed),
+        (&bound, Open, 2, Outcome::Queued, Open),
+        (&bound, Closed, 1, Outcome::Queued, Open),
+        (&foreign, Merged, 3, Outcome::NotAllowed, Open),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let update = PrLifecycleChange {
+            number: 482,
+            state,
+            updated_at: now + SignedDuration::from_secs(seconds),
+        };
+        let delivery = NewDelivery {
+            id: Uuid::new_v4(),
+            hash: &format!("{i:064x}"),
+            event: "pull_request",
+            action: Some(if state == Open { "reopened" } else { "closed" }),
+            installation_id: None,
+            effect: Effect::Signal(repository, &[], Some(update)),
+        };
+        assert_eq!(db.github().record(&delivery, now).await.unwrap(), outcome);
+        let rows = db
+            .pull_requests()
+            .history("default", "u1", None, 2)
+            .await
+            .unwrap();
+        assert_eq!(rows[0].1.pr_state, Some(expected));
+    }
+}
+
+#[tokio::test]
+async fn lifecycle_ties_wait_for_a_read_started_after_the_conflicting_receipt() {
+    use PrLifecycleState::{Closed, Open};
+
+    let db = test_db().await;
+    let repository = repo(7, "acme", "node-client");
+    let prs = db.pull_requests();
+    let now = Timestamp::now();
+    let at = |offset| now + SignedDuration::from_secs(offset);
+    assert!(
+        prs.record_lifecycle(1, Open, at(0), at(1), Some(7))
+            .await
+            .unwrap()
+    );
+    for (state, received, action) in [(Closed, 3, "closed"), (Open, 4, "reopened")] {
+        db.github()
+            .record(
+                &NewDelivery {
+                    id: Uuid::new_v4(),
+                    hash: &format!("{received:064x}"),
+                    event: "pull_request",
+                    action: Some(action),
+                    installation_id: None,
+                    effect: Effect::Signal(
+                        &repository,
+                        &[],
+                        Some(PrLifecycleChange {
+                            number: 482,
+                            state,
+                            updated_at: at(2),
+                        }),
+                    ),
+                },
+                at(received),
+            )
+            .await
+            .unwrap();
+    }
+
+    assert_eq!(
+        prs.history("default", "u1", None, 1).await.unwrap()[0]
+            .1
+            .pr_state,
+        None,
+        "keep unresolved state visible under the default archive filter"
+    );
+    assert!(
+        !prs.record_lifecycle(1, Open, at(2), at(1), Some(7))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !prs.record_lifecycle(1, Closed, at(2), at(3), Some(7))
+            .await
+            .unwrap()
+    );
+    assert!(
+        prs.record_lifecycle(1, Open, at(2), at(5), Some(7))
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        prs.history("default", "u1", None, 1).await.unwrap()[0]
+            .1
+            .pr_state,
+        Some(Open)
+    );
+}
+
+#[tokio::test]
+async fn lifecycle_signal_survives_first_pull_request_upsert() {
+    use PrLifecycleState::{Merged, Open};
+
+    let db = test_db().await;
+    let repository = repo(7, "acme", "node-client");
+    let prs = db.pull_requests();
+    let now = Timestamp::now();
+    db.github()
+        .record(
+            &NewDelivery {
+                id: Uuid::new_v4(),
+                hash: &"a".repeat(64),
+                event: "pull_request",
+                action: Some("closed"),
+                installation_id: None,
+                effect: Effect::Signal(
+                    &repository,
+                    &[],
+                    Some(PrLifecycleChange {
+                        number: 483,
+                        state: Merged,
+                        updated_at: now,
+                    }),
+                ),
+            },
+            now,
+        )
+        .await
+        .unwrap();
+    let mut summary = prs.get(1).await.unwrap().pr;
+    summary.number = 483;
+    let pr = prs.upsert("default", 1, &summary, now).await.unwrap();
+    let before_signal = now - SignedDuration::from_secs(1);
+    assert!(
+        !prs.record_lifecycle(pr, Open, before_signal, before_signal, Some(7))
+            .await
+            .unwrap()
+    );
+    prs.record_opening("default", "u1", pr, now).await.unwrap();
+    let history = prs.history("default", "u1", None, 2).await.unwrap();
+    assert_eq!(
+        history
+            .into_iter()
+            .find(|(id, _)| *id == pr)
+            .unwrap()
+            .1
+            .pr_state,
+        Some(Merged),
+    );
+}
+
+#[tokio::test]
+async fn lifecycle_observation_accepts_equivalent_evidence_and_an_unbound_repository() {
+    use PrLifecycleState::{Closed, Open};
+
+    let db = test_db().await;
+    let prs = db.pull_requests();
+    let now = Timestamp::now();
+    let older = now - SignedDuration::from_secs(1);
+    sqlx::query("UPDATE repos SET github_id = NULL")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert!(
+        prs.record_lifecycle(1, Closed, older, now, Some(7))
+            .await
+            .unwrap()
+    );
+
+    sqlx::query("UPDATE repos SET github_id = 7")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert!(
+        prs.record_lifecycle(1, Closed, older, older, Some(7))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !prs.record_lifecycle(1, Open, older, older, Some(7))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !prs.record_lifecycle(1, Closed, older, older, Some(8))
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn signed_lifecycle_events_track_pulls_in_history_from_page_openings() {
+    let db = test_db().await;
+    let repository = repo(8, "acme", "visited");
+    let stored = db
+        .repos()
+        .upsert("default", &repository.name, repository.id)
+        .await
+        .unwrap();
+    let prs = db.pull_requests();
+    let mut summary = prs.get(1).await.unwrap().pr;
+    summary.repo = repository.name.clone();
+    let now = Timestamp::now();
+    let id = prs
+        .upsert("default", stored.id, &summary, now)
+        .await
+        .unwrap();
+    let delivery = NewDelivery {
+        id: Uuid::new_v4(),
+        hash: &"3".repeat(64),
+        event: "pull_request",
+        action: Some("closed"),
+        installation_id: None,
+        effect: Effect::Signal(
+            &repository,
+            &[],
+            Some(PrLifecycleChange {
+                number: summary.number,
+                state: PrLifecycleState::Closed,
+                updated_at: now,
+            }),
+        ),
+    };
+    assert_eq!(
+        db.github().record(&delivery, now).await.unwrap(),
+        Outcome::NotAllowed
+    );
+    prs.record_opening("default", "u1", id, now).await.unwrap();
+    assert_eq!(
+        db.github().record(&delivery, now).await.unwrap(),
+        Outcome::Queued
+    );
+    let rows = prs.history("default", "u1", None, 10).await.unwrap();
+    assert_eq!(
+        rows.into_iter()
+            .find(|(pr, _)| *pr == id)
+            .unwrap()
+            .1
+            .pr_state,
+        Some(PrLifecycleState::Closed)
     );
 }

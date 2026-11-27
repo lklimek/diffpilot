@@ -10,6 +10,7 @@ import {
   inspector,
   nav,
   openStep,
+  PR_PAGE_PATH,
   startAnalysis,
   waitForState,
 } from "../support/app";
@@ -55,12 +56,12 @@ test("head moved: comment refused with pr_head_changed, Start analysis, the supe
   await checkScreen(page);
 
   await inspector(page).getByRole("link", { name: "Analyse the new head" }).click();
-  await expect(page).toHaveURL("/pr/acme/node-client/482");
+  await expect(page).toHaveURL(PR_PAGE_PATH);
   const banner = page.getByRole("alert").filter({ hasText: "The PR has moved." });
   await expect(banner).toContainText(`Analysis of 52d2da1; the PR is now at ${moved.slice(0, 7)}.`);
   await expect(banner.getByRole("link", { name: "Open the old analysis" })).toHaveAttribute(
     "href",
-    `/analyses/${old}`,
+    `${PR_PAGE_PATH}/analyses/${old}`,
   );
   await checkScreen(page);
   const fresh = await startAnalysis(page);

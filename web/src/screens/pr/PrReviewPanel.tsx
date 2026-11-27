@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { Link } from "react-router";
+import { Link, useNavigate } from "react-router";
 import { ApiError, errorText } from "../../api/client";
 import type { AnalysisId, AnalysisSummary, LlmLanguage, PrRef } from "../../api/generated/types";
 import { prCheckKey, useCreateAnalysis, useResolvePr } from "../../api/queries";
@@ -16,6 +16,7 @@ import { Tooltip } from "../../components/tooltip/Tooltip";
 import { GITHUB_SYNC_SETTINGS_PATH } from "../shell/paths";
 import { LiveReview } from "./LiveReview";
 import { analysisHref, openTip, reviewOutcome } from "./outcome";
+import { analysisProgressPath } from "./paths";
 
 export function PrReviewPanel({
   pr,
@@ -32,10 +33,12 @@ export function PrReviewPanel({
   const check = useResolvePr(url);
   const start = useCreateAnalysis();
   const client = useQueryClient();
+  const navigate = useNavigate();
   const result = check.data;
   const outcome = result && reviewOutcome(result);
   useTabActivity("pr-check", check.isPending ? "busy" : check.isError ? "attention" : null);
   if (!result) {
+    const liveId = progressId ?? previous?.id;
     if (check.isPending) return <StatusMessage kind="loading">Checking the pull request…</StatusMessage>;
     return (
       <>
@@ -45,20 +48,16 @@ export function PrReviewPanel({
             Try again
           </button>
         </Tooltip>
-        {previous && <LiveReview analysisId={previous.id} />}
+        {liveId && <LiveReview analysisId={liveId} />}
       </>
     );
   }
 
   const moved = outcome?.kind === "head_moved" ? outcome.analysis : undefined;
   const existing = result.analysis;
-  const liveId = moved
-    ? progressId === moved.id
-      ? progressId
-      : undefined
-    : outcome?.kind === "in_progress" || outcome?.kind === "failed"
-      ? outcome.analysis.id
-      : progressId;
+  const liveId =
+    progressId ??
+    (outcome?.kind === "in_progress" || outcome?.kind === "failed" ? outcome.analysis.id : undefined);
   const differentLanguage =
     existing && existing.state.state !== "cancelled" && language && existing.language !== language
       ? language
@@ -78,6 +77,7 @@ export function PrReviewPanel({
           void client.invalidateQueries({ queryKey: ["my-analyses"] });
           void client.invalidateQueries({ queryKey: ["pr-history"] });
           void client.invalidateQueries({ queryKey: ["pr-page", pr.repo.owner, pr.repo.name, pr.number] });
+          if (progressId) void navigate(analysisProgressPath(analysis.pr, analysis.id), { replace: true });
         },
       },
     );

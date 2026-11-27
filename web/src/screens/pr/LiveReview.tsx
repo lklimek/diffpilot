@@ -16,6 +16,8 @@ import { LanguageTag } from "../../components/language-tag/LanguageTag";
 import { AnalysisProgress } from "../../components/progress/AnalysisProgress";
 import { StatusMessage } from "../../components/status/StatusMessage";
 
+import { analysisPath } from "./paths";
+
 /** Live analysis progress and controls on the PR page. */
 export function LiveReview({
   analysisId,
@@ -59,7 +61,7 @@ export function LiveReview({
         state={summary.state}
         progress={summary.progress}
         usage={summary.usage}
-        reviewHref={`/analyses/${summary.id}`}
+        reviewHref={analysisPath(summary.pr, summary.id)}
         busy={
           cancel.isPending ||
           retry.isPending ||

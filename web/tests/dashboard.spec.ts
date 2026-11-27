@@ -14,12 +14,13 @@ test.describe("My work (msw)", () => {
   test("mentions: three rows, bot preference, hide, count, keyboard and narrow themes", async ({ page }) => {
     await page.goto("/?dashboard=mentions");
     const strip = page.getByRole("region", { name: "Mentions" });
+    const githubLinks = strip.getByRole("link", { name: /new tab/i });
     await expect(strip.getByRole("link")).toHaveCount(0);
     await strip.getByRole("button", { name: "Mentions (4)" }).click();
-    await expect(strip.getByRole("link")).toHaveCount(3);
+    await expect(githubLinks).toHaveCount(3);
     await expect(page.locator("[data-nav-count]")).toHaveText("4");
     await strip.getByRole("button", { name: "+1 more" }).click();
-    await expect(strip.getByRole("link")).toHaveCount(4);
+    await expect(githubLinks).toHaveCount(4);
     await strip.getByRole("button", { name: "with bots", exact: true }).click();
     await expect(strip.getByText(/· bot/)).toBeVisible();
     await expect(page.locator("[data-nav-count]")).toHaveText("4");
@@ -640,15 +641,20 @@ test.describe("My work (msw)", () => {
       "Click or press Enter to list its pull requests",
     );
     await chart.click(at);
-    await expect(list.getByRole("group", { name: "Opened (2)" })).toBeVisible();
-    const closed = list.getByRole("group", { name: "Closed (3)" });
-    await expect(closed.getByRole("listitem").filter({ hasText: "acme/node-client#1114" })).toContainText(
+    await expect(list.getByRole("group", { name: /^Opened and closed/ })).toBeVisible();
+    await expect(list.getByRole("group", { name: /^Opened only/ })).toBeVisible();
+    await expect(list.getByRole("group", { name: /^Closed from earlier days/ })).toBeVisible();
+    await expect(list.getByRole("listitem").filter({ hasText: "acme/node-client#1114" })).toContainText(
       "closed without merge",
     );
-    await expect(closed.getByRole("link", { name: /^acme\/platform#1116/ })).toHaveAttribute(
-      "href",
-      "https://github.com/acme/platform/pull/1116",
-    );
+    const github = list.getByRole("link", { name: "Open acme/platform#1116 on GitHub (new tab)" });
+    await expect(github).toHaveAttribute("href", "https://github.com/acme/platform/pull/1116");
+    const project = page.getByRole("combobox", { name: "Chart project" });
+    await project.selectOption("acme/node-client");
+    await expect(github).toHaveCount(0);
+    await expect(list.getByText("acme/node-client#1114", { exact: true })).toBeVisible();
+    await project.selectOption("");
+    await expect(github).toBeVisible();
     await chart.click(at);
     await expect(list).toHaveCount(0);
     // By keyboard: read a bar, Enter lists it, Hide returns to the chart. Focus starts on the last bar.
@@ -753,7 +759,7 @@ test("failed mention hide keeps the row and count and shows a retry message", as
     .first()
     .click();
   await expect(page.getByText(/Could not hide this mention. Try again./)).toBeVisible();
-  await expect(strip.getByRole("link")).toHaveCount(3);
+  await expect(strip.getByRole("link", { name: /on GitHub \(new tab\)$/ })).toHaveCount(3);
   await expect(page.locator("[data-nav-count]")).toHaveText("4");
   await page.getByRole("button", { name: "Dismiss", exact: true }).click();
   await expect(page.getByText(/Could not hide this mention. Try again./)).toHaveCount(0);
@@ -764,7 +770,10 @@ test("hiding a vanished mention removes its row and updates the count without an
   const strip = page.getByRole("region", { name: "Mentions" });
   await strip.getByRole("button", { name: "Mentions (4)" }).click();
   const first = strip.getByRole("button", { name: /Hide mention/ }).first();
-  const href = await strip.getByRole("link").first().getAttribute("href");
+  const href = await strip
+    .getByRole("link", { name: /on GitHub \(new tab\)$/ })
+    .first()
+    .getAttribute("href");
   await first.click();
   await expect(page.locator("[data-nav-count]")).toHaveText("3");
   await expect(strip.locator(`a[href="${href}"]`)).toHaveCount(0);

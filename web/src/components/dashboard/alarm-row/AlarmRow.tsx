@@ -82,7 +82,7 @@ export function AlarmRow({
       </Tooltip>
       <div className="grid min-w-0 gap-1">
         <div className="text-[15px] font-bold [overflow-wrap:anywhere]">
-          <WorkTitle item={item} />
+          <WorkTitle item={item} href={reviewHref} onNavigate={onNavigate} />
         </div>
         <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted">
           <span className="font-mono">{item.id}</span>

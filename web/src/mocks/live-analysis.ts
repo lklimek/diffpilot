@@ -2,7 +2,7 @@
 // planning → running k of n → finished, and every change is published to the open event streams.
 import type { AnalysisState, AnalysisSummary, PrSummary } from "../api/generated/types";
 import { seedNow } from "./fixtures";
-import { flowStage, scenario } from "./scenarios";
+import { flowStage, realTour, scenario } from "./scenarios";
 
 /** Delay between two steps of the scripted run. */
 export const RUN_STEP_MS = 400;
@@ -21,7 +21,7 @@ const listeners = new Set<Listener>();
 /** The analysis now: the scenario's pinned state, else the fixture seed, until something changes it. */
 export function liveAnalysis(): AnalysisSummary {
   if (stored) return structuredClone(stored);
-  const seed = seedNow("analysis") as AnalysisSummary;
+  const seed = realTour()?.analysis ?? (seedNow("analysis") as AnalysisSummary);
   const pinned = scenario().analysis;
   const usageSeed = {
     ...seed,

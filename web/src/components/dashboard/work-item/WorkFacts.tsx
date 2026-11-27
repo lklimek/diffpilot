@@ -6,6 +6,8 @@ import { OpenExternal, rowOpenLabel } from "../common/OpenExternal";
 import { FactTags } from "../common/Tags";
 import { FilterButton, type OnFilter } from "../filter-chips/FilterChips";
 import { authorFilter, repoFilter } from "../filter-chips/filters";
+import { WorkTitleLink } from "../common/WorkTitleLink";
+import type { Navigate } from "../common/navigate";
 
 export function workTags(item: WorkItem): FactTag[] {
   const tags = [...item.tags];
@@ -36,10 +38,23 @@ export function workTags(item: WorkItem): FactTag[] {
   return tags;
 }
 
-export function WorkTitle({ item }: { item: WorkItem }) {
+export function WorkTitle({
+  item,
+  href,
+  onNavigate,
+}: {
+  item: WorkItem;
+  href?: string;
+  onNavigate?: Navigate;
+}) {
   return (
     <>
-      {item.title}
+      <WorkTitleLink
+        href={item.kind === "pr" && !item.private && item.repo && item.number !== null ? href : undefined}
+        onNavigate={onNavigate}
+      >
+        {item.title}
+      </WorkTitleLink>
       {item.url && isGithubUrl(item.url) && (
         <>
           {" "}

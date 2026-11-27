@@ -262,6 +262,30 @@ pub async fn ensure_read(
     )
 }
 
+/// Reconciles lifecycle when a signed close/reopen pair was dispatched before this PR had a local row.
+pub(crate) async fn reconcile_lifecycle_on_visit(
+    state: &AppState,
+    session: &Session,
+    handle: &PrHandle,
+) -> Result<(), LoopError> {
+    let requests = state.db.pull_requests();
+    if session.is_access_token() || !requests.lifecycle_needs_read(handle.id).await? {
+        return Ok(());
+    }
+    let _guard = read_lock(&session.tenant_id, &handle.pr).await;
+    if requests.lifecycle_needs_read(handle.id).await? {
+        read_now(
+            state,
+            &session.tenant_id,
+            &session.user_id,
+            &handle.pr,
+            None,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 /// Refreshes an invalidated snapshot when a browser reader enters or resumes Comments.
 pub(crate) async fn refresh_invalidated(
     state: &AppState,
@@ -478,6 +502,21 @@ async fn read_now(
         .pull_requests()
         .upsert(tenant, repo.id, &summary, now)
         .await?;
+    if let Some((lifecycle, updated_at)) =
+        crate::github::rest::pull_lifecycle(&read.pr.state, None).zip(read.pr.updated_at)
+    {
+        state
+            .db
+            .pull_requests()
+            .record_lifecycle(
+                id,
+                lifecycle,
+                updated_at,
+                started_at,
+                Some(read.repo_github_id),
+            )
+            .await?;
+    }
     state.db.review_loop().ensure_pr(tenant, id, now).await?;
     if first_comments_read {
         state

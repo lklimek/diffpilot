@@ -2,6 +2,8 @@
 //! browser path (client-side routes). API, auth and runner paths are never answered with the UI.
 
 use axum::Router;
+use contracts::common::PrRef;
+use contracts::ids::AnalysisId;
 
 use crate::state::AppState;
 
@@ -11,6 +13,16 @@ pub(crate) const SECURITY_HEADERS: [(&str, &str); 3] = [
     ("referrer-policy", "same-origin"),
     ("x-frame-options", "DENY"),
 ];
+
+/// Browser path to a stored pull request.
+pub(crate) fn pr_path(pr: &PrRef) -> String {
+    format!("/pr/{}/{}/{}", pr.repo.owner, pr.repo.name, pr.number)
+}
+
+/// Browser path to the analysis of a stored pull request.
+pub(crate) fn analysis_path(pr: &PrRef, id: AnalysisId) -> String {
+    format!("{}/analyses/{id}", pr_path(pr))
+}
 
 /// Web UI routes.
 #[cfg(not(feature = "embed-ui"))]

@@ -244,7 +244,7 @@ async fn record(h: &Harness, at: Timestamp, change: &WebhookChange) -> Uuid {
                 event: "pull_request",
                 action: change.action.as_deref(),
                 installation_id: Some(42),
-                effect: Effect::Signal(&change.repository, std::slice::from_ref(change)),
+                effect: Effect::Signal(&change.repository, std::slice::from_ref(change), None),
             },
             at,
         )

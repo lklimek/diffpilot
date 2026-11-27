@@ -49,7 +49,7 @@ import { ReviewTopBar } from "../shell/ReviewTopBar";
 import { AnalysisPathLinks } from "../review/AnalysisPathLinks";
 import { PrAskChatProvider } from "../review/askChat";
 import { ACCOUNT_SETTINGS_PATH } from "../shell/paths";
-import { commentsPath, prOfParams, prPath } from "../pr/paths";
+import { analysisPath, commentsPath, prOfParams, prPath } from "../pr/paths";
 import { GithubThreadRoute } from "./GithubThreadRoute";
 
 /** What every Comments page gets from the layout. */
@@ -195,7 +195,7 @@ function CommentsVisit({ pr }: { pr: PrRef }) {
   if (showImports) importSearch.delete("imported_unseen");
   else importSearch.set("imported_unseen", "true");
   const analysis = o?.analysis ?? null;
-  const base = analysis ? `/analyses/${encodeURIComponent(analysis)}` : null;
+  const base = o && analysis ? analysisPath(o.pr, analysis) : null;
   const display = `${pr.repo.owner}/${pr.repo.name} #${pr.number}`;
 
   const error = (uncertain ? null : visitError) ?? (overviewRead ? (overview.error ?? items.error) : null);
@@ -426,7 +426,7 @@ function CommentsVisit({ pr }: { pr: PrRef }) {
             onNavigate={go}
           />
         )}
-        <AnalysisPathLinks analysisId={analysis} head={o?.head ?? null}>
+        <AnalysisPathLinks analysisId={analysis} pr={pr} head={o?.head ?? null}>
           <WithAsk pr={pr} analysisId={o ? (o.ask_analysis ?? null) : undefined} items={items.data}>
             {body}
           </WithAsk>

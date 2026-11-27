@@ -4,10 +4,11 @@
 
 use std::time::Duration;
 
-use contracts::api::pr::PrSummary;
+use contracts::api::pr::{PrLifecycleState, PrSummary};
 use contracts::api::settings::AppInstallation;
 use contracts::common::{PrRef, RepoRef};
 use contracts::ids::CommitSha;
+use contracts::time::Timestamp;
 use reqwest::header::{ACCEPT, USER_AGENT};
 use reqwest::{Client, StatusCode, redirect};
 use secrecy::{ExposeSecret, SecretString};
@@ -55,6 +56,8 @@ pub struct GithubPull {
     pub size: Option<(u64, u32)>,
     /// The pull request at its current head.
     pub summary: PrSummary,
+    /// Lifecycle and GitHub's update time, when both are known.
+    pub lifecycle: Option<(PrLifecycleState, Timestamp)>,
     /// GitHub id of the base repository.
     pub repo_github_id: i64,
     /// The base repository is private (not supported in v1).
@@ -76,6 +79,18 @@ struct PullResponse {
     base: PullBase,
     #[serde(default)]
     body: Option<String>,
+    state: Option<String>,
+    merged: Option<bool>,
+    updated_at: Option<Timestamp>,
+}
+
+pub(crate) fn pull_lifecycle(state: &str, merged: Option<bool>) -> Option<PrLifecycleState> {
+    match (state, merged) {
+        ("open", _) | ("OPEN", _) => Some(PrLifecycleState::Open),
+        ("closed", Some(true)) | ("MERGED", _) => Some(PrLifecycleState::Merged),
+        ("closed", Some(false)) | ("CLOSED", _) => Some(PrLifecycleState::Closed),
+        _ => None,
+    }
 }
 
 #[derive(Deserialize)]
@@ -192,6 +207,11 @@ pub async fn get_pull(
             base_sha: commit_sha(pull.base.sha)?,
             head_sha: commit_sha(pull.head.sha)?,
         },
+        lifecycle: pull
+            .state
+            .as_deref()
+            .and_then(|state| pull_lifecycle(state, pull.merged))
+            .zip(pull.updated_at),
         repo_github_id: pull.base.repo.id,
         private: pull.base.repo.private,
         description: pull.body.filter(|body| !body.trim().is_empty()),

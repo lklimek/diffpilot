@@ -3,6 +3,7 @@
 //! comments each), at most [`MAX_PAGES`] per connection; every page costs one GraphQL point (spike S13-2).
 
 use contracts::common::PrRef;
+use contracts::time::Timestamp;
 use secrecy::SecretString;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -61,6 +62,9 @@ pub struct PrFacts {
     pub url: String,
     /// `OPEN`, `CLOSED`, `MERGED`.
     pub state: String,
+    /// GitHub's last update of the pull request.
+    #[serde(default)]
+    pub updated_at: Option<Timestamp>,
     /// Draft.
     pub is_draft: bool,
     /// Author.
@@ -71,8 +75,6 @@ pub struct PrFacts {
     pub base_ref_oid: String,
     /// Head commit.
     pub head_ref_oid: String,
-    /// GitHub's PR update time.
-    pub updated_at: Option<contracts::time::Timestamp>,
     /// `APPROVED`, `CHANGES_REQUESTED`, `REVIEW_REQUIRED` or null.
     pub review_decision: Option<String>,
 }

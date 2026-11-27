@@ -1,6 +1,9 @@
 //! Selects subscribed actions and projects verified JSON into durable dispatch hints.
 
-use db::repo::github::{ChangeKind, Effect, InstallationUpdate, Repository, WebhookChange};
+use contracts::api::pr::PrLifecycleState;
+use db::repo::github::{
+    ChangeKind, Effect, InstallationUpdate, PrLifecycleChange, Repository, WebhookChange,
+};
 use serde_json::Value;
 
 use crate::github::work::parse_repo;
@@ -53,7 +56,7 @@ pub(super) enum Changes {
         hook_id: Option<i64>,
         events: Vec<String>,
     },
-    Signal(Repository, Vec<WebhookChange>),
+    Signal(Repository, Vec<WebhookChange>, Option<PrLifecycleChange>),
     Installation(i64, Lifecycle),
 }
 
@@ -68,7 +71,7 @@ impl Changes {
     pub(super) fn effect(&self) -> Effect<'_> {
         match self {
             Self::Ignore | Self::Ping { .. } => Effect::Ignore,
-            Self::Signal(repo, changes) => Effect::Signal(repo, changes),
+            Self::Signal(repo, changes, lifecycle) => Effect::Signal(repo, changes, *lifecycle),
             Self::Installation(id, action) => Effect::Installation(
                 *id,
                 match action {
@@ -272,7 +275,38 @@ pub(super) fn extract(
             candidate_login,
         )]
     };
-    Ok(Changes::Signal(repo, changes))
+    let lifecycle = match (
+        event,
+        action_name,
+        changes.first().and_then(|change| change.number),
+    ) {
+        ("pull_request", "opened" | "closed" | "reopened", Some(number)) => {
+            lifecycle_change(body, number, action_name)
+        }
+        _ => None,
+    };
+    Ok(Changes::Signal(repo, changes, lifecycle))
+}
+
+fn lifecycle_change(body: &Value, number: u32, action: &str) -> Option<PrLifecycleChange> {
+    let pull = &body["pull_request"];
+    let repository = body["repository"]
+        .as_object()
+        .map_or(&pull["base"]["repo"], |_| &body["repository"]);
+    if repository["private"].as_bool() != Some(false) {
+        return None;
+    }
+    let state =
+        crate::github::rest::pull_lifecycle(pull["state"].as_str()?, pull["merged"].as_bool())?;
+    match (action, state) {
+        ("closed", PrLifecycleState::Closed | PrLifecycleState::Merged)
+        | ("opened" | "reopened", PrLifecycleState::Open) => Some(PrLifecycleChange {
+            number,
+            state,
+            updated_at: pull["updated_at"].as_str()?.parse().ok()?,
+        }),
+        _ => None,
+    }
 }
 
 fn lifecycle(
@@ -308,4 +342,31 @@ fn lifecycle(
         installation.ok_or(InvalidPayload)?,
         update,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lifecycle_change_requires_an_observed_public_pull_request_state() {
+        let mut body = serde_json::json!({
+            "number": 482,
+            "repository": {"id": 7, "full_name": "acme/node-client", "private": false},
+            "pull_request": {"state": "closed", "merged": true, "updated_at": "2026-11-27T12:00:00Z"}
+        });
+        let parse =
+            |body: &Value, action| match extract("pull_request", Some(action), body, Some(7)) {
+                Ok(Changes::Signal(_, _, lifecycle)) => lifecycle.map(|change| change.state),
+                _ => panic!("expected a typed pull request signal"),
+            };
+        assert_eq!(parse(&body, "closed"), Some(PrLifecycleState::Merged));
+        body["pull_request"]["merged"] = false.into();
+        assert_eq!(parse(&body, "closed"), Some(PrLifecycleState::Closed));
+        assert_eq!(parse(&body, "reopened"), None);
+        body["pull_request"]["state"] = "open".into();
+        assert_eq!(parse(&body, "reopened"), Some(PrLifecycleState::Open));
+        body["repository"]["private"] = true.into();
+        assert_eq!(parse(&body, "reopened"), None);
+    }
 }

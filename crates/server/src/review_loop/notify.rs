@@ -31,6 +31,7 @@ use url::Url;
 
 use self::outbound::{Outbound, Reach, SendError, UrlError, check_url};
 use crate::auth::{Session, TokenPrincipal};
+use crate::frontend::pr_path;
 use crate::secrets::{Aad, SecretError, TokenCipher};
 use crate::state::AppState;
 
@@ -609,10 +610,7 @@ fn absolute(state: &AppState, link: Option<&str>) -> Option<String> {
 
 /// The path of a PR's Comments page on this instance, as user events store it.
 pub fn comments_path(pr: &PrRef) -> String {
-    format!(
-        "/pr/{}/{}/{}/comments",
-        pr.repo.owner, pr.repo.name, pr.number
-    )
+    format!("{}/comments", pr_path(pr))
 }
 
 /// The push message of a claimable decision: ids and the fetch path only (T28).

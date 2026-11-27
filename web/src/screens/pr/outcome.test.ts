@@ -49,18 +49,20 @@ describe("reviewOutcome (brief §4.1)", () => {
 
   it("analysisHref: the review when finished, else the progress screen", () => {
     expect(analysisHref({ ...analysis, state: { state: "finished", total: 5 } })).toBe(
-      `/analyses/${analysis.id}`,
+      `/pr/acme/node-client/482/analyses/${analysis.id}`,
     );
     expect(analysisHref({ ...analysis, state: { state: "planning" } })).toBe(
-      `/analyses/${analysis.id}/progress`,
+      `/pr/acme/node-client/482/analyses/${analysis.id}/progress`,
     );
   });
 
   it("a failed analysis with a readable review opens the Tour, which shows the failure and Retry", () => {
     const failed = { state: "failed", flow: null, message: "Boom." } as const;
-    expect(analysisHref({ ...analysis, review_ready: true, state: failed })).toBe(`/analyses/${analysis.id}`);
+    expect(analysisHref({ ...analysis, review_ready: true, state: failed })).toBe(
+      `/pr/acme/node-client/482/analyses/${analysis.id}`,
+    );
     expect(analysisHref({ ...analysis, review_ready: false, state: failed })).toBe(
-      `/analyses/${analysis.id}/progress`,
+      `/pr/acme/node-client/482/analyses/${analysis.id}/progress`,
     );
   });
 });

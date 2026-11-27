@@ -40,7 +40,7 @@ const itemsKey = (pr: PrRef | null) => ["comment-items", ...(pr ? prKey(pr) : []
 export const cachedCommentsOverview = (client: QueryClient, pr: PrRef) =>
   client.getQueryData<CommentsOverview>(overviewKey(pr));
 
-/** One read of an analysis (the old progress URL finds its PR with it). */
+/** One authorized read of an analysis to identify its pull request. */
 export const useAnalysisOnce = (id: AnalysisId) =>
   useQuery({ queryKey: ["analysis-once", id], queryFn: () => api.getAnalysis(id) });
 

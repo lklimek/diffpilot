@@ -22,7 +22,9 @@ macro_rules! tracking_query {
            SELECT DISTINCT r.tenant_id, r.github_id, r.owner, r.name
            FROM repos r JOIN pull_requests pr ON pr.repo_id = r.id
            WHERE EXISTS (SELECT 1 FROM pr_watches w JOIN memberships m USING (tenant_id, user_id)
-                         WHERE w.pull_request_id = pr.id AND w.tenant_id = r.tenant_id AND w.state != 'ended')
+                         WHERE w.pull_request_id = pr.id AND w.tenant_id = r.tenant_id)
+              OR EXISTS (SELECT 1 FROM pr_page_openings o JOIN memberships m USING (tenant_id, user_id)
+                         WHERE o.pull_request_id = pr.id AND o.tenant_id = r.tenant_id)
               OR EXISTS (SELECT 1 FROM analyses a JOIN memberships m
                          ON m.tenant_id = a.tenant_id AND m.user_id = a.created_by
                          WHERE a.pull_request_id = pr.id AND a.tenant_id = r.tenant_id)

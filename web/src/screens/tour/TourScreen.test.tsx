@@ -8,12 +8,14 @@ import { expectTrustWording } from "../../__tests__/wording";
 import type { AnalysisSummary, AskQuestion, ReviewState, Tour } from "../../api/generated/types";
 import { seedFor, setFixtureState } from "../../mocks/fixtures";
 import { readStore } from "../../mocks/review-store";
-import { setScenario } from "../../mocks/scenarios";
+import { realTour, setScenario } from "../../mocks/scenarios";
 import { FLASH_MS } from "../../components/flash/useFlashTarget";
+import { analysisPath } from "../pr/paths";
 import { LAYOUT_STORAGE_KEY } from "./layout";
 
 const server = startMockServer();
-const ID = (seedFor("default", "analysis") as AnalysisSummary).id;
+const ANALYSIS = seedFor("default", "analysis") as AnalysisSummary;
+const ID = ANALYSIS.id;
 
 beforeEach(() => {
   FakeEventSource.reset();
@@ -40,7 +42,8 @@ const blockHeading = () =>
 
 async function open(state?: Parameters<typeof setFixtureState>[0]) {
   if (state) setFixtureState(state);
-  const router = renderRoute(`/analyses/${ID}`);
+  const { pr, id } = realTour()?.analysis ?? ANALYSIS;
+  const router = renderRoute(analysisPath(pr, id));
   await waitFor(() => expect(blockHeading()).toBeDefined());
   return router;
 }
@@ -160,7 +163,9 @@ describe("Tour screen (brief §4.3)", () => {
       expect(within(main()).getByText(/viewed/, { selector: "[data-viewed]" })).toHaveTextContent("☑ viewed"),
     );
     await user().keyboard("s");
-    await waitFor(() => expect(router.state.location.pathname).toBe(`/analyses/${ID}/files`));
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe(`/pr/acme/node-client/482/analyses/${ID}/files`),
+    );
     expect(decodeURIComponent(router.state.location.hash)).toBe(
       "#lines?file=src/config.rs&side=head&line=23&step=f2.1",
     );
@@ -301,7 +306,7 @@ describe("Tour screen (brief §4.3)", () => {
   });
 
   it("an evidence link highlights the line it jumps to", async () => {
-    renderRoute(`/analyses/${ID}#lines?file=src%2Frpc%2Fclient.rs&side=head&line=99`);
+    renderRoute(`/pr/acme/node-client/482/analyses/${ID}#lines?file=src%2Frpc%2Fclient.rs&side=head&line=99`);
     const code = await screen.findByRole("region", { name: /^src\/rpc\/client\.rs, lines/ });
     const row = await waitFor(() => code.querySelector('[data-line="99"][data-side="head"]')!);
     await waitFor(() => expect(row).toHaveAttribute("data-flash"));
@@ -342,21 +347,23 @@ describe("Tour screen (brief §4.3)", () => {
 
   it("a deep link takes precedence over the server resume position", async () => {
     setFixtureState("resume");
-    renderRoute(`/analyses/${ID}#f1.2`);
+    renderRoute(`/pr/acme/node-client/482/analyses/${ID}#f1.2`);
     await waitFor(() => expect(blockHeading()).toHaveTextContent("2"));
     expect(blockHeading()).not.toHaveTextContent("Retry allowed?");
   });
 
   it("opens structured fit evidence as code when no step shows it", async () => {
-    await open();
-    await user().click(within(main()).getByRole("button", { name: "Show src/config.rs:23" }));
+    renderRoute(`/pr/acme/node-client/482/analyses/${ID}#pr_context`);
+    await user().click(await screen.findByRole("button", { name: "Show src/config.rs:23" }));
     expect(await within(main()).findByRole("button", { name: "Comment on line 23" })).toBeVisible();
   });
 
   it("sends an analysis that has not finished to its progress screen", async () => {
     setScenario("running");
-    const router = renderRoute(`/analyses/${ID}`);
-    await waitFor(() => expect(router.state.location.pathname).toBe(`/analyses/${ID}/progress`));
+    const router = renderRoute(`/pr/acme/node-client/482/analyses/${ID}`);
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe(`/pr/acme/node-client/482/analyses/${ID}/progress`),
+    );
   });
 
   it("starts at PR context the first time and stores it as the last viewed block", async () => {
@@ -793,7 +800,7 @@ describe("Tour screen (brief §4.3)", () => {
     const router = await open();
     await user().keyboard("j");
     await act(() => router.navigate("/"));
-    await act(() => router.navigate(`/analyses/${ID}`));
+    await act(() => router.navigate(`/pr/acme/node-client/482/analyses/${ID}`));
     await waitFor(() => expect(blockHeading()).toHaveTextContent("Send an RPC request with retry"));
     await user().keyboard("j");
     await waitFor(() => expect(finished.at(-1)?.last_viewed).toEqual({ block: "step", step_id: "f1.1" }));
@@ -817,7 +824,7 @@ describe("Tour screen (brief §4.3)", () => {
     const router = await open("resume");
     await user().keyboard("j");
     await act(() => router.navigate("/"));
-    await act(() => router.navigate(`/analyses/${ID}`));
+    await act(() => router.navigate(`/pr/acme/node-client/482/analyses/${ID}`));
     // The block moved to before the read succeeded wins over the stored one.
     await waitFor(() => expect(blockHeading()).toHaveTextContent("Send an RPC request with retry"));
     expect(within(main()).queryByRole("alert")).toBeNull();

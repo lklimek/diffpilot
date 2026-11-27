@@ -67,6 +67,10 @@ describe("WorkList: Watch on a private pull request (RW1 reads public repositori
         now={NOW}
       />,
     );
+    expect(screen.queryByRole("link", { name: hidden.title })).toBeNull();
+    expect(
+      screen.getByRole("link", { name: "Open acme/node-client#482 on GitHub, new tab" }),
+    ).toHaveAttribute("href", hidden.url);
     await userEvent.click(screen.getByRole("button", { name: "More actions for NC-482" }));
     const watch = screen.getByRole("menuitemcheckbox", { name: "Watch comments" });
     expect(watch).toHaveAttribute("aria-disabled", "true");

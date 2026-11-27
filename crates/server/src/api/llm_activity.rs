@@ -13,6 +13,7 @@ use db::repo::jobs::OwnJob;
 use super::error::ApiFailure;
 use super::settings::llm_status;
 use crate::auth::Session;
+use crate::frontend::{analysis_path, pr_path};
 use crate::github::rest::is_valid_repo;
 use crate::review_loop::notify::comments_path;
 use crate::state::AppState;
@@ -101,9 +102,12 @@ fn subject(kind: LlmJobKind, job: &OwnJob) -> Option<JobSubject> {
         .filter(|pr| is_valid_repo(&pr.repo) && pr.number > 0)?;
     let label = format!("{}/{}#{}", pr.repo.owner, pr.repo.name, pr.number);
     let href = match (kind, job.analysis) {
-        (LlmJobKind::Ask, Some(analysis)) => format!("/analyses/{analysis}"),
+        (LlmJobKind::Ask | LlmJobKind::FlowAnalysis, Some(analysis)) => analysis_path(pr, analysis),
+        (LlmJobKind::Analysis, Some(analysis)) => {
+            format!("{}/progress", analysis_path(pr, analysis))
+        }
         (LlmJobKind::CommentAssessment | LlmJobKind::Ask, _) => comments_path(pr),
-        _ => format!("/pr/{}/{}/{}", pr.repo.owner, pr.repo.name, pr.number),
+        _ => pr_path(pr),
     };
     Some(JobSubject { label, href })
 }

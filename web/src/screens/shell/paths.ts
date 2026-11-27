@@ -29,3 +29,6 @@ export const SETTINGS_PAGES = [
 export type SettingsPage = (typeof SETTINGS_PAGES)[number]["id"];
 
 export const SETTINGS_NOTIFICATIONS_PATH = `${REVIEW_LOOP_SETTINGS_PATH}#notifications`;
+
+/** The top-level destinations in the app navigation. */
+export const APP_NAV_HREFS = { "my-work": MY_WORK_PATH, prs: PRS_PATH, settings: SETTINGS_PATH };

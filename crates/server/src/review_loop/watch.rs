@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{LazyLock, Mutex, PoisonError};
 use std::time::Duration;
 
+use contracts::api::pr::PrLifecycleState;
 use contracts::api::review_loop::{
     ItemState, PrBadgeView, ReadFailure, UserEventKind, WatchList, WatchState, WatchedPr,
 };
@@ -100,6 +101,8 @@ struct Probe {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ProbedRepository {
+    database_id: Option<i64>,
+    is_private: Option<bool>,
     pull_request: Option<ProbedPull>,
 }
 
@@ -114,6 +117,13 @@ struct ProbedPull {
     review_threads: Count,
     comments: Count,
     reviews: Nodes,
+}
+
+impl ProbedPull {
+    fn lifecycle(&self) -> Option<(PrLifecycleState, Timestamp)> {
+        let state = crate::github::rest::pull_lifecycle(self.state.as_deref()?, None)?;
+        Some((state, self.updated_at.parse().ok()?))
+    }
 }
 
 #[derive(Deserialize)]
@@ -135,7 +145,7 @@ struct NodeId {
 /// The aliased lookup of one pull request (a GraphQL string literal is a JSON string).
 fn lookup(pr: &PrRef) -> String {
     format!(
-        "repository(owner: {}, name: {}) {{ pullRequest(number: {}) {{ state headRefOid updatedAt \
+        "repository(owner: {}, name: {}) {{ databaseId isPrivate pullRequest(number: {}) {{ state headRefOid updatedAt \
          reviewThreads {{ totalCount }} comments {{ totalCount }} reviews(last: 1) {{ nodes {{ id }} }} }} }}",
         Value::from(pr.repo.owner.as_str()),
         Value::from(pr.repo.name.as_str()),
@@ -358,13 +368,13 @@ pub(crate) async fn event_probe(
     let rl = state.db.review_loop();
     let watches = rl.watches_of(pr).await?;
     let Some(first) = watches.first() else {
-        return refresh_readers(state, pr, now, budgets, instant).await;
+        return refresh_after_watch(state, pr, now, budgets, instant).await;
     };
     if !installations::live(state, &first.tenant_id)
         .await?
         .contains(&installations::key(&first.pr.repo))
     {
-        return Ok(None);
+        return refresh_lifecycle(state, pr, now, budgets, instant).await;
     }
     if let Some(due) = watches
         .iter()
@@ -418,11 +428,107 @@ pub(crate) async fn event_probe(
     {
         ProbeOutcome::Complete => {
             settle_all(state, Some(&HashSet::from([pr])), now).await?;
-            refresh_readers(state, pr, now, budgets, instant).await
+            refresh_after_watch(state, pr, now, budgets, instant).await
         }
         ProbeOutcome::Incomplete => Err(WatchError::IncompleteProbe),
         ProbeOutcome::Deferred(delay) => Ok(Some(delay.max(EVENT_PROBE_INTERVAL.unsigned_abs()))),
     }
+}
+
+async fn refresh_after_watch(
+    state: &AppState,
+    pr: i64,
+    now: Timestamp,
+    budgets: &mut HashMap<String, EventBudget>,
+    instant: Instant,
+) -> Result<Option<Duration>, WatchError> {
+    if let Some(delay) = refresh_readers(state, pr, now, budgets, instant).await? {
+        return Ok(Some(delay));
+    }
+    refresh_lifecycle(state, pr, now, budgets, instant).await
+}
+
+/// Conflicting lifecycle signals need one current read, even when no Watch or Comments view is active.
+async fn refresh_lifecycle(
+    state: &AppState,
+    pr: i64,
+    now: Timestamp,
+    budgets: &mut HashMap<String, EventBudget>,
+    instant: Instant,
+) -> Result<Option<Duration>, WatchError> {
+    let requests = state.db.pull_requests();
+    let mut earliest_wait = None;
+    let mut incomplete = false;
+    for target in requests.lifecycle_probes(pr).await? {
+        let budget = budgets.entry(target.user_id.clone()).or_default();
+        let mut wait = limit_until(&target.user_id, now)
+            .and_then(|until| Duration::try_from(until - now).ok())
+            .unwrap_or_default()
+            .max(budget.blocked_for(instant, now).await);
+        if wait.is_zero() {
+            let client = WorkClient::new(
+                state.config.github.api_url.clone(),
+                UserTokens {
+                    state: state.clone(),
+                    user_id: target.user_id.clone(),
+                },
+            )?
+            .with_event_budget(budget.clone(), instant);
+            let read_at = Timestamp::now();
+            match client.batched(&[target.pr], 1, "", lookup).await {
+                Ok(result) => {
+                    let lifecycle = result
+                        .resolved
+                        .into_iter()
+                        .next()
+                        .and_then(|(_, value)| {
+                            serde_json::from_value::<ProbedRepository>(value).ok()
+                        })
+                        .filter(|repo| {
+                            repo.database_id == Some(target.repository_id)
+                                && repo.is_private == Some(false)
+                        })
+                        .and_then(|repo| repo.pull_request?.lifecycle());
+                    if let Some((lifecycle, updated_at)) = lifecycle {
+                        requests
+                            .record_lifecycle(
+                                pr,
+                                lifecycle,
+                                updated_at,
+                                read_at,
+                                Some(target.repository_id),
+                            )
+                            .await?;
+                    }
+                    if !requests.lifecycle_needs_read(pr).await? {
+                        return Ok(None);
+                    }
+                    incomplete = true;
+                    continue;
+                }
+                Err(WorkError::Token(UserTokenError::SignInRequired) | WorkError::Unauthorized) => {
+                    continue;
+                }
+                Err(WorkError::EventBudget) => wait = budget.blocked_for(instant, now).await,
+                Err(WorkError::PrimaryRateLimit { reset }) => {
+                    wait = backoff_for_rate_limit(&target.user_id, reset, now);
+                }
+                Err(WorkError::SecondaryRateLimit { retry_after }) => {
+                    return Ok(Some(backoff_for_rate_limit(
+                        &target.user_id,
+                        secondary_reset(now, retry_after),
+                        now,
+                    )));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        earliest_wait = Some(earliest_wait.map_or(wait, |old: Duration| old.min(wait)));
+    }
+    if incomplete && earliest_wait.is_none() {
+        return Err(WatchError::IncompleteProbe);
+    }
+    Ok(earliest_wait)
 }
 
 async fn refresh_readers(
@@ -537,6 +643,7 @@ async fn probe(
             budget, instant, ..
         } => client.with_event_budget(budget.clone(), instant),
     };
+    let read_at = Timestamp::now();
     let answers = match client
         .batched(watches, PROBE_BATCH, "", |watch| lookup(&watch.pr))
         .await
@@ -550,10 +657,11 @@ async fn probe(
             return ProbeOutcome::Deferred(backoff_for_rate_limit(user, reset, now));
         }
         Err(WorkError::SecondaryRateLimit { retry_after }) => {
-            let reset = retry_after
-                .and_then(|wait| SignedDuration::try_from(wait).ok())
-                .and_then(|wait| now.checked_add(wait));
-            return ProbeOutcome::Deferred(backoff_for_rate_limit(user, reset, now));
+            return ProbeOutcome::Deferred(backoff_for_rate_limit(
+                user,
+                secondary_reset(now, retry_after),
+                now,
+            ));
         }
         Err(WorkError::EventBudget) => {
             if let ProbeTrigger::Webhook {
@@ -587,7 +695,7 @@ async fn probe(
     }
     let mut complete = answers.failed.is_empty();
     for (watch, value) in answers.resolved {
-        match observe(state, watch, value, now, trigger).await {
+        match observe(state, watch, value, now, read_at, trigger).await {
             Ok(Some(delay)) => return ProbeOutcome::Deferred(delay),
             Ok(None) => (),
             Err(error) => {
@@ -602,6 +710,12 @@ async fn probe(
     } else {
         ProbeOutcome::Incomplete
     }
+}
+
+fn secondary_reset(now: Timestamp, retry_after: Option<Duration>) -> Option<Timestamp> {
+    retry_after
+        .and_then(|wait| SignedDuration::try_from(wait).ok())
+        .and_then(|wait| now.checked_add(wait))
 }
 
 fn backoff_for_rate_limit(user: &str, reset: Option<Timestamp>, now: Timestamp) -> Duration {
@@ -659,14 +773,15 @@ async fn observe(
     watch: &WatchRecord,
     value: Value,
     now: Timestamp,
+    read_at: Timestamp,
     trigger: ProbeTrigger<'_>,
 ) -> Result<Option<Duration>, WatchError> {
     let rl = state.db.review_loop();
     let (user, pr) = (watch.user_id.as_str(), watch.pull_request_id);
-    let Some(pull) = serde_json::from_value::<Option<ProbedRepository>>(value)
+    let Some(repo) = serde_json::from_value::<Option<ProbedRepository>>(value)
         .ok()
         .flatten()
-        .and_then(|repository| repository.pull_request)
+        .filter(|repo| repo.is_private != Some(true))
     else {
         tracing::debug!(
             pr,
@@ -674,6 +789,24 @@ async fn observe(
         );
         return keep_probe(state, watch, now).await.map(|()| None);
     };
+    let Some(pull) = repo.pull_request else {
+        return keep_probe(state, watch, now).await.map(|()| None);
+    };
+    if repo.is_private == Some(false)
+        && let (Some(repo_id), Some((lifecycle, updated_at))) = (repo.database_id, pull.lifecycle())
+        && !state
+            .db
+            .pull_requests()
+            .record_lifecycle(pr, lifecycle, updated_at, read_at, Some(repo_id))
+            .await?
+    {
+        if matches!(trigger, ProbeTrigger::Webhook { .. })
+            && state.db.pull_requests().lifecycle_needs_read(pr).await?
+        {
+            return Err(WatchError::IncompleteProbe);
+        }
+        return keep_probe(state, watch, now).await.map(|()| None);
+    }
     if let Some(closed) = pull.state.as_deref().filter(|state| *state != "OPEN") {
         rl.end_pr_watches(pr, now).await?;
         tracing::info!(

@@ -150,7 +150,7 @@ pub(super) async fn receive(State(hooks): State<Webhooks>, request: Request) -> 
         }
     };
     let (repo, number) = match &changes {
-        Changes::Signal(repo, hints) => {
+        Changes::Signal(repo, hints, _) => {
             (Some(&repo.name), hints.first().and_then(|hint| hint.number))
         }
         _ => (audit_repo.as_ref().map(|repo| &repo.name), None),

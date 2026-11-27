@@ -1,5 +1,6 @@
 //! Durable GitHub App deliveries and installation coverage (ADR-026).
 
+use contracts::api::pr::PrLifecycleState;
 use contracts::api::settings::RepositoryInstallation;
 use contracts::common::RepoRef;
 use contracts::time::Timestamp;
@@ -10,7 +11,7 @@ use uuid::Uuid;
 
 use super::{
     Db,
-    jobs::{parse_ts, ts},
+    jobs::{parse_ts, ts, wire_name},
     read_tx, write_tx,
 };
 use crate::error::DbError;
@@ -106,6 +107,17 @@ pub enum InstallationUpdate<'a> {
     Suspend(bool),
 }
 
+/// Current lifecycle from a verified public GitHub pull request event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PrLifecycleChange {
+    /// Pull request number in the event's repository.
+    pub number: u32,
+    /// Lifecycle state.
+    pub state: PrLifecycleState,
+    /// GitHub's last update of the pull request.
+    pub updated_at: Timestamp,
+}
+
 /// The allowed effect of a verified delivery.
 pub enum Effect<'a> {
     /// Persist the delivery for audit only.
@@ -115,7 +127,11 @@ pub enum Effect<'a> {
     /// Record a verified delivery whose JSON or shape was invalid.
     Reject(Option<&'a Repository>, DeliveryError),
     /// Queue hints if the event repository is tracked.
-    Signal(&'a Repository, &'a [WebhookChange]),
+    Signal(
+        &'a Repository,
+        &'a [WebhookChange],
+        Option<PrLifecycleChange>,
+    ),
     /// Update live coverage for tracked repositories.
     Installation(i64, InstallationUpdate<'a>),
 }
@@ -203,7 +219,11 @@ pub enum DeliveryError {
 }
 
 enum Admitted<'a> {
-    Signal(tracking::Tracked<'a>, &'a [WebhookChange]),
+    Signal(
+        tracking::Tracked<'a>,
+        &'a [WebhookChange],
+        Option<PrLifecycleChange>,
+    ),
     Installation(i64, installations::Prepared<'a>),
 }
 
@@ -235,7 +255,7 @@ impl Github<'_> {
             Effect::Reject(repo, error) => {
                 return self.scoped_audit(delivery, *repo, Some(*error), now).await;
             }
-            Effect::Signal(repo, changes) => {
+            Effect::Signal(repo, changes, lifecycle) => {
                 let mut reader = read_tx(self.pool).await?;
                 let matched =
                     tracking::resolve(&mut reader, std::slice::from_ref(*repo), 1).await?;
@@ -243,7 +263,7 @@ impl Github<'_> {
                 matched
                     .into_iter()
                     .next()
-                    .map(|tracked| Admitted::Signal(tracked, changes))
+                    .map(|tracked| Admitted::Signal(tracked, changes, *lifecycle))
             }
             Effect::Installation(id, update) => {
                 let mut reader = read_tx(self.pool).await?;
@@ -283,9 +303,31 @@ impl Github<'_> {
         }
 
         let (changes, error, comments_changed) = match admitted {
-            Admitted::Signal(tracked, changes) => {
+            Admitted::Signal(tracked, changes, lifecycle) => {
                 if !tracked.bind(&mut tx).await? {
                     return Ok(Outcome::NotAllowed);
+                }
+                if let (Some(repo_id), Some(lifecycle)) = (tracked.repo.id, lifecycle) {
+                    sqlx::query(
+                        "INSERT INTO github_pr_lifecycle_signals
+                             (repository_id, number, lifecycle, updated_at, received_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5)
+                         ON CONFLICT (repository_id, number) DO UPDATE SET
+                             lifecycle = CASE WHEN excluded.updated_at > updated_at
+                                              THEN excluded.lifecycle ELSE lifecycle END,
+                             conflicted = excluded.updated_at = updated_at
+                                          AND (conflicted OR excluded.lifecycle <> lifecycle),
+                             updated_at = excluded.updated_at,
+                             received_at = MAX(received_at, excluded.received_at)
+                         WHERE excluded.updated_at >= updated_at",
+                    )
+                    .bind(repo_id)
+                    .bind(lifecycle.number)
+                    .bind(wire_name(lifecycle.state)?)
+                    .bind(ts(lifecycle.updated_at))
+                    .bind(ts(now))
+                    .execute(&mut *tx)
+                    .await?;
                 }
                 let hints = serde_json::to_string(changes)?;
                 let comments_changed = changes.iter().any(|change| {
@@ -562,10 +604,23 @@ impl Github<'_> {
 
     /// Deletes receipts past their retention window.
     pub async fn prune_deliveries(&self, now: Timestamp) -> Result<(), DbError> {
+        let cutoff = ts(now - RETENTION);
+        let mut tx = write_tx(self.pool).await?;
         sqlx::query("DELETE FROM github_deliveries WHERE received_at < ?")
-            .bind(ts(now - RETENTION))
-            .execute(self.pool)
+            .bind(&cutoff)
+            .execute(&mut *tx)
             .await?;
+        sqlx::query(
+            "DELETE FROM github_pr_lifecycle_signals AS signal WHERE received_at < ?
+             AND NOT EXISTS (
+                 SELECT 1 FROM repos r JOIN pull_requests p ON p.repo_id = r.id
+                 WHERE r.github_id = signal.repository_id AND p.number = signal.number
+             )",
+        )
+        .bind(&cutoff)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
         Ok(())
     }
 }

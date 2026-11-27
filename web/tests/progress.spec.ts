@@ -67,7 +67,7 @@ test("finished: n of n and Open", async ({ page }) => {
   await open(page, "finished");
   await expect(page.getByText("5 of 5 flows analysed")).toBeVisible();
   await expect(page.getByRole("button", { name: "Cancel analysis" })).toHaveCount(0);
-  await expect(openReview(page)).toHaveAttribute("href", `/analyses/${ANALYSIS_ID}`);
+  await expect(openReview(page)).toHaveAttribute("href", `/pr/acme/node-client/482/analyses/${ANALYSIS_ID}`);
   await expect(openReview(page)).toHaveAccessibleDescription(/Starts nothing/);
   await expect(page.getByRole("group", { name: "Analysis actions" }).getByRole("link")).toHaveCount(0);
   await expectTooltips(page);
