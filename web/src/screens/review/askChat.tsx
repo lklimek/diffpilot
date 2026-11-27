@@ -261,7 +261,9 @@ export function PrAskChatProvider({
   children: ReactNode;
 }) {
   const questions = usePrQuestions(pr);
-  const tour = useTour(analysisId ?? "", analysisId !== null).data;
+  // Only the ready head analysis contributes non-comment questions to this feed.
+  const hasAnalysisQuestions = questions.data?.some((question) => question.anchor.kind !== "comment_item");
+  const tour = useTour(analysisId ?? "", analysisId !== null && hasAnalysisQuestions === true).data;
   const ask = useAskPrQuestion(pr, analysisId);
   const source: ChatSource = {
     key: `pr:${pr.repo.owner}/${pr.repo.name}/${pr.number}`,

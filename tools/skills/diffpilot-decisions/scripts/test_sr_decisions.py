@@ -1019,6 +1019,18 @@ def test_combine_names_the_review_once(env, fake, capsys):
     assert target.read_text(encoding="utf-8") == signed(f"{line}\nC3: Fixed.\n\n{SHA}\n\nC5: Not changed.")
 
 
+def test_combine_preserves_source_blockquotes(env, fake, capsys):
+    line = "@bob, re [your review](https://github.com/acme/widget/pull/482):"
+    serve_claimed(fake, DEC, review_comment_decision(DEC, 5, E1, f"{line}\n> Original.\n\nNot changed."))
+    serve_claimed(fake, DEC2, review_comment_decision(DEC2, 3, E2, f"{line}\nFixed."))
+    target = env["tmp"] / "comment.md"
+    code, _, errout = run(capsys, "combine", DEC, DEC2, "--out", str(target))
+    assert code == 0, errout
+    assert target.read_text(encoding="utf-8") == signed(
+        f"{line}\nC3: Fixed.\n\nC5:\n> Original.\n\nNot changed."
+    )
+
+
 @pytest.mark.parametrize(
     "line",
     [

@@ -58,13 +58,19 @@ const PR_LEVEL: ReadonlySet<DecisionKind> = new Set([
 const decisionItemId = (d: Pick<Decision, "item_no" | "kind">) =>
   `${PR_LEVEL.has(d.kind) ? "P" : "C"}${d.item_no}`;
 
+function effectWord(effect: Effect): string {
+  return effect.kind === "upstream_issue" && effect.params.title
+    ? "follow-up issue"
+    : EFFECT_WORD[effect.kind];
+}
+
 /**
  * An agent's reference (agents read untrusted PR comments, threat model T24): a GitHub URL becomes a link, a commit
  * id a link to that commit of the PR's repository; anything else stays text.
  */
 function Reference({ reference, effect, pr }: { reference: string; effect: Effect; pr: PrRef }) {
   if (isGithubUrl(reference))
-    return <OpenExternal href={reference} label={`Open the reported ${EFFECT_WORD[effect.kind]}`} />;
+    return <OpenExternal href={reference} label={`Open the reported ${effectWord(effect)}`} />;
   const commit = commitGithubUrl(pr, reference);
   if (commit)
     return (
@@ -81,7 +87,7 @@ function EffectLine({ effect, now, pr }: { effect: Effect; now: Date; pr: PrRef 
   const report = effect.reports.at(-1);
   return (
     <li>
-      {EFFECT_WORD[effect.kind] ?? effect.kind}: {STATE[effect.state] ?? effect.state}
+      {effectWord(effect)}: {STATE[effect.state] ?? effect.state}
       {effect.claim &&
         ` by ${effect.claim.token_name} (lease until ${clockText(effect.claim.lease_until, now)})`}
       {report && (
@@ -201,13 +207,15 @@ export function DecisionLog({
 }: DecisionLogProps) {
   const [source, setSource] = useState<"diffpilot" | "github" | "all">("diffpilot");
   const imported = log.decisions.filter((decision) => decision.via === "imported_github");
-  const githubCount = imported.length + githubDecisions.length;
+  const loggedImports = new Set(imported.filter((decision) => !decision.undone_at).map((d) => d.item_no));
+  const observations = githubDecisions.filter((item) => !item.imported_decision || !loggedImports.has(item.no));
+  const githubCount = imported.length + observations.length;
   const decisions =
     source === "github"
       ? imported
       : log.decisions.filter((decision) => source === "all" || decision.via !== "imported_github");
   const entries = [...decisions, ...(source === "github" ? [] : (log.marks ?? []))].reverse();
-  const observed = source === "diffpilot" ? [] : githubDecisions;
+  const observed = source === "diffpilot" ? [] : observations;
   const timeOf = (entry: Decision | MarkLogEntry) => Date.parse("at" in entry ? entry.at : entry.decided_at);
   entries.sort((a, b) => timeOf(b) - timeOf(a));
   return (

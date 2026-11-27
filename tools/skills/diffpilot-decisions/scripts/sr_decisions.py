@@ -994,7 +994,8 @@ def _combined(parts: list[tuple[int, str, str]]) -> str:
         first, sep, rest = text.partition("\n")
         if sep and REVIEW_LINE_RE.fullmatch(first) and heading in (None, first):
             heading, text = first, rest
-        listed.append(f"C{no}: {text}")
+        separator = "\n" if text.startswith("> ") else " "
+        listed.append(f"C{no}:{separator}{text}")
     body = "\n\n".join(listed)
     return body if heading is None else f"{heading}\n{body}"
 

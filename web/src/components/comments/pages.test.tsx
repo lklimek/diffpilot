@@ -6,6 +6,7 @@ import { expectTrustWording } from "../../__tests__/wording";
 import type { CommentLog, Decision, MarkLogEntry } from "../../api/generated/types";
 import {
   carryOvers,
+  listItems,
   log,
   notificationSettings,
   overview,
@@ -235,6 +236,75 @@ describe("DecisionLog (V3)", () => {
     await userEvent.selectOptions(source, "all");
     expect(screen.getByText(/by external-maintainer/)).toBeVisible();
     expect(screen.getByText(/Accept despite the gate/)).toBeVisible();
+  });
+
+  it("lists a standing GitHub import once when it occurs in both responses", async () => {
+    const stored = log();
+    const item = listItems()[0]!;
+    const imported: Decision = {
+      ...stored.decisions[0]!,
+      id: "imported",
+      item_no: item.no,
+      via: "imported_github",
+      decided_by: "external-maintainer",
+      kind: "resolve",
+      override: null,
+    };
+    render(
+      <DecisionLog
+        log={{ ...stored, decisions: [...stored.decisions, imported] }}
+        githubDecisions={[
+          {
+            ...item,
+            imported_decision: {
+              kind: "resolve",
+              by: imported.decided_by,
+              at: imported.decided_at,
+              evidence_url: "https://github.com/acme/node-client/pull/482#issuecomment-17",
+            },
+          },
+        ]}
+        pr={PR}
+        now={NOW}
+        storageKey="t"
+        origin="http://agentic:3000"
+      />,
+    );
+    expect(screen.getByRole("option", { name: "GitHub (1)" })).toBeInTheDocument();
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Decision source" }), "github");
+    expect(screen.getByText(/by external-maintainer/)).toBeVisible();
+    expect(screen.queryByText(/Resolved on GitHub by/)).toBeNull();
+  });
+
+  it("labels and links the effect of creating a follow-up issue", () => {
+    const stored = reported("https://github.com/acme/node-client/issues/42");
+    const decision = stored.decisions[0]!;
+    const effect = decision.effects[0]!;
+    render(
+      <DecisionLog
+        log={{
+          ...stored,
+          decisions: [
+            {
+              ...decision,
+              kind: "follow_up_issue",
+              effects: [
+                { ...effect, kind: "upstream_issue", params: { ...effect.params, title: "Follow up" } },
+              ],
+            },
+          ],
+        }}
+        pr={PR}
+        now={NOW}
+        storageKey="t"
+        origin="http://agentic:3000"
+      />,
+    );
+    expect(screen.getByText(/follow-up issue: /)).toBeVisible();
+    expect(screen.getByRole("link", { name: /Open the reported follow-up issue/ })).toHaveAttribute(
+      "href",
+      "https://github.com/acme/node-client/issues/42",
+    );
   });
 
   it("shows mark history and offers Undo only for the active entry", async () => {
