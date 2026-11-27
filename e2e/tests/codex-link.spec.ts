@@ -6,7 +6,7 @@ test("Settings links and relinks a plan through the isolated fake gateway", asyn
   await page.goto("/");
   await page.getByRole("link", { name: "Sign in with GitHub" }).click();
   await expect(page.getByRole("banner")).toContainText("alice");
-  await page.goto("/settings");
+  await page.goto("/settings/llm");
   const card = page.getByRole("region", { name: "Codex account" });
   await expect(card).toContainText("Linking may log your Codex out on other machines");
   await card.getByRole("button", { name: "Unlink Codex account", exact: true }).click();

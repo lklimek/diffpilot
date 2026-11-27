@@ -26,7 +26,7 @@ function expectAdmissionNote(note: RegExp, resetsAt?: string) {
   const status = message.closest('[role="status"]');
   expect(status).toBeVisible();
   if (resetsAt) expect(status?.querySelector("time")).toHaveAttribute("datetime", resetsAt);
-  else expect(within(status as HTMLElement).getByRole("link")).toHaveAttribute("href", "/settings/account");
+  else expect(within(status as HTMLElement).getByRole("link")).toHaveAttribute("href", "/settings/llm");
   expect(screen.queryByRole("alert")).toBeNull();
 }
 

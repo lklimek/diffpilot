@@ -12,10 +12,12 @@ import {
   useSetLlmJobSlots,
   useSetLanguage,
   useSetLlm,
+  useSaveDashboardSettings,
   useSettings,
 } from "../../api/queries";
 import { useNow } from "../../app/now";
 import { AccessTokensCard } from "../../components/dashboard/settings-access-tokens/AccessTokensCard";
+import { DashboardSettingsCard } from "../../components/dashboard/settings-dashboard/DashboardSettingsCard";
 import { MemcanStatusLine } from "../../components/section/MemcanStatusLine";
 import { AccountCard } from "../../components/settings/AccountCard";
 import { CodexAccountCard } from "../../components/settings/CodexAccountCard";
@@ -30,11 +32,8 @@ import { useShellSlots } from "../shell/ShellRoute";
 export function AccountPage() {
   const user = useMe().data?.user;
   const { signOut } = useShellSlots();
-  const now = new Date(useNow());
-  const codex = useCodexAccount(now.getTime());
   const tokens = useAccessTokens();
   const tokenActions = useAccessTokenActions();
-  const codexError = codex.link.error ?? codex.unlink.error ?? codex.status.error;
   return (
     <>
       {user && (
@@ -45,18 +44,6 @@ export function AccountPage() {
           onSignOutEverywhere={() => signOut.leave(true)}
         />
       )}
-      <CodexAccountCard
-        status={codex.status.data}
-        challenge={codex.challenge}
-        now={now}
-        busy={codex.link.isPending || codex.unlink.isPending}
-        error={codexError ? errorText(codexError) : undefined}
-        onLink={() => {
-          codex.unlink.reset();
-          codex.link.mutate();
-        }}
-        onUnlink={() => codex.unlink.mutate()}
-      />
       {tokens.data ? (
         <AccessTokensCard
           tokens={tokens.data}
@@ -81,6 +68,7 @@ export function LlmPage({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => 
   const assessment = useAssessmentSettings();
   const now = new Date(useNow());
   const codex = useCodexAccount(now.getTime());
+  const codexError = codex.link.error ?? codex.unlink.error ?? codex.status.error;
   const ranking = useQuery(rankingUsageQuery);
   const setLlm = useSetLlm();
   const setAskEffort = useSetAskEffort();
@@ -116,6 +104,18 @@ export function LlmPage({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => 
           lastCall={settings.data?.llm_status}
         />
       </div>
+      <CodexAccountCard
+        status={codex.status.data}
+        challenge={codex.challenge}
+        now={now}
+        busy={codex.link.isPending || codex.unlink.isPending}
+        error={codexError ? errorText(codexError) : undefined}
+        onLink={() => {
+          codex.unlink.reset();
+          codex.link.mutate();
+        }}
+        onUnlink={() => codex.unlink.mutate()}
+      />
       {settings.data?.llm_selection && sessionScope !== undefined && (
         <LlmSelectionCard
           key={sessionScope}
@@ -137,20 +137,36 @@ export function LlmPage({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => 
   );
 }
 
-export function MemcanPage() {
+export function MemcanPage({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => void }) {
   const settings = useSettings();
+  const dashboard = useDashboardSettings();
+  const save = useSaveDashboardSettings();
   return (
-    <Section title="MemCan status">
-      {!settings.data ? (
-        <StatusMessage kind={settings.isError ? "error" : "loading"}>
-          {settings.isError ? errorText(settings.error) : "Loading MemCan status…"}
-        </StatusMessage>
+    <>
+      <Section title="MemCan status">
+        {!settings.data ? (
+          <StatusMessage kind={settings.isError ? "error" : "loading"}>
+            {settings.isError ? errorText(settings.error) : "Loading MemCan status…"}
+          </StatusMessage>
+        ) : (
+          <p>
+            <MemcanStatusLine status={settings.data.memcan_status} />
+          </p>
+        )}
+        <p>diffpilot uses MemCan to read TODOs and project profiles.</p>
+      </Section>
+      {dashboard.data ? (
+        <DashboardSettingsCard
+          view={dashboard.data}
+          page="memcan"
+          onSave={save}
+          onDirtyChange={onDirtyChange}
+        />
       ) : (
-        <p>
-          <MemcanStatusLine status={settings.data.memcan_status} />
-        </p>
+        <StatusMessage kind={dashboard.isError ? "error" : "loading"}>
+          {dashboard.isError ? errorText(dashboard.error) : "Loading TODO sources…"}
+        </StatusMessage>
       )}
-      <p>diffpilot uses MemCan to read TODOs and project profiles.</p>
-    </Section>
+    </>
   );
 }

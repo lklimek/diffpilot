@@ -11,7 +11,7 @@ function renderCard(
   view: DashboardSettingsView = VIEW,
   onSave = vi.fn().mockResolvedValue(view),
   onDirtyChange = vi.fn(),
-  page: "github-sync" | "repositories" = "github-sync",
+  page: "github-sync" | "repositories" | "memcan" = "github-sync",
 ) {
   render(<DashboardSettingsCard page={page} view={view} onSave={onSave} onDirtyChange={onDirtyChange} />);
   return { onSave, onDirtyChange, card: document.body };
@@ -41,10 +41,18 @@ describe("DashboardSettingsCard (plan §F.6)", () => {
     expect(marks[0]!.closest("tr")).toBe(screen.getByLabelText("Repository 6").closest("tr"));
     expect(marks[0]).toHaveAccessibleDescription(/could not see acme\/legacy-tools/);
   });
-  it("shows scope, TODO sources and schedule", () => {
+  it("shows scope and schedule in GitHub sync", () => {
     const { card } = renderCard();
     expect(card).toHaveTextContent("Your login alice is always scanned.");
     expect(within(card).getByRole("list", { name: "Linked logins" })).toHaveTextContent("alice-ci");
+    expect(screen.queryByLabelText("Show my MemCan TODOs")).toBeNull();
+    expect(screen.getByLabelText("Run nightly scan")).toBeChecked();
+    expect(screen.getByLabelText("Time of day")).toHaveValue("06:00");
+    expect(screen.getByLabelText("Time zone")).toHaveValue("Europe/Warsaw");
+  });
+
+  it("shows and saves TODO sources on MemCan without changing GitHub sync settings", async () => {
+    const { card, onSave } = renderCard(VIEW, undefined, undefined, "memcan");
     expect(within(card).getByRole("list", { name: "MemCan projects" })).toHaveTextContent(
       "platformwallet-uinode-clientconsensusdocs-sitelegacy-tools",
     );
@@ -52,9 +60,9 @@ describe("DashboardSettingsCard (plan §F.6)", () => {
       "release-notes",
     );
     expect(screen.getByLabelText("Show my MemCan TODOs")).toBeChecked();
-    expect(screen.getByLabelText("Run nightly scan")).toBeChecked();
-    expect(screen.getByLabelText("Time of day")).toHaveValue("06:00");
-    expect(screen.getByLabelText("Time zone")).toHaveValue("Europe/Warsaw");
+    await userEvent.click(screen.getByLabelText("Show my MemCan TODOs"));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(saved(onSave)).toEqual({ ...VIEW.settings, include_todos: false });
   });
 
   it("explains the ownership policy: column help, placeholders and a visible hint under the fields", () => {
@@ -237,12 +245,14 @@ describe("DashboardSettingsCard (plan §F.6)", () => {
     expect(saved(onSave)).toEqual({
       ...VIEW.defaults,
       repositories: VIEW.settings.repositories,
+      include_todos: VIEW.settings.include_todos,
+      memcan_extra_projects: VIEW.settings.memcan_extra_projects,
       time_zone: "Europe/Warsaw",
     });
   });
 
   it("without MemCan the TODO switch is off and says why", () => {
-    renderCard({ ...VIEW, memcan_configured: false });
+    renderCard({ ...VIEW, memcan_configured: false }, undefined, undefined, "memcan");
     const toggle = screen.getByLabelText("Show my MemCan TODOs");
     expect(toggle).toBeDisabled();
     expect(toggle).not.toBeChecked();

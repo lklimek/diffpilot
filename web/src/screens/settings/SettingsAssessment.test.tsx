@@ -23,7 +23,7 @@ it("shows a code, polls only the local endpoint, and handles quarantine without 
       HttpResponse.json(posts ? { ...unlinkedCodex, relink_reason: "quarantined" } : unlinkedCodex),
     ),
   );
-  renderRoute("/settings");
+  renderRoute("/settings/llm");
   const card = await screen.findByRole("region", { name: "Codex account" });
   await userEvent.click(await within(card).findByRole("button", { name: "Link Codex account" }));
   expect(await within(card).findByText(/outcome is uncertain/)).toBeVisible();
@@ -106,10 +106,10 @@ it("restores an in-flight code from GET after remount without posting", async ()
       return HttpResponse.error();
     }),
   );
-  renderRoute("/settings");
+  renderRoute("/settings/llm");
   expect(await screen.findByText("RESTORED")).toBeVisible();
   cleanup();
-  renderRoute("/settings");
+  renderRoute("/settings/llm");
   expect(await screen.findByText("RESTORED")).toBeVisible();
   expect(posts).toBe(0);
 });

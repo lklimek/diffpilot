@@ -323,7 +323,7 @@ const HELP = {
       "Add a review bot that runs under a normal user account, so its review requests do not wait on you.",
   },
   include_todos: {
-    section: "GitHub sync",
+    section: "MemCan",
     title: "Show my MemCan TODOs",
     what: "Lists your open MemCan TODOs on My work next to pull requests and issues.",
     when: "Every refresh reads them from the MemCan projects below. Switching it off hides them at once.",
@@ -334,7 +334,7 @@ const HELP = {
     ],
   },
   memcan_extra_projects: {
-    section: "GitHub sync",
+    section: "MemCan",
     title: "Extra MemCan projects",
     what: "MemCan projects whose TODOs are read besides the projects named after your repository rows.",
     when: "Every refresh with TODOs on.",

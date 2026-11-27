@@ -81,7 +81,7 @@ test("Reset to defaults fills GitHub sync and keeps its time zone", async ({ pag
 });
 
 test("MemCan not configured: the TODO switch is off and says why", async ({ page }) => {
-  await page.goto("/settings/github-sync?settings-scenario=memcan-off");
+  await page.goto("/settings/memcan?settings-scenario=memcan-off");
   const toggle = page.getByLabel("Show my MemCan TODOs");
   await expect(toggle).toBeDisabled();
   await expect(toggle).not.toBeChecked();

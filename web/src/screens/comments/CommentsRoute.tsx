@@ -48,7 +48,7 @@ import { prGithubUrl } from "../../components/github/links";
 import { ReviewTopBar } from "../shell/ReviewTopBar";
 import { AnalysisPathLinks } from "../review/AnalysisPathLinks";
 import { PrAskChatProvider } from "../review/askChat";
-import { ACCOUNT_SETTINGS_PATH } from "../shell/paths";
+import { LLM_USAGE_PATH } from "../shell/paths";
 import { analysisPath, commentsPath, prOfParams, prPath } from "../pr/paths";
 import { GithubThreadRoute } from "./GithubThreadRoute";
 
@@ -336,7 +336,7 @@ function CommentsVisit({ pr }: { pr: PrRef }) {
         {read.isError && <StatusMessage kind="error">{errorText(read.error)}</StatusMessage>}
         {assessmentIssue?.code === "credential_missing" && (
           <StatusMessage kind="empty">
-            <Link className="text-accent underline" to={ACCOUNT_SETTINGS_PATH}>
+            <Link className="text-accent underline" to={LLM_USAGE_PATH}>
               Link a Codex account in Settings
             </Link>{" "}
             to assess comments.

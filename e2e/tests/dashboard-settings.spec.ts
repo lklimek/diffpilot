@@ -44,17 +44,6 @@ test("Dashboard settings: client and server validation, save, reload; the rankin
   await addLogin.click();
   await expect(scope.getByRole("button", { name: "Remove alice-helper" })).toBeVisible();
 
-  // MemCan projects: extra names are validated here.
-  const sources = page.getByRole("region", { name: "TODO sources" });
-  const project = sources.getByLabel("Add a MemCan project");
-  const addProject = sources.getByRole("button", { name: "Add to extra memcan projects" });
-  await project.fill("release notes!");
-  await addProject.click();
-  await expect(sources).toContainText('Extra MemCan projects: "release notes!" is not a project name');
-  await project.fill("release-notes");
-  await addProject.click();
-  await expect(sources.getByRole("button", { name: "Remove release-notes" })).toBeVisible();
-
   // The nightly scan: a time in 15-minute steps and an IANA zone.
   const schedule = page.getByRole("region", { name: "Nightly scan" });
   await schedule.getByLabel("Time of day").selectOption("07:15");
@@ -70,6 +59,20 @@ test("Dashboard settings: client and server validation, save, reload; the rankin
 
   await page.reload();
   await expect(schedule.getByLabel("Time of day")).toHaveValue("07:15");
+
+  await page.getByRole("link", { name: "MemCan", exact: true }).click();
+  // MemCan projects: extra names are validated here.
+  const sources = page.getByRole("region", { name: "TODO sources" });
+  const project = sources.getByLabel("Add a MemCan project");
+  const addProject = sources.getByRole("button", { name: "Add to extra memcan projects" });
+  await project.fill("release notes!");
+  await addProject.click();
+  await expect(sources).toContainText('Extra MemCan projects: "release notes!" is not a project name');
+  await project.fill("release-notes");
+  await addProject.click();
+  await expect(sources.getByRole("button", { name: "Remove release-notes" })).toBeVisible();
+  await saveDashboardSettings().click();
+  await expect(page.getByText("Dashboard settings saved.", { exact: true })).toBeVisible();
 
   // Repositories: owner/name is validated on Save. Saving here preserves the GitHub sync fields.
   await page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: "Repositories" }).click();
