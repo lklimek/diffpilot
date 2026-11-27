@@ -6,7 +6,7 @@ import { displaySide, filesHash } from "../../components/files/model";
 import { githubLineUrl, type PrLinkBase } from "../../components/github/links";
 import { PathLinks, pathMatcher } from "../../components/section/pathLinks";
 
-import { analysisPath, samePr } from "../pr/paths";
+import { analysisPath } from "../pr/paths";
 
 export function AnalysisPathLinks({
   analysisId,
@@ -21,8 +21,7 @@ export function AnalysisPathLinks({
 }) {
   const tour = useTour(analysisId ?? "", analysisId !== null);
   const analysedPr = tour.data?.analysis.pr;
-  const matchesHead =
-    !!analysedPr && samePr(analysedPr, pr) && (head === undefined || head === analysedPr.head_sha);
+  const matchesHead = !!analysedPr && (head === undefined || head === analysedPr.head_sha);
   // Review screens already read Files; the Comments route needs its own read after checking the head.
   const files = useFiles(analysisId ?? "", analysisId !== null && head !== undefined && matchesHead);
   return (
@@ -56,7 +55,7 @@ export function FilePathLinks({
     if (analysisId === null || !files) return null;
     const filesPath = analysisPath(pr, analysisId, "files");
     const byPath = new Map(files.map((file) => [file.path, file]));
-    const match = pathMatcher([...byPath.keys()], pr.repo);
+    const match = pathMatcher([...byPath.keys()], githubPr?.repo ?? pr.repo);
     return {
       resolve: (mention: string) => {
         const at = match(mention);

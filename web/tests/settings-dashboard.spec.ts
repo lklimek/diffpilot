@@ -25,7 +25,7 @@ test("repository rules retain stored values and show App installation facts", as
   await expectAccessible(page);
 });
 
-test("GitHub sync validates scope and sends the whole record in one save", async ({ page }) => {
+test("GitHub sync validates scope and sends one scoped save", async ({ page }) => {
   await page.goto("/settings/github-sync");
   const scope = page.getByRole("region", { name: "Scope" });
   const linked = scope.getByLabel("Add a linked login");
@@ -36,7 +36,7 @@ test("GitHub sync validates scope and sends the whole record in one save", async
   await days.fill("0");
   let puts = 0;
   const isSave = (request: { method: () => string; url: () => string }) =>
-    request.method() === "PUT" && request.url().endsWith("/api/v1/settings/dashboard");
+    request.method() === "PUT" && new URL(request.url()).pathname === "/api/v1/settings/dashboard";
   page.on("request", (request) => {
     if (isSave(request)) puts += 1;
   });
@@ -53,7 +53,9 @@ test("GitHub sync validates scope and sends the whole record in one save", async
   await nightly.getByLabel("Time of day").selectOption("07:30");
   const request = page.waitForRequest(isSave);
   await save.click();
-  expect((await request).postDataJSON()).toMatchObject({
+  const saved = await request;
+  expect(new URL(saved.url()).searchParams.get("section")).toBe("github-sync");
+  expect(saved.postDataJSON()).toMatchObject({
     lookback_days: 10,
     schedule_enabled: false,
     schedule_time: "07:30",
