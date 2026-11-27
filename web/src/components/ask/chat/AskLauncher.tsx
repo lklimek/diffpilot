@@ -17,7 +17,7 @@ export interface AskLauncherProps {
 export function AskLauncher({ unread, busy, onOpen }: AskLauncherProps) {
   return (
     <Tooltip
-      className="fixed right-4 bottom-4 z-40"
+      className="fixed right-[calc(1rem+var(--ask-launcher-inset,0px))] bottom-4 z-40"
       tip="Your private Ask chat about this PR (a). It stays open while you move between steps, flows and files."
     >
       <button
