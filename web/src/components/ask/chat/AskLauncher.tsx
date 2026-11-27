@@ -16,12 +16,15 @@ export interface AskLauncherProps {
  */
 export function AskLauncher({ unread, busy, onOpen }: AskLauncherProps) {
   return (
-    <Tooltip tip="Your private Ask chat about this PR (a). It stays open while you move between steps, flows and files.">
+    <Tooltip
+      className="fixed right-[calc(1rem+var(--ask-launcher-inset,0px))] bottom-4 z-40"
+      tip="Your private Ask chat about this PR (a). It stays open while you move between steps, flows and files."
+    >
       <button
         type="button"
         data-ask-launcher
         onClick={onOpen}
-        className="fixed right-4 bottom-4 z-40 inline-flex cursor-pointer items-center gap-2 rounded-full border border-accent bg-accent px-3.5 py-1.5 text-[14px] font-semibold text-on-accent shadow-lg hover:brightness-110"
+        className="inline-flex cursor-pointer items-center gap-2 rounded-full border border-accent bg-accent px-3.5 py-1.5 text-[14px] font-semibold text-on-accent shadow-lg hover:brightness-110"
       >
         {busy && (
           <span

@@ -30,7 +30,7 @@ use db::repo::dashboard::{
     JUDGEMENT_RETENTION_DAYS, JudgeCounts, JudgeSend, RankingUpdate, RankingWrite, RefreshProgress,
     RefreshRecord, SendCaps, SendReservation, StoredJudgement,
 };
-use db::repo::jobs::{JobStage, MAX_REPAIR_RUNS};
+use db::repo::jobs::{JobStage, JudgeCapacity, MAX_REPAIR_RUNS};
 use futures::StreamExt;
 use futures::future::BoxFuture;
 use std::collections::{HashMap, HashSet};
@@ -51,7 +51,7 @@ use super::refresh::{self, Scope};
 use super::score::{Freshness, ScoreRules};
 use super::snapshot::{self, Snapshot};
 use crate::jobs::executor::{ExecutorError, JobHandle, JobRequest, JobUpdate};
-use crate::model::{ModelContext, select_model};
+use crate::model::{ModelContext, select_model_for_payer};
 use crate::state::AppState;
 
 /// Version of the judge prompt and output schema; a mismatch makes a stored judgement stale.
@@ -664,7 +664,7 @@ impl<'a> Ranking<'a> {
                 crate::jobs::payer::PayerError::Missing => RankError::Unusable,
                 crate::jobs::payer::PayerError::Db(error) => RankError::Db(error),
             })?;
-        let saved = self.state.db.settings().llm_selection().await?;
+        let payer = contracts::ids::UserId(self.run.scope.user_id.clone());
         let spec = JobSpec {
             job_id,
             attempt: 0,
@@ -677,9 +677,15 @@ impl<'a> Ranking<'a> {
             flow_file: None,
             assessment: None,
             pr_data: None,
-            model: select_model(JobKind::JudgeWork, &ModelContext::default(), saved.as_ref()),
+            model: select_model_for_payer(
+                &self.state.db,
+                &payer,
+                JobKind::JudgeWork,
+                &ModelContext::default(),
+            )
+            .await?,
             limits: JobLimits::default(),
-            payer: contracts::ids::UserId(self.run.scope.user_id.clone()),
+            payer,
             session: None,
             working_session: None,
             context_pack: None,
@@ -736,12 +742,12 @@ impl<'a> Ranking<'a> {
         }
     }
 
-    /// Reports payer pauses and shared runner-capacity waits without changing container claim eligibility.
+    /// Reports payer pauses and counts time while a queued judge job is eligible for a claim.
     async fn observe(&mut self, job: JobId) -> Result<(), RankError> {
         let db = &self.state.db;
         let record = db.jobs().get(job).await?;
-        let live = match record.state {
-            JobState::Paused => RankingState::Paused,
+        let (live, unclaimed) = match record.state {
+            JobState::Paused => (RankingState::Paused, false),
             JobState::Queued => {
                 let credential = match db.llm_credentials().get(&record.spec.payer.0).await {
                     Ok(credential) => Some(credential),
@@ -753,24 +759,25 @@ impl<'a> Ranking<'a> {
                     .and_then(|c| c.paused_until)
                     .is_some_and(|until| until > Timestamp::now())
                 {
-                    RankingState::Paused
+                    (RankingState::Paused, false)
                 } else if credential.is_some_and(|c| c.unusable_since.is_some()) {
                     return Err(RankError::Unusable);
-                } else if analysis_running(db).await? {
-                    RankingState::WaitingForAnalysis
                 } else {
-                    RankingState::Running
+                    match db.jobs().judge_capacity(&record.spec.payer.0).await? {
+                        JudgeCapacity::Available => (RankingState::Running, true),
+                        JudgeCapacity::WaitingForAnalysis => {
+                            (RankingState::WaitingForAnalysis, false)
+                        }
+                        JudgeCapacity::Occupied => (RankingState::Running, false),
+                    }
                 }
             }
             JobState::Claimed
             | JobState::Running
             | JobState::Succeeded
             | JobState::Failed
-            | JobState::Cancelled => RankingState::Running,
+            | JobState::Cancelled => (RankingState::Running, false),
         };
-        let unclaimed = record.state == JobState::Queued
-            && live == RankingState::Running
-            && !db.jobs().judge_busy(&record.spec.payer.0).await?;
         self.unclaimed_since = unclaimed.then(|| {
             self.unclaimed_since
                 .unwrap_or_else(tokio::time::Instant::now)
@@ -1254,20 +1261,6 @@ async fn retention(db: &Db, now: Timestamp) {
         Err(error) => tracing::warn!(%error,
             "old dashboard judgements could not be deleted; the next ranking tries again"),
     }
-}
-
-/// An active pipeline turn can occupy the runner's shared turn capacity.
-async fn analysis_running(db: &Db) -> Result<bool, DbError> {
-    for analysis in db.analyses().unfinished().await? {
-        let active = db
-            .jobs()
-            .list_for_analysis(analysis.id, &[JobState::Claimed, JobState::Running])
-            .await?;
-        if !active.is_empty() {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
 
 /// Requests cancellation of the refresh's unfinished judge jobs (of `attempt` only, when given), so an ended

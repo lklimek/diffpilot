@@ -23,9 +23,10 @@ the same attempt; 400 malformed body.
 ## Claim
 - The runner polls `claim` every 1 s while idle (5 s after a failed claim), reporting successfully retired PRs
   in `retired`. `accept_job` defaults to true; false requests housekeeping and retirement only.
-- The server picks the next runnable job: `queued`, credential usable, not paused and idle, no running job of
-  the same PR (claim exclusion and triggers), analysis or credential (partial unique indexes), interactive (`priority` 0) before batch (1), Ask before dashboard ranking within interactive, then oldest; a claimed or running job is never pre-empted. It increments
-  `attempt` (every claim, including after a pause or a lease expiry), mints a random job token (stored hashed),
+- The server picks the next queued job with a usable, unpaused payer, an available payer slot and a free
+  target container. Different payers can hold jobs on the same PR. Eligible interactive jobs precede batch
+  jobs, with Ask first and comment assessments second, then oldest first. Claim increments `attempt`
+  (including after a pause or a lease expiry), mints a random job token (stored hashed),
   sets the lease, and fills `spec.access` at claim time:
   - `github`: an installation token for the **PR repository only** (explicit `repositories` and read-only
     `permissions`, 1 h, ADR-005) — or `null` when the GitHub App is not installed on the PR repository; then the
@@ -55,6 +56,14 @@ the same attempt; 400 malformed body.
   runs it answer-only: `shell_tool` and `view_image` off, `web_search = "disabled"`, read-only sandbox, no MCP server;
   the code-mode `exec` isolate has no network; any tool item (command, MCP, web search, file change, sub-agent) fails
   the job.
+
+## Runner capacity
+
+A runner process keeps at most `SR_WORKER_MAX_RUNNING` jobs in flight (default 3). Compose gives the runner
+and launcher the same limit. Claims and retirement acknowledgements are sent in order. Each job owns its
+lease, events, cancellation and cleanup until its slot is free. A retirement request for a PR with a local
+container still in use is retried. The launcher reserves a worker through the gap between Ensure and
+Attach. Shutdown stops claiming, cancels all local attempts and waits for cleanup within the stop grace.
 
 ## State machine
 `JobState::transition` is the single source (`crates/contracts/src/job/state.rs`):
@@ -176,7 +185,8 @@ The existing Ask tests cover early publication and reconciliation with cancellat
   An effective analytic checkpoint increments that generation. Successful output without an archive clears
   the analytic reference and invalidates forks. Ask results update only the authenticated question's user row;
   repeated/stale results have no effect. Cancelled checkpoints invalidate forks without accepting their thread.
-- Claim still serialises per PR and credential. No simultaneous analysis/Ask or two-user Ask jobs in v1.
+- At most one active job owns each (PR, payer) volume and each payer's judge container. All active
+  jobs count toward that payer's Settings job-slot limit.
 - Every claim carries a bounded context pack. Analytic packs contain only public PR data and analysis
   documents, including repairs. Ask packs include only that user's latest 20 final Q&A across the PR, fenced
   as untrusted data. The runner supplies this pack on every lazy/re-fork and lost-session fallback, including

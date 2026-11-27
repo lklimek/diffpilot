@@ -8,10 +8,29 @@ pub mod fake;
 use contracts::ids::JobId;
 use contracts::job::event::JobEvent;
 use contracts::job::result::Usage;
+use contracts::job::spec::JobSpec;
 use contracts::time::Timestamp;
 use futures::future::BoxFuture;
 use serde_json::Value;
 use tokio::sync::mpsc;
+
+/// Identity of a local provider attempt, derived from its claimed job.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct AttemptId {
+    /// Job whose lease was granted.
+    pub job: JobId,
+    /// Lease attempt number assigned by the server.
+    pub number: u32,
+}
+
+impl From<&JobSpec> for AttemptId {
+    fn from(spec: &JobSpec) -> Self {
+        Self {
+            job: spec.job_id,
+            number: spec.attempt,
+        }
+    }
+}
 
 /// Runs agent calls. `run` starts a new session, `resume` continues one; both send
 /// [`ProviderEvent::OutputReady`] before reporting the persistent-thread checkpoint.
@@ -36,9 +55,14 @@ pub trait LlmProvider: Send + Sync {
         Box::pin(async { Ok(()) })
     }
 
-    /// Stops the running call of `job` (stop the worker turn); the call then ends with
+    /// Stops the running call of `attempt` (stop the worker turn); the call then ends with
     /// [`ProviderError::Cancelled`].
-    fn cancel(&self, job: JobId) -> BoxFuture<'_, Result<(), ProviderError>>;
+    fn cancel(&self, attempt: AttemptId) -> BoxFuture<'_, Result<(), ProviderError>>;
+
+    /// Fences a dropped call's resources if they are still abandoned.
+    fn reap_abandoned(&self, _attempt: AttemptId) -> BoxFuture<'_, Result<(), ProviderError>> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 /// What a provider reports while a call runs.

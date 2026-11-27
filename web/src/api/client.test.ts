@@ -138,6 +138,49 @@ describe("api client", () => {
     expect(seen).toEqual(["old", "new"]);
   });
 
+  it.each([
+    ["llm", (api, scope) => api.setLlm({ model: "gpt-6-sol", reasoning_effort: "low" }, scope)],
+    ["llm/ask-effort", (api, scope) => api.setAskEffort("low", scope)],
+    ["llm/judge-effort", (api, scope) => api.setJudgeEffort("low", scope)],
+    ["llm/job-slots", (api, scope) => api.setLlmJobSlots(3, scope)],
+    ["language", (api, scope) => api.setLanguage({ language: "pl" }, scope)],
+  ] satisfies [string, (api: ReturnType<typeof createApiClient>, scope: number) => Promise<unknown>][])(
+    "keeps an open %s form bound to its original session",
+    async (route, save) => {
+      let actor = { login: "alice", token: "alice-session" };
+      const seen: (string | null)[] = [];
+      server.use(
+        http.get(`${BASE}/api/v1/me`, () =>
+          HttpResponse.json({
+            user: { login: actor.login, name: null, avatar_url: null, language: "en" },
+            csrf_token: actor.token,
+          }),
+        ),
+        http.put(`${BASE}/api/v1/settings/${route}`, ({ request }) => {
+          const token = request.headers.get("X-CSRF-Token");
+          seen.push(token);
+          if (token !== actor.token) {
+            return HttpResponse.json({ code: "csrf_rejected", message: "Reload." }, { status: 403 });
+          }
+          return HttpResponse.json({ saved: true });
+        }),
+      );
+      const api = createApiClient(BASE);
+      const { sessionScope } = await api.getBrowserSession();
+      expect((await api.getBrowserSession()).sessionScope).toBe(sessionScope);
+
+      actor = { login: "bob", token: "bob-session" };
+      await expect(save(api, sessionScope)).rejects.toMatchObject({ code: "csrf_rejected" });
+      await expect(save(api, sessionScope)).rejects.toMatchObject({ code: "csrf_rejected" });
+      expect(seen).toEqual(["alice-session"]);
+
+      const current = await api.getBrowserSession();
+      expect(current.sessionScope).not.toBe(sessionScope);
+      await expect(save(api, current.sessionScope)).resolves.toEqual({ saved: true });
+      expect(seen).toEqual(["alice-session", "bob-session"]);
+    },
+  );
+
   it("passes query parameters of range routes", async () => {
     let url = "";
     server.use(

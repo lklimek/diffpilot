@@ -57,7 +57,7 @@ use super::context::{self, ItemContext};
 use crate::github::mirror::{self, MirrorError};
 use crate::github::oauth::endpoint;
 use crate::jobs::executor::{ExecutorError, JobHandle, JobRequest, JobUpdate};
-use crate::model::{ModelContext, select_model};
+use crate::model::{ModelContext, select_model_for_payer};
 use crate::prompts;
 use crate::state::AppState;
 
@@ -69,7 +69,7 @@ pub const PASS_SPACING: SignedDuration = SignedDuration::from_mins(10);
 /// Logical passes per payer per UTC day; manual and automatic passes share the cap, and an A/B pair counts once.
 pub const DAILY_PASSES_PER_USER: u32 = 80;
 /// Version of the native comment assessment prompt and output schema.
-pub const VERIFY_PROMPT_VERSION: u32 = 5;
+pub const VERIFY_PROMPT_VERSION: u32 = 6;
 /// Legacy history window used to read the previous pass end for automatic spacing.
 const DAY: SignedDuration = SignedDuration::from_hours(24);
 
@@ -193,7 +193,7 @@ async fn request(
     state: &AppState,
     pr: i64,
     reason: PassReason,
-    continuation: Option<PassId>,
+    continuation: Option<&PassRecord>,
     by: Option<&str>,
 ) -> Result<PassQueued, AssessError> {
     let db = &state.db;
@@ -376,10 +376,13 @@ async fn request(
     }
     // Everything fallible is read before the pass is stored: a live pass without a job would hold every later
     // request back as already running.
-    let language = match (&user, reason) {
-        (Some(user), PassReason::Ask | PassReason::Watch) => db.users().get(user).await?.language,
-        _ => LlmLanguage::En,
-    };
+    let language = assessment_language(
+        state,
+        &record.tenant_id,
+        user.as_deref(),
+        continuation.filter(|_| reason != PassReason::Ask),
+    )
+    .await?;
     let analysis = analysis_inputs(state, &record.tenant_id, pr, &record.pr, language).await?;
     let input = VerifyCommentsInput {
         pull_request: format!(
@@ -432,7 +435,12 @@ async fn request(
     }
     let id = match db
         .review_loop()
-        .start_pass_with_continuation(&record.tenant_id, &pass, now, continuation)
+        .start_pass_with_continuation(
+            &record.tenant_id,
+            &pass,
+            now,
+            continuation.map(|pass| pass.id),
+        )
         .await?
     {
         PassStart::Started(id) => id,
@@ -463,6 +471,36 @@ async fn request(
         "comment assessment pass queued");
     follow(state, id, Some(handle.job_id));
     Ok(PassQueued::Queued)
+}
+
+/// Use the original language when the same payer continues a batch, even after an intervening question.
+async fn assessment_language(
+    state: &AppState,
+    tenant: &str,
+    user: Option<&str>,
+    continuation: Option<&PassRecord>,
+) -> Result<LlmLanguage, AssessError> {
+    let Some(user) = user else {
+        return Ok(LlmLanguage::En);
+    };
+    if let Some(previous) = continuation.filter(|pass| pass.user_id.as_deref() == Some(user)) {
+        let payer = contracts::ids::UserId(user.to_owned());
+        match state
+            .db
+            .assessments()
+            .pass(tenant, &payer, previous.id)
+            .await
+        {
+            Ok(pass) => {
+                if let Some(language) = frozen::Frozen::read(state, &pass).await?.language {
+                    return Ok(language);
+                }
+            }
+            Err(DbError::NotFound) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(state.db.users().get(user).await?.language)
 }
 
 /// The first watcher of `pr` under the daily cap, unless the spacing holds the pass back (not for a continuation).
@@ -911,6 +949,15 @@ async fn submit(
     input: &VerifyCommentsInput,
     language: LlmLanguage,
 ) -> Result<JobHandle, AssessError> {
+    let payer = contracts::ids::UserId(
+        state
+            .db
+            .review_loop()
+            .pass(pass)
+            .await?
+            .user_id
+            .ok_or(DbError::NotFound)?,
+    );
     let spec = JobSpec {
         job_id: JobId::new_random(),
         attempt: 0,
@@ -933,21 +980,15 @@ async fn submit(
         flow_file: None,
         assessment: None,
         pr_data: None,
-        model: select_model(
+        model: select_model_for_payer(
+            &state.db,
+            &payer,
             JobKind::VerifyComments,
             &ModelContext::default(),
-            state.db.settings().llm_selection().await?.as_ref(),
-        ),
+        )
+        .await?,
         limits: JobLimits::default(),
-        payer: contracts::ids::UserId(
-            state
-                .db
-                .review_loop()
-                .pass(pass)
-                .await?
-                .user_id
-                .ok_or(DbError::NotFound)?,
-        ),
+        payer,
         session: None,
         working_session: None,
         context_pack: None,
@@ -1157,11 +1198,11 @@ async fn advance(
     };
     let rest =
         batch.and_then(|batch| continuation_reason(batch.cause).map(|reason| (batch, reason)));
-    let handoff = rest.map(|(batch, _)| batch.id);
+    let handoff = rest.map(|(batch, _)| batch);
     let ask = request(state, pr, PassReason::Ask, handoff, None).await?;
     match (ask, rest) {
         (PassQueued::Skipped, Some((batch, reason))) => {
-            request(state, pr, reason, handoff, batch.user_id.as_deref()).await
+            request(state, pr, reason, Some(batch), batch.user_id.as_deref()).await
         }
         _ => Ok(ask),
     }

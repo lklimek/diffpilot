@@ -121,6 +121,7 @@ struct ActiveRepo {
 #[serde(rename_all = "camelCase")]
 struct AuthoredNode {
     number: u32,
+    state: String,
     created_at: Timestamp,
     updated_at: Timestamp,
     closed_at: Option<Timestamp>,
@@ -295,7 +296,7 @@ impl<T: TokenSource> WorkClient<T> {
             let lookup = format!(
                 "repository(owner: {}, name: {}) {{ nameWithOwner pullRequests(first: {}, orderBy: {{field: \
                  UPDATED_AT, direction: DESC}}{after}) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ number \
-                 createdAt updatedAt closedAt mergedAt author {{ login }} }} }} }}",
+                 state createdAt updatedAt closedAt mergedAt author {{ login }} }} }} }}",
                 literal(&repo.owner),
                 literal(&repo.name),
                 self.page_size
@@ -325,6 +326,7 @@ impl<T: TokenSource> WorkClient<T> {
                     read.found.push((
                         node.number,
                         HistoryPr {
+                            state: node.state,
                             created_at: node.created_at,
                             closed_at: node.closed_at,
                             merged_at: node.merged_at,

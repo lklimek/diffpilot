@@ -24,7 +24,7 @@ use db::repo::review_loop::{ItemRecord, NewPass, PassRecord};
 use futures::StreamExt;
 use serde_json::json;
 
-const HOST_VERSION: &str = "13.7.0/71096d7/4.2/brief2";
+const HOST_VERSION: &str = "13.7.0/71096d7/4.2/brief3";
 
 pub(super) async fn admit(
     state: &AppState,
@@ -92,6 +92,7 @@ pub(super) async fn admit(
         super::imports::Authorities::read(state, &tenant, &user.0, &mut data.manifest).await?;
     let mut frozen = Frozen {
         data,
+        language: Some(language),
         authorities,
         own_reply_urls: Default::default(),
         own_reply_texts: Default::default(),
@@ -108,11 +109,13 @@ pub(super) async fn admit(
         .await?;
     let id = PassId::new_random();
     let hash = frozen.write(state, id).await?;
-    let model = crate::model::select_model(
+    let model = crate::model::select_model_for_payer(
+        &state.db,
+        &user,
         JobKind::VerifyComments,
         &Default::default(),
-        state.db.settings().llm_selection().await?.as_ref(),
-    );
+    )
+    .await?;
     let input = AssessmentInput {
         pr: native.pull_request.clone(),
         pull_request_id: review.pull_request_id,
@@ -153,9 +156,7 @@ pub(super) async fn admit(
                     },
                 }),
                 prompt: match method {
-                    AssessmentMethod::ClaudiusHost => {
-                        include_str!("../../../../../prompts/check_pr_comments.md").into()
-                    }
+                    AssessmentMethod::ClaudiusHost => prompt::render_host(language)?,
                     AssessmentMethod::PromptV4 => prompt::render(native, pr, language)?,
                 },
                 output_schema: match method {

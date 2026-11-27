@@ -343,7 +343,8 @@ describe("msw handlers of the screens", () => {
       language: "en",
       llm_status: { status: { state: "working" } },
     });
-    await api.setLanguage({ language: "pl" });
+    const { sessionScope } = await api.getBrowserSession();
+    await api.setLanguage({ language: "pl" }, sessionScope);
     expect((await api.getSettings()).language).toBe("pl");
     expect((await api.getRepoSettings({ owner: "acme", name: "node-client" })).rules.length).toBeGreaterThan(
       0,

@@ -9,6 +9,7 @@ import {
   useMe,
   useSetAskEffort,
   useSetJudgeEffort,
+  useSetLlmJobSlots,
   useSetLanguage,
   useSetLlm,
   useSettings,
@@ -85,11 +86,14 @@ export function LlmPage({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => 
   const setAskEffort = useSetAskEffort();
   const setJudgeEffort = useSetJudgeEffort();
   const setLanguage = useSetLanguage();
-  const save = async ({ model, ask, ranking }: LlmChoiceChanges) => {
-    // Each mutation returns the full selection and updates the same cache.
-    if (model) await setLlm.mutateAsync(model);
-    if (ask) await setAskEffort.mutateAsync(ask);
-    if (ranking) await setJudgeEffort.mutateAsync(ranking);
+  const setSlots = useSetLlmJobSlots();
+  const sessionScope = settings.sessionScope;
+  const languageMutationIsCurrent = setLanguage.variables?.sessionScope === sessionScope;
+  const save = async (sessionScope: number, { model, ask, ranking, slots }: LlmChoiceChanges) => {
+    if (model) await setLlm.mutateAsync({ value: model, sessionScope });
+    if (ask) await setAskEffort.mutateAsync({ value: ask, sessionScope });
+    if (ranking) await setJudgeEffort.mutateAsync({ value: ranking, sessionScope });
+    if (slots !== undefined) await setSlots.mutateAsync({ value: slots, sessionScope });
   };
   return (
     <>
@@ -112,19 +116,21 @@ export function LlmPage({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => 
           lastCall={settings.data?.llm_status}
         />
       </div>
-      {settings.data?.llm_selection && (
+      {settings.data?.llm_selection && sessionScope !== undefined && (
         <LlmSelectionCard
+          key={sessionScope}
           selection={settings.data.llm_selection}
-          onSave={save}
+          jobSlots={settings.data.llm_job_slots}
+          onSave={(changes) => save(sessionScope, changes)}
           onDirtyChange={onDirtyChange}
         />
       )}
-      {settings.data && (
+      {settings.data && sessionScope !== undefined && (
         <LanguageCard
           language={settings.data.language}
-          busy={setLanguage.isPending}
-          onChange={(language) => setLanguage.mutate(language)}
-          error={setLanguage.isError ? errorText(setLanguage.error) : undefined}
+          busy={languageMutationIsCurrent && setLanguage.isPending}
+          onChange={(language) => setLanguage.mutate({ language, sessionScope })}
+          error={languageMutationIsCurrent && setLanguage.isError ? errorText(setLanguage.error) : undefined}
         />
       )}
     </>

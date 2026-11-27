@@ -1,5 +1,5 @@
 // TanStack Query hooks over the API client; used by screens only (components get props).
-import { QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { QueryClient, skipToken, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import type {
   AnalysisEvent,
@@ -16,18 +16,25 @@ import type {
   FilesResponse,
   FlowId,
   LlmLanguage,
+  LlmSelection,
   PendingReview,
   QuestionId,
   RangeQuery,
   RepoRef,
+  Settings,
   Tour,
 } from "./generated/types";
-import { api } from "./client";
+import { ApiError, api } from "./client";
 import { reviewStates } from "./review-state";
 import { withoutRetried } from "./questionHistory";
 
 /** The signed-in user and CSRF token. */
-export const useMe = () => useQuery({ queryKey: ["me"], queryFn: api.getMe });
+export const useMe = () =>
+  useQuery({
+    queryKey: ["me"],
+    queryFn: ({ signal }) => api.getBrowserSession(signal),
+    refetchOnWindowFocus: "always",
+  });
 
 /** The reader's own analyses, the latest per PR, newest first (Recent reviews); disabled while signed out. */
 export const useMyAnalyses = (enabled: boolean, limit?: number) =>
@@ -295,8 +302,41 @@ export const useCancelAnalysis = () => useMutation({ mutationFn: api.cancelAnaly
 /** Retries a failed analysis; progress arrives on the event stream. */
 export const useRetryAnalysis = () => useMutation({ mutationFn: api.retryAnalysis });
 
-/** Global settings: LLM status of the last call, language, App installations, known repositories. */
-export const useSettings = () => useQuery({ queryKey: ["settings"], queryFn: api.getSettings });
+const settingsSessionPrefix = ["settings", "session"] as const;
+const settingsKey = (sessionScope: number | undefined) => [...settingsSessionPrefix, sessionScope];
+
+const sessionRejected = (error: unknown) =>
+  error instanceof ApiError && (error.code === "csrf_rejected" || error.code === "unauthenticated");
+
+/** Settings belong to the browser session that read them. */
+export function useSettings() {
+  const client = useQueryClient();
+  const me = useMe();
+  const sessionScope = me.data?.user ? me.data.sessionScope : undefined;
+  const query = useQuery({
+    queryKey: settingsKey(sessionScope),
+    queryFn:
+      sessionScope === undefined
+        ? skipToken
+        : async ({ signal }) => {
+            try {
+              return await api.getSettings(sessionScope, signal);
+            } catch (error) {
+              if (sessionRejected(error)) void client.invalidateQueries({ queryKey: ["me"] });
+              throw error;
+            }
+          },
+  });
+  useEffect(() => {
+    if (me.isSuccess) {
+      client.removeQueries({
+        queryKey: settingsSessionPrefix,
+        predicate: (entry) => entry.queryKey[2] !== sessionScope,
+      });
+    }
+  }, [client, me.isSuccess, sessionScope]);
+  return { ...query, sessionScope, data: sessionRejected(query.error) ? undefined : query.data };
+}
 
 /** Ranking usage shared by My work and the LLM settings. */
 export const rankingUsageQuery = {
@@ -312,16 +352,29 @@ export const useRepoSettings = (repo: RepoRef | undefined) =>
     enabled: repo !== undefined,
   });
 
-/** Sets the language of LLM texts; refreshes the settings and the user. */
+/** Saves the language and updates the initiating browser session's cached views. */
 export const useSetLanguage = () => {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (language: LlmLanguage) => api.setLanguage({ language }),
-    onSuccess: () =>
-      Promise.all([
-        client.invalidateQueries({ queryKey: ["settings"] }),
-        client.invalidateQueries({ queryKey: ["me"] }),
-      ]),
+    mutationFn: ({ language, sessionScope }: { language: LlmLanguage; sessionScope: number }) =>
+      api.setLanguage({ language }, sessionScope),
+    onSuccess: async (_, { language, sessionScope }) => {
+      const key = settingsKey(sessionScope);
+      await client.cancelQueries({ queryKey: key, exact: true });
+      client.setQueryData<Settings>(key, (settings) => settings && { ...settings, language });
+      const meKey = ["me"];
+      const me = client.getQueryData<Awaited<ReturnType<typeof api.getBrowserSession>>>(meKey);
+      if (me?.sessionScope === sessionScope && me.user) {
+        const profilePending = client.isFetching({ queryKey: meKey, exact: true }) > 0;
+        client.setQueryData(meKey, { ...me, user: { ...me.user, language } });
+        if (profilePending) {
+          await client.refetchQueries({ queryKey: meKey, exact: true }, { cancelRefetch: true });
+        }
+      }
+    },
+    onError: (error) => {
+      if (sessionRejected(error)) void client.invalidateQueries({ queryKey: ["me"] });
+    },
   });
 };
 
@@ -477,19 +530,26 @@ export function useAnalysisLive(id: AnalysisId): AnalysisLive {
   return live.id === id ? live : { reconnecting: false };
 }
 
-/** Save the shared installation model and refresh its audit details. */
-export function useSetLlm() {
+function useLlmSetting<Value, Result>(
+  write: (value: Value, sessionScope: number) => Promise<Result>,
+  apply: (settings: Settings, saved: Result) => Settings,
+) {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: api.setLlm,
-    onSuccess: (selection) => {
-      client.setQueryData<import("./generated/types").Settings>(
-        ["settings"],
-        (old) => old && { ...old, llm_selection: selection },
-      );
+    mutationFn: ({ value, sessionScope }: { value: Value; sessionScope: number }) =>
+      write(value, sessionScope),
+    onSuccess: (saved, { sessionScope }) =>
+      client.setQueryData<Settings>(settingsKey(sessionScope), (old) => old && apply(old, saved)),
+    onError: (error) => {
+      if (sessionRejected(error)) void client.invalidateQueries({ queryKey: ["me"] });
     },
   });
 }
+
+const applySelection = (settings: Settings, llm_selection: LlmSelection) => ({ ...settings, llm_selection });
+
+/** Saves the payer's model and refreshes its audit details. */
+export const useSetLlm = () => useLlmSetting(api.setLlm, applySelection);
 
 /** The user's dashboard settings (R6). */
 export const useDashboardSettings = () =>
@@ -505,46 +565,28 @@ export function useSaveDashboardSettings() {
     });
 }
 
-/** Saves the installation-wide Ask effort and refreshes its audit details. */
-export function useSetAskEffort() {
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: api.setAskEffort,
-    onSuccess: (selection) =>
-      client.setQueryData<import("./generated/types").Settings>(
-        ["settings"],
-        (old) => old && { ...old, llm_selection: selection },
-      ),
-  });
-}
+/** Saves the payer's Ask effort and refreshes its audit details. */
+export const useSetAskEffort = () => useLlmSetting(api.setAskEffort, applySelection);
 
-/** Saves the installation-wide controlled owners; Dependencies views are read again with them. */
+/** Saves the installation-wide controlled owners; Dependencies and Settings read them again. */
 export function useSetControlledOwners() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (owners: string[]) => api.setControlledOwners({ owners }),
-    onSuccess: (controlled_owners) => {
-      client.setQueryData<import("./generated/types").Settings>(
-        ["settings"],
-        (old) => old && { ...old, controlled_owners },
-      );
-      void client.invalidateQueries({ queryKey: ["dependencies"] });
-    },
+    onSuccess: () =>
+      Promise.all([
+        client.invalidateQueries({ queryKey: ["settings"] }),
+        client.invalidateQueries({ queryKey: ["dependencies"] }),
+      ]),
   });
 }
 
-/** Saves the installation-wide ranking effort and refreshes its audit details. */
-export function useSetJudgeEffort() {
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: api.setJudgeEffort,
-    onSuccess: (selection) =>
-      client.setQueryData<import("./generated/types").Settings>(
-        ["settings"],
-        (old) => old && { ...old, llm_selection: selection },
-      ),
-  });
-}
+/** Saves the payer's ranking effort and refreshes its audit details. */
+export const useSetJudgeEffort = () => useLlmSetting(api.setJudgeEffort, applySelection);
+
+/** Saves the payer's concurrent job limit. */
+export const useSetLlmJobSlots = () =>
+  useLlmSetting(api.setLlmJobSlots, (settings, { slots }) => ({ ...settings, llm_job_slots: slots }));
 
 /** The user's access tokens (R8). */
 export const useAccessTokens = () => useQuery({ queryKey: ["access-tokens"], queryFn: api.listAccessTokens });

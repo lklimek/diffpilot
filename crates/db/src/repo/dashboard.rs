@@ -1896,7 +1896,6 @@ mod tests {
         StepState,
     };
     use contracts::common::RepoRef;
-    use contracts::job::spec::ReasoningEffort;
     use serde_json::json;
 
     use super::*;
@@ -4224,19 +4223,15 @@ mod tests {
             .await
             .expect("after");
         assert_eq!(after, before, "every v1 row is kept unchanged");
-        let selection = db
-            .settings()
-            .llm_selection()
-            .await
-            .expect("selection")
-            .expect("stored");
+        let selection: (String, String, String) = sqlx::query_as(
+            "SELECT model, judge_effort, changed_by FROM llm_selection WHERE singleton = 1",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("legacy selection");
         assert_eq!(
-            (
-                selection.choice.model.as_str(),
-                selection.judge_effort,
-                selection.changed_by.as_str()
-            ),
-            ("gpt-6-astra", ReasoningEffort::Low, "lklimek")
+            selection,
+            ("gpt-6-astra".into(), "low".into(), "lklimek".into())
         );
         let versions: Vec<i64> = sqlx::query_scalar(
             "SELECT version FROM _sqlx_migrations WHERE success ORDER BY version",

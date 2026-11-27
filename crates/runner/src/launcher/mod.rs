@@ -5,6 +5,7 @@ mod template;
 
 use std::{
     collections::{HashMap, HashSet},
+    sync::{Arc, Mutex, MutexGuard, Weak},
     time::Instant,
 };
 
@@ -16,6 +17,7 @@ use bollard::{
 };
 use contracts::{job::access::McpHttpEndpoint, launcher::WorkerStatus, runtime::ContainerId};
 use futures::StreamExt;
+use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 
 pub use client::Client;
 pub use serve::serve;
@@ -54,7 +56,7 @@ pub enum Error {
     #[error("invalid launcher message")]
     Protocol,
     /// No idle worker can be evicted.
-    #[error("all worker slots have active attachments")]
+    #[error("all worker slots are in use")]
     Busy,
     /// Dependency fetching failed; caller continues without dependency sources.
     #[error("dependency fetch failed or exceeded its deadline")]
@@ -64,13 +66,20 @@ pub enum Error {
     RuntimeConfig,
 }
 
-/// Container state is serialized under the service's lifecycle mutex.
-#[derive(Clone)]
 struct Launcher {
     docker: Docker,
     settings: Settings,
+    state: Mutex<Lifecycle>,
+    // Only Ensure can grow the running set. Stop and idle sweep never wait on allocation.
+    allocation: AsyncMutex<()>,
+}
+
+#[derive(Default)]
+struct Lifecycle {
+    operations: HashMap<String, Weak<AsyncMutex<()>>>,
     used: HashMap<String, Instant>,
-    attached: HashSet<String>,
+    ensured: HashMap<String, Instant>,
+    attached: HashMap<String, Arc<()>>,
     fetching: HashSet<String>,
 }
 
@@ -126,7 +135,55 @@ async fn validate_runtime(docker: &Docker, settings: &Settings) -> Result<(), Er
     Ok(())
 }
 
+// A caller that disappears before Attach cannot pin capacity beyond the maximum job and shutdown window.
+const ENSURE_RESERVATION: std::time::Duration =
+    std::time::Duration::from_secs(contracts::job::spec::JobLimits::MAX_RUNTIME_SECS as u64 + 60);
+
 impl Launcher {
+    fn new(docker: Docker, settings: Settings) -> Self {
+        Self {
+            docker,
+            settings,
+            state: Mutex::default(),
+            allocation: AsyncMutex::default(),
+        }
+    }
+
+    fn state(&self) -> MutexGuard<'_, Lifecycle> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn operation(&self, name: &str) -> Arc<AsyncMutex<()>> {
+        let mut state = self.state();
+        state.operations.retain(|_, lock| lock.strong_count() != 0);
+        if let Some(lock) = state.operations.get(name).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let operation = Arc::default();
+        state
+            .operations
+            .insert(name.to_owned(), Arc::downgrade(&operation));
+        operation
+    }
+
+    fn try_idle_operation(&self, name: &str) -> Option<OwnedMutexGuard<()>> {
+        let operation = self.operation(name).try_lock_owned().ok()?;
+        if self.state().occupied(name) {
+            return None;
+        }
+        Some(operation)
+    }
+
+    fn begin_attachment(&self, name: &str) -> Option<Arc<()>> {
+        self.state().begin_attachment(name)
+    }
+
+    fn finish_attachment(&self, name: String, relay: &Arc<()>) {
+        self.state().finish_attachment(name, relay);
+    }
+
     async fn objects(&self) -> Result<Vec<ContainerSummary>, Error> {
         let filters = HashMap::from([(
             "label".to_owned(),
@@ -236,7 +293,8 @@ impl Launcher {
         }
     }
 
-    async fn stop(&mut self, id: &ContainerId) -> Result<(), Error> {
+    // Service callers hold this container's operation lock across Docker mutations.
+    async fn stop(&self, id: &ContainerId) -> Result<(), Error> {
         let name = self.settings.name(id, false);
         if let Some(c) = self.inspect(id, false).await? {
             if c.state.and_then(|s| s.running) == Some(true) {
@@ -251,12 +309,15 @@ impl Launcher {
                 self.docker.remove_container(&name, None).await?;
             }
         }
-        self.used.remove(&name);
+        let mut state = self.state();
+        state.used.remove(&name);
+        state.ensured.remove(&name);
+        state.attached.remove(&name);
         Ok(())
     }
 
-    async fn remove(&mut self, id: &ContainerId) -> Result<(), Error> {
-        if self.fetching.contains(&self.settings.name(id, false)) {
+    async fn remove(&self, id: &ContainerId) -> Result<(), Error> {
+        if self.state().occupied(&self.settings.name(id, false)) {
             return Err(Error::Busy);
         }
         self.stop(id).await?;
@@ -364,18 +425,22 @@ impl Launcher {
         .unwrap_or(Err(Error::RuntimeConfig))
     }
 
-    // Return whether a CS1 start needs CS3; the service performs it outside the lifecycle lock.
+    // Return whether a CS1 start needs CS3; the service performs it outside the operation lock.
     async fn ensure(
-        &mut self,
+        &self,
         id: &ContainerId,
         memcan: Option<&McpHttpEndpoint>,
+        check_peer: impl Fn() -> Result<(), Error>,
     ) -> Result<bool, Error> {
         let config = self.settings.template(id, false, memcan)?;
         let name = self.settings.name(id, false);
-        if self.attached.contains(&name) || self.fetching.contains(&name) {
+        if self.state().occupied(&name) {
             return Err(Error::Busy);
         }
+        let allocating = self.allocation.lock().await;
+        check_peer()?;
         let mut existing = self.inspect(id, false).await?;
+        check_peer()?;
         let drifted = existing.as_ref().is_some_and(|c| {
             c.config.as_ref().is_none_or(|c| {
                 c.image != config.image
@@ -397,6 +462,7 @@ impl Launcher {
                     )
                     .await?;
             }
+            check_peer()?;
             self.docker.remove_container(&name, None).await?;
             existing = None;
         }
@@ -407,30 +473,43 @@ impl Launcher {
             != Some(true);
         if started {
             let running = self.list().await?;
+            check_peer()?;
             let mut candidates: Vec<_> = running
                 .iter()
                 .filter(|w| w.running && &w.container != id)
                 .collect();
             if candidates.len() >= self.settings.max_running {
                 let needed = candidates.len() - self.settings.max_running + 1;
-                candidates.retain(|w| {
-                    let name = self.settings.name(&w.container, false);
-                    !self.attached.contains(&name) && !self.fetching.contains(&name)
-                });
-                candidates.sort_by_key(|w| {
-                    self.used
-                        .get(&self.settings.name(&w.container, false))
-                        .copied()
-                });
-                if candidates.len() < needed {
+                {
+                    let state = self.state();
+                    candidates.sort_by_key(|w| {
+                        state
+                            .used
+                            .get(&self.settings.name(&w.container, false))
+                            .copied()
+                    });
+                }
+                let evictions: Vec<_> = candidates
+                    .into_iter()
+                    .filter_map(|worker| {
+                        let guard =
+                            self.try_idle_operation(&self.settings.name(&worker.container, false))?;
+                        Some((worker, guard))
+                    })
+                    .take(needed)
+                    .collect();
+                if evictions.len() < needed {
                     return Err(Error::Busy);
                 }
-                for candidate in candidates.into_iter().take(needed) {
+                for (candidate, _operation) in evictions {
+                    check_peer()?;
                     self.stop(&candidate.container).await?;
                 }
             }
             if existing.is_none() {
+                check_peer()?;
                 self.work_volume(id).await?;
+                check_peer()?;
                 self.docker
                     .create_container(
                         Some(
@@ -442,14 +521,35 @@ impl Launcher {
                     )
                     .await?;
             }
+            check_peer()?;
             self.docker.start_container(&name, None).await?;
         }
-        if let Err(error) = self.configure(id, memcan).await {
-            self.stop(id).await?;
+        self.state().ensured.insert(name.clone(), Instant::now());
+        drop(allocating);
+        let configured = async {
+            check_peer()?;
+            self.configure(id, memcan).await?;
+            check_peer()
+        }
+        .await;
+        if let Err(error) = configured {
+            self.discard_ensure(id).await?;
             return Err(error);
         }
-        self.used.insert(name, Instant::now());
+        self.state().used.insert(name, Instant::now());
         Ok(started && matches!(id, ContainerId::Pr { .. }))
+    }
+
+    // The caller holds the same target guard as the discarded Ensure.
+    async fn discard_ensure(&self, id: &ContainerId) -> Result<(), Error> {
+        let name = self.settings.name(id, false);
+        {
+            let mut state = self.state();
+            // If Docker cannot stop it, the idle sweep can still retry immediately.
+            state.ensured.remove(&name);
+            state.used.remove(&name);
+        }
+        self.stop(id).await
     }
 
     async fn fetch(
@@ -528,23 +628,28 @@ impl Launcher {
     }
 
     // The provider retires local keys before releasing a job attachment.
-    async fn sweep(&mut self) -> Result<(), Error> {
+    async fn sweep(&self) -> Result<(), Error> {
+        self.state()
+            .ensured
+            .retain(|_, at| at.elapsed() < ENSURE_RESERVATION);
         for worker in self.list().await?.into_iter().filter(|w| w.running) {
             let name = self.settings.name(&worker.container, false);
-            if !self.attached.contains(&name)
-                && !self.fetching.contains(&name)
-                && self
-                    .used
-                    .get(&name)
-                    .is_none_or(|t| t.elapsed().as_secs() >= self.settings.idle_seconds)
-            {
+            let Some(_operation) = self.try_idle_operation(&name) else {
+                continue;
+            };
+            let expired = self
+                .state()
+                .used
+                .get(&name)
+                .is_none_or(|t| t.elapsed().as_secs() >= self.settings.idle_seconds);
+            if expired {
                 self.stop(&worker.container).await?;
             }
         }
         Ok(())
     }
 
-    async fn reconcile(&mut self) -> Result<(), Error> {
+    async fn reconcile(&self) -> Result<(), Error> {
         for worker in self.list().await? {
             self.stop(&worker.container).await?;
         }
@@ -570,6 +675,45 @@ impl Launcher {
             }
         }
         Ok(())
+    }
+}
+
+impl Lifecycle {
+    fn occupied(&self, name: &str) -> bool {
+        self.attached.contains_key(name)
+            || self.fetching.contains(name)
+            || self
+                .ensured
+                .get(name)
+                .is_some_and(|at| at.elapsed() < ENSURE_RESERVATION)
+    }
+
+    fn begin_attachment(&mut self, name: &str) -> Option<Arc<()>> {
+        if self.fetching.contains(name)
+            || self.attached.contains_key(name)
+            || self
+                .ensured
+                .remove(name)
+                .is_none_or(|at| at.elapsed() >= ENSURE_RESERVATION)
+        {
+            return None;
+        }
+        let relay = Arc::new(());
+        self.attached.insert(name.to_owned(), relay.clone());
+        Some(relay)
+    }
+
+    fn has_attachment(&self, name: &str, relay: &Arc<()>) -> bool {
+        self.attached
+            .get(name)
+            .is_some_and(|current| Arc::ptr_eq(current, relay))
+    }
+
+    fn finish_attachment(&mut self, name: String, relay: &Arc<()>) {
+        if self.has_attachment(&name, relay) {
+            self.attached.remove(&name);
+            self.used.insert(name, Instant::now());
+        }
     }
 }
 

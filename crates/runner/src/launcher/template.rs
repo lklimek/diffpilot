@@ -4,6 +4,7 @@ use bollard::models::{ContainerCreateBody, HostConfig, Mount, MountType};
 use contracts::{ids::UserId, job::access::McpHttpEndpoint, runtime::ContainerId};
 
 use super::Error;
+use crate::config::{WORKER_MAX_RUNNING, max_running, valid_max_running};
 use sha2::{Digest, Sha256};
 
 /// Operator-owned limits and image pins; none are accepted from socket requests.
@@ -58,6 +59,11 @@ impl Settings {
                 Err(_) => Err(Error::Configuration(key.into())),
             }
         };
+        let capacity = match std::env::var(WORKER_MAX_RUNNING) {
+            Ok(value) => max_running(Some(value.trim())),
+            Err(std::env::VarError::NotPresent) => max_running(None),
+            Err(_) => None,
+        };
         let settings = Self {
             worker_image: get("SR_WORKER_IMAGE")?,
             fetch_image: get("SR_FETCH_IMAGE")?,
@@ -68,9 +74,9 @@ impl Settings {
             memory: number("SR_WORKER_MEMORY", 2 * 1024 * 1024 * 1024)?,
             cpus: number("SR_WORKER_CPUS", 2)?,
             pids: number("SR_WORKER_PIDS", 1024)?,
-            max_running: number("SR_WORKER_MAX_RUNNING", 3)?
-                .try_into()
-                .map_err(|_| Error::InvalidTemplate)?,
+            max_running: capacity
+                .ok_or_else(|| Error::Configuration(WORKER_MAX_RUNNING.into()))?
+                .get(),
             idle_seconds: number("SR_WORKER_IDLE_STOP", 1200)?
                 .try_into()
                 .map_err(|_| Error::InvalidTemplate)?,
@@ -96,7 +102,7 @@ impl Settings {
             || self.cpus <= 0
             || self.cpus > 16
             || self.pids <= 0
-            || self.max_running == 0
+            || !valid_max_running(self.max_running)
             || self.idle_seconds == 0
             || !self.proxy.starts_with("http://")
         {

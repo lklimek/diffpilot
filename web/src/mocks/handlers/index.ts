@@ -2,7 +2,7 @@ import { settingsV14Handlers } from "./settings-v14";
 import { getLlmActivity } from "./llm-activity";
 import { assessmentHandlers } from "./assessment-settings";
 import { requestFlow, setBackgroundAnalysis } from "./flow-work";
-import { setAskEffort, setJudgeEffort, setLlm } from "./set-llm";
+import { setAskEffort, setJudgeEffort, setLlm, setLlmJobSlots } from "./set-llm";
 import { pauseAnalysis } from "./pause-analysis";
 import { resumeAnalysis } from "./resume-analysis";
 import { analysisEvents } from "./analysis-events";
@@ -67,6 +67,7 @@ export const handlers = [
   requestFlow,
   setBackgroundAnalysis,
   setLlm,
+  setLlmJobSlots,
   pauseAnalysis,
   resumeAnalysis,
   getMe,

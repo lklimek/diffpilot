@@ -1,7 +1,10 @@
 //! Runner configuration from `SR_RUNNER_*` environment variables. Error messages name the variable, never
 //! its value.
 
-use std::path::{Path, PathBuf};
+use std::{
+    num::NonZeroUsize,
+    path::{Path, PathBuf},
+};
 
 use contracts::job::access::Secret;
 
@@ -33,6 +36,28 @@ pub const GATEWAY_KEYS_FILE: &str = "SR_GATEWAY_KEYS_TOKEN_FILE";
 pub const SKILLS_COMMIT: &str = "SR_WORKER_SKILLS_COMMIT";
 /// MiB that must stay free on the work directory's filesystem for the runner to take a job (default 2048).
 pub const DISK_RESERVE_MIB: &str = "SR_RUNNER_DISK_RESERVE_MIB";
+
+/// Concurrent jobs and running worker containers; shared by runner and launcher.
+pub const WORKER_MAX_RUNNING: &str = "SR_WORKER_MAX_RUNNING";
+pub(crate) const DEFAULT_MAX_RUNNING: usize = 3;
+pub(crate) const CONTROL_CONNECTIONS: usize = 16;
+
+pub(crate) fn max_running(value: Option<&str>) -> Option<NonZeroUsize> {
+    value.filter(|value| !value.is_empty()).map_or(
+        NonZeroUsize::new(DEFAULT_MAX_RUNNING),
+        |value| {
+            value
+                .parse::<NonZeroUsize>()
+                .ok()
+                .filter(|limit| valid_max_running(limit.get()))
+        },
+    )
+}
+
+pub(crate) fn valid_max_running(limit: usize) -> bool {
+    // Each job may use an attachment plus an independent fetch connection.
+    (1..=(tokio::sync::Semaphore::MAX_PERMITS - CONTROL_CONNECTIONS) / 2).contains(&limit)
+}
 
 const DEFAULT_RUNNER_ID: &str = "runner";
 const DEFAULT_STATE_DIR: &str = "/var/lib/diffpilot-runner";
@@ -78,6 +103,8 @@ pub struct Config {
     pub skills_commit: String,
     /// Bytes that must stay free on the work directory's filesystem for a claim.
     pub disk_reserve: u64,
+    /// Maximum number of jobs with local attempts in progress.
+    pub max_running: NonZeroUsize,
 }
 
 /// Invalid or missing configuration.
@@ -215,6 +242,8 @@ impl Config {
             skills_commit: get(SKILLS_COMMIT)
                 .unwrap_or_else(|| "71096d7d4481977added8761b2cfd63cd84852b4".into()),
             disk_reserve: disk_reserve_mib * MIB,
+            max_running: max_running(get(WORKER_MAX_RUNNING).as_deref())
+                .ok_or(ConfigError::NotPositive(WORKER_MAX_RUNNING))?,
         })
     }
 
@@ -309,6 +338,7 @@ mod tests {
         assert_eq!(config.state_dir, PathBuf::from("/var/lib/diffpilot-runner"));
         assert_eq!(config.work_dir, config.state_dir);
         assert_eq!(config.provider, ProviderKind::Appserver);
+        assert_eq!(config.max_running.get(), 3);
         assert!(!format!("{config:?}").contains("s3cret-value"));
     }
 
@@ -335,6 +365,18 @@ mod tests {
         let mut pairs = BASE.to_vec();
         pairs.push((DISK_RESERVE_MIB, "512"));
         assert_eq!(config(&pairs).unwrap().disk_reserve, 512 * 1024 * 1024);
+    }
+
+    #[test]
+    fn capacity_accepts_an_override_and_refuses_zero() {
+        let mut pairs = BASE.to_vec();
+        pairs.push((WORKER_MAX_RUNNING, "6"));
+        assert_eq!(config(&pairs).unwrap().max_running.get(), 6);
+        pairs[2].1 = "0";
+        assert!(matches!(
+            config(&pairs),
+            Err(ConfigError::NotPositive(WORKER_MAX_RUNNING))
+        ));
     }
 
     #[test]

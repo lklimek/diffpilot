@@ -123,6 +123,8 @@ fn settings() -> DashboardSettings {
 #[derive(Default)]
 struct Gate {
     missing: std::sync::Mutex<Option<(bool, usize)>>,
+    pull_updates: std::sync::Mutex<HashMap<u64, Value>>,
+    history_updates: std::sync::Mutex<HashMap<String, Value>>,
     closed: AtomicBool,
     requests: AtomicUsize,
     arrived: Notify,
@@ -168,15 +170,44 @@ async fn github_gate(State(gate): State<Arc<Gate>>, request: Request, next: Next
     }
     let response = next.run(request).await;
     let missing = *gate.missing.lock().expect("missing responses");
-    let Some((details, count)) = missing else {
+    let updates = gate.pull_updates.lock().expect("pull updates").clone();
+    let history = gate
+        .history_updates
+        .lock()
+        .expect("history updates")
+        .clone();
+    if missing.is_none() && updates.is_empty() && history.is_empty() {
         return response;
-    };
+    }
     let (parts, body) = response.into_parts();
     let bytes = body.collect().await.expect("GitHub response").to_bytes();
     let Ok(mut value) = serde_json::from_slice::<Value>(&bytes) else {
         return Response::from_parts(parts, axum::body::Body::from(bytes));
     };
-    if let Some(data) = value["data"].as_object_mut() {
+    if let Some(data) = value.get_mut("data").and_then(Value::as_object_mut) {
+        for pull in data
+            .values_mut()
+            .filter_map(|entry| entry.get_mut("pullRequest"))
+        {
+            let update = match pull["number"].as_u64() {
+                Some(number) => updates.get(&number),
+                None => pull["createdAt"].as_str().and_then(|at| history.get(at)),
+            };
+            match update {
+                Some(Value::Null) => *pull = Value::Null,
+                Some(Value::Object(fields)) => {
+                    for (field, value) in fields {
+                        pull[field] = value.clone();
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    if let (Some(data), Some((details, count))) = (
+        value.get_mut("data").and_then(Value::as_object_mut),
+        missing,
+    ) {
         let mut left = count;
         for entry in data.values_mut() {
             if left > 0

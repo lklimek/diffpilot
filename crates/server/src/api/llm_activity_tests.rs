@@ -163,7 +163,7 @@ async fn other_users_pause_end_not_exposed() {
     assert_eq!(own["last_call"]["status"]["state"], "working");
 }
 
-async fn claim_foreign_analysis(state: &AppState) {
+pub(super) async fn claim_foreign_analysis(state: &AppState, payer: &str) {
     let db = &state.db;
     let tenant = "other";
     seed_tenant(db, tenant).await.unwrap();
@@ -203,8 +203,8 @@ async fn claim_foreign_analysis(state: &AppState) {
         .await
         .unwrap()
         .id;
-    let hidden = enqueue(state, foreign, pr_id, "u2", 1).await;
-    claim(state, "u2", hidden).await;
+    let hidden = enqueue(state, foreign, pr_id, payer, 1).await;
+    claim(state, payer, hidden).await;
 }
 
 #[tokio::test]
@@ -212,7 +212,7 @@ async fn other_tenants_jobs_not_listed() {
     let (state, analysis, reader, _) = setup().await;
     let own = enqueue(&state, analysis, 1, "u1", 1).await;
 
-    claim_foreign_analysis(&state).await;
+    claim_foreign_analysis(&state, "u2").await;
 
     let snapshot = activity(&state, &reader).await;
     assert_eq!(snapshot["running"], json!([]));
@@ -286,7 +286,7 @@ async fn waits_for_usage_limit_until_own_only() {
 }
 
 #[tokio::test]
-async fn ranking_waits_for_active_analysis_in_its_tenant() {
+async fn ranking_reports_analysis_only_when_it_occupies_the_payers_slots() {
     let (state, analysis, reader, _) = setup().await;
     let refresh = seed_ranking_refresh(&state.db).await.unwrap();
     let mut spec = judge_spec(refresh);
@@ -311,11 +311,25 @@ async fn ranking_waits_for_active_analysis_in_its_tenant() {
         json!({"kind":"runner"}),
         "a ranking without an active analysis waits for a runner"
     );
-    claim_foreign_analysis(&state).await;
+    claim_foreign_analysis(&state, "u2").await;
     assert_eq!(
         activity(&state, &reader).await["queued"][0]["waits_for"],
         json!({"kind":"runner"}),
         "an active analysis in another tenant does not affect the wait"
+    );
+
+    state
+        .db
+        .settings()
+        .set_llm_job_slots("u2", std::num::NonZeroU16::new(2).unwrap())
+        .await
+        .unwrap();
+    let peer_job = enqueue(&state, analysis, 1, "u2", 2).await;
+    claim(&state, "u2", peer_job).await;
+    assert_eq!(
+        activity(&state, &reader).await["queued"][0]["waits_for"],
+        json!({"kind":"runner"}),
+        "another payer in the same tenant uses its own slots"
     );
 
     let job = enqueue(&state, analysis, 1, "u1", 1).await;
@@ -325,6 +339,17 @@ async fn ranking_waits_for_active_analysis_in_its_tenant() {
     assert_eq!(ranking["kind"], "ranking");
     assert_eq!(ranking["subject"], json!({"label":"My work","href":"/"}));
     assert_eq!(ranking["waits_for"], json!({"kind":"analysis_running"}));
+    state
+        .db
+        .settings()
+        .set_llm_job_slots("u1", std::num::NonZeroU16::new(2).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        activity(&state, &reader).await["queued"][0]["waits_for"],
+        json!({"kind":"runner"}),
+        "a free payer slot leaves the ranking eligible"
+    );
 }
 
 #[tokio::test]

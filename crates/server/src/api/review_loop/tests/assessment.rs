@@ -535,6 +535,16 @@ async fn comments_overview_and_items_get_queue_no_llm_work() {
 async fn comments_entry_post_queues_pass() {
     let w = world().await;
     w.link_llm().await;
+    assert_eq!(
+        w.call(
+            "PUT",
+            contracts::routes::SET_LANGUAGE.path,
+            Some(json!({"language":"pl"}))
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
     let uri = format!("{PR}/comments/assess");
     assert_eq!(
         w.call("POST", &uri, None).await,
@@ -568,6 +578,149 @@ async fn comments_entry_post_queues_pass() {
     let job = w.state.db.jobs().get(pass.job_id.unwrap()).await.unwrap();
     assert_eq!(job.spec.kind, contracts::agent::JobKind::VerifyComments);
     assert_eq!(job.analysis_id, None);
+    assert!(
+        job.spec
+            .prompt
+            .contains("Write every text value in Polish (polski)")
+    );
+}
+
+#[tokio::test]
+async fn assess_again_replaces_the_card_using_the_settings_language() {
+    use contracts::assessment::AssessmentMethod;
+    use contracts::job::result::{JobOutcome, JobResult};
+    use db::repo::jobs::ClaimParams;
+
+    let w = world().await;
+    w.link_llm().await;
+    let settings = w.get("/api/v1/settings/comment-assessment").await;
+    let update = json!({
+        "revision": settings["revision"],
+        "config": {"primary_method":"claudius_host","ab_prs":["acme/node-client#482"],"ab_until":null}
+    });
+    assert_eq!(
+        w.call("PUT", "/api/v1/settings/comment-assessment", Some(update))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    w.assess(L2, recommend(DecisionKind::FixHere, "backoff"), vec![])
+        .await;
+    let item = w.item(L2).await;
+    let item_id = serde_json::from_value(item["id"].clone()).unwrap();
+    let rl = w.state.db.review_loop();
+    let mut card = item["assessment"].clone();
+    assert_eq!(card["necessity"]["reason"], "in this change");
+    let uri = format!("{PR}/comments/items/C{}/assess", item["no"]);
+    let draft = "Per maintainer decision, we will cap the delay.";
+    for (setting, language, localized_reason) in [
+        (
+            "pl",
+            "Polish (polski)",
+            "Opóźnienie rośnie bez górnej granicy.",
+        ),
+        (
+            "ru",
+            "Russian (русский)",
+            "Задержка растёт без ограничения.",
+        ),
+        ("en", "English", "The delay grows without an upper limit."),
+    ] {
+        assert_eq!(
+            w.call(
+                "PUT",
+                contracts::routes::SET_LANGUAGE.path,
+                Some(json!({"language": setting}))
+            )
+            .await
+            .0,
+            StatusCode::NO_CONTENT
+        );
+        let (status, body) = w.post(&uri, json!({})).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        let pass = rl.latest_pass(w.pr_id().await).await.unwrap().unwrap();
+        assert_eq!(pass.sent.len(), 1);
+        assert_eq!(pass.sent[0].item, item_id);
+        for _ in 0..2 {
+            let now = Timestamp::now();
+            let job = w
+                .state
+                .db
+                .jobs()
+                .claim(ClaimParams {
+                    payer_ids: &["u1".into()],
+                    job_token_hash: b"fake",
+                    lease_until: now + SignedDuration::from_mins(5),
+                    now,
+                })
+                .await
+                .unwrap()
+                .unwrap();
+            let run = job.spec.assessment.unwrap();
+            assert_eq!(run.pass_id, pass.id);
+            assert!(
+                job.spec
+                    .prompt
+                    .contains(&format!("Write every text value in {language}")),
+                "{:?} did not receive {language}",
+                run.method
+            );
+            assert!(job.spec.prompt.contains("which are always in English"));
+            assert!(job.spec.prompt.contains("Keep source quotations verbatim"));
+            let report = (run.method == AssessmentMethod::ClaudiusHost).then(|| {
+                serde_json::from_value(json!({
+                    "schema_version": "4.2.0",
+                    "metadata": {
+                        "report_type":"comment_check", "input_mode":"host_supplied",
+                        "pr_number":482, "commit":pass.head
+                    },
+                    "comment_assessments": [{
+                        "id": format!("CMT-{:03}", pass.sent[0].no),
+                        "reviewer":"thepastaclaw", "source_kind":"inline",
+                        "thread_id":"PRRT_fixture482_l2", "comment_url":item["url"],
+                        "description":localized_reason, "reasoning":localized_reason,
+                        "assessment":"valid", "proposed_action":localized_reason,
+                        "proposed_decision":{"kind":"fix_here"}, "proposed_reply":draft
+                    }]
+                }))
+                .unwrap()
+            });
+            w.state
+                .db
+                .jobs()
+                .complete(
+                    &JobResult {
+                        assessment: Some(Box::new(run)),
+                        report,
+                        job_id: job.id,
+                        attempt: job.attempt,
+                        outcome: JobOutcome::Succeeded {
+                            output: json!({"purpose":"Retry calls","items":[],"answer":null}),
+                        },
+                        session: None,
+                        usage: None,
+                        skills_commit: None,
+                        llm_call: None,
+                    },
+                    now,
+                )
+                .await
+                .unwrap();
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while rl.pass(pass.id).await.unwrap().finished_at.is_none() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let updated = w.item(L2).await;
+        let next_card = &updated["assessment"];
+        assert_ne!(next_card["job"], card["job"]);
+        assert_eq!(next_card["necessity"]["reason"], localized_reason);
+        assert_eq!(next_card["reply_drafts"], json!([draft]));
+        card = next_card.clone();
+    }
 }
 
 #[tokio::test]

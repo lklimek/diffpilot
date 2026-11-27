@@ -353,16 +353,7 @@ async fn fake_launcher() -> (wiremock::MockServer, Launcher) {
     let docker =
         bollard::Docker::connect_with_http(&server.uri(), 10, bollard::API_DEFAULT_VERSION)
             .unwrap();
-    (
-        server,
-        Launcher {
-            docker,
-            settings: settings(),
-            used: HashMap::new(),
-            attached: HashSet::new(),
-            fetching: HashSet::new(),
-        },
-    )
+    (server, Launcher::new(docker, settings()))
 }
 
 #[tokio::test]
@@ -414,7 +405,7 @@ async fn foreign_container_collision_is_never_started_or_removed() {
         Mock, ResponseTemplate,
         matchers::{method, path_regex},
     };
-    let (server, mut launcher) = fake_launcher().await;
+    let (server, launcher) = fake_launcher().await;
     Mock::given(method("GET"))
         .and(path_regex(r"/containers/v13w3-test-pr-7-3/json$"))
         .respond_with(
@@ -437,9 +428,9 @@ async fn ensure_does_not_restart_a_worker_whose_old_relay_is_still_attached() {
         Mock, ResponseTemplate,
         matchers::{method, path_regex},
     };
-    let (server, mut launcher) = fake_launcher().await;
+    let (server, launcher) = fake_launcher().await;
     let name = launcher.settings.name(&pr(), false);
-    launcher.attached.insert(name);
+    launcher.state().attached.insert(name, Arc::default());
     let labels = launcher
         .settings
         .template(&pr(), false, None)
@@ -459,7 +450,7 @@ async fn ensure_does_not_restart_a_worker_whose_old_relay_is_still_attached() {
         .mount(&server)
         .await;
     assert!(matches!(
-        launcher.ensure(&pr(), None).await,
+        launcher.ensure(&pr(), None, || Ok(())).await,
         Err(Error::Busy)
     ));
     assert!(
@@ -478,7 +469,6 @@ async fn relay_forwards_stdout_only_and_keeps_worker_warm() {
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
-        sync::Mutex,
     };
     let engine = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = format!("http://{}", engine.local_addr().unwrap());
@@ -559,13 +549,12 @@ async fn relay_forwards_stdout_only_and_keeps_worker_warm() {
     });
     let docker =
         bollard::Docker::connect_with_http(&address, 10, bollard::API_DEFAULT_VERSION).unwrap();
-    let shared = Arc::new(Mutex::new(Launcher {
-        docker,
-        settings: settings(),
-        used: HashMap::new(),
-        attached: HashSet::new(),
-        fetching: HashSet::new(),
-    }));
+    let launcher = Launcher::new(docker, settings());
+    launcher
+        .state()
+        .ensured
+        .insert("v13w3-test-pr-7-3".into(), Instant::now());
+    let shared = Arc::new(launcher);
     let (socket, mut client) = tokio::net::UnixStream::pair().unwrap();
     let handler = tokio::spawn(serve::connection(socket, Arc::clone(&shared)));
     serve::write_message(
@@ -580,6 +569,7 @@ async fn relay_forwards_stdout_only_and_keeps_worker_warm() {
     let response: contracts::launcher::LauncherResponse =
         serve::read_message(&mut client).await.unwrap();
     assert_eq!(response.id, "relay");
+    assert!(response.error.is_none());
     client.write_all(b"ping").await.unwrap();
     let mut output = vec![];
     tokio::time::timeout(
@@ -592,9 +582,10 @@ async fn relay_forwards_stdout_only_and_keeps_worker_warm() {
     assert_eq!(output, b"pong");
     handler.await.unwrap().unwrap();
     fake.await.unwrap();
-    let launcher = shared.lock().await;
-    assert!(launcher.attached.is_empty());
-    assert!(launcher.used.contains_key("v13w3-test-pr-7-3"));
+    let state = shared.state();
+    assert!(state.attached.is_empty());
+    assert!(state.ensured.is_empty());
+    assert!(state.used.contains_key("v13w3-test-pr-7-3"));
 }
 
 #[tokio::test]
@@ -693,7 +684,7 @@ async fn ensure_recreates_stale_image_or_template_and_keeps_work_volume() {
         matchers::{method, path_regex},
     };
     for (running, stale_image) in [(false, true), (true, true), (false, false)] {
-        let (server, mut launcher) = fake_launcher().await;
+        let (server, launcher) = fake_launcher().await;
         let s = launcher.settings.clone();
         let mut config = s.template(&pr(), false, None).unwrap();
         if stale_image {
@@ -747,7 +738,7 @@ async fn ensure_recreates_stale_image_or_template_and_keeps_work_volume() {
                 .await;
         }
         mock_runtime(&server).await;
-        launcher.ensure(&pr(), None).await.unwrap();
+        launcher.ensure(&pr(), None, || Ok(())).await.unwrap();
         let requests = server.received_requests().await.unwrap();
         let deleted = requests.iter().position(|r| r.method == "DELETE").unwrap();
         let created = requests
@@ -793,14 +784,20 @@ async fn ensure_evicts_lru_unattached_worker_before_starting() {
     let recent = ContainerId::Judge {
         payer: UserId("recent".into()),
     };
-    launcher.used.insert(s.name(&recent, false), Instant::now());
+    launcher
+        .state()
+        .used
+        .insert(s.name(&recent, false), Instant::now());
     let attached = ContainerId::Judge {
         payer: UserId("attached".into()),
     };
     let new = ContainerId::Judge {
         payer: UserId("new".into()),
     };
-    launcher.attached.insert(s.name(&attached, false));
+    launcher
+        .state()
+        .attached
+        .insert(s.name(&attached, false), Arc::default());
     mock_inspect(&server, &s, &old, true).await;
     mock_inspect(&server, &s, &recent, true).await;
     Mock::given(method("GET"))
@@ -840,7 +837,7 @@ async fn ensure_evicts_lru_unattached_worker_before_starting() {
         .mount(&server)
         .await;
     mock_runtime(&server).await;
-    launcher.ensure(&new, None).await.unwrap();
+    launcher.ensure(&new, None, || Ok(())).await.unwrap();
     let requests = server.received_requests().await.unwrap();
     let stop = requests
         .iter()
@@ -868,19 +865,25 @@ async fn sweep_stops_only_expired_unattached_workers() {
         Mock, ResponseTemplate,
         matchers::{method, path_regex},
     };
-    let (server, mut launcher) = fake_launcher().await;
+    let (server, launcher) = fake_launcher().await;
     let s = launcher.settings.clone();
-    let ids: Vec<_> = ["old", "recent", "attached", "untracked"]
+    let ids: Vec<_> = ["old", "recent", "attached", "untracked", "busy"]
         .map(|v| ContainerId::Judge {
             payer: UserId(v.into()),
         })
         .into();
-    launcher.used.insert(s.name(&ids[1], false), Instant::now());
-    launcher.used.insert(
+    launcher
+        .state()
+        .used
+        .insert(s.name(&ids[1], false), Instant::now());
+    launcher.state().used.insert(
         s.name(&ids[0], false),
         Instant::now() - std::time::Duration::from_secs(1201),
     );
-    launcher.attached.insert(s.name(&ids[2], false));
+    launcher
+        .state()
+        .attached
+        .insert(s.name(&ids[2], false), Arc::default());
     Mock::given(method("GET"))
         .and(path_regex(r"/containers/json$"))
         .respond_with(ResponseTemplate::new(200).set_body_json(
@@ -912,6 +915,10 @@ async fn sweep_stops_only_expired_unattached_workers() {
             .mount(&server)
             .await;
     }
+    let _operation = launcher
+        .operation(&s.name(&ids[4], false))
+        .lock_owned()
+        .await;
     launcher.sweep().await.unwrap();
     assert!(
         !server
@@ -920,7 +927,9 @@ async fn sweep_stops_only_expired_unattached_workers() {
             .unwrap()
             .iter()
             .any(|r| r.method != "GET"
-                && (r.url.path().contains("recent") || r.url.path().contains("attached")))
+                && (r.url.path().contains("recent")
+                    || r.url.path().contains("attached")
+                    || r.url.path().contains("busy")))
     );
 }
 
@@ -930,7 +939,7 @@ async fn reconcile_removes_abandoned_fetch_and_lists_all_work_volumes() {
         Mock, ResponseTemplate,
         matchers::{method, path_regex},
     };
-    let (server, mut launcher) = fake_launcher().await;
+    let (server, launcher) = fake_launcher().await;
     let s = launcher.settings.clone();
     mock_inspect(&server, &s, &pr(), false).await;
     Mock::given(method("GET")).and(path_regex(r"/containers/json$"))
@@ -985,7 +994,7 @@ async fn reconcile_removes_abandoned_fetch_and_lists_all_work_volumes() {
 
 async fn assert_missing_container_volume_is_recoverable(
     server: &wiremock::MockServer,
-    launcher: &mut Launcher,
+    launcher: &Launcher,
 ) {
     use wiremock::{
         Mock, ResponseTemplate,
@@ -1058,7 +1067,7 @@ async fn assert_missing_container_volume_is_recoverable(
         .expect(1)
         .mount(server)
         .await;
-    assert!(launcher.ensure(&pr(), None).await.unwrap());
+    assert!(launcher.ensure(&pr(), None, || Ok(())).await.unwrap());
     let requests = server.received_requests().await.unwrap();
     let create = requests
         .iter()
@@ -1085,15 +1094,17 @@ async fn reconcile_keeps_pruned_idle_worker_volume_until_explicit_remove() {
         Mock, ResponseTemplate,
         matchers::{method, path_regex},
     };
-    let (server, mut launcher) = fake_launcher().await;
+    let (server, launcher) = fake_launcher().await;
     // Docker prune removed the stopped container; its labeled volume still holds the archive.
     Mock::given(method("GET"))
         .and(path_regex(r"/containers/v13w3-test-pr-7-3/json$"))
         .respond_with(ResponseTemplate::new(404))
         .mount(&server)
         .await;
-    assert_missing_container_volume_is_recoverable(&server, &mut launcher).await;
-    // Remove must also retire a volume when the container has gone missing again.
+    assert_missing_container_volume_is_recoverable(&server, &launcher).await;
+    // An abandoned reservation is stopped before the volume can be retired.
+    assert!(matches!(launcher.remove(&pr()).await, Err(Error::Busy)));
+    launcher.stop(&pr()).await.unwrap();
     launcher.remove(&pr()).await.unwrap();
     assert_eq!(
         server
@@ -1118,7 +1129,7 @@ async fn reconcile_keeps_volume_when_shutdown_interrupts_recreation() {
         Mock, ResponseTemplate,
         matchers::{method, path_regex},
     };
-    let (server, mut launcher) = fake_launcher().await;
+    let (server, launcher) = fake_launcher().await;
     let removed = Arc::new(AtomicBool::new(false));
     let deleted = Arc::new(tokio::sync::Notify::new());
     let mut config = launcher.settings.template(&pr(), false, None).unwrap();
@@ -1151,7 +1162,7 @@ async fn reconcile_keeps_volume_when_shutdown_interrupts_recreation() {
         .await;
     {
         let id = pr();
-        let ensure = launcher.ensure(&id, None);
+        let ensure = launcher.ensure(&id, None, || Ok(()));
         tokio::pin!(ensure);
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             tokio::select! {
@@ -1163,14 +1174,13 @@ async fn reconcile_keeps_volume_when_shutdown_interrupts_recreation() {
         .unwrap();
     }
     assert!(removed.load(Ordering::SeqCst));
-    assert_missing_container_volume_is_recoverable(&server, &mut launcher).await;
+    assert_missing_container_volume_is_recoverable(&server, &launcher).await;
 }
 
 #[tokio::test]
 async fn fetch_releases_lifecycle_lock_and_reserves_its_identity() {
     use contracts::launcher::{LauncherAction, LauncherRequest, LauncherResponse};
     use std::sync::Arc;
-    use tokio::sync::Mutex;
     use wiremock::{
         Mock, ResponseTemplate,
         matchers::{method, path_regex},
@@ -1215,7 +1225,7 @@ async fn fetch_releases_lifecycle_lock_and_reserves_its_identity() {
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
         .mount(&server)
         .await;
-    let shared = Arc::new(Mutex::new(launcher));
+    let shared = Arc::new(launcher);
     let (socket, mut client) = tokio::net::UnixStream::pair().unwrap();
     let task = tokio::spawn(serve::connection(socket, Arc::clone(&shared)));
     serve::write_message(
@@ -1263,9 +1273,9 @@ async fn fetch_releases_lifecycle_lock_and_reserves_its_identity() {
     .unwrap();
     assert_eq!(response.id, "list");
     {
-        let mut launcher = shared.lock().await;
+        let launcher = &shared;
         assert!(matches!(
-            launcher.ensure(&pr(), None).await,
+            launcher.ensure(&pr(), None, || Ok(())).await,
             Err(Error::Busy)
         ));
         assert!(matches!(launcher.remove(&pr()).await, Err(Error::Busy)));
@@ -1273,13 +1283,12 @@ async fn fetch_releases_lifecycle_lock_and_reserves_its_identity() {
     let _: LauncherResponse = serve::read_message(&mut client).await.unwrap();
     task.await.unwrap().unwrap();
     listing.await.unwrap().unwrap();
-    assert!(shared.lock().await.fetching.is_empty());
+    assert!(shared.state().fetching.is_empty());
 }
 
 #[tokio::test]
-async fn periodic_sweep_retries_docker_errors_and_skips_busy_lock() {
+async fn periodic_sweep_retries_docker_list_errors() {
     use std::sync::Arc;
-    use tokio::sync::Mutex;
     use wiremock::{
         Mock, ResponseTemplate,
         matchers::{method, path_regex},
@@ -1292,15 +1301,11 @@ async fn periodic_sweep_retries_docker_errors_and_skips_busy_lock() {
         )
         .mount(&server)
         .await;
-    let shared = Arc::new(Mutex::new(launcher));
-    let guard = shared.lock().await;
+    let shared = Arc::new(launcher);
     let sweep = tokio::spawn(serve::housekeeping(
         Arc::clone(&shared),
         std::time::Duration::from_millis(5),
     ));
-    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    assert!(server.received_requests().await.unwrap().is_empty());
-    drop(guard);
     let result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
             if server.received_requests().await.unwrap().len() >= 2 {
@@ -1366,7 +1371,7 @@ async fn warm_ensure_changes_per_job_memcan_without_recreating() {
         Mock, ResponseTemplate,
         matchers::{method, path_regex},
     };
-    let (server, mut launcher) = fake_launcher().await;
+    let (server, launcher) = fake_launcher().await;
     let endpoint = |url: &str, token| McpHttpEndpoint {
         url: url.into(),
         token: Secret::new(token),
@@ -1388,7 +1393,10 @@ async fn warm_ensure_changes_per_job_memcan_without_recreating() {
     mock_runtime(&server).await;
     let jobs = [None, Some(&old), Some(&rotated), None, Some(&moved)];
     for next in jobs {
-        assert!(!launcher.ensure(&pr(), next).await.unwrap());
+        assert!(!launcher.ensure(&pr(), next, || Ok(())).await.unwrap());
+        let name = launcher.settings.name(&pr(), false);
+        let relay = launcher.begin_attachment(&name).unwrap();
+        launcher.finish_attachment(name, &relay);
     }
     let requests = server.received_requests().await.unwrap();
     let resets: Vec<_> = requests
@@ -1430,8 +1438,9 @@ async fn ensure_refuses_when_every_running_slot_is_attached() {
         payer: UserId("new".into()),
     };
     launcher
+        .state()
         .attached
-        .insert(launcher.settings.name(&old, false));
+        .insert(launcher.settings.name(&old, false), Arc::default());
     Mock::given(method("GET"))
         .and(path_regex(r"/containers/v13w3-test-user-new/json$"))
         .respond_with(ResponseTemplate::new(404))
@@ -1449,7 +1458,7 @@ async fn ensure_refuses_when_every_running_slot_is_attached() {
         .mount(&server)
         .await;
     assert!(matches!(
-        launcher.ensure(&new, None).await,
+        launcher.ensure(&new, None, || Ok(())).await,
         Err(Error::Busy)
     ));
     assert!(
@@ -1561,10 +1570,7 @@ async fn service_replies_with_safe_error_before_any_relay_upgrade() {
     use contracts::launcher::{LauncherAction, LauncherFailure, LauncherRequest, LauncherResponse};
     let (_server, launcher) = fake_launcher().await;
     let (socket, mut client) = tokio::net::UnixStream::pair().unwrap();
-    let handler = tokio::spawn(serve::connection(
-        socket,
-        std::sync::Arc::new(tokio::sync::Mutex::new(launcher)),
-    ));
+    let handler = tokio::spawn(serve::connection(socket, std::sync::Arc::new(launcher)));
     serve::write_message(
         &mut client,
         &LauncherRequest {
@@ -1587,4 +1593,420 @@ async fn service_replies_with_safe_error_before_any_relay_upgrade() {
         handler.await.unwrap(),
         Err(Error::InvalidTemplate)
     ));
+}
+
+#[tokio::test]
+async fn ensure_keeps_the_older_unattached_reservation_when_newer_idle_worker_can_be_evicted() {
+    use wiremock::{
+        Mock, ResponseTemplate,
+        matchers::{method, path_regex},
+    };
+    let (server, mut launcher) = fake_launcher().await;
+    launcher.settings.max_running = 2;
+    let settings = launcher.settings.clone();
+    let judge = |payer: &str| ContainerId::Judge {
+        payer: UserId(payer.into()),
+    };
+    let reserved = judge("a");
+    let incoming = judge("b");
+    let idle = judge("c");
+    for id in [&reserved, &idle] {
+        mock_inspect(&server, &settings, id, true).await;
+    }
+    Mock::given(method("GET"))
+        .and(path_regex(r"/containers/v13w3-test-user-b/json$"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"/containers/json$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+            summary(&settings, &reserved, true),
+            summary(&settings, &idle, true),
+        ])))
+        .mount(&server)
+        .await;
+    for (verb, path) in [
+        ("POST", r"/containers/v13w3-test-user-a/stop$"),
+        ("DELETE", r"/containers/v13w3-test-user-a$"),
+        ("POST", r"/containers/v13w3-test-user-c/stop$"),
+        ("DELETE", r"/containers/v13w3-test-user-c$"),
+        ("POST", r"/containers/v13w3-test-user-b/start$"),
+    ] {
+        Mock::given(method(verb))
+            .and(path_regex(path))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("POST"))
+        .and(path_regex(r"/containers/create$"))
+        .respond_with(
+            ResponseTemplate::new(201).set_body_json(serde_json::json!({"Id":"b","Warnings":[]})),
+        )
+        .mount(&server)
+        .await;
+    mock_runtime(&server).await;
+
+    launcher.ensure(&reserved, None, || Ok(())).await.unwrap();
+    let now = Instant::now();
+    launcher.state().used.insert(
+        settings.name(&reserved, false),
+        now - std::time::Duration::from_secs(1),
+    );
+    launcher
+        .state()
+        .used
+        .insert(settings.name(&idle, false), now);
+    launcher.ensure(&incoming, None, || Ok(())).await.unwrap();
+    let stopped: Vec<_> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.url.path().ends_with("/stop"))
+        .collect();
+    assert_eq!(stopped.len(), 1);
+    assert!(stopped[0].url.path().ends_with("/v13w3-test-user-c/stop"));
+}
+
+#[tokio::test]
+async fn disconnected_stop_request_cannot_stop_a_newer_owner() {
+    use contracts::launcher::{LauncherAction, LauncherRequest};
+    use std::sync::Arc;
+
+    let (engine, launcher) = fake_launcher().await;
+    let shared = Arc::new(launcher);
+    let guard = shared
+        .operation(&shared.settings.name(&pr(), false))
+        .lock_owned()
+        .await;
+    let (socket, mut client) = tokio::net::UnixStream::pair().unwrap();
+    let handler = tokio::spawn(serve::connection(socket, Arc::clone(&shared)));
+    serve::write_message(
+        &mut client,
+        &LauncherRequest {
+            id: "expired-stop".into(),
+            action: LauncherAction::Stop { container: pr() },
+        },
+    )
+    .await
+    .unwrap();
+    drop(client);
+    drop(guard);
+
+    assert!(handler.await.unwrap().is_err());
+    assert!(engine.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn stopped_worker_can_attach_again_before_its_old_relay_exits() {
+    use wiremock::{
+        Mock, ResponseTemplate,
+        matchers::{method, path_regex},
+    };
+
+    let (engine, launcher) = fake_launcher().await;
+    mock_inspect(&engine, &launcher.settings, &pr(), true).await;
+    mock_runtime(&engine).await;
+    Mock::given(method("POST"))
+        .and(path_regex(r"/containers/v13w3-test-pr-7-3/stop$"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&engine)
+        .await;
+    let name = launcher.settings.name(&pr(), false);
+
+    launcher.ensure(&pr(), None, || Ok(())).await.unwrap();
+    let old_relay = launcher.begin_attachment(&name).unwrap();
+    launcher.stop(&pr()).await.unwrap();
+    launcher.ensure(&pr(), None, || Ok(())).await.unwrap();
+    let new_relay = launcher.begin_attachment(&name).unwrap();
+
+    launcher.finish_attachment(name.clone(), &old_relay);
+    assert!(launcher.state().has_attachment(&name, &new_relay));
+    launcher.finish_attachment(name.clone(), &new_relay);
+    assert!(!launcher.state().occupied(&name));
+}
+
+#[tokio::test]
+async fn slow_worker_configure_does_not_block_an_unrelated_stop() {
+    use contracts::launcher::{LauncherAction, LauncherRequest, LauncherResponse};
+    use tokio::{net::UnixStream, sync::Notify};
+    use wiremock::{
+        Mock, Request, ResponseTemplate,
+        matchers::{method, path_regex},
+    };
+
+    let (engine, launcher) = fake_launcher().await;
+    let other = ContainerId::Pr {
+        pull_request_id: 8,
+        payer: UserId("3".into()),
+    };
+    for worker in [pr(), other.clone()] {
+        mock_inspect(&engine, &launcher.settings, &worker, true).await;
+    }
+    let configuring = Arc::new(Notify::new());
+    let entered = Arc::clone(&configuring);
+    Mock::given(method("GET"))
+        .and(path_regex(r"/exec/reset/json$"))
+        .respond_with(move |_: &Request| {
+            entered.notify_one();
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"Running":false,"ExitCode":0}))
+                .set_delay(std::time::Duration::from_secs(2))
+        })
+        .with_priority(1)
+        .mount(&engine)
+        .await;
+    mock_runtime(&engine).await;
+    Mock::given(method("POST"))
+        .and(path_regex(r"/containers/v13w3-test-pr-8-3/stop$"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&engine)
+        .await;
+    let shared = Arc::new(launcher);
+    let request = |id: &str, action| {
+        let (socket, mut client) = UnixStream::pair().unwrap();
+        let state = Arc::clone(&shared);
+        let request = LauncherRequest {
+            id: id.into(),
+            action,
+        };
+        tokio::spawn(async move {
+            let handler = tokio::spawn(serve::connection(socket, state));
+            serve::write_message(&mut client, &request).await.unwrap();
+            let response: LauncherResponse = serve::read_message(&mut client).await.unwrap();
+            handler.await.unwrap().unwrap();
+            response
+        })
+    };
+    let ensure = request(
+        "ensure",
+        LauncherAction::Ensure {
+            container: pr(),
+            memcan: None,
+        },
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(2), configuring.notified())
+        .await
+        .unwrap();
+    let stop = request("stop", LauncherAction::Stop { container: other });
+    let response = tokio::time::timeout(std::time::Duration::from_secs(1), stop)
+        .await
+        .expect("a different worker's configure must not hold up Stop")
+        .unwrap();
+    assert!(response.error.is_none());
+    assert!(!ensure.is_finished());
+    assert!(ensure.await.unwrap().error.is_none());
+}
+
+#[tokio::test]
+async fn disconnected_ensure_cannot_create_a_reservation_after_allocation_unlocks() {
+    use contracts::launcher::{LauncherAction, LauncherRequest};
+    use tokio::net::UnixStream;
+
+    let (engine, launcher) = fake_launcher().await;
+    mock_inspect(&engine, &launcher.settings, &pr(), true).await;
+    mock_runtime(&engine).await;
+    let launcher = Arc::new(launcher);
+    let name = launcher.settings.name(&pr(), false);
+    let worker = launcher.operation(&name);
+    let allocation = launcher.allocation.lock().await;
+    let (socket, mut client) = UnixStream::pair().unwrap();
+    let handler = tokio::spawn(serve::connection(socket, launcher.clone()));
+    serve::write_message(
+        &mut client,
+        &LauncherRequest {
+            id: "stale-ensure".into(),
+            action: LauncherAction::Ensure {
+                container: pr(),
+                memcan: None,
+            },
+        },
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while worker.try_lock().is_ok() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    drop(client);
+    drop(allocation);
+    assert!(handler.await.unwrap().is_err());
+    assert!(engine.received_requests().await.unwrap().is_empty());
+    assert!(launcher.state().ensured.is_empty());
+}
+
+#[tokio::test]
+async fn disconnected_configure_stops_the_worker_and_releases_its_reservation() {
+    use contracts::launcher::{LauncherAction, LauncherRequest};
+    use tokio::{net::UnixStream, sync::Notify};
+    use wiremock::{
+        Mock, Request, ResponseTemplate,
+        matchers::{method, path_regex},
+    };
+
+    let (engine, launcher) = fake_launcher().await;
+    mock_inspect(&engine, &launcher.settings, &pr(), true).await;
+    mock_runtime(&engine).await;
+    let configuring = Arc::new(Notify::new());
+    let entered = Arc::clone(&configuring);
+    Mock::given(method("GET"))
+        .and(path_regex(r"/exec/reset/json$"))
+        .respond_with(move |_: &Request| {
+            entered.notify_one();
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"Running":false,"ExitCode":0}))
+                .set_delay(std::time::Duration::from_millis(200))
+        })
+        .with_priority(1)
+        .mount(&engine)
+        .await;
+    Mock::given(method("POST"))
+        .and(path_regex(r"/containers/v13w3-test-pr-7-3/stop$"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&engine)
+        .await;
+
+    let launcher = Arc::new(launcher);
+    let (socket, mut client) = UnixStream::pair().unwrap();
+    let handler = tokio::spawn(serve::connection(socket, launcher.clone()));
+    serve::write_message(
+        &mut client,
+        &LauncherRequest {
+            id: "abandoned-configure".into(),
+            action: LauncherAction::Ensure {
+                container: pr(),
+                memcan: None,
+            },
+        },
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), configuring.notified())
+        .await
+        .unwrap();
+    assert_eq!(launcher.state().ensured.len(), 1);
+    drop(client);
+
+    assert!(handler.await.unwrap().is_err());
+    assert!(launcher.state().ensured.is_empty());
+    engine.verify().await;
+}
+
+#[tokio::test]
+async fn disconnected_cold_ensure_reclaims_worker_after_finishing_fetch() {
+    use contracts::launcher::{LauncherAction, LauncherRequest};
+    use tokio::{net::UnixStream, sync::Notify};
+    use wiremock::{
+        Mock, Request, ResponseTemplate,
+        matchers::{method, path_regex},
+    };
+
+    let (engine, launcher) = fake_launcher().await;
+    mock_runtime(&engine).await;
+    mock_inspect(&engine, &launcher.settings, &pr(), true).await;
+    let worker = launcher.settings.template(&pr(), false, None).unwrap();
+    Mock::given(method("GET"))
+        .and(path_regex(r"/containers/v13w3-test-pr-7-3/json$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "Config":{"Image":worker.image,"Labels":worker.labels},"State":{"Running":false}
+        })))
+        .with_priority(1)
+        .up_to_n_times(1)
+        .mount(&engine)
+        .await;
+    for (verb, route, response) in [
+        (
+            "GET",
+            r"/containers/json$",
+            ResponseTemplate::new(200).set_body_json(serde_json::json!([])),
+        ),
+        (
+            "POST",
+            r"/containers/v13w3-test-(pr|fetch)-7-3/start$",
+            ResponseTemplate::new(204),
+        ),
+        (
+            "GET",
+            r"/containers/v13w3-test-fetch-7-3/json$",
+            ResponseTemplate::new(404),
+        ),
+        (
+            "POST",
+            r"/containers/create$",
+            ResponseTemplate::new(201)
+                .set_body_json(serde_json::json!({"Id":"fetch","Warnings":[]})),
+        ),
+        (
+            "DELETE",
+            r"/containers/v13w3-test-fetch-7-3$",
+            ResponseTemplate::new(204),
+        ),
+        (
+            "POST",
+            r"/containers/v13w3-test-pr-7-3/stop$",
+            ResponseTemplate::new(204),
+        ),
+    ] {
+        Mock::given(method(verb))
+            .and(path_regex(route))
+            .respond_with(response)
+            .mount(&engine)
+            .await;
+    }
+    let fetching = Arc::new(Notify::new());
+    let entered = fetching.clone();
+    Mock::given(method("POST"))
+        .and(path_regex(r"/containers/v13w3-test-fetch-7-3/wait$"))
+        .respond_with(move |_: &Request| {
+            entered.notify_one();
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"StatusCode":0}))
+                .set_delay(std::time::Duration::from_millis(200))
+        })
+        .mount(&engine)
+        .await;
+    let launcher = Arc::new(launcher);
+    let (socket, mut client) = UnixStream::pair().unwrap();
+    let handler = tokio::spawn(serve::connection(socket, launcher.clone()));
+    serve::write_message(
+        &mut client,
+        &LauncherRequest {
+            id: "abandoned-fetch".into(),
+            action: LauncherAction::Ensure {
+                container: pr(),
+                memcan: None,
+            },
+        },
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), fetching.notified())
+        .await
+        .unwrap();
+    assert_eq!(launcher.state().fetching.len(), 1);
+    drop(client);
+
+    assert!(handler.await.unwrap().is_err());
+    assert!(launcher.state().ensured.is_empty());
+    assert!(launcher.state().fetching.is_empty());
+    let requests = engine.received_requests().await.unwrap();
+    let fetched = requests
+        .iter()
+        .position(|request| {
+            request.method == "DELETE" && request.url.path().ends_with("v13w3-test-fetch-7-3")
+        })
+        .unwrap();
+    let stopped = requests
+        .iter()
+        .position(|request| request.url.path().ends_with("v13w3-test-pr-7-3/stop"))
+        .unwrap();
+    assert!(fetched < stopped);
 }

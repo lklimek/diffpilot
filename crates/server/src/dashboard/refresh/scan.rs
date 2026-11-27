@@ -191,11 +191,12 @@ pub(super) async fn scan<T: TokenSource>(
     let details_read = Instant::now();
     notes.append(&mut details.notes);
     notes.extend(listing.notes.iter().cloned());
-    details.found.retain(|_, detail| detail.state == "OPEN");
-    progress.log(format!(
-        "PR details: {} of {total} read",
-        details.found.len()
-    ));
+    let terminal = details
+        .found
+        .extract_if(.., |_, detail| detail.state != "OPEN")
+        .collect();
+    let open_read = details.found.len();
+    progress.log(format!("PR details: {open_read} of {total} read"));
     progress
         .step(
             ScanStepKey::PrDetails,
@@ -279,9 +280,15 @@ pub(super) async fn scan<T: TokenSource>(
         repos: &configured,
         owners: &settings.enumerate_owners,
     };
-    let (history, history_notes) =
-        history::collect(client, input.rules, &logins, &refused_from, first, start).await?;
-    notes.extend(history_notes);
+    let history_read = history::collect(client, &logins, &refused_from, first, start).await?;
+    notes.extend(history_read.notes);
+    let history = history::reconcile(
+        input.rules,
+        &mut details.found,
+        &terminal,
+        &history_read.found,
+        start,
+    );
     progress.log(format!("history: {} events since {first}", history.len()));
     let events = count(history.len());
     progress

@@ -459,6 +459,9 @@ function ChatShell({ source, children }: { source: ChatSource; children: ReactNo
       );
       setBox((old) => (JSON.stringify(old) === JSON.stringify(next) ? old : next));
       const inspectorHidden = (rect('[data-column="inspector"]')?.width ?? 0) < (2 * next.minWidth) / 3;
+      // Keep the launcher clear of the full-height button that restores the Inspector.
+      const inspectorStripWidth = rect('[data-strip="inspector"]')?.width ?? 0;
+      launcher.current?.style.setProperty("--ask-launcher-inset", `${inspectorStripWidth}px`);
       // The launcher's corner stays free: the Inspector (or, without it, the centre) ends above it.
       const launcherBox = launcher.current?.querySelector("button")?.getBoundingClientRect();
       const launcherPad = launcherBox?.height ? `${Math.ceil(view.height - launcherBox.top) + 8}px` : "0px";

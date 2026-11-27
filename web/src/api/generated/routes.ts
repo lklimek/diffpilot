@@ -54,6 +54,7 @@ export const routes = {
   setLanguage: { method: "PUT", path: "/api/v1/settings/language", auth: "session_csrf" },
   setControlledOwners: { method: "PUT", path: "/api/v1/settings/controlled-owners", auth: "session_csrf" },
   setLlm: { method: "PUT", path: "/api/v1/settings/llm", auth: "session_csrf" },
+  setLlmJobSlots: { method: "PUT", path: "/api/v1/settings/llm/job-slots", auth: "session_csrf" },
   setAskEffort: { method: "PUT", path: "/api/v1/settings/llm/ask-effort", auth: "session_csrf" },
   getRepoSettings: { method: "GET", path: "/api/v1/repos/{owner}/{name}/settings", auth: "read" },
   getDashboard: { method: "GET", path: "/api/v1/dashboard", auth: "read" },

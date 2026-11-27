@@ -19,7 +19,7 @@ pub struct DashboardTarget {
     pub repo: RepoRef,
     /// PR or issue number.
     pub number: u32,
-    /// The item is absent and the hint named a login associated with the member.
+    /// The item is absent and may qualify for admission to the ranking.
     pub candidate: bool,
 }
 
@@ -63,7 +63,8 @@ impl Github<'_> {
         .await?)
     }
 
-    /// Maps hints to compatible snapshots by item, named check PR or repository and head SHA.
+    /// Maps hints by ranked item, check identity or a login tied to the dashboard.
+    /// History reads can wait for an initial scan to produce its first snapshot.
     pub async fn dashboard_targets(
         &self,
         changes: &[WebhookChange],
@@ -79,17 +80,24 @@ impl Github<'_> {
                       value ->> '$.base_repository.name.owner' AS base_owner,
                       value ->> '$.base_repository.name.name' AS base_name,
                       value ->> '$.number' AS number, value ->> '$.head_sha' AS sha,
-                      value ->> '$.candidate_login' AS login
+                      value ->> '$.candidate_login' AS login,
+                      COALESCE(value ->> '$.action' IN ('closed', 'reopened'), 0) AS lifecycle
                FROM json_each(?1)
              ), snapshots AS MATERIALIZED (
                SELECT m.tenant_id, m.user_id, u.login, d.snapshot
                FROM memberships m JOIN users u ON u.id = m.user_id
-               JOIN dashboard_refreshes d ON d.id = (
+               LEFT JOIN dashboard_refreshes d ON d.id = (
                  SELECT id FROM dashboard_refreshes
                  WHERE tenant_id = m.tenant_id AND user_id = m.user_id AND state IN ('ranking', 'finished')
                  ORDER BY started_at DESC, rowid DESC LIMIT 1
+               ) AND d.snapshot ->> '$.version' = ?2
+               WHERE d.id IS NOT NULL OR (
+                 EXISTS (SELECT 1 FROM signals WHERE kind = 'pull_request' AND lifecycle)
+                 AND EXISTS (
+                   SELECT 1 FROM dashboard_refreshes
+                   WHERE tenant_id = m.tenant_id AND user_id = m.user_id AND state = 'scanning'
+                 )
                )
-               WHERE d.snapshot ->> '$.version' = ?2
              ), items AS MATERIALIZED (
                SELECT d.tenant_id, d.user_id, lists.key = 1 AS issue,
                       item.value ->> '$.facts.repo.owner' AS owner,
@@ -102,7 +110,10 @@ impl Github<'_> {
                   d.snapshot -> '$.pull_requests', d.snapshot -> '$.issues')) lists,
                   json_each(lists.value) item
              )
-             SELECT s.position AS change, i.tenant_id, i.user_id, i.owner, i.name, i.number, 0 AS candidate
+             SELECT s.position AS change, i.tenant_id, i.user_id,
+                    CASE WHEN s.kind = 'pull_request' AND s.lifecycle THEN s.owner ELSE i.owner END AS owner,
+                    CASE WHEN s.kind = 'pull_request' AND s.lifecycle THEN s.name ELSE i.name END AS name,
+                    i.number, 0 AS candidate
              FROM signals s JOIN items i
              LEFT JOIN repos r ON r.tenant_id = i.tenant_id AND r.owner = i.owner AND r.name = i.name
              WHERE (
@@ -125,14 +136,25 @@ impl Github<'_> {
                  )
              )
              UNION ALL
-             SELECT s.position, d.tenant_id, d.user_id, s.owner, s.name, s.number, 1
+             SELECT s.position, d.tenant_id, d.user_id, s.owner, s.name, s.number, NOT s.lifecycle
              FROM signals s JOIN snapshots d
              LEFT JOIN dashboard_settings settings USING (tenant_id, user_id)
              WHERE s.kind = 'pull_request' AND s.login IS NOT NULL AND s.number IS NOT NULL
+               AND (s.lifecycle OR d.snapshot IS NOT NULL)
+               AND (NOT s.lifecycle OR NOT EXISTS (
+                 SELECT 1 FROM repos r
+                 WHERE r.tenant_id = d.tenant_id AND r.owner = s.owner COLLATE NOCASE
+                   AND r.name = s.name COLLATE NOCASE AND r.github_id != s.repo_id
+               ))
                AND (d.login = s.login COLLATE NOCASE OR EXISTS (
                     SELECT 1 FROM json_each(settings.linked_logins)
                     WHERE value = s.login COLLATE NOCASE
-               ))
+               ) OR (s.lifecycle AND (
+                    d.snapshot ->> '$.own_login' = s.login COLLATE NOCASE OR EXISTS (
+                        SELECT 1 FROM json_each(d.snapshot -> '$.settings.linked_logins')
+                        WHERE value = s.login COLLATE NOCASE
+                    )
+               )))
                AND NOT EXISTS (SELECT 1 FROM items i WHERE i.tenant_id = d.tenant_id AND i.user_id = d.user_id
                    AND NOT i.issue AND i.number = s.number
                    AND i.owner = s.owner COLLATE NOCASE AND i.name = s.name COLLATE NOCASE)",

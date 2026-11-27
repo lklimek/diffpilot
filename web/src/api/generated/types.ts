@@ -4964,6 +4964,15 @@ kind: LlmJobKind, };
 export type LlmJobKind = "analysis" | "flow_analysis" | "ranking" | "comment_assessment" | "ask";
 
 /**
+ * Request and response of `PUT /api/v1/settings/llm/job-slots`.
+ */
+export type LlmJobSlots = {
+/**
+ * Maximum concurrent jobs using the authenticated payer's plan.
+ */
+slots: number, };
+
+/**
  * Language of LLM-written texts.
  */
 export type LlmLanguage = "en" | "pl" | "ru";
@@ -4982,7 +4991,7 @@ id: string,
 label: string, };
 
 /**
- * Allowed models and the installation-wide choice for newly submitted jobs.
+ * Allowed models and this payer's effective choice for newly submitted jobs.
  */
 export type LlmSelection = {
 /**
@@ -4994,7 +5003,7 @@ models: Array<LlmModelOption>,
  */
 efforts: Array<ReasoningEffort>,
 /**
- * Current choice, or the server default before the first save.
+ * Current choice, falling back to the installation choice or built-in default.
  */
 current: ModelChoice,
 /**
@@ -5003,16 +5012,16 @@ current: ModelChoice,
  */
 judge_effort?: ReasoningEffort,
 /**
- * Reasoning effort of Ask jobs (default medium); every other job uses `current`. Optional on the wire;
+ * Reasoning effort of Ask jobs (default medium). Optional on the wire;
  * absent on older servers.
  */
 ask_effort?: ReasoningEffort,
 /**
- * Login of the last editor of the model, effort, ranking effort or Ask effort; null for the default.
+ * Login of the last editor of the model, effort, ranking effort or Ask effort; null without a personal save.
  */
 changed_by: string | null,
 /**
- * Time of the last save; null for the default.
+ * Time of the last save; null without a personal save.
  */
 changed_at: string | null, };
 
@@ -7658,9 +7667,13 @@ viewed: boolean, };
  */
 export type Settings = {
 /**
- * Installation-wide model selection; absent on older servers.
+ * The payer's effective model and effort selection; absent on older servers.
  */
 llm_selection?: LlmSelection,
+/**
+ * The payer's concurrent job limit; absent on older servers.
+ */
+llm_job_slots?: number,
 /**
  * Tenant usage in the server's local calendar; absent on older responses.
  */

@@ -95,8 +95,9 @@ Plan `docs/review-workflow-plan.md` §2.8, §5 (ADR-023). Types in `crates/contr
   as notifications when its per-browser toggle is on. Heartbeats and token re-checks as for dashboard streams; the
   stream ends when the server stops.
   The v1.4 `llm_activity {activity}` event carries the same reader-scoped snapshot as `GET /api/v1/llm/activity`.
-  The stream starts with the current snapshot on every connection. Job state changes trigger another snapshot
-  when the reader's view changes, at most once a second per stream.
+  The stream starts with the current snapshot on every connection. It checks for visible changes on tenant job
+  updates and at the heartbeat. Heartbeat checks also pick up the reader's slot changes and capacity used by
+  their jobs in other tenants. Activity events are sent at most once a second per stream.
   Other jobs in the reader's tenant carry only their kind and a response-local opaque id. The reader's pause
   and last call remain private. [Phase B activity contract](../v1.4-phase-b-plan.md#8-llm-activity-c7)
 - `GET /api/v1/decision-feed/events` (RF2, `read`, query `FeedQuery`): `FeedEvent` tagged by `event`:

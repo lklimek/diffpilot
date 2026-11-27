@@ -33,6 +33,26 @@ pub struct RepoRecord {
 }
 
 impl Repos<'_> {
+    /// Finds tenant-bound repository names for the supplied GitHub IDs.
+    pub async fn bound_names(
+        &self,
+        tenant: &str,
+        ids: &[i64],
+    ) -> Result<Vec<(i64, RepoRef)>, DbError> {
+        let rows: Vec<(i64, String, String)> = sqlx::query_as(
+            "SELECT github_id, owner, name FROM repos
+             WHERE tenant_id = ?1 AND github_id IN (SELECT value FROM json_each(?2))",
+        )
+        .bind(tenant)
+        .bind(serde_json::to_string(ids)?)
+        .fetch_all(self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, owner, name)| (id, RepoRef { owner, name }))
+            .collect())
+    }
+
     /// Inserts the repository or updates its spelling and GitHub id (owner and name match case-insensitively).
     pub async fn upsert(
         &self,

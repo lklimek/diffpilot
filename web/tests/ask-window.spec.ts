@@ -120,19 +120,39 @@ test("the unread badge persists until an out-of-view answer is reached", async (
   await expect(badge).toBeHidden();
 });
 
-test("the phone sheet opens at half height and expands without desktop controls", async ({ page }) => {
+test.describe("on a phone", () => {
+  test.use({ isMobile: true, hasTouch: true, viewport: { width: 390, height: 844 } });
+
+  test("the phone sheet opens at half height and expands without desktop controls", async ({ page }) => {
+    await page.goto(flow);
+    await page.getByRole("button", { name: launcher }).tap();
+    const chat = page.getByRole("dialog", { name: "Ask" });
+    const half = (await chat.boundingBox())!;
+    expect(half).toMatchObject({ x: 0, width: 390, height: 422 });
+    await expect(chat.getByRole("button", { name: "Position" })).toHaveCount(0);
+    await expect(chat.getByRole("button", { name: /^Move the Ask window/ })).toHaveCount(0);
+    await chat.getByRole("button", { name: "Full", exact: true }).tap();
+    expect((await chat.boundingBox())!.height).toBeGreaterThan(half.height);
+    await chat.getByRole("button", { name: "Half", exact: true }).tap();
+    expect(await chat.boundingBox()).toEqual(half);
+  });
+});
+
+test("the Ask tooltip at phone width leaves the launcher accessible to a mouse and keyboard", async ({
+  page,
+}) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(flow);
-  await page.getByRole("button", { name: launcher }).click();
+  const ask = page.getByRole("button", { name: launcher });
   const chat = page.getByRole("dialog", { name: "Ask" });
-  const half = (await chat.boundingBox())!;
-  expect(half).toMatchObject({ x: 0, width: 390, height: 422 });
-  await expect(chat.getByRole("button", { name: "Position" })).toHaveCount(0);
-  await expect(chat.getByRole("button", { name: /^Move the Ask window/ })).toHaveCount(0);
-  await chat.getByRole("button", { name: "Full", exact: true }).click();
-  expect((await chat.boundingBox())!.height).toBeGreaterThan(half.height);
-  await chat.getByRole("button", { name: "Half", exact: true }).click();
-  expect(await chat.boundingBox()).toEqual(half);
+  await ask.hover();
+  await expect(page.getByRole("tooltip").filter({ hasText: "Your private Ask chat" })).toBeVisible();
+  await ask.click();
+  await expect(chat).toBeVisible();
+  await chat.getByRole("button", { name: "Hide the Ask chat" }).click();
+  await expect(ask).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(chat).toBeVisible();
 });
 
 for (const view of ["Flows", "Files"] as const) {

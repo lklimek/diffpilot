@@ -40,8 +40,10 @@ walked step by step, with LLM analysis (container app-server) clearly separated 
 - `LlmProvider` is `run` + `resume` + `cancel`, with container retirement acknowledged after local key and volume
   removal. One analytic thread per (PR, payer); Ask forks only its payer's thread, otherwise uses a private context
   pack. Worker volumes retain threads. First-Ask compaction above 80k requires explicit acknowledgement (ADR-025).
-  Model and effort come from `select_model`, a plain Rust function in the server using the stored
-  installation-wide Settings choice (default Sol, high; Ask: stored Ask effort, default medium). Each new job reads the current choice.
+  Each new job snapshots its payer's model and effort through the server's `select_model`. Unset choices fall
+  back to the saved installation defaults, then to Sol/high, medium for Ask and low for ranking (ADR-025).
+  Claim counts the payer's occupied job slots under the same transaction as the lease. Each (PR, payer)
+  volume still serves one job at a time. The launcher enforces the deployment's worker limit.
 - Flow jobs write tagged `out/flow.md` and run `sr-check`; server and checker share `analysis::tagged` (ADR-014).
   Format version 3 (incidental changes): server and worker images are rebuilt together. Plan, PR context and Ask keep JSON.
 - Only `runner::provider` and `server::gateway` know Codex; only `analysis::tech` (TechPlugin) knows path/line rules and call hierarchy

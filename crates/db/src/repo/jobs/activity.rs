@@ -54,7 +54,7 @@ pub struct OwnJob {
     pub queued_at: Option<Timestamp>,
     /// When a usage-limited job can be requeued.
     pub resumes_at: Option<Timestamp>,
-    /// A review analysis is active in this tenant (dashboard ranking wait).
+    /// The payer's active analysis jobs occupy the slots needed by a queued judge job.
     pub analysis_running: bool,
 }
 
@@ -88,7 +88,7 @@ impl Jobs<'_> {
 
     /// Read the tenant's active queue and the reader's credential in one SQLite snapshot.
     pub async fn activity(&self, tenant: &str, reader: &str) -> Result<Activity, DbError> {
-        let rows = sqlx::query(
+        let rows = sqlx::query(concat!(
             "WITH active AS (
                  SELECT j.id, j.kind, j.state, j.pull_request_id, j.analysis_id, j.claimed_at, j.created_at,
                      j.resumes_at, json_extract(j.spec, '$.payer') = ?2 AS own
@@ -101,11 +101,9 @@ impl Jobs<'_> {
                  CASE WHEN j.own THEN j.created_at END AS queued_at,
                  CASE WHEN j.own THEN j.resumes_at END AS resumes_at,
                  r.owner, r.name, CASE WHEN r.id IS NOT NULL THEN p.number END AS pr_number,
-                 CASE WHEN j.own AND j.kind = 'judge_work' AND j.state = 'queued' THEN EXISTS (
-                     SELECT 1 FROM active a JOIN analyses an ON an.id = a.analysis_id
-                     WHERE an.tenant_id = reader.tenant_id
-                         AND a.state IN ('claimed', 'running') AND an.state IN ('planning', 'running', 'paused')
-                 ) ELSE 0 END AS analysis_running,
+                 CASE WHEN j.own AND j.kind = 'judge_work' AND j.state = 'queued'
+                      THEN COALESCE((", judge_capacity_sql!("?2"), ") = 'waiting_for_analysis', 0)
+                      ELSE 0 END AS analysis_running,
                  c.paused_until, c.last_call_at, c.last_call_ok, c.last_call_message, c.last_call_failure,
                  CASE WHEN c.state = 'relink_needed' THEN c.relink_needed_at END AS unusable_since
              FROM reader
@@ -114,7 +112,7 @@ impl Jobs<'_> {
              LEFT JOIN repos r ON r.id = p.repo_id AND r.tenant_id = reader.tenant_id
              LEFT JOIN llm_credentials c ON c.user_id = reader.user_id AND c.tenant_id = reader.tenant_id
              ORDER BY running DESC, j.own DESC, queued_at, j.kind, own_id",
-        )
+        ))
         .bind(tenant)
         .bind(reader)
         .fetch_all(self.pool)

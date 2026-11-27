@@ -1,12 +1,20 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { act, render, renderHook, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it } from "vitest";
 import { startMockServer } from "../../__tests__/screen";
 import type { LinesResponse, RangeQuery } from "../../api/generated/types";
-import { ChunkedCode, FileDiffCode, MAX_RANGE_LINES, RangeCode, rangeChunks, type CodeContext } from "./code";
+import {
+  ChunkedCode,
+  FileDiffCode,
+  MAX_RANGE_LINES,
+  RangeCode,
+  rangeChunks,
+  useHideContextChanges,
+  type CodeContext,
+} from "./code";
 
 const server = startMockServer();
 let requests: RangeQuery[] = [];
@@ -63,6 +71,25 @@ function show(node: ReactNode) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}>{node}</QueryClientProvider>);
 }
+
+it("loads the saved context visibility when the login arrives and keeps accounts separate", () => {
+  const key = "diffpilot.hide-context-changes.alice";
+  localStorage.setItem(key, "false");
+  try {
+    const { result, rerender } = renderHook(useHideContextChanges, { initialProps: null as string | null });
+    expect(result.current[0]).toBe(true);
+    rerender("alice");
+    expect(result.current[0]).toBe(false);
+    rerender("bob");
+    expect(result.current[0]).toBe(true);
+    rerender("alice");
+    expect(result.current[0]).toBe(false);
+    act(() => result.current[1](true));
+    expect(localStorage.getItem(key)).toBe("true");
+  } finally {
+    localStorage.removeItem(key);
+  }
+});
 
 describe("code of long and disjoint ranges", () => {
   it("makes the whole test file's classic diff accessible beyond the range limit", async () => {

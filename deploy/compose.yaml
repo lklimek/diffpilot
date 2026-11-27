@@ -101,6 +101,7 @@ services:
       SR_RUNNER_ID: ${SR_RUNNER_ID:-runner}
       SR_RUNNER_MIRRORS_DIR: /mirror
       SR_RUNNER_DISK_RESERVE_MIB: ${SR_RUNNER_DISK_RESERVE_MIB:-2048}
+      SR_WORKER_MAX_RUNNING: ${SR_WORKER_MAX_RUNNING:-3}
       SR_LAUNCHER_SOCKET: /run/launcher/launcher.sock
       SR_GATEWAY_ADMIN_URL: http://${SR_GATEWAY_ADMIN_ADDR:-172.29.71.5}:8091
       SR_GATEWAY_KEYS_TOKEN_FILE: /run/secrets/gateway-keys-token

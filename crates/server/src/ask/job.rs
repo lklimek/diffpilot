@@ -37,7 +37,7 @@ use crate::github::oauth::endpoint;
 use crate::jobs::claim::ContextPackError;
 use crate::jobs::executor::{ExecutorError, JobHandle, JobRequest, JobUpdate};
 use crate::memcan::profile;
-use crate::model::{ModelContext, select_model};
+use crate::model::{ModelContext, select_model_for_payer};
 use crate::pipeline::context::{StoredResults, pack};
 use crate::pipeline::prepass::PrepassRunError;
 use crate::pipeline::tour::{self, TourLoadError};
@@ -566,6 +566,7 @@ async fn submit(
             })?
         }
     };
+    let payer = contracts::ids::UserId(record.user_id.clone());
     let spec = JobSpec {
         job_id: JobId::new_random(),
         attempt: 0,
@@ -588,15 +589,17 @@ async fn submit(
         flow_file: None,
         assessment: None,
         pr_data: None,
-        model: select_model(
+        model: select_model_for_payer(
+            &state.db,
+            &payer,
             JobKind::Ask,
             &ModelContext {
                 changed_lines: changed_line_count(&files),
             },
-            state.db.settings().llm_selection().await?.as_ref(),
-        ),
+        )
+        .await?,
         limits: JobLimits::default(),
-        payer: contracts::ids::UserId(record.user_id.clone()),
+        payer,
         session: None,
         working_session: None,
         context_pack: None,

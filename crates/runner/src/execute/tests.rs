@@ -79,7 +79,7 @@ impl LlmProvider for Stub {
     ) -> BoxFuture<'a, Result<ProviderOutcome, ProviderError>> {
         self.run(call, events)
     }
-    fn cancel(&self, _: JobId) -> BoxFuture<'_, Result<(), ProviderError>> {
+    fn cancel(&self, _: AttemptId) -> BoxFuture<'_, Result<(), ProviderError>> {
         self.cancelled
             .store(true, std::sync::atomic::Ordering::SeqCst);
         self.stopped.notify_one();

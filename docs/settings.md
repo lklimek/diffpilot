@@ -39,35 +39,43 @@ Revoking a token stops it at once. Sign out everywhere revokes every token.
 
 ### Model
 
-- **What:** The LLM model of every job on this installation: analyses, Ask answers and the ranking of My work. One choice for everyone.
-- **When used:** Each new job reads the current choice; a running job keeps the one it started with.
-- **Empty or default:** Sol 6.1 until someone saves another model.
+- **What:** The model used by jobs paid for by your linked plan, including analyses, Ask answers, comment assessments and My work ranking.
+- **When used:** Each job reads your current choice when it enters the queue.
+- **Empty or default:** The installation's saved model, or Sol 6.1 if it has no saved selection.
 - **Limits:** One of the listed models.
 - **Example:** Pick Astra 6 for a hard pull request, then switch back.
 
 ### Reasoning effort
 
-- **What:** How much the model reasons in analysis jobs: the plan, the PR context and each flow.
-- **When used:** Each new analysis job reads it.
-- **Empty or default:** High until someone saves another effort.
+- **What:** How much the model reasons in analysis and comment assessment jobs paid for by your linked plan.
+- **When used:** Each new analysis and comment assessment job reads it.
+- **Empty or default:** The installation's saved effort, or high if it has no saved selection.
 - **Limits:** Low, medium or high. Higher effort can take longer.
 - **Example:** Medium is often enough for small pull requests.
 
 ### Ask effort
 
 - **What:** How much the model reasons when it answers a question you ask about a step.
-- **When used:** Each new Ask answer reads it. It applies to everyone on this installation.
-- **Empty or default:** Medium until someone saves another effort.
+- **When used:** Each new answer to one of your Ask questions uses your choice.
+- **Empty or default:** The installation's saved Ask effort, or medium if it has no saved selection.
 - **Limits:** Low, medium or high. Lower effort answers sooner.
 - **Example:** Low for quick questions such as where a value is set.
 
 ### Dashboard ranking effort
 
 - **What:** How much the model reasons when it ranks the items of My work.
-- **When used:** Each ranking job of a refresh reads it. It applies to everyone on this installation.
-- **Empty or default:** Low until someone saves another effort.
+- **When used:** Each new ranking job for your dashboard uses your choice.
+- **Empty or default:** The installation's saved ranking effort, or low if it has no saved selection.
 - **Limits:** Low, medium or high.
 - **Example:** Medium if the ranking reasons look too thin.
+
+### Concurrent LLM jobs
+
+- **What:** How many jobs can run at once on your linked plan.
+- **When used:** Each claim checks your current limit. Active jobs finish normally when you lower it.
+- **Empty or default:** One slot until you change it.
+- **Limits:** A whole number from 1 to 65,535. Your jobs for the same pull request run one at a time, and the server's worker limit also applies.
+- **Example:** Use three slots to review three different pull requests at once when the server has capacity.
 
 ### LLM status
 

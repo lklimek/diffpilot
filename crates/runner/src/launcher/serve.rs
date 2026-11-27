@@ -1,19 +1,17 @@
 use super::{Error, Launcher, Settings};
 use bollard::{Docker, container::LogOutput, exec::StartExecResults, models::ExecConfig};
-use contracts::launcher::{LauncherAction, LauncherRequest, LauncherResponse};
+use contracts::{
+    job::access::McpHttpEndpoint,
+    launcher::{DependencySources, LauncherAction, LauncherRequest, LauncherResponse},
+    runtime::ContainerId,
+};
 use futures::StreamExt;
 use serde::{Serialize, de::DeserializeOwned};
-use std::{
-    collections::{HashMap, HashSet},
-    os::unix::fs::PermissionsExt,
-    path::Path,
-    sync::Arc,
-    time::Duration,
-};
+use std::{os::unix::fs::PermissionsExt, path::Path, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{UnixListener, UnixStream},
-    sync::{Mutex, Semaphore},
+    sync::{OwnedMutexGuard, Semaphore},
     task::JoinSet,
 };
 
@@ -53,7 +51,7 @@ pub(super) async fn write_message<T: Serialize>(
 
 pub(super) async fn connection(
     mut socket: UnixStream,
-    shared: Arc<Mutex<Launcher>>,
+    launcher: Arc<Launcher>,
 ) -> Result<(), Error> {
     let request: LauncherRequest = tokio::time::timeout(
         Duration::from_secs(10),
@@ -63,7 +61,7 @@ pub(super) async fn connection(
     .map_err(|_| Error::Protocol)??;
     let id = request.id.clone();
     let mut upgraded = false;
-    let result = handle(&mut socket, request, shared, &mut upgraded).await;
+    let result = handle(&mut socket, request, launcher, &mut upgraded).await;
     if let Err(error) = &result
         && !upgraded
     {
@@ -91,10 +89,21 @@ pub(super) async fn connection(
 async fn handle(
     socket: &mut UnixStream,
     request: LauncherRequest,
-    shared: Arc<Mutex<Launcher>>,
+    launcher: Arc<Launcher>,
     upgraded: &mut bool,
 ) -> Result<(), Error> {
-    let mut launcher = shared.lock().await;
+    let operation = match &request.action {
+        LauncherAction::Ensure { container, .. }
+        | LauncherAction::Stop { container }
+        | LauncherAction::Remove { container }
+        | LauncherAction::Fetch { container }
+        | LauncherAction::Attach { container } => {
+            let name = launcher.settings.name(container, false);
+            Some(launcher.operation(&name).lock_owned().await)
+        }
+        LauncherAction::List => None,
+    };
+    check_peer(socket)?;
     let mut response = LauncherResponse {
         id: request.id,
         error: None,
@@ -102,10 +111,17 @@ async fn handle(
         workers: vec![],
     };
     let fetch = match request.action {
-        LauncherAction::Ensure { container, memcan } => launcher
-            .ensure(&container, memcan.as_ref())
-            .await?
-            .then_some((container, true)),
+        LauncherAction::Ensure { container, memcan } => {
+            return ensure_response(
+                socket,
+                &launcher,
+                response,
+                &container,
+                memcan.as_ref(),
+                operation.ok_or(Error::Protocol)?,
+            )
+            .await;
+        }
         LauncherAction::Stop { container } => {
             launcher.stop(&container).await?;
             None
@@ -114,27 +130,33 @@ async fn handle(
             launcher.remove(&container).await?;
             None
         }
-        LauncherAction::Fetch { container } => Some((container, false)),
+        LauncherAction::Fetch { container } => Some(container),
         LauncherAction::List => {
             response.workers = launcher.list().await?;
             None
         }
         LauncherAction::Attach { container } => {
             let name = launcher.settings.name(&container, false);
-            if launcher.inspect(&container, false).await?.is_none()
-                || launcher.fetching.contains(&name)
-                || !launcher.attached.insert(name.clone())
-            {
+            let running = launcher
+                .inspect(&container, false)
+                .await?
+                .and_then(|worker| worker.state)
+                .and_then(|state| state.running)
+                == Some(true);
+            if !running {
                 return Err(Error::Busy);
             }
-            let docker = launcher.docker.clone();
-            drop(launcher);
+            let relay = launcher.begin_attachment(&name).ok_or(Error::Busy)?;
+            let docker = &launcher.docker;
             let result = async {
                 let exec = docker.create_exec(&name, ExecConfig {
                     attach_stdin: Some(true), attach_stdout: Some(true), attach_stderr: Some(true), tty: Some(false),
                     cmd: Some(vec!["codex".into(), "app-server".into(), "proxy".into(), "--sock".into(), "/run/dp/app.sock".into()]), ..Default::default()
                 }).await?;
-                let StartExecResults::Attached { mut output, mut input } = docker.start_exec(&exec.id, None).await? else { return Err(Error::Protocol); };
+                // The same container guard fences Docker proxy startup against Stop.
+                let StartExecResults::Attached { mut output, mut input } = docker.start_exec(&exec.id, None).await?
+                    else { return Err(Error::Protocol); };
+                drop(operation);
                 write_message(socket, &response).await?;
                 *upgraded = true;
                 let (mut reader, mut writer) = socket.split();
@@ -155,48 +177,84 @@ async fn handle(
                 Ok::<(), Error>(())
             }.await;
             // W4 stops an interrupted turn explicitly; clean detach begins the idle interval.
-            let mut launcher = shared.lock().await;
-            launcher.attached.remove(&name);
-            launcher.used.insert(name, std::time::Instant::now());
+            launcher.finish_attachment(name, &relay);
             return result;
         }
     };
-    if let Some((container, automatic)) = fetch {
+    if let Some(container) = fetch {
         let name = launcher.settings.name(&container, false);
-        if !launcher.fetching.insert(name.clone()) {
+        if !launcher.state().fetching.insert(name.clone()) {
             return Err(Error::Busy);
         }
-        let fetcher = launcher.clone();
-        drop(launcher);
-        let result = fetcher.fetch(&container).await;
-        shared.lock().await.fetching.remove(&name);
-        response.fetch = Some(
-            result
-                .as_ref()
-                .copied()
-                .unwrap_or(contracts::launcher::DependencySources::Unavailable),
-        );
-        if automatic {
-            if result.is_err() {
-                tracing::warn!(worker = %name, "dependency sources unavailable after worker start");
-            }
-        } else {
-            result?;
-        }
-    } else {
-        drop(launcher);
+        drop(operation);
+        let result = launcher.fetch(&container).await;
+        launcher.state().fetching.remove(&name);
+        response.fetch = Some(result?);
     }
     write_message(socket, &response).await?;
     super::client::close(socket).await
 }
 
-pub(super) async fn housekeeping(shared: Arc<Mutex<Launcher>>, period: Duration) {
+fn check_peer(socket: &UnixStream) -> Result<(), Error> {
+    // Check the nonblocking fd directly so a just-closed peer does not depend on reactor readiness.
+    match rustix::io::read(socket, &mut [0; 1]) {
+        Ok(_) => Err(Error::Protocol),
+        Err(rustix::io::Errno::AGAIN) => Ok(()),
+        Err(error) => Err(std::io::Error::from(error).into()),
+    }
+}
+
+async fn ensure_response(
+    socket: &mut UnixStream,
+    launcher: &Launcher,
+    mut response: LauncherResponse,
+    container: &ContainerId,
+    memcan: Option<&McpHttpEndpoint>,
+    operation: OwnedMutexGuard<()>,
+) -> Result<(), Error> {
+    let name = launcher.settings.name(container, false);
+    let automatic = launcher
+        .ensure(container, memcan, || check_peer(socket))
+        .await?;
+    let operation = if automatic && check_peer(socket).is_ok() {
+        launcher.state().fetching.insert(name.clone());
+        drop(operation);
+        let fetched = launcher.fetch(container).await;
+        let operation = launcher.operation(&name).lock_owned().await;
+        // Fetching has blocked replacement while Stop could invalidate this Ensure.
+        launcher.state().fetching.remove(&name);
+        if fetched.is_err() {
+            tracing::warn!(worker = %name, "dependency sources unavailable after worker start");
+        }
+        response.fetch = Some(fetched.unwrap_or(DependencySources::Unavailable));
+        operation
+    } else {
+        operation
+    };
+
+    let acknowledged = async {
+        check_peer(socket)?;
+        if !launcher.state().ensured.contains_key(&name) {
+            return Err(Error::Busy);
+        }
+        write_message(socket, &response).await
+    }
+    .await;
+    if acknowledged.is_err()
+        && let Err(error) = launcher.discard_ensure(container).await
+    {
+        tracing::warn!(worker = %name, %error, "cannot stop a worker after its Ensure response was lost");
+    }
+    drop(operation);
+    acknowledged?;
+    super::client::close(socket).await
+}
+
+pub(super) async fn housekeeping(launcher: Arc<Launcher>, period: Duration) {
     let mut interval = tokio::time::interval(period);
     loop {
         interval.tick().await;
-        if let Ok(mut launcher) = shared.try_lock()
-            && let Err(error) = launcher.sweep().await
-        {
+        if let Err(error) = launcher.sweep().await {
             tracing::warn!(%error, "worker idle sweep failed; retrying on next interval");
         }
     }
@@ -208,13 +266,7 @@ pub async fn serve(path: &Path, settings: Settings) -> Result<(), Error> {
     settings.validate()?;
     let docker = Docker::connect_with_socket_defaults()?;
     super::validate_runtime(&docker, &settings).await?;
-    let mut launcher = Launcher {
-        docker,
-        settings,
-        used: HashMap::new(),
-        attached: HashSet::new(),
-        fetching: HashSet::new(),
-    };
+    let launcher = Launcher::new(docker, settings);
     if path.exists() {
         if UnixStream::connect(path).await.is_ok() {
             return Err(Error::Busy);
@@ -227,8 +279,10 @@ pub async fn serve(path: &Path, settings: Settings) -> Result<(), Error> {
         std::fs::remove_file(path)?;
         return Err(error);
     }
-    let shared = Arc::new(Mutex::new(launcher));
-    let permits = Arc::new(Semaphore::new(16));
+    let permits = Arc::new(Semaphore::new(
+        launcher.settings.max_running * 2 + crate::config::CONTROL_CONNECTIONS,
+    ));
+    let shared = Arc::new(launcher);
     let mut tasks = JoinSet::new();
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let sweep = tokio::spawn(housekeeping(Arc::clone(&shared), Duration::from_secs(30)));
@@ -252,7 +306,7 @@ pub async fn serve(path: &Path, settings: Settings) -> Result<(), Error> {
     let _ = sweep.await;
     tasks.abort_all();
     while tasks.join_next().await.is_some() {}
-    shared.lock().await.reconcile().await?;
+    shared.reconcile().await?;
     std::fs::remove_file(path)?;
     failure.map_or(Ok(()), Err)
 }

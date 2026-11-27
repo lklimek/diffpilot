@@ -21,6 +21,9 @@ async fn codex_linking_syncs_only_the_signed_in_payers_safe_status_and_unlinks()
         )
         .unwrap(),
     );
+    db::repo::analyses::testing::seed_payer(&h.state.db, "codex-1")
+        .await
+        .expect("separate payer");
     crate::test_support::link_payer(&h.state.db, DEFAULT_TENANT, "codex-1").await;
     let route = "/api/v1/settings/codex";
     let linking = format!("{route}/link");

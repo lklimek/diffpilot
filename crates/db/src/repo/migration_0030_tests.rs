@@ -74,6 +74,7 @@ const NEW: &[&str] = &[
     "assessment_owner_decisions",
     "assessment_passes",
     "comment_sources",
+    "user_llm_selection",
 ];
 const WATCH_RUNTIME: &[&str] = &[
     "probe",
@@ -148,6 +149,15 @@ async fn assert_clean(db: &Db) {
             .unwrap();
         assert_eq!(count, 0, "{table} must start empty");
     }
+    let non_default_slots: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM users WHERE llm_job_slots IS NOT 1")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        non_default_slots, 0,
+        "migrated users start with one job slot"
+    );
     let fk_errors: Vec<String> =
         sqlx::query_scalar("SELECT \"table\" FROM pragma_foreign_key_check")
             .fetch_all(&db.pool)
@@ -202,12 +212,20 @@ async fn migration_0030_cleans_populated_0029_and_preserves_identity_and_setting
     assert_eq!(automatic, "automatic", "exercise the 0029 row shape");
     let mut kept = Vec::new();
     for table in KEPT {
-        let excluded = if *table == "pr_watches" {
-            WATCH_RUNTIME
-        } else {
-            &[]
+        let excluded = match *table {
+            "pr_watches" => WATCH_RUNTIME,
+            "users" => &["llm_job_slots"],
+            _ => &[],
         };
-        kept.push((*table, excluded, snapshot(&old, table, excluded).await));
+        let mut expected = snapshot(&old, table, excluded).await;
+        if *table == "users" {
+            // SQLite appends the 0040 column definition inside the existing CREATE TABLE.
+            let definition = expected.0.strip_suffix(") STRICT").unwrap();
+            expected.0 = format!(
+                "{definition}, llm_job_slots INTEGER NOT NULL DEFAULT 1\n    CHECK (llm_job_slots BETWEEN 1 AND 65535)) STRICT"
+            );
+        }
+        kept.push((*table, excluded, expected));
     }
     let thread_columns = ["agent_thread_id", "analytic_generation", "session_state"];
     let pr = snapshot(&old, "pull_requests", &thread_columns).await;
