@@ -30,6 +30,10 @@ export function CommentConversation({
     list.push(annotation);
     byUrl.set(key, list);
   }
+  const present = new Set(comments.flatMap((comment) => (comment.url ? [commentKey(comment.url)] : [])));
+  const unmatched = (annotations ?? []).filter(
+    (annotation) => !present.has(commentKey(annotation.target_url)),
+  );
   return (
     <article aria-labelledby="comment-conversation-heading" className="grid gap-3">
       <header>
@@ -62,6 +66,12 @@ export function CommentConversation({
           </li>
         ))}
       </ol>
+      {unmatched.length > 0 && (
+        <section aria-label="Annotations with unavailable GitHub originals">
+          <p className="text-sm text-muted">Original GitHub comment unavailable</p>
+          <AgentAnnotations annotations={unmatched} />
+        </section>
+      )}
     </article>
   );
 }

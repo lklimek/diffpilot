@@ -89,7 +89,9 @@ export function CommentsTable(props: CommentsTableProps) {
   const missingId = useId();
   const isOpen = (i: CommentItem) => ["needs_you", "not_assessed"].includes(i.status);
   const open = items.filter((i) => isOpen(i) && i.kind !== "pr_question");
-  const closed = items.filter((i) => !isOpen(i) && i.state !== "assessing" && i.kind !== "pr_question");
+  const closed = items.filter(
+    (i) => !isOpen(i) && i.status !== "waiting" && i.status !== "assessing" && i.kind !== "pr_question",
+  );
   const [rows, setRows] = useState<Record<string, Row>>({});
   const [showAll, setShowAll] = useState(false);
   const rowOf = (item: CommentItem) => rows[item.id] ?? initial(item);

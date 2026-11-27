@@ -395,7 +395,7 @@ const HELP = {
   access_tokens: {
     section: "Account",
     title: "Access tokens",
-    what: "Personal access tokens let agents use diffpilot over HTTP. A read token is read-only. Add review_loop_execute for an agent that claims decisions and reports their effects.",
+    what: "Personal access tokens let agents use diffpilot over HTTP. The read scope gives the agent read-only access to your data. Add review_loop_execute to claim decisions and report their effects, or review_loop_submit to add comments and annotations in DiffPilot.",
     when: "When an agent sends Authorization: Bearer srp_… with a request.",
     empty: "No tokens: agents cannot read your data.",
     limits:

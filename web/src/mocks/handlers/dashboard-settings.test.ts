@@ -1,6 +1,6 @@
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import type { AccessToken, DashboardSettingsView } from "../../api/generated/types";
+import type { AccessToken, CreatedAccessToken, DashboardSettingsView } from "../../api/generated/types";
 import { handlers } from "./index";
 import { resetDashboardSettings, setDashboardSettingsScenario } from "./dashboard-settings";
 
@@ -81,5 +81,21 @@ describe("msw dashboard settings (plan §F.6) and access tokens (ADR-019)", () =
       status: 409,
       body: { code: "token_limit_reached" },
     });
+  });
+
+  it("supports the independent agent submission scope alongside read", async () => {
+    const request = { name: "Review agent", scopes: ["read", "review_loop_submit"], expires_in_days: 90 };
+    const created = await call<CreatedAccessToken>(TOKENS, "POST", request);
+    expect(created.status).toBe(201);
+    expect(created.body.access_token.scopes).toEqual(request.scopes);
+    expect((await call(TOKENS, "POST", { ...request, scopes: ["review_loop_submit"] })).status).toBe(400);
+    expect(
+      (
+        await call(TOKENS, "POST", {
+          ...request,
+          scopes: ["read", "review_loop_submit", "review_loop_submit"],
+        })
+      ).status,
+    ).toBe(400);
   });
 });

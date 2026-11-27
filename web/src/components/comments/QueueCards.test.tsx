@@ -589,6 +589,30 @@ describe("CommentsTable (US8, US27)", () => {
     return onSubmit;
   };
 
+  it("keeps queued and running items out of the decided table using the server status", () => {
+    const item = byNo(22);
+    render(
+      table(
+        [
+          { ...item, id: "done", no: 40, title: "Settled finding", state: "done", status: "decided" },
+          { ...item, id: "queued", no: 41, title: "Queued finding", state: "undecided", status: "waiting" },
+          {
+            ...item,
+            id: "running",
+            no: 42,
+            title: "Running finding",
+            state: "undecided",
+            status: "assessing",
+          },
+        ],
+        vi.fn(),
+      ),
+    );
+    expect(screen.getByRole("link", { name: "Settled finding" })).toBeVisible();
+    expect(screen.queryByRole("link", { name: "Queued finding" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Running finding" })).toBeNull();
+  });
+
   it("the LLM tags of its column headers take keyboard focus and show their tips (brief §4 rule 3)", () => {
     show();
     const tagged = screen

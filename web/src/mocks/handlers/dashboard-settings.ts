@@ -139,16 +139,19 @@ export const listAccessTokens = route("listAccessTokens", () =>
 export const createAccessToken = route("createAccessToken", async ({ request }) => {
   const body = (await request.json()) as CreateAccessToken;
   const length = [...body.name].length;
+  const scopes = new Set(body.scopes);
   if (
     length < 1 ||
     length > 60 ||
-    !["read", "read,review_loop_execute", "review_loop_execute,read"].includes(body.scopes.join()) ||
+    scopes.size !== body.scopes.length ||
+    !scopes.has("read") ||
+    [...scopes].some((scope) => !["read", "review_loop_execute", "review_loop_submit"].includes(scope)) ||
     ![30, 90, 365].includes(body.expires_in_days)
   ) {
     return apiError(
       400,
       "invalid_request",
-      "Use a name of 1 to 60 characters, scope read (optionally with review_loop_execute) and 30, 90 or 365 days.",
+      "Use a name of 1 to 60 characters, read with optional review_loop_execute or review_loop_submit, and 30, 90 or 365 days.",
     );
   }
   if (tokens.some((t) => t.name === body.name)) {

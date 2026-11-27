@@ -27,7 +27,7 @@ Personal access tokens keep working after Sign out.
 
 ### Access tokens
 
-- **What:** Personal access tokens let agents use diffpilot over HTTP. A read token is read-only. Add review_loop_execute for an agent that claims decisions and reports their effects.
+- **What:** Personal access tokens let agents use diffpilot over HTTP. The read scope gives the agent read-only access to your data. Add review_loop_execute to claim decisions and report their effects, or review_loop_submit to add comments and annotations in DiffPilot.
 - **When used:** When an agent sends Authorization: Bearer srp_… with a request.
 - **Empty or default:** No tokens: agents cannot read your data.
 - **Limits:** Name of 1 to 60 characters; lifetime of 30, 90 (default) or 365 days; at most 10 live tokens. The secret is shown once.
