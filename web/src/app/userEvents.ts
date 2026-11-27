@@ -1,12 +1,14 @@
-// Browser notifications of the review loop (plan docs/review-workflow-plan.md §5.5, US16, RQ18): "questions ready"
-// on a watched PR and "round executed", from the per-user event stream (RW3), under the existing per-browser
-// "Notify me when work finishes" opt-in.
-import { useEffect } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useEffect, useEffectEvent } from "react";
 import { useNavigate } from "react-router";
 import { api } from "../api/client";
-import type { UserEvent } from "../api/generated/types";
-import { commentsPath } from "../screens/pr/paths";
+import type { LlmActivity, UserEvent } from "../api/generated/types";
+import { useMe } from "../api/queries";
+import { prPath } from "../screens/pr/paths";
+import { SETTINGS_NOTIFICATIONS_PATH } from "../screens/shell/paths";
 import { notifyWorkDone, useNotifySetting, type WorkEvent } from "./workNotifications";
+
+export const llmActivityKey = (login: string) => ["llm-activity", login] as const;
 
 /** The notification of a user event; its key is the event id, so every tab shows it once. */
 export function userEventNotice(event: UserEvent): WorkEvent {
@@ -14,20 +16,33 @@ export function userEventNotice(event: UserEvent): WorkEvent {
     key: `user-event:${event.id}`,
     title: "diffpilot",
     body: event.text,
-    path: event.pr ? commentsPath(event.pr) : "/settings#notifications",
+    path: event.pr ? prPath(event.pr) : SETTINGS_NOTIFICATIONS_PATH,
   };
 }
 
-/** Opens the per-user event stream while notifications are on and shows its events (screens and layouts only). */
-export function useUserEventNotifications(): void {
+/** Follow job activity and optional browser notifications on the signed-in user's stream. */
+export function useUserEvents(): void {
+  const login = useMe().data?.user?.login;
+  const client = useQueryClient();
   const navigate = useNavigate();
   const { enabled } = useNotifySetting();
+  const notify = useEffectEvent((event: UserEvent) => {
+    if (enabled) void notifyWorkDone(userEventNotice(event), (path) => void navigate(path));
+  });
   useEffect(() => {
-    if (!enabled || typeof EventSource === "undefined") return;
+    if (!login || typeof EventSource === "undefined") return;
+    const queryKey = llmActivityKey(login);
     return api.subscribeUserEvents({
-      onEvent: (event) => void notifyWorkDone(userEventNotice(event), (path) => void navigate(path)),
-      // The browser reconnects by itself; a closed stream ends with this page.
-      onError: () => {},
+      onEvent: (event) => notify(event),
+      onActivity: (activity) => {
+        void client.cancelQueries({ queryKey, exact: true });
+        client.setQueryData(queryKey, activity);
+      },
+      onReconnect: () => {
+        if (client.getQueryData<LlmActivity | null>(queryKey) !== null) {
+          void client.invalidateQueries({ queryKey, exact: true });
+        }
+      },
     });
-  }, [enabled, navigate]);
+  }, [client, login]);
 }

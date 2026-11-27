@@ -23,7 +23,7 @@ describe("current wire facts", () => {
       where === "context" ? (
         <PrContextBlock pr={tour.analysis.pr} context={context} threadCount={0} />
       ) : (
-        <TopBar login="alice" ci={ci} pr={tour.analysis.pr} />
+        <TopBar ci={ci} pr={tour.analysis.pr} />
       ),
     );
     expect(screen.getByText("Check runs: 1 passed, 4 skipped. Statuses: 1 pending.")).toBeVisible();

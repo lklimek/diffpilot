@@ -21,50 +21,48 @@ const region = async (name: string) => {
 };
 
 describe("Settings: dashboard section, ranking effort, access tokens (plan §F.6)", () => {
-  it("shows the dashboard settings, the ranking effort in the LLM card and the tokens", async () => {
-    renderRoute("/settings");
-    const dashboard = await region("Dashboard");
-    expect(dashboard).toHaveTextContent("Your login alice is always scanned.");
-    expect(within(dashboard).getByLabelText("Short name of acme/platform")).toHaveValue("PLAT");
-    const llm = await region("LLM model");
-    expect(within(llm).getByLabelText("Dashboard ranking effort")).toHaveValue("low");
-    expect(await screen.findByText("dispatcher agent")).toBeVisible();
+  it("shows the scope and the nightly scan on GitHub sync", async () => {
+    renderRoute("/settings/github-sync");
+    expect(await region("Scope")).toHaveTextContent("Your login alice is always scanned.");
+    expect(await region("Nightly scan")).toHaveTextContent("Runs once a night");
     expectTrustWording(document.body.textContent ?? "");
   });
-
   it("saves the form and keeps the saved values", async () => {
-    renderRoute("/settings");
-    const dashboard = await region("Dashboard");
+    renderRoute("/settings/github-sync");
+    const dashboard = await screen.findByRole("main");
+    await screen.findByRole("button", { name: "Save" });
     const days = within(dashboard).getByLabelText("Look-back days");
     await userEvent.clear(days);
     await userEvent.type(days, "14");
-    await userEvent.click(within(dashboard).getByRole("button", { name: "Save dashboard settings" }));
+    await userEvent.click(within(dashboard).getByRole("button", { name: "Save" }));
     expect(await within(dashboard).findByRole("status")).toHaveTextContent("Dashboard settings saved.");
     expect(days).toHaveValue(14);
   });
 
   it("shows the server's refusal naming the field", async () => {
     setDashboardSettingsScenario("save-rejected");
-    renderRoute("/settings");
-    const dashboard = await region("Dashboard");
-    await userEvent.click(within(dashboard).getByRole("button", { name: "Save dashboard settings" }));
+    renderRoute("/settings/github-sync");
+    const dashboard = await screen.findByRole("main");
+    await screen.findByRole("button", { name: "Save" });
+    await userEvent.click(within(dashboard).getByRole("button", { name: "Save" }));
     expect(await within(dashboard).findByRole("alert")).toHaveTextContent(
       'Not saved: Time zone: "Etc/Unknown" is not a known time zone.',
     );
   });
 
   it("saves the ranking effort and shows who changed it", async () => {
-    renderRoute("/settings");
-    const llm = await region("LLM model");
+    renderRoute("/settings/llm");
+    const llm = await region("Model and effort");
     await userEvent.selectOptions(within(llm).getByLabelText("Dashboard ranking effort"), "medium");
-    expect(await screen.findByText("Ranking effort saved.")).toBeVisible();
-    const card = await region("LLM model");
+    await userEvent.click(within(llm).getByRole("button", { name: "Save" }));
+    expect(await within(llm).findByText("Saved")).toBeVisible();
+    const card = await region("Model and effort");
     expect(within(card).getByLabelText("Dashboard ranking effort")).toHaveValue("medium");
     expect(card).toHaveTextContent("changed by alice");
   });
 
   it("creates a token, shows its secret once, then lists it", async () => {
-    renderRoute("/settings");
+    renderRoute("/settings/account");
     await screen.findByText("dispatcher agent");
     const tokens = await region("Access tokens");
     await userEvent.click(within(tokens).getByRole("button", { name: "New token" }));
@@ -83,7 +81,7 @@ describe("Settings: dashboard section, ranking effort, access tokens (plan §F.6
 
   it("the server refuses an eleventh token", async () => {
     setDashboardSettingsScenario("token-limit");
-    renderRoute("/settings");
+    renderRoute("/settings/account");
     await screen.findByText("agent 10");
     const tokens = await region("Access tokens");
     expect(within(tokens).getByRole("button", { name: "New token" })).toHaveAttribute(
@@ -95,10 +93,7 @@ describe("Settings: dashboard section, ranking effort, access tokens (plan §F.6
 
   it("settings that cannot be read: plain errors in both cards", async () => {
     setDashboardSettingsScenario("load-fails");
-    renderRoute("/settings");
-    expect(await within(await region("Dashboard")).findByRole("alert")).toHaveTextContent(
-      "cannot be read right now",
-    );
+    renderRoute("/settings/account");
     expect(await within(await region("Access tokens")).findByRole("alert")).toHaveTextContent(
       "cannot be read right now",
     );
@@ -109,45 +104,41 @@ describe("Settings: dashboard section, ranking effort, access tokens (plan §F.6
       http.get("/api/v1/settings/dashboard", () => new HttpResponse(null, { status: 404 })),
       http.get("/api/v1/settings/access-tokens", () => new HttpResponse(null, { status: 404 })),
     );
-    renderRoute("/settings");
-    const llm = await region("LLM model");
-    expect(await within(await region("Dashboard")).findByRole("alert")).toBeVisible();
-    expect(await within(await region("Access tokens")).findByRole("alert")).toBeVisible();
-    // The ranking effort belongs to the installation's LLM settings, whatever the dashboard settings answer.
-    expect(within(llm).getByLabelText("Dashboard ranking effort")).toBeVisible();
+    renderRoute("/settings/github-sync");
+    expect(await screen.findByRole("alert")).toBeVisible();
   });
 
-  it("saving the ranking effort keeps an unsaved model choice and the focus", async () => {
-    renderRoute("/settings");
-    const llm = await region("LLM model");
+  it("saving the ranking effort and model keeps both changes", async () => {
+    renderRoute("/settings/llm");
+    const llm = await region("Model and effort");
     await userEvent.selectOptions(within(llm).getByLabelText("Model", { exact: true }), "gpt-6-astra");
     const effort = within(llm).getByLabelText("Dashboard ranking effort");
     await userEvent.selectOptions(effort, "medium");
-    expect(await screen.findByText("Ranking effort saved.")).toBeVisible();
-    const card = await region("LLM model");
+    await userEvent.click(within(llm).getByRole("button", { name: "Save" }));
+    expect(await within(llm).findByText("Saved")).toBeVisible();
+    const card = await region("Model and effort");
     expect(within(card).getByLabelText("Model", { exact: true })).toHaveValue("gpt-6-astra");
-    expect(within(card).getByLabelText("Dashboard ranking effort")).toHaveFocus();
+    expect(within(card).getByLabelText("Dashboard ranking effort")).toHaveValue("medium");
   });
 
   it("unsaved dashboard settings: leaving asks first, Stay keeps them, Leave goes; the page unload is guarded", async () => {
-    const router = renderRoute("/settings");
-    const dashboard = await region("Dashboard");
+    const router = renderRoute("/settings/repositories");
+    await region("Repository rules");
+    const dashboard = screen.getByRole("main");
     await userEvent.click(within(dashboard).getByLabelText("Watch issues of acme/node-client"));
     expect(dashboard).toHaveTextContent("Unsaved changes");
     const unload = new Event("beforeunload", { cancelable: true });
     window.dispatchEvent(unload);
     expect(unload.defaultPrevented).toBe(true);
     // Another repository in the URL (same screen) is not leaving.
-    await router.navigate("/settings?repo=acme%2Fnode-client");
+    await router.navigate("/settings/repositories?repo=acme%2Fnode-client");
     expect(screen.queryByRole("alertdialog")).toBeNull();
     void router.navigate("/");
-    const ask = await screen.findByRole("alertdialog", { name: "Unsaved dashboard settings" });
-    expect(router.state.location.pathname).toBe("/settings");
+    const ask = await screen.findByRole("alertdialog", { name: "Unsaved settings" });
+    expect(router.state.location.pathname).toBe("/settings/repositories");
     await userEvent.click(within(ask).getByRole("button", { name: "Stay" }));
     expect(screen.queryByRole("alertdialog")).toBeNull();
-    expect(
-      within(await region("Dashboard")).getByLabelText("Watch issues of acme/node-client"),
-    ).toBeChecked();
+    expect(within(dashboard).getByLabelText("Watch issues of acme/node-client")).toBeChecked();
     void router.navigate("/");
     await userEvent.click(
       within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Leave without saving" }),
@@ -156,10 +147,11 @@ describe("Settings: dashboard section, ranking effort, access tokens (plan §F.6
   });
 
   it("after Save nothing is guarded", async () => {
-    renderRoute("/settings");
-    const dashboard = await region("Dashboard");
+    renderRoute("/settings/repositories");
+    await region("Repository rules");
+    const dashboard = screen.getByRole("main");
     await userEvent.click(within(dashboard).getByLabelText("Watch issues of acme/node-client"));
-    await userEvent.click(within(dashboard).getByRole("button", { name: "Save dashboard settings" }));
+    await userEvent.click(within(dashboard).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(dashboard).not.toHaveTextContent("Unsaved changes"));
     await waitFor(() => {
       const unload = new Event("beforeunload", { cancelable: true });
@@ -169,9 +161,10 @@ describe("Settings: dashboard section, ranking effort, access tokens (plan §F.6
   });
 
   it("Sign out with unsaved dashboard settings leaves without asking", async () => {
-    const router = renderRoute("/settings");
-    const dashboard = await region("Dashboard");
+    const router = renderRoute("/settings/repositories");
+    const dashboard = await region("Repository rules");
     await userEvent.click(within(dashboard).getByLabelText("Watch issues of acme/node-client"));
+    await userEvent.click(screen.getByRole("button", { name: /^alice/ }));
     await userEvent.click(screen.getByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/"));
     expect(screen.queryByRole("alertdialog")).toBeNull();
@@ -183,9 +176,7 @@ describe("Settings: dashboard section, ranking effort, access tokens (plan §F.6
         HttpResponse.json({ code: "not_found", message: "No dashboard settings here." }, { status: 404 }),
       ),
     );
-    renderRoute("/settings");
-    expect(await within(await region("Dashboard")).findByRole("alert")).toHaveTextContent(
-      "No dashboard settings here.",
-    );
+    renderRoute("/settings/github-sync");
+    expect(await screen.findByRole("alert")).toHaveTextContent("No dashboard settings here.");
   });
 });

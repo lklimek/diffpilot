@@ -22,7 +22,15 @@ import type {
   StageKind,
   ThreadsStatus,
   Tour,
+  LlmActivity,
 } from "../api/generated/types";
+import {
+  failedActivity,
+  idleActivity,
+  manyJobsActivity,
+  pausedActivity,
+  runningActivity,
+} from "./llm-activity";
 import type { CommentsMockState } from "./review-loop";
 import largeGraphs from "./diagrams/large-flow-graphs.json";
 import {
@@ -33,6 +41,7 @@ import {
   mockDependenciesNotes,
   mockDependenciesNotRust,
 } from "./dependencies";
+import { codeViewLines, codeViewTour } from "./code-view-v14";
 import { seedFor, seedNow } from "./fixtures";
 import { REAL_QUESTIONS, REAL_TOURS } from "./real";
 
@@ -87,6 +96,8 @@ interface Scenario {
   me?: () => MeResponse;
   /** `GET /api/v1/analyses` answer (Recent reviews). */
   myAnalyses?: () => MyAnalyses;
+  legacyPrHistory?: boolean;
+  emptyPrHistory?: boolean;
   /** Changes to the `pr/resolve` answer of the fixture PR. */
   resolve?: (seed: ResolvePrResponse) => ResolvePrResponse;
   /** The analysis stays in this state (no scripted run after Start analysis). */
@@ -100,6 +111,9 @@ interface Scenario {
   silent?: true;
   /** `settings` answer. */
   settings?: Settings;
+  settingsV14?: "unavailable" | "unconfigured" | "at-limit" | "reset-fails";
+  llmActivity?: LlmActivity;
+  reviewLoopNotification?: boolean;
   /** `repos/{owner}/{name}/settings` answer; null = not known yet (409 `analysis_not_finished`). */
   repoSettings?: RepoSettings | null;
   /** Changes to the `tour` answer. */
@@ -326,6 +340,28 @@ const REPORTED_USAGE: UsageTotals = {
 };
 
 const SCENARIOS = {
+  "settings-v14-unavailable": { settingsV14: "unavailable" },
+  "settings-v14-unconfigured": {
+    settingsV14: "unconfigured",
+    settings: {
+      ...SETTINGS,
+      app_installations: [],
+      memcan_status: { state: "not_checked", last_success_at: null },
+    },
+  },
+  "settings-v14-at-limit": { settingsV14: "at-limit" },
+  "settings-v14-reset-fails": { settingsV14: "reset-fails" },
+  "settings-v14-memcan-offline": {
+    settings: { ...SETTINGS, memcan_status: { state: "not_reachable", last_success_at: null } },
+  },
+  "settings-v14-memcan-reachable": {
+    settings: { ...SETTINGS, memcan_status: { state: "reachable", last_success_at: "2026-11-25T10:00:00Z" } },
+  },
+  "llm-activity-idle": { llmActivity: idleActivity },
+  "llm-activity-running": { llmActivity: runningActivity },
+  "llm-activity-paused": { llmActivity: pausedActivity },
+  "llm-activity-failed": { llmActivity: failedActivity },
+  "llm-activity-many": { llmActivity: manyJobsActivity },
   // Review loop (docs/mockups/10-review-loop.html states).
   "comments-no-analysis": { comments: "no-analysis" },
   "comments-running": { comments: "running" },
@@ -333,9 +369,23 @@ const SCENARIOS = {
   // The empty queue with no agent subscribed: how to start one is shown open.
   "comments-no-agent": { comments: "no-agent" },
   "comments-github-error": { comments: "github-error" },
+  "review-loop-notification": { reviewLoopNotification: true },
+  "comments-proposals": { comments: "proposals" },
+  "comments-v14": { comments: "v14" },
+  "comments-marks": { comments: "marks" },
   "comments-watched": { comments: "watched" },
   "show-less": { showLess: true },
   // Owner screenshot: one remark over a replaced line, unchanged lines and added comment lines that fold.
+  "code-view-v14": { tour: codeViewTour, lines: codeViewLines },
+  "code-view-v14-long-title": {
+    tour: (seed) => {
+      const tour = codeViewTour(seed);
+      tour.analysis.pr.title =
+        "feat(rpc): retry timed-out requests with exponential backoff while preserving the existing caller deadlines and reporting the last transport failure when the retry budget is exhausted";
+      return tour;
+    },
+    lines: codeViewLines,
+  },
   "remark-layout": { tour: remarkLayoutTour, lines: remarkLayoutLines },
   // Rating and remark pills: a rated step without remarks (f1.3) and an unrated one with remarks (f2.2).
   "remark-pills": {
@@ -543,6 +593,8 @@ const SCENARIOS = {
     progress: (state) => waitingProgress("this_analysis", state),
   },
   "signed-out": { me: () => ({ user: null, csrf_token: null }) },
+  "legacy-pr-history": { legacyPrHistory: true },
+  "empty-pr-history": { emptyPrHistory: true },
   "no-reviews": { myAnalyses: () => ({ analyses: [] }) },
   "viewed-refused": { viewedError: "github_refused" },
   // Another Viewed change of this user and analysis is still being saved.

@@ -7,6 +7,47 @@ import { expectTrustWording } from "./support";
 const PR = "/pr/acme/node-client/482";
 const chat = (page: Page) => page.getByRole("dialog", { name: "Ask" });
 
+test("the owner can confirm GitHub proposals from a member and a linked login", async ({ page }) => {
+  await page.goto(`${PR}/comments?scenario=comments-proposals&item=C22`);
+  await expect(page.getByText(/@alice proposes: Reject/)).toBeVisible();
+  await expect(page.getByRole("link", { name: /Proposal on GitHub/ })).toHaveAttribute(
+    "href",
+    /#discussion_r1041$/,
+  );
+  await expect(page.getByRole("radio", { name: "Reject", exact: true })).toBeChecked();
+  await page
+    .getByRole("navigation", { name: "Queue" })
+    .getByRole("button", { name: /^C14\b/ })
+    .click();
+  await expect(page.getByText(/@alice-relay proposes: Resolve/)).toBeVisible();
+  await expect(page.getByRole("link", { name: /Proposal on GitHub/ })).toHaveAttribute(
+    "href",
+    /#discussion_r1042$/,
+  );
+  await expect(page.getByRole("radio", { name: "Resolve (already fixed)" })).toBeChecked();
+  await page.getByRole("button", { name: "Decide", exact: true }).click();
+  await page.getByRole("link", { name: "Decision log and agents" }).click();
+  await expect(page.getByText(/C14 · Resolve/)).toBeVisible();
+});
+
+test("the group and bulk confirmation use the visible GitHub proposals", async ({ page }) => {
+  await page.goto(`${PR}/comments?scenario=comments-proposals&item=C18`);
+  await expect(page.getByRole("heading", { name: /Same recommendation: Reject/ })).toBeVisible();
+  await expect(page.getByText(/@alice-relay proposes: Resolve/)).toBeVisible();
+  await page.getByRole("button", { name: "Decide 2 items" }).click();
+  await expect(page.getByText(/2 items: decision recorded/)).toBeVisible();
+  await page.getByRole("button", { name: /^Decide the rest \(/ }).click();
+  await expect(page.getByText(/@alice proposes: Reject/)).toBeVisible();
+  const apply = page.getByRole("button", { name: /^Apply \d+ decisions$/ });
+  await expect(apply).toHaveAttribute("aria-disabled", "true");
+  await page.getByRole("textbox", { name: /^C22 · Reason/ }).fill("Owner's reason");
+  await apply.click();
+  await page.getByRole("link", { name: "Decision log and agents" }).click();
+  await expect(page.getByText(/C18 · Resolve/)).toBeVisible();
+  await expect(page.getByText(/C19 · Reject/)).toBeVisible();
+  await expect(page.getByText(/C22 · Reject/)).toBeVisible();
+});
+
 test("table_row_opens_question", async ({ page }) => {
   await page.goto(`${PR}/comments/table`);
   await page.getByRole("link", { name: "Jitter uses a fixed seed" }).click();
@@ -26,7 +67,7 @@ test("table_row_opens_question", async ({ page }) => {
 test("decide_from_the_middle_opens_the_next_question", async ({ page }) => {
   await page.goto(`${PR}/comments`);
   const queue = page.getByRole("navigation", { name: "Queue" });
-  await expect(queue.getByRole("heading").last()).toHaveText("PR-level (1)");
+  await expect(queue.getByRole("listitem").last()).toContainText("P24");
   await queue.getByRole("button", { name: /^C15(?!\d)/ }).click();
   await expect(page.getByRole("heading", { level: 2, name: /C15 · Debug log prints/ })).toBeFocused();
   const row = queue.getByRole("button", { name: /^C15(?!\d)/ });
@@ -150,3 +191,163 @@ for (const [name, url] of [
     await expectAccessible(page);
   });
 }
+
+test("v1.4 queue filters, duplicate decisions, and GitHub provenance", async ({ page }) => {
+  await page.goto(`${PR}/comments?scenario=comments-v14&item=C14`);
+  const queue = page.getByRole("navigation", { name: "Queue" });
+  const status = queue.getByRole("button", { name: /^Status:/ });
+  await expect(status).toHaveText(/Needs you · 11.*2 gates/);
+  await expect(page.getByRole("link", { name: "Questions, 11 need you" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /C14 · Retry may resend.*LLM/ })).toBeVisible();
+  await expect(queue.getByRole("button", { name: /^C30/ })).toHaveCount(0);
+  await queue.getByText(/\+2 same point/).click();
+  await expect(queue.getByRole("button", { name: /^C30/ })).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: /C30 \(coderabbit/ }).locator('[data-icon="github"]'),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Decide", exact: true }).click();
+  await expect(status).toHaveText(/Needs you · 10.*1 gate/);
+
+  await status.press("ArrowDown");
+  const menu = page.getByRole("menu");
+  await expect(menu.getByRole("menuitemradio")).toHaveCount(9);
+  await menu.getByRole("menuitemradio", { name: "Duplicates · 2" }).click();
+  await expect(queue.getByRole("button", { name: /^C30/ })).toBeVisible();
+  await status.click();
+  await menu.getByRole("menuitemradio", { name: /^Decided · / }).click();
+  await expect(page).toHaveURL(/status=decided/);
+  const imported = queue.getByRole("button", { name: /^C33/ });
+  await expect(imported).toContainText("Rejected on GitHub by @alice");
+  await expect(queue.getByRole("link", { name: /Evidence for C33/ })).toHaveAttribute(
+    "href",
+    "https://github.com/acme/node-client/pull/482#discussion_r1038",
+  );
+  await expect(queue.getByRole("button", { name: /^C9 / })).toContainText("no reason given");
+  await page.getByRole("link", { name: "Decision log and agents" }).click();
+  await expect(page.getByText(/Rejected on GitHub by @alice/)).toBeVisible();
+});
+
+test("v1.4 assessment dismissal, status and Watch work on a dark phone", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.goto(`${PR}/comments?scenario=comments-v14`);
+  const header = page.getByRole("heading", { level: 1 });
+  await expect(header).toContainText("acme/node-client #482");
+  const watch = page.getByRole("button", { name: "Watch this PR" });
+  await expect(watch).toHaveAttribute("aria-pressed", "false");
+  await watch.click();
+  await expect(page.getByRole("button", { name: "Watching" })).toHaveAttribute("aria-pressed", "true");
+
+  const prStatus = page.getByRole("button", { name: "Questions waiting" });
+  await prStatus.press("Enter");
+  const panel = page.getByRole("dialog", { name: "Pull request status" });
+  await expect(panel.getByRole("heading", { name: /PR Hygiene/ })).toBeVisible();
+  await expect(panel.getByRole("heading", { name: /thepastaclaw status/ })).toBeVisible();
+  await expect(panel.getByText("CI: 2 passed, 1 pending")).toBeVisible();
+  await expect(panel.getByText(/Bot rounds: 4/)).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Read GitHub again" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(prStatus).toBeFocused();
+
+  const queue = page.getByRole("navigation", { name: "Queue" });
+  const status = queue.getByRole("button", { name: /^Status:/ });
+  const hide = page.getByRole("button", { name: "Hide", exact: true });
+  await expect(page.getByText(/Assessing 1 comment now.*1 waits.*1 not assessed: daily limit/)).toBeVisible();
+  await hide.press("Space");
+  await expect(status).toBeFocused();
+  await page.reload();
+  await expect(status).toBeVisible();
+  await expect(hide).toHaveCount(0);
+
+  await status.click();
+  await page.getByRole("menuitemradio", { name: "Waiting for assessment · 1" }).click();
+  await expect(queue.getByRole("button", { name: /^C35/ })).toContainText("waiting for assessment");
+  await expect(queue.getByRole("button", { name: /^C35/ })).not.toContainText("running");
+  await page.reload();
+  await expect(status).toHaveText("Waiting for assessment · 1 ▾");
+  await expectAccessible(page);
+});
+
+test("v1.4 dashboard, PR panel and queue agree on Needs you", async ({ page }) => {
+  await page.goto("/?scenario=comments-v14");
+  const tally = page.getByRole("link", { name: /11 need you: comments of #482/ });
+  await expect(tally).toBeVisible();
+  await tally.click();
+  await expect(page.getByRole("link", { name: "Questions, 11 need you" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Status: Needs you · 11/ })).toBeVisible();
+  await page.goto(`${PR}?scenario=comments-v14`);
+  const panel = page.getByRole("region", { name: "Process PR comments" });
+  await expect(panel.getByText("Needs you").locator("xpath=following-sibling::dd[1]")).toContainText("11");
+  await expect(panel.getByRole("button", { name: "Watch" })).toBeVisible();
+});
+
+test("v1.4 hiding assessment keeps the chosen table decision", async ({ page }) => {
+  await page.goto(`${PR}/comments/table?scenario=comments-v14`);
+  const decision = page.getByRole("combobox", { name: /^Decision for C22/ });
+  await decision.selectOption("resolve");
+  await page.getByRole("button", { name: "Hide", exact: true }).click();
+  await expect(page).toHaveURL(/\/comments\/table\?/);
+  await expect(decision).toHaveValue("resolve");
+  await expect(page.getByRole("link", { name: "Table", exact: true })).toBeFocused();
+});
+
+test("queue filter count and Undo restores Needs you", async ({ page }) => {
+  await page.goto(`${PR}/comments?scenario=comments-v14&item=C22`);
+  const queue = page.getByRole("navigation", { name: "Queue" });
+  const status = queue.getByRole("button", { name: /^Status:/ });
+  await expect(status).toHaveText(/Needs you · 11/);
+  await page.getByRole("radio", { name: "Not a review point" }).check();
+  const decide = page.getByRole("button", { name: "Decide", exact: true });
+  await expect(decide).not.toHaveAttribute("aria-disabled", "true");
+  await decide.click();
+  await expect(status).toHaveText(/Needs you · 10/);
+  await status.click();
+  await page.getByRole("menuitemradio", { name: "Not a review point (1)" }).click();
+  await expect(queue.getByRole("button", { name: /^C22/ })).toContainText("Not a review point");
+  await page.getByRole("link", { name: "Decision log and agents" }).click();
+  const entry = page.getByRole("listitem").filter({ hasText: /C22 · Not a review point/ });
+  await expect(entry).toContainText("by alice");
+  await expectAccessible(page);
+  await entry.getByRole("button", { name: "Undo mark on C22" }).click();
+  await expect(entry).toContainText(/Undone .* by alice/);
+  await page.getByRole("link", { name: "Questions, 11 need you" }).click();
+  await expect(queue.getByRole("button", { name: /^C22/ })).toBeVisible();
+});
+
+test("a gate mark is recorded alone from the table", async ({ page }) => {
+  await page.goto(`${PR}/comments/table?scenario=comments-v14`);
+  await page.getByRole("combobox", { name: /^Decision for C14/ }).selectOption("not_a_review_point");
+  await page.getByRole("textbox", { name: /^Reason or target for C14/ }).fill("Fixture only.");
+  await expectAccessible(page);
+  await page.getByRole("button", { name: "Mark C14" }).click();
+  await expect(page.getByText("C14: Not a review point.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: /^Decision for C14/ })).toHaveCount(0);
+  await expect(page.getByRole("combobox", { name: /^Decision for C15/ })).toBeVisible();
+  const provenance = /Not a review point · follows C14 · by alice · 09:\d{2}/;
+  await page.getByRole("button", { name: "Show all", exact: true }).click();
+  await expect(page.locator('tr[data-row="C30"]')).toContainText(provenance);
+
+  await page.getByRole("link", { name: /^Questions,/ }).click();
+  const queue = page.getByRole("navigation", { name: "Queue" });
+  await queue.getByRole("button", { name: /^Status:/ }).click();
+  await page.getByRole("menuitemradio", { name: "Not a review point (3)" }).click();
+  const follower = queue.getByRole("button", { name: /^C30/ });
+  await expect(follower).toContainText(provenance);
+  await follower.click();
+  await expect(page.getByRole("article", { name: "C30" })).toContainText(provenance);
+  await page.getByRole("link", { name: "Decision log and agents", exact: true }).click();
+  await expect(page.getByRole("listitem").filter({ hasText: /C14 · Not a review point/ })).toContainText(
+    "Fixture only.",
+  );
+});
+
+test("Settings lists marked items across cursor pages", async ({ page }) => {
+  await page.goto("/settings/review-loop?scenario=comments-marks");
+  const marks = page.getByRole("region", { name: "Not a review point" });
+  await expect(marks.getByText("Review item 100", { exact: true })).toBeVisible();
+  await expect(marks.getByText("Review item 101", { exact: true })).toHaveCount(0);
+  await marks.getByRole("button", { name: "Show older marked items" }).click();
+  await expect(marks.getByText("Review item 100", { exact: true })).toBeVisible();
+  await expect(marks.getByText("Review item 101", { exact: true })).toBeVisible();
+  await expectAccessible(page);
+});

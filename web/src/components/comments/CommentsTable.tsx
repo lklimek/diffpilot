@@ -1,6 +1,8 @@
 import { Tooltip } from "../tooltip/Tooltip";
 import { useId, useState } from "react";
 import type { CommentItem, DecisionBatchRow, DecisionVia } from "../../api/generated/types";
+import { GithubDecision, GithubProposal } from "./GithubDecision";
+import { commentStatus } from "./queueStatus";
 import { buttonClass } from "../button/button";
 import { OpenExternal } from "../dashboard/common/OpenExternal";
 import { navigateOnClick, type Navigate } from "../dashboard/common/navigate";
@@ -8,9 +10,11 @@ import { clockText } from "../format/time";
 import { ProvenanceTag } from "../section/ProvenanceTag";
 import {
   CHOICE_LABEL,
+  canMark,
   choicesFor,
   decisionLabel,
   gateOf,
+  markText,
   missingInput,
   needOf,
   recommendedValue,
@@ -26,6 +30,8 @@ const VIA: Record<DecisionVia, string> = {
   group: "in a group",
   bulk: "via decide the rest",
   table: "in the table",
+  imported_github: "imported from GitHub",
+  follows_primary: "follows primary",
   carried: "carried",
 };
 
@@ -72,7 +78,6 @@ interface CommentsTableProps {
 const TH =
   "border-b border-border bg-surface px-2 py-1.5 text-left text-[11px] font-semibold tracking-wide text-muted uppercase";
 const TD = "border-b border-border px-2 py-1.5 align-top";
-const OPEN = new Set(["undecided", "reopened", "asked_back"]);
 
 /**
  * The table page (V2, RQ21): `check-pr-comments` §4 columns, a decision select per row (default = recommendation,
@@ -82,7 +87,7 @@ const OPEN = new Set(["undecided", "reopened", "asked_back"]);
 export function CommentsTable(props: CommentsTableProps) {
   const { items, now } = props;
   const missingId = useId();
-  const isOpen = (i: CommentItem) => OPEN.has(i.state) && !i.gone_at;
+  const isOpen = (i: CommentItem) => ["needs_you", "not_assessed"].includes(commentStatus(i));
   const open = items.filter((i) => isOpen(i) && i.kind !== "pr_question");
   const closed = items.filter((i) => !isOpen(i) && i.state !== "assessing" && i.kind !== "pr_question");
   const [rows, setRows] = useState<Record<string, Row>>({});
@@ -92,6 +97,13 @@ export function CommentsTable(props: CommentsTableProps) {
     setRows({ ...rows, [item.id]: { ...rowOf(item), ...change } });
   const changed = (item: CommentItem) => rowOf(item).revision !== item.revision;
 
+  const rowRequest = (item: CommentItem): DecisionBatchRow => {
+    const row = rowOf(item);
+    return {
+      item_no: item.no,
+      ...requestOf({ ...item, revision: row.revision }, { ...row, choice: row.choice as Choice }, null),
+    };
+  };
   const missing: string[] = [];
   const counts = new Map<string, number>();
   for (const item of open) {
@@ -103,22 +115,18 @@ export function CommentsTable(props: CommentsTableProps) {
       );
       continue;
     }
-    if (missingInput({ choice: row.choice, value: row.value }))
+    if (row.choice === "not_a_review_point" && !canMark(item))
+      missing.push(`${itemId(item)} (choose another decision)`);
+    else if (row.choice === "not_a_review_point" && gateOf(item))
+      missing.push(`${itemId(item)} (mark individually)`);
+    else if (missingInput({ choice: row.choice, value: row.value }))
       missing.push(`${itemId(item)} (reason or target)`);
     counts.set(CHOICE_LABEL[row.choice], (counts.get(CHOICE_LABEL[row.choice]) ?? 0) + 1);
   }
   const total = [...counts.values()].reduce((a, b) => a + b, 0);
   const submit = () => {
     if (props.busy || missing.length || total === 0) return;
-    props.onSubmit(
-      open.map((item) => {
-        const row = rowOf(item);
-        return {
-          item_no: item.no,
-          ...requestOf({ ...item, revision: row.revision }, { ...row, choice: row.choice as Choice }, null),
-        };
-      }),
-    );
+    props.onSubmit(open.map(rowRequest));
   };
 
   const shownClosed = showAll ? closed : closed.slice(0, 2);
@@ -155,7 +163,10 @@ export function CommentsTable(props: CommentsTableProps) {
         <td className={TD}>
           {item.kind.replace("_", " ")} · {item.author_kind}
         </td>
-        <td className={TD}>{problem(item)}</td>
+        <td className={TD}>
+          {problem(item)}
+          <GithubProposal item={item} />
+        </td>
         <td className={TD}>
           {a ? (
             <>
@@ -237,7 +248,10 @@ export function CommentsTable(props: CommentsTableProps) {
             </tr>
             {open.map((item) => {
               const row = rowOf(item);
-              const need = row.choice ? needOf(row.choice) : null;
+              const gate = gateOf(item);
+              const marking = row.choice === "not_a_review_point";
+              const need = row.choice ? needOf(row.choice, gate) : null;
+              const markBlocked = props.busy || changed(item) || !canMark(item) || !row.value.trim();
               const name = `${itemId(item)} (${item.title})`;
               return (
                 <tr key={item.id} data-row={itemId(item)}>
@@ -267,6 +281,18 @@ export function CommentsTable(props: CommentsTableProps) {
                         </option>
                       ))}
                     </select>
+                    {marking && gate && (
+                      <Tooltip tip="Enter a reason to mark this gate item individually.">
+                        <button
+                          type="button"
+                          aria-disabled={markBlocked || undefined}
+                          className={`${buttonClass("plain", true)} mt-1`}
+                          onClick={() => !markBlocked && props.onSubmit([rowRequest(item)])}
+                        >
+                          Mark {itemId(item)}
+                        </button>
+                      </Tooltip>
+                    )}
                     {changed(item) && (
                       <div role="status" className="mt-1 text-xs text-med">
                         Changed since you started; check this row.{" "}
@@ -298,8 +324,10 @@ export function CommentsTable(props: CommentsTableProps) {
                       <input
                         type="checkbox"
                         aria-label={`Resolve ${itemId(item)}`}
-                        checked={(row.choice !== "" && resolveLocked(row.choice)) || row.resolve}
-                        disabled={row.choice !== "" && resolveLocked(row.choice)}
+                        checked={
+                          !marking && ((row.choice !== "" && resolveLocked(row.choice)) || row.resolve)
+                        }
+                        disabled={marking || (row.choice !== "" && resolveLocked(row.choice))}
                         onChange={(e) => set(item, { resolve: e.target.checked })}
                       />
                     ) : (
@@ -310,7 +338,8 @@ export function CommentsTable(props: CommentsTableProps) {
                     <input
                       type="text"
                       aria-label={`Your comment on ${itemId(item)}`}
-                      value={row.comment}
+                      value={marking ? "" : row.comment}
+                      disabled={marking}
                       onChange={(e) => set(item, { comment: e.target.value })}
                       className="min-w-36 rounded-md border border-muted bg-surface px-1.5 py-1"
                     />
@@ -321,9 +350,9 @@ export function CommentsTable(props: CommentsTableProps) {
             })}
             <tr>
               <th scope="rowgroup" colSpan={12} className={`${TD} bg-surface-2 text-left`}>
-                Previously decided, outside diffpilot or no longer read ({closed.length})
+                Decided and other comments ({closed.length})
                 {closed.length > 2 && (
-                  <Tooltip tip="Shows or hides the previously decided and outside rows beyond the first two.">
+                  <Tooltip tip="Shows or hides additional rows.">
                     <button
                       type="button"
                       onClick={() => setShowAll(!showAll)}
@@ -336,20 +365,28 @@ export function CommentsTable(props: CommentsTableProps) {
               </th>
             </tr>
             {shownClosed.map((item) => {
-              const d = item.decisions.at(-1);
+              const d = item.not_a_review_point ? undefined : item.decisions.at(-1);
               return (
                 <tr key={item.id} data-row={itemId(item)} className="bg-ok-bg/40">
                   {common(item)}
                   <td className={TD}>
-                    {d ? (
+                    {item.not_a_review_point ? (
+                      markText(item.not_a_review_point, now)
+                    ) : d ? (
                       <>
                         <b>{decisionLabel(d)}</b>
                         <div className="text-xs text-muted">
                           {VIA[d.via] ?? d.via} {clockText(d.decided_at, now)} · {d.decided_by}
                         </div>
                       </>
-                    ) : item.state === "outside" ? (
-                      `Resolved on GitHub by ${item.outside?.by ?? "someone"}, not through diffpilot`
+                    ) : item.imported_decision || item.state === "outside" ? (
+                      <GithubDecision item={item} />
+                    ) : item.duplicate_of != null ? (
+                      <>
+                        Same point as C{item.duplicate_of} <ProvenanceTag source="llm" />
+                      </>
+                    ) : item.status_comment ? (
+                      "Status comment"
                     ) : (
                       "—"
                     )}

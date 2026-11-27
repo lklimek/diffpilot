@@ -12,7 +12,7 @@ use regex::{Regex, RegexBuilder};
 use super::WordingWarning;
 
 /// Banned phrases, matched case-insensitively (`words` of `scripts/wording-rules.json`).
-pub const BANNED_PHRASES: &str = r"\bno\s+risk|\bnothing\s+to\s+review\b|\bno\s+review\s+needed\b|\bnoise\b|\bverified\b|\bwas\s+wrong\b|\bconfidence\b";
+pub const BANNED_PHRASES: &str = r"\bno\s+risk|\bnothing\s+to\s+review\b|\bno\s+review\s+needed\b|\bnoise\b|\bjunk\b|\bverified\b|\bwas\s+wrong\b|\bconfidence\b";
 /// Percentages (`percent` of `scripts/wording-rules.json`; `{}` stands for an interpolated value in sources).
 pub const PERCENTAGE: &str = r"(?:\d+|\{\})\s?%";
 
@@ -522,7 +522,7 @@ mod tests {
     #[test]
     fn ask_answer_wording_is_scanned() {
         let output = AskOutput {
-            answer: "This was verified; no risk at 90% here?".to_owned(),
+            answer: "This was verified; no risk at 90% here? Junk.".to_owned(),
             evidence: Vec::new(),
         };
         assert_eq!(
@@ -530,6 +530,7 @@ mod tests {
             [
                 ("verified", "answer"),
                 ("no risk", "answer"),
+                ("Junk", "answer"),
                 ("90%", "answer")
             ]
         );

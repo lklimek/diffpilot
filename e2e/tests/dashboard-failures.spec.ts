@@ -5,6 +5,7 @@ import {
   api,
   githubFaults,
   latestRefresh,
+  notLiveScan,
   ranked,
   refreshButton,
   rowIds,
@@ -92,7 +93,9 @@ test("GitHub down: the refresh fails with a plain message and the previous list 
   await expect(
     page.getByText(/^Nothing was replaced: you are looking at the \d\d:\d\d snapshot\./),
   ).toBeVisible();
-  await expect(page.getByText(/^Refresh of \d\d:\d\d failed · showing \d\d:\d\d$/)).toBeVisible();
+  const snapshot = page.getByText(notLiveScan);
+  await expect(snapshot).toBeVisible();
+  await expect(snapshot).toHaveAccessibleDescription(/Scan started at .* failed\. Last full scan:/);
   expect(await rowIds(page)).toEqual(before);
   await checkScreen(page);
   await screens(page, "dashboard-github-down");

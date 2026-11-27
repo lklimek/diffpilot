@@ -1,3 +1,4 @@
+import { userEventNotice } from "../app/userEvents";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeEventSource } from "../__tests__/fake-event-source";
 import { createApiClient } from "./client";
@@ -37,3 +38,10 @@ describe("subscribeUserEvents (RW3, sse-events.md)", () => {
     expect(source.readyState).toBe(FakeEventSource.CLOSED);
   });
 });
+
+it.each(["questions_ready", "round_executed"] as const)(
+  "opens the PR main page from a %s notification",
+  (kind) => {
+    expect(userEventNotice({ ...EVENT, kind }).path).toBe("/pr/acme/node-client/482");
+  },
+);

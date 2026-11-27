@@ -12,7 +12,7 @@ use contracts::time::Timestamp;
 use fake_github::Config;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use reqwest::StatusCode;
-use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
+use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
 use serde_json::{Value, json};
 use url::Url;
 
@@ -320,6 +320,49 @@ async fn jwts_github_would_refuse_are_refused() {
 }
 
 #[tokio::test]
+async fn installation_token_body_errors_follow_authentication_and_lookup() {
+    let base = spawn(config(true)).await;
+    let jwt = good_jwt();
+    let valid_body = read_only().to_string();
+    for (id, token, content_type, body, status) in [
+        (
+            INSTALLATION,
+            "invalid",
+            "application/json",
+            "{",
+            StatusCode::UNAUTHORIZED,
+        ),
+        ("1", &jwt, "application/json", "{", StatusCode::NOT_FOUND),
+        (
+            INSTALLATION,
+            &jwt,
+            "application/json",
+            "{",
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            INSTALLATION,
+            &jwt,
+            "text/plain",
+            &valid_body,
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+    ] {
+        let response = reqwest::Client::new()
+            .post(format!("{base}/app/installations/{id}/access_tokens"))
+            .bearer_auth(token)
+            .header(USER_AGENT, "diffpilot")
+            .header(CONTENT_TYPE, content_type)
+            .body(body.to_owned())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status);
+    }
+    assert_eq!(credentials(&base).await["installation_tokens"], json!([]));
+}
+
+#[tokio::test]
 async fn token_requests_beyond_read_only_for_the_pr_repository_are_refused() {
     let base = spawn(config(true)).await;
     let jwt = good_jwt();
@@ -388,5 +431,20 @@ async fn token_requests_beyond_read_only_for_the_pr_repository_are_refused() {
         narrower["permissions"],
         json!({"contents": "read"}),
         "the token carries what was asked"
+    );
+}
+
+#[tokio::test]
+async fn an_app_jwt_lists_the_recorded_installation() {
+    let base = spawn(config(true)).await;
+    let endpoint = format!("{base}/app/installations");
+    let denied = send(reqwest::Method::GET, endpoint.clone(), "wrong", None).await;
+    assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+    let response = send(reqwest::Method::GET, endpoint, &good_jwt(), None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let rows: Vec<Value> = response.json().await.unwrap();
+    assert_eq!(
+        rows,
+        [recording("rest/repo-installation.json")["response"].clone()]
     );
 }

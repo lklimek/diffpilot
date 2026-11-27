@@ -213,7 +213,8 @@ fn token_use(method: &Method, matched: Option<&str>) -> TokenUse {
         | RouteAuth::Session
         | RouteAuth::SessionCsrf
         | RouteAuth::RunnerSecret
-        | RouteAuth::JobToken => TokenUse::Refused,
+        | RouteAuth::JobToken
+        | RouteAuth::GithubSignature => TokenUse::Refused,
     }
 }
 

@@ -25,7 +25,7 @@ use contracts::routes::{
     ASSESS_COMMENT, DECIDE_COMMENT, DECIDE_COMMENT_BATCH, GET_COMMENT_CONTEXT, GET_COMMENT_LOG,
     GET_COMMENTS, GET_DECIDE_REST, GET_PR_PAGE, LIST_CARRY_OVERS, LIST_COMMENT_ITEMS,
     MARK_COMMENT_GATE, PREVIEW_COMMENT_EFFECTS, READ_COMMENTS, REOPEN_COMMENT_ITEM,
-    SKIP_COMMENT_ITEM, UNDO_COMMENT_DECISION,
+    SKIP_COMMENT_ITEM, START_COMMENT_ASSESSMENT, UNDO_COMMENT_DECISION, VISIT_COMMENTS,
 };
 use contracts::time::Timestamp;
 
@@ -69,13 +69,23 @@ fn item_list(nos: &[u32]) -> String {
 impl ApiErrorSource for ReviewLoopApiError {
     fn code(&self) -> ApiErrorCode {
         match self {
+            Self::Assess(error)
+                if matches!(
+                    error.as_ref(),
+                    assess::AssessError::StatusComment | assess::AssessError::MarkedItem
+                ) =>
+            {
+                ApiErrorCode::Conflict
+            }
             Self::Assess(_) => ApiErrorCode::Internal,
             Self::Path(_) | Self::Query(_) | Self::Json(_) => ApiErrorCode::InvalidRequest,
             Self::Loop(error) => match error {
                 LoopError::NotFound => ApiErrorCode::NotFound,
                 LoopError::PrivateRepository => ApiErrorCode::PrivateRepository,
                 LoopError::Token(error) => error.code(),
-                LoopError::Unreadable(ReadFailure::RateLimited) => ApiErrorCode::GithubRateLimited,
+                LoopError::Unreadable(ReadFailure::RateLimited) | LoopError::EventBudget(_) => {
+                    ApiErrorCode::GithubRateLimited
+                }
                 LoopError::Unreadable(ReadFailure::SignInRequired) => ApiErrorCode::Unauthenticated,
                 LoopError::Unreadable(ReadFailure::Unavailable) => ApiErrorCode::GithubUnavailable,
                 LoopError::TooSoon => ApiErrorCode::RateLimited,
@@ -85,7 +95,9 @@ impl ApiErrorSource for ReviewLoopApiError {
                 | LoopError::GateRow(_)
                 | LoopError::InvalidCursor
                 | LoopError::BadRange => ApiErrorCode::InvalidRequest,
-                LoopError::NotApplicable | LoopError::AssessmentRunning => ApiErrorCode::Conflict,
+                LoopError::NotApplicable
+                | LoopError::AssessmentRunning
+                | LoopError::FollowerClaimed(_) => ApiErrorCode::Conflict,
                 LoopError::WatchLimitReached => ApiErrorCode::WatchLimitReached,
                 LoopError::RangeTooLarge => ApiErrorCode::RangeTooLarge,
                 LoopError::Mirror(MirrorError::BlobTooLarge { .. }) => ApiErrorCode::NotRendered,
@@ -98,6 +110,12 @@ impl ApiErrorSource for ReviewLoopApiError {
 
     fn public_message(&self) -> Cow<'static, str> {
         match self {
+            Self::Assess(error) if matches!(error.as_ref(), assess::AssessError::StatusComment) => {
+                Cow::Borrowed("Status comments cannot be assessed.")
+            }
+            Self::Assess(error) if matches!(error.as_ref(), assess::AssessError::MarkedItem) => {
+                Cow::Borrowed("Items marked as not a review point cannot be assessed.")
+            }
             Self::Assess(_) => {
                 Cow::Borrowed("The assessment could not be started. Try again later.")
             }
@@ -110,9 +128,11 @@ impl ApiErrorSource for ReviewLoopApiError {
                     "The repository is private; diffpilot supports public repositories.",
                 ),
                 LoopError::Token(error) => error.public_message(),
-                LoopError::Unreadable(ReadFailure::RateLimited) => Cow::Borrowed(
-                    "GitHub's rate limit is used up; the pull request could not be read. Try again later.",
-                ),
+                LoopError::Unreadable(ReadFailure::RateLimited) | LoopError::EventBudget(_) => {
+                    Cow::Borrowed(
+                        "GitHub's rate limit is used up; the pull request could not be read. Try again later.",
+                    )
+                }
                 LoopError::Unreadable(ReadFailure::SignInRequired) => {
                     Cow::Borrowed("Your GitHub sign-in has ended. Sign in again.")
                 }
@@ -134,6 +154,9 @@ impl ApiErrorSource for ReviewLoopApiError {
                 LoopError::GateRow(nos) => Cow::Owned(format!(
                     "Gate items need their own decision: {}.",
                     item_list(nos)
+                )),
+                LoopError::FollowerClaimed(no) => Cow::Owned(format!(
+                    "An agent has claimed the effects of duplicate C{no}. Try again after the claim ends."
                 )),
                 LoopError::NotApplicable => Cow::Borrowed(
                     "This does not apply to the comment now: it has no standing decision, or an agent claimed \
@@ -185,6 +208,8 @@ pub fn routes() -> Router<AppState> {
         .route(GET_PR_PAGE.path, get(pr_page))
         .route(GET_COMMENTS.path, get(overview))
         .route(READ_COMMENTS.path, post(read_again))
+        .route(START_COMMENT_ASSESSMENT.path, post(start_assessment))
+        .route(VISIT_COMMENTS.path, post(visit))
         .route(LIST_COMMENT_ITEMS.path, get(items))
         .route(GET_COMMENT_CONTEXT.path, get(context))
         .route(ASSESS_COMMENT.path, post(assess_again))
@@ -244,7 +269,23 @@ async fn pr_page(
 ) -> ApiResult<Json<PrPage>> {
     mark_present(&state, &session);
     let handle = handle_of(&state, &session, path).await?;
-    Ok(Json(views::pr_page(&state, &session, handle).await?))
+    let pr_id = handle.id;
+    let page = views::pr_page(&state, &session, handle).await?;
+    if !session.is_access_token()
+        && let Err(error) = state
+            .db
+            .pull_requests()
+            .record_opening(
+                &session.tenant_id,
+                &session.user_id,
+                pr_id,
+                Timestamp::now(),
+            )
+            .await
+    {
+        tracing::warn!(?error, pr = pr_id, "could not record PR page opening");
+    }
+    Ok(Json(page))
 }
 
 async fn overview(
@@ -254,17 +295,31 @@ async fn overview(
 ) -> ApiResult<Json<CommentsOverview>> {
     mark_present(&state, &session);
     let handle = handle_of(&state, &session, path).await?;
-    if !session.is_access_token()
-        && let Err(error) =
-            assess::request_pass_for(&state, handle.id, PassReason::Opened, &session.user_id).await
-    {
-        tracing::warn!(
-            ?error,
-            pr = handle.id,
-            "assessment pass on opening Comments could not be requested"
-        );
-    }
     Ok(Json(views::overview(&state, &session, handle).await?))
+}
+
+async fn visit(
+    State(state): State<AppState>,
+    SessionCsrf(session): SessionCsrf,
+    path: PrPath,
+) -> ApiResult<StatusCode> {
+    let handle = handle_of(&state, &session, path).await?;
+    state
+        .db
+        .review_loop()
+        .visit_comments(&session.tenant_id, &session.user_id, handle.id)
+        .await
+        .map_err(LoopError::from)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn start_assessment(
+    State(state): State<AppState>,
+    SessionCsrf(session): SessionCsrf,
+    path: PrPath,
+) -> ApiResult<Response> {
+    let handle = handle_of(&state, &session, path).await?;
+    request_assessment(&state, &session, handle.id, PassReason::Opened).await
 }
 
 async fn read_again(
@@ -315,14 +370,22 @@ async fn assess_again(
         .await
         .map_err(LoopError::from)?
         .ok_or(LoopError::NotFound)?;
-    match assess::request_pass_for(
+    request_assessment(
         &state,
+        &session,
         handle.id,
         PassReason::AssessAgain(item.id),
-        &session.user_id,
     )
     .await
-    {
+}
+
+async fn request_assessment(
+    state: &AppState,
+    session: &Session,
+    pr: i64,
+    reason: PassReason,
+) -> ApiResult<Response> {
+    match assess::request_pass_for(state, pr, reason, &session.user_id).await {
         Ok(assess::PassQueued::AlreadyRunning) => Err(LoopError::AssessmentRunning.into()),
         Ok(assess::PassQueued::DailyLimit) => {
             let quota = state
@@ -358,15 +421,15 @@ async fn assess_again(
             Ok((status, Json(failure)).into_response())
         }
         Ok(queued) => {
-            tracing::debug!(pr = handle.id, item = no, ?queued, "assess again requested");
+            tracing::debug!(pr, ?reason, ?queued, "comment assessment requested");
             Ok(StatusCode::ACCEPTED.into_response())
         }
         Err(error) => {
             tracing::warn!(
                 ?error,
-                pr = handle.id,
-                item = no,
-                "assess again could not be requested"
+                pr,
+                ?reason,
+                "comment assessment could not be requested"
             );
             Err(ReviewLoopApiError::Assess(Box::new(error)))
         }
@@ -482,6 +545,7 @@ async fn mark_gate(
     let (handle, no) = item_of(&state, &session, path).await?;
     review_loop::mark_gate(
         &state,
+        &session,
         &handle,
         no,
         request.gate,

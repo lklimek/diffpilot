@@ -11,7 +11,7 @@ import { resetDashboard, setDashboardScenario } from "../../mocks/handlers/dashb
 import { resetDashboardSettings } from "../../mocks/handlers/dashboard-settings";
 import { setScenario } from "../../mocks/scenarios";
 import { resetSentTimeZones } from "./queries";
-import { FILTER_KEY, LEGACY_FILTER_KEY, SIZE_FILTER_KEY, useDashboardPage } from "./useDashboardPage";
+import { FILTER_KEY, LEGACY_FILTER_KEY, useDashboardPage } from "./useDashboardPage";
 
 const server = setupServer(...handlers);
 beforeAll(() => server.listen({ onUnhandledFrame: "error" }));
@@ -50,7 +50,7 @@ describe("useDashboardPage", () => {
   it("loads the summary and all items; the list opens with every kind on", async () => {
     const { result } = renderPage();
     await waitFor(() => expect(result.current.allItems).toHaveLength(13));
-    expect(result.current.view).toMatchObject({ scanning: null, ranking: null, empty: false });
+    expect(result.current.view).toMatchObject({ scanning: null, empty: false });
     expect(result.current.filter).toEqual(["pr", "issue", "todo"]);
     // A finished refresh has no stream.
     expect(FakeEventSource.instances).toHaveLength(0);
@@ -89,19 +89,6 @@ describe("useDashboardPage", () => {
       act(() => result.current.setFilter([...only]));
       expect(renderPage().result.current.filter).toEqual(only);
     }
-  });
-
-  it("remembers the size filter under its own key; unknown or no stored sizes fall back to every size", () => {
-    const { result } = renderPage();
-    expect(result.current.sizes).toEqual(["tiny", "small", "medium", "large", "huge"]);
-    act(() => result.current.setSizes(["small", "huge"]));
-    expect(JSON.parse(localStorage.getItem(SIZE_FILTER_KEY) ?? "null")).toEqual(["small", "huge"]);
-    expect(renderPage().result.current.sizes).toEqual(["small", "huge"]);
-    for (const value of ['["gigantic"]', "[]", "nonsense", "constructor"]) {
-      localStorage.setItem(SIZE_FILTER_KEY, value);
-      expect(renderPage().result.current.sizes).toEqual(["tiny", "small", "medium", "large", "huge"]);
-    }
-    localStorage.removeItem(SIZE_FILTER_KEY);
   });
 
   it("a corrupt stored value naming an Object.prototype key falls back to every kind", () => {
@@ -150,7 +137,7 @@ describe("useDashboardPage", () => {
   it("says Ranking finished when the watched ranking ends", async () => {
     setDashboardScenario("provisional");
     const { result } = renderPage();
-    await waitFor(() => expect(result.current.view?.ranking).toMatchObject({ status: { state: "running" } }));
+    await waitFor(() => expect(result.current.summary.data?.latest_refresh?.ranking?.state).toBe("running"));
     const summary = result.current.summary.data!;
     const latest = summary.latest_refresh!;
     expect(result.current.notice).toBeNull();
@@ -164,15 +151,40 @@ describe("useDashboardPage", () => {
       http.get("/api/v1/dashboard", () => HttpResponse.json({ ...summary, latest_refresh: finished })),
     );
     emit(finished);
-    await waitFor(() => expect(result.current.notice).toBe("Ranking finished: 13 items judged."));
+    await waitFor(() => expect(result.current.notice).toBe("Ranking finished: 14 items judged."));
   });
 
-  it("Rank again restarts a failed ranking", async () => {
+  it("requests one re-judgement, then reads the running state from the item page", async () => {
+    setDashboardScenario("v14");
+    const { result } = renderPage();
+    const key = "acme~node-client~pr~482";
+    const state = () => result.current.allItems?.find((item) => item.key === key)?.judgement?.state;
+    await waitFor(() => expect(state()).toBe("outdated"));
+    act(() => result.current.rejudge.mutate({ key }));
+    await waitFor(() => expect(state()).toBe("judging"));
+    expect(result.current.rejudge.error).toBeNull();
+  });
+
+  it("keeps the outdated judgement when the request fails", async () => {
+    setDashboardScenario("v14-rejudge-error");
+    const { result } = renderPage();
+    const key = "acme~node-client~pr~482";
+    const state = () => result.current.allItems?.find((item) => item.key === key)?.judgement?.state;
+    await waitFor(() => expect(state()).toBe("outdated"));
+    act(() => result.current.rejudge.mutate({ key }));
+    await waitFor(() => expect(result.current.rejudge.error?.message).toBe("LLM ranking is unavailable."));
+    expect(state()).toBe("outdated");
+  });
+
+  it("retries the failed ranking on the existing snapshot and opens its events", async () => {
     setDashboardScenario("ranking-failed");
     const { result } = renderPage();
-    await waitFor(() => expect(result.current.view?.ranking).toMatchObject({ status: { state: "failed" } }));
-    act(() => result.current.rankAgain.run(result.current.view!.ranking!.refreshId));
-    await waitFor(() => expect(result.current.view?.ranking).toMatchObject({ status: { state: "running" } }));
+    await waitFor(() => expect(result.current.summary.data?.latest_refresh?.ranking?.state).toBe("failed"));
+    const id = result.current.summary.data!.snapshot!.refresh_id;
+    act(() => result.current.retryRanking.run(id));
+    await waitFor(() => expect(result.current.summary.data?.latest_refresh?.ranking?.state).toBe("running"));
+    expect(FakeEventSource.latest().url).toContain(`/refreshes/${id}/events`);
+    expect(result.current.retryRanking.error).toBeNull();
   });
 
   it("an empty snapshot and a first visit without a snapshot read no items", async () => {

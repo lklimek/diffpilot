@@ -156,6 +156,7 @@ fn tour() -> Tour {
                 id: step_id,
                 number: 1,
                 facts: StepFacts {
+                    leading_context: None,
                     file: "src/rpc/client.rs".to_owned(),
                     side: LineSide::Head,
                     range: LineRange {
@@ -270,6 +271,7 @@ fn error_codes_map_to_statuses() {
         ("not_rendered", 422),
         ("github_unavailable", 502),
         ("internal", 500),
+        ("not_implemented", 501),
         ("unavailable", 503),
         ("refresh_running", 409),
         ("github_rate_limited", 429),
@@ -317,6 +319,11 @@ fn routes_are_unique_and_split_by_listener() {
         assert!(names.insert(route.name), "duplicate name {}", route.name);
         let runner_auth = matches!(route.auth, RouteAuth::RunnerSecret | RouteAuth::JobToken);
         match route.listener {
+            Listener::Webhook => {
+                assert_eq!(route.path, "/webhooks/github");
+                assert_eq!(route.method, HttpMethod::Post);
+                assert_eq!(route.auth, RouteAuth::GithubSignature);
+            }
             Listener::Runner => {
                 assert!(route.path.starts_with("/runner/v1/"), "{}", route.path);
                 assert!(runner_auth, "{}", route.path);
@@ -807,6 +814,7 @@ fn deletions_have_valid_locations() {
     };
     // Whole file deleted: base-side step, unexplained base lines, base-side lines endpoint.
     let step = StepFacts {
+        leading_context: None,
         file: "src/rpc/old.rs".to_owned(),
         side: LineSide::Base,
         range: base_range,
@@ -1054,4 +1062,19 @@ fn usage_and_size_warning_are_additive_json_numbers() {
             .changed_lines,
         27081
     );
+}
+
+#[test]
+fn github_webhook_status_reports_only_installation_wide_totals() {
+    use contracts::api::settings::GithubWebhook;
+
+    let wire = json!({
+        "configured": true,
+        "webhook_url": "https://hooks.example.test/diffpilot/github",
+        "last_delivery_at": "2026-11-25T10:00:00Z",
+        "dropped_deliveries": 3,
+        "refused_connections": 2
+    });
+    let status: GithubWebhook = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(status).unwrap(), wire);
 }

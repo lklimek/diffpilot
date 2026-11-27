@@ -28,6 +28,16 @@ docker run --name "$name" --network none --read-only --cap-drop ALL --security-o
     python3 /etc/codex/claudius/scripts/validate_report.py /etc/codex/claudius/tests/fixtures/reports/v4-comment-assessments-host.json
     test -r /etc/codex/skills/report-format/references/comment-assessments.md
     test -r /etc/codex/skills/severity/SKILL.md
+    # Codex checks for bubblewrap when starting with sandboxing enabled (CS2).
+    export CODEX_HOME=/tmp/codex
+    mkdir "$CODEX_HOME"
+    if ! logs=$(RUST_LOG=codex_app_server=error codex app-server -c "sandbox_mode=\"read-only\"" \
+        --listen stdio:// </dev/null 2>&1) || printf "%s\n" "$logs" | grep -Fq "Codex could not find bubblewrap on PATH"; then
+        printf "%s\n" "$logs" >&2
+        exit 1
+    fi
+    command -v bwrap
+    test -s /usr/share/doc/bubblewrap/copyright
     echo "IM3 offline image checks PASS"
 '
 

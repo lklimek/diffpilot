@@ -1,5 +1,5 @@
-// Settings of My work (v1.1 plan §F.6) and who reads it (ADR-019, threat model T16, T20): the Dashboard card saves
-// and validates (scan scope, MemCan projects, schedule time and zone), the ranking effort; a personal access token
+// Settings of My work and who reads it (ADR-019, threat model T16, T20): GitHub sync and Repositories save and
+// validate their changes, LLM & usage saves the ranking effort; a personal access token
 // reads with only its bearer, cannot write, stops at revoke; a second user sees nothing of the first.
 import { execFileSync } from "node:child_process";
 import { checkScreen, signIn } from "../support/app";
@@ -27,52 +27,67 @@ test("Dashboard settings: client and server validation, save, reload; the rankin
   page,
 }) => {
   await signIn(page);
-  await page.goto("/settings");
-  const card = page.getByRole("region", { name: "Dashboard", exact: true });
-  await expect(card).toContainText("Your login alice is always scanned.");
+  await page.goto("/settings/github-sync");
+  const scope = page.getByRole("region", { name: "Scope" });
+  await expect(scope).toContainText("Your login alice is always scanned.");
 
   // Scan scope: linked logins are logins, never the own one.
-  const login = card.getByLabel("Add a linked login");
-  const addLogin = card.getByRole("button", { name: "Add to linked logins" });
+  const login = scope.getByLabel("Add a linked login");
+  const addLogin = scope.getByRole("button", { name: "Add to linked logins" });
   await login.fill("alice");
   await addLogin.click();
-  await expect(card).toContainText('Linked logins: "alice" is your own login, which is always scanned.');
+  await expect(scope).toContainText('Linked logins: "alice" is your own login, which is always scanned.');
   await login.fill("not a login!");
   await addLogin.click();
-  await expect(card).toContainText('Linked logins: "not a login!" is not a GitHub login');
+  await expect(scope).toContainText('Linked logins: "not a login!" is not a GitHub login');
   await login.fill("alice-helper");
   await addLogin.click();
-  await expect(card.getByRole("button", { name: "Remove alice-helper" })).toBeVisible();
+  await expect(scope.getByRole("button", { name: "Remove alice-helper" })).toBeVisible();
 
-  // Repositories: owner/name, checked on Save.
-  await card.getByRole("button", { name: "Add repository" }).click();
-  await card.getByLabel("Repository 1").fill("acme platform");
-  await card.getByRole("button", { name: "Save dashboard settings" }).click();
-  await expect(card.getByRole("alert")).toContainText("Not saved: fix the marked fields.");
-  await expect(card.getByRole("alert")).toContainText("Repository 1: use owner/name.");
-  await checkScreen(page);
-  await card.getByLabel("Repository 1").fill("acme/platform");
-  await card.getByLabel("Short name of acme/platform").fill("PLAT");
-
-  // MemCan projects: the repository's short name is derived; extras are checked names.
-  const project = card.getByLabel("Add a MemCan project");
-  const addProject = card.getByRole("button", { name: "Add to extra memcan projects" });
+  // MemCan projects: extra names are validated here.
+  const sources = page.getByRole("region", { name: "TODO sources" });
+  const project = sources.getByLabel("Add a MemCan project");
+  const addProject = sources.getByRole("button", { name: "Add to extra memcan projects" });
   await project.fill("release notes!");
   await addProject.click();
-  await expect(card).toContainText('Extra MemCan projects: "release notes!" is not a project name');
+  await expect(sources).toContainText('Extra MemCan projects: "release notes!" is not a project name');
   await project.fill("release-notes");
   await addProject.click();
-  await expect(card.getByRole("button", { name: "Remove release-notes" })).toBeVisible();
+  await expect(sources.getByRole("button", { name: "Remove release-notes" })).toBeVisible();
 
-  // The daily refresh: a time in 15-minute steps and an IANA zone.
-  await card.getByLabel("Time of day").selectOption("07:15");
-  await card.getByLabel("Time zone").selectOption("Europe/Warsaw");
-  await card.getByRole("button", { name: "Save dashboard settings" }).click();
-  await expect(card.getByRole("status")).toHaveText("Dashboard settings saved.");
+  // The nightly scan: a time in 15-minute steps and an IANA zone.
+  const schedule = page.getByRole("region", { name: "Nightly scan" });
+  await schedule.getByLabel("Time of day").selectOption("07:15");
+  await schedule.getByLabel("Time zone").selectOption("Europe/Warsaw");
+  const saveDashboardSettings = () =>
+    page
+      .getByRole("button", { name: "Save", exact: true })
+      .and(page.getByRole("button", { description: "Saves the changes on this page." }));
+  await saveDashboardSettings().click();
+  await expect(page.getByText("Dashboard settings saved.", { exact: true })).toBeVisible();
   await checkScreen(page);
   await screens(page, "settings-dashboard");
 
   await page.reload();
+  await expect(schedule.getByLabel("Time of day")).toHaveValue("07:15");
+
+  // Repositories: owner/name is validated on Save. Saving here preserves the GitHub sync fields.
+  await page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: "Repositories" }).click();
+  await expect(page).toHaveURL(/\/settings\/repositories$/);
+  const repositories = page.getByRole("region", { name: "Repository rules" });
+  await repositories.getByRole("button", { name: "Add repository" }).click();
+  await repositories.getByLabel("Repository 1").fill("acme platform");
+  await saveDashboardSettings().click();
+  const validation = page.getByRole("alert").filter({ hasText: "Not saved: fix the marked fields." });
+  await expect(validation).toContainText("Repository 1: use owner/name.");
+  await checkScreen(page);
+  await repositories.getByLabel("Repository 1").fill("acme/platform");
+  await repositories.getByLabel("Short name of acme/platform").fill("PLAT");
+  await saveDashboardSettings().click();
+  await expect(page.getByText("Dashboard settings saved.", { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(repositories.getByLabel("Short name of acme/platform")).toHaveValue("PLAT");
+
   const saved = (await (await page.request.get("/api/v1/settings/dashboard")).json()) as {
     settings: ReturnType<typeof worldSettings>;
     memcan_projects: string[];
@@ -86,8 +101,6 @@ test("Dashboard settings: client and server validation, save, reload; the rankin
     time_zone: "Europe/Warsaw",
   });
   expect(saved.memcan_projects).toEqual(["platform", "release-notes"]);
-  await expect(card.getByLabel("Time of day")).toHaveValue("07:15");
-  await expect(card.getByLabel("Short name of acme/platform")).toHaveValue("PLAT");
 
   // The server checks every rule too and names the field.
   const offStep = await api(page, "PUT", "/api/v1/settings/dashboard", {
@@ -100,11 +113,14 @@ test("Dashboard settings: client and server validation, save, reload; the rankin
   const zone = await api(page, "PUT", "/api/v1/settings/dashboard/time-zone", { time_zone: "Mars/Olympus" });
   expect([zone.status, zone.body?.code]).toEqual([422, "invalid_dashboard_settings"]);
 
-  // The ranking effort is installation-wide, saved when changed.
-  const effort = page.getByLabel("Dashboard ranking effort");
+  // The ranking effort is installation-wide, saved by the section's Save.
+  await page.goto("/settings/llm");
+  const selection = page.getByRole("region", { name: "Model and effort" });
+  const effort = selection.getByLabel("Dashboard ranking effort");
   await expect(effort).toHaveValue("low");
   await effort.selectOption("medium");
-  await expect(page.getByText("Ranking effort saved.")).toBeVisible();
+  await selection.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(selection.getByRole("status")).toHaveText("Saved");
   await page.reload();
   await expect(page.getByLabel("Dashboard ranking effort")).toHaveValue("medium");
   await checkScreen(page);

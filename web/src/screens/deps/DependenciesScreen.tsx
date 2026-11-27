@@ -1,22 +1,38 @@
-import { useRef, useState, type ReactNode } from "react";
-import { Navigate, useNavigate, useParams } from "react-router";
-import { ApiError } from "../../api/client";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Navigate, useLocation, useNavigate, useParams } from "react-router";
+import { ApiError, errorText } from "../../api/client";
 import { routes } from "../../api/generated/routes";
 import type { AnalysisId, FilesResponse, Tour } from "../../api/generated/types";
 import { useDependencies, useFiles, useMe, useTour } from "../../api/queries";
 import { buttonClass } from "../../components/button/button";
 import { DependencyNotices } from "../../components/deps/DependencyNotices";
 import { DependencyTree } from "../../components/deps/DependencyTree";
-import type { DepsLinks } from "../../components/deps/model";
+import {
+  crateFromHash,
+  crateHash,
+  crateKey,
+  repositoryKey,
+  unchangedCrate,
+  type DepsLinks,
+} from "../../components/deps/model";
 import { filesHash } from "../../components/files/model";
 import { githubLineUrl } from "../../components/github/links";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { Tooltip } from "../../components/tooltip/Tooltip";
-import { TopBar } from "../../components/top-bar/TopBar";
-import { SETTINGS_PATH } from "../shell/paths";
-import { errorText } from "../tour/code";
+import { ReviewTopBar } from "../shell/ReviewTopBar";
+import { GITHUB_SYNC_SETTINGS_PATH } from "../shell/paths";
 import { checksHref } from "../tour/review";
-import { commentsPath } from "../pr/paths";
+import { commentsPath, prPath } from "../pr/paths";
+
+const SHOW_UNCHANGED = "diffpilot.deps.show-unchanged";
+
+function loadShowUnchanged() {
+  try {
+    return localStorage.getItem(SHOW_UNCHANGED) === "true";
+  } catch {
+    return false;
+  }
+}
 
 const openKey = (id: AnalysisId) => `diffpilot.deps.open.${id}`;
 
@@ -76,7 +92,7 @@ export function DependenciesScreen() {
 function Shell({ login, children }: { login: string | null; children: ReactNode }) {
   return (
     <div className="flex min-h-screen flex-col">
-      <TopBar login={login} />
+      <ReviewTopBar login={login} />
       <main id="main" className="grid gap-3 px-8 py-5">
         {children}
       </main>
@@ -99,11 +115,35 @@ function DependenciesView({
   const deps = useDependencies(analysisId);
   const mainRef = useRef<HTMLElement>(null);
   const [open, setOpen] = useState(() => loadOpen(analysisId));
+  const [showUnchanged, setShowUnchanged] = useState(loadShowUnchanged);
+  const location = useLocation();
+  const target = crateFromHash(location.hash);
+  const unchanged =
+    deps.data?.repositories.reduce((total, repo) => total + repo.crates.filter(unchangedCrate).length, 0) ??
+    0;
+  const mapReady = deps.data?.status === "available";
+  useEffect(() => {
+    if (!target || !mapReady) return;
+    const crate = Array.from(mainRef.current?.querySelectorAll<HTMLButtonElement>("[data-crate]") ?? []).find(
+      (item) => item.dataset.crate === target,
+    );
+    crate?.focus();
+  }, [target, mapReady]);
   const base = `/analyses/${analysisId}`;
   const pr = tour.analysis.pr;
   const toggle = (key: string, value: boolean) => {
     const next = { ...open, [key]: value };
     setOpen(next);
+    if (
+      !value &&
+      target &&
+      deps.data?.repositories.some((repo, index) => {
+        const rk = repositoryKey(repo, index);
+        return rk === key && repo.crates.some((crate) => crateKey(rk, crate) === target);
+      })
+    ) {
+      void navigate({ ...location, hash: "" }, { replace: true });
+    }
     try {
       localStorage.setItem(openKey(analysisId), JSON.stringify(next));
     } catch {
@@ -126,8 +166,9 @@ function DependenciesView({
             ),
             external: true,
           },
+    crate: (key) => `${location.pathname}${location.search}${crateHash(key)}`,
     flow: (id) => `${base}#${encodeURIComponent(id)}`,
-    settings: SETTINGS_PATH,
+    settings: GITHUB_SYNC_SETTINGS_PATH,
     onNavigate: (href) => void navigate(href),
   };
   let body: ReactNode;
@@ -158,7 +199,34 @@ function DependenciesView({
       <>
         <DependencyNotices view={deps.data} prOwner={pr.repo.owner} links={links} />
         {deps.data.status === "available" && (
-          <DependencyTree view={deps.data} open={open} onToggle={toggle} links={links} />
+          <>
+            {unchanged > 0 && (
+              <label className="flex min-h-6 w-fit cursor-pointer items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={showUnchanged}
+                  onChange={(event) => {
+                    const value = event.target.checked;
+                    setShowUnchanged(value);
+                    try {
+                      localStorage.setItem(SHOW_UNCHANGED, String(value));
+                    } catch {
+                      /* The setting still works on this page. */
+                    }
+                  }}
+                />
+                Show unchanged dependencies ({unchanged})
+              </label>
+            )}
+            <DependencyTree
+              view={deps.data}
+              open={open}
+              onToggle={toggle}
+              links={links}
+              showUnchanged={showUnchanged}
+              targetCrate={target}
+            />
+          </>
         )}
       </>
     );
@@ -175,7 +243,7 @@ function DependenciesView({
       >
         Skip to content
       </a>
-      <TopBar
+      <ReviewTopBar
         pr={pr}
         ci={tour.pr_context.facts.ci}
         checksHref={checksHref(pr)}
@@ -187,7 +255,7 @@ function DependenciesView({
           filesHref: `${base}/files`,
           depsHref: `${base}/deps`,
           commentsHref: commentsPath(pr),
-          prContextHref: `${base}#pr_context`,
+          prPageHref: prPath(pr),
           onNavigate: (href) => void navigate(href),
         }}
       />

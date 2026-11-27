@@ -160,7 +160,7 @@ fn proposal_agrees(
     proposal: &crate::agent::comment_report::ProposedDecision,
     owner: &crate::assessment::AssessmentOwnerDecision,
 ) -> bool {
-    use crate::api::review_loop::{DecisionKind as Kind, DecisionTarget as Target};
+    use crate::api::review_loop::{DecisionTarget as Target, ReviewDecisionKind as Kind};
     let kind = serde_json::to_value(proposal.kind).ok();
     if kind != serde_json::to_value(owner.kind).ok() {
         return false;
@@ -189,7 +189,7 @@ fn proposal_agrees(
 mod tests {
     use super::*;
     use crate::agent::comment_report::{ProposedDecision, ProposedDecisionKind};
-    use crate::api::review_loop::{DecisionKind, DecisionTarget};
+    use crate::api::review_loop::{DecisionTarget, ReviewDecisionKind};
     use crate::assessment::AssessmentOwnerDecision;
     use crate::ids::{DecisionId, UserId};
 
@@ -200,7 +200,7 @@ mod tests {
             revision: 1,
             owner: UserId("owner".into()),
             at: Timestamp::UNIX_EPOCH,
-            kind: DecisionKind::FixHere,
+            kind: ReviewDecisionKind::FixHere,
             target: None,
         };
         let mut proposal = ProposedDecision {
@@ -213,7 +213,7 @@ mod tests {
         assert!(!proposal_agrees(&proposal, &owner));
         proposal.kind = ProposedDecisionKind::FixHere;
         assert!(proposal_agrees(&proposal, &owner));
-        owner.kind = DecisionKind::HandledInPr;
+        owner.kind = ReviewDecisionKind::HandledInPr;
         owner.target = Some(DecisionTarget::ExistingPr { number: 12 });
         proposal.kind = ProposedDecisionKind::HandledInPr;
         proposal.target_pr = Some(13);

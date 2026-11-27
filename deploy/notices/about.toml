@@ -17,5 +17,5 @@ accepted = [
 targets = ["x86_64-unknown-linux-gnu"]
 ignore-dev-dependencies = true
 ignore-build-dependencies = true
-# The workspace's own crates (publish = false) are covered by LICENSE.md.
+# The workspace's own crates (publish = false) are covered by LICENSE (Apache-2.0).
 private = { ignore = true }

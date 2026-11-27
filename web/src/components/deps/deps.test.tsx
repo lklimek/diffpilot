@@ -44,6 +44,8 @@ function Tree({ view, onNavigate = vi.fn() }: { view: DependencyView; onNavigate
       open={open}
       onToggle={(key, value) => setOpen((o) => ({ ...o, [key]: value }))}
       links={links(onNavigate)}
+      showUnchanged
+      targetCrate={null}
     />
   );
 }
@@ -185,7 +187,7 @@ describe("DependencyNotices (brief 2026-11-20: Not available, limits, controlled
       );
       expect(document.body).not.toHaveTextContent("No Rust crate is changed");
       expect(document.body).toHaveTextContent(
-        "Yours: acme (this pull request's owner). No other organisation is listed in Settings.",
+        "Yours: acme (this pull request's owner). No other organisation is listed in GitHub sync.",
       );
       expect(screen.getByRole("region", { name: "This map is incomplete" })).toBeVisible();
       expectTrustWording(document.body.textContent ?? "");
@@ -198,7 +200,7 @@ describe("DependencyNotices (brief 2026-11-20: Not available, limits, controlled
       <DependencyNotices prOwner="acme" view={mockDependenciesNoControlled()} links={links(onNavigate)} />,
     );
     expect(document.body).toHaveTextContent(
-      "Yours: acme (this pull request's owner). No other organisation is listed in Settings.",
+      "Yours: acme (this pull request's owner). No other organisation is listed in GitHub sync.",
     );
     const settings = screen.getByRole("link", { name: "Controlled organisations" });
     expect(settings).toHaveAttribute("href", "/settings");
@@ -242,7 +244,7 @@ describe("DependencyTree (repository → crate → facts and notes, disclosure b
     render(<Tree view={mockDependenciesMulti()} />);
     const chips = screen.getAllByText("yours");
     expect(chips).toHaveLength(3);
-    expect(chips[0]).toHaveAccessibleDescription(/Controlled organisations in Settings/);
+    expect(chips[0]).toHaveAccessibleDescription(/Controlled owners in GitHub sync/);
     const registry = screen.getByRole("button", { name: /^crates\.io/ }).closest("li")!;
     expect(within(registry).queryByText("yours")).toBeNull();
   });
@@ -310,7 +312,16 @@ describe("DependencyTree (repository → crate → facts and notes, disclosure b
 
   it("onToggle receives the level's key and its new state", async () => {
     const onToggle = vi.fn();
-    render(<DependencyTree view={mockDependenciesMulti()} open={{}} onToggle={onToggle} links={links()} />);
+    render(
+      <DependencyTree
+        view={mockDependenciesMulti()}
+        open={{}}
+        onToggle={onToggle}
+        links={links()}
+        showUnchanged
+        targetCrate={null}
+      />,
+    );
     await userEvent.click(screen.getByRole("button", { name: /^acme\/node-client/ }));
     expect(onToggle).toHaveBeenCalledWith("this", false);
     await userEvent.click(screen.getByRole("button", { name: /^node-client/ }));
@@ -335,7 +346,7 @@ describe("DependencyTree (repository → crate → facts and notes, disclosure b
     await userEvent.click(screen.getByRole("button", { name: /^acme\/node-sdk/ }));
     const crate = screen.getByRole("button", { name: /^rpc-types/ });
     expect(crate).toHaveTextContent("rpc-types 0.3.1");
-    expect(crate).toHaveTextContent("used by node-client");
+    expect(crate.closest("li")).toHaveTextContent("Used by node-client");
     expect(crate).toHaveTextContent("1 conversion added for its types");
     await userEvent.click(crate);
     const row = crate.closest("li")!;

@@ -160,6 +160,7 @@ mod tests {
             database_id: Some(1),
             state: None,
             author: Some(Author {
+                database_id: None,
                 login: login.to_owned(),
                 typename: typename.to_owned(),
             }),
@@ -199,6 +200,7 @@ mod tests {
                 state: "OPEN".to_owned(),
                 is_draft: false,
                 author: Some(Author {
+                    database_id: None,
                     login: "Alice".to_owned(),
                     typename: "User".to_owned(),
                 }),

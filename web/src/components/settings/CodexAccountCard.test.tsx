@@ -1,3 +1,4 @@
+import { CodexPlanUsage } from "./CodexPlanUsage";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import type { CredentialStatus } from "../../api/generated/types";
@@ -158,37 +159,23 @@ it("moves focus into unlink confirmation and returns it on either close action",
   fireEvent.click(screen.getByRole("button", { name: "Confirm unlink" }));
   expect(trigger).toHaveFocus();
 });
-it("renders measured account telemetry and explicitly labels absent observations", () => {
+it("renders provider plan usage and explicitly labels absent observations", () => {
   render(
-    <CodexAccountCard
+    <CodexPlanUsage
       status={{
         ...status,
         state: "linked",
         telemetry: {
-          linked_at: "2026-11-18T09:00:00Z",
+          ...status.telemetry,
           primary: { used_percent: 12.5, resets_at: "2026-11-18T12:00:00Z" },
           secondary: null,
-          tokens_today: {
-            input_tokens: 100,
-            cached_input_tokens: 80,
-            output_tokens: 20,
-            reasoning_output_tokens: null,
-            jobs: 1,
-          },
-          tokens_month: null,
-          live_containers: [{ shape: "pr", pull_request_id: 42, payer: "alice" }],
         },
       }}
       now={now}
-      busy={false}
-      onLink={vi.fn()}
-      onUnlink={vi.fn()}
     />,
   );
   expect(screen.getByText(/12.5%/)).toBeVisible();
-  expect(screen.getByText(/Tokens today .*120/)).toBeVisible();
-  expect(screen.getByText(/Tokens this month .*not reported yet/)).toBeVisible();
-  expect(screen.getByText(/Live containers .*1/)).toBeVisible();
+  expect(screen.getByText(/Secondary plan usage/)).toHaveTextContent("not reported yet");
 });
 it("explains an unavailable status in the link tooltip", () => {
   render(
@@ -215,14 +202,14 @@ it("hides an observed plan percentage when its reset arrives without a newer obs
       secondary: { used_percent: 90, resets_at: "2026-11-18T09:26:00Z" },
     },
   };
-  const props = { status: current, busy: false, onLink: vi.fn(), onUnlink: vi.fn() };
-  const { rerender } = render(<CodexAccountCard {...props} now={now} />);
+  const props = { status: current };
+  const { rerender } = render(<CodexPlanUsage {...props} now={now} />);
   expect(screen.getByText(/Primary plan usage:/)).toHaveTextContent("80%");
   expect(screen.getByText(/Secondary plan usage:/)).toHaveTextContent(
     "reset at 2026-11-18T09:26:00Z; no newer observation",
   );
   expect(screen.getByText(/Secondary plan usage:/)).not.toHaveTextContent("90%");
-  rerender(<CodexAccountCard {...props} now={new Date("2026-11-18T09:28:00Z")} />);
+  rerender(<CodexPlanUsage {...props} now={new Date("2026-11-18T09:28:00Z")} />);
   expect(screen.getByText(/Primary plan usage:/)).toHaveTextContent(
     "reset at 2026-11-18T09:28:00Z; no newer observation",
   );

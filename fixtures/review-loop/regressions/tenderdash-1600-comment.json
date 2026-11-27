@@ -1,0 +1,9 @@
+{
+  "id": "IC_coderabbit_review_skipped",
+  "databaseId": 160001,
+  "author": {"login": "coderabbitai", "__typename": "Bot"},
+  "body": "<!-- coderabbit-ai-generated:v1 -->\n\n<!-- This is an auto-generated comment: skip review by coderabbit.ai -->\n\n> [!IMPORTANT]\n> ## Review skipped\n>\n> Auto reviews are disabled on this repository.",
+  "createdAt": "2026-11-09T13:43:19Z",
+  "lastEditedAt": null,
+  "url": "https://github.com/dashpay/tenderdash/pull/1600#issuecomment-160001"
+}

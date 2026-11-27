@@ -189,3 +189,49 @@ pub struct SetJudgeEffortRequest {
     /// Reasoning effort of the dashboard ranking.
     pub reasoning_effort: crate::job::spec::ReasoningEffort,
 }
+
+/// Live webhook coverage of repositories tracked by the reader's tenant.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct RepositoryInstallations {
+    /// Repositories tracked through owners to list, repository rules, watches, analyses or current snapshots.
+    pub repositories: Vec<RepositoryInstallation>,
+}
+
+/// Whether the GitHub App updates this tracked repository.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct RepositoryInstallation {
+    /// Repository.
+    pub repo: RepoRef,
+    /// Whether it gets live webhook updates.
+    pub live: bool,
+}
+
+/// GitHub App webhook configuration and delivery status.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct GithubWebhook {
+    /// Whether the webhook secret is configured.
+    pub configured: bool,
+    /// Configured public HTTPS URL.
+    pub webhook_url: Option<String>,
+    /// When the last verified delivery was received.
+    pub last_delivery_at: Option<Timestamp>,
+    /// Verified deliveries dropped for untracked repositories, installation-wide, since the last restart, at most 14 days.
+    pub dropped_deliveries: u32,
+    /// TCP connections refused at the webhook listener's capacity limit since the last restart.
+    pub refused_connections: u32,
+}
+
+/// Usage of the reader's dashboard ranking caps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct RankingUsage {
+    /// Items sent today after the last reset.
+    pub sent_today: u32,
+    /// Items allowed per local calendar day.
+    pub daily_cap: u32,
+    /// Items allowed per scan ranking.
+    pub per_refresh_cap: u32,
+    /// Next local midnight in the reader's configured time zone.
+    pub resets_at: Timestamp,
+    /// Items in the current snapshot left unjudged at a cap.
+    pub left_provisional: u32,
+}

@@ -1,20 +1,26 @@
-import { GithubCommentText } from "./GithubCommentText";
 import type {
+  CommentItem,
   CommentLog,
   Decision,
   DecisionKind,
   Effect,
   EffectState,
   FeedSubscriber,
+  MarkLogEntry,
   PrRef,
 } from "../../api/generated/types";
+import { buttonClass } from "../button/button";
+import { StatusMessage } from "../status/StatusMessage";
+import { Tooltip } from "../tooltip/Tooltip";
+import { GithubDecision } from "./GithubDecision";
+import { GithubCommentText } from "./GithubCommentText";
 import { OpenExternal } from "../dashboard/common/OpenExternal";
 import { clockText, dateTimeText } from "../format/time";
 import { commitGithubUrl, isGithubUrl } from "../github/links";
 import { ProvenanceTag } from "../section/ProvenanceTag";
 import { CollapsibleSection } from "../collapsible/CollapsibleSection";
 import { CHOICE_LABEL, decisionLabel, EFFECT_WORD } from "./decisions";
-import { Chip, FactChip } from "./parts";
+import { Chip, FactChip, itemId } from "./parts";
 import { StartAgentHelp } from "./StartAgentHelp";
 
 const STATE: Record<EffectState, string> = {
@@ -31,6 +37,8 @@ const VIA: Record<Decision["via"], string> = {
   group: "in a group",
   bulk: 'via "decide the rest"',
   table: "via table",
+  imported_github: "imported from GitHub",
+  follows_primary: "follows primary",
   carried: "carried",
 };
 
@@ -163,19 +171,36 @@ function Agents({ subscribers, now }: { subscribers: FeedSubscriber[]; now: Date
 
 interface DecisionLogProps {
   log: CommentLog;
+  githubDecisions?: CommentItem[];
   /** The pull request (commit links of agent reports, the agent prompt). */
   pr: PrRef;
   /** This diffpilot's origin, named in the agent prompt. */
   origin: string;
   now: Date;
   storageKey: string;
+  undoBusy?: boolean;
+  undoError?: string | null;
+  onUndoMark?: (mark: MarkLogEntry) => void;
 }
 
 /**
  * V3: agents and push targets, how to start an agent (shown while none is subscribed, else collapsed), open and
  * failed effects, and every decision with its effects and reports; an undone decision says so.
  */
-export function DecisionLog({ log, pr, origin, now, storageKey }: DecisionLogProps) {
+export function DecisionLog({
+  log,
+  githubDecisions = [],
+  pr,
+  origin,
+  now,
+  storageKey,
+  undoBusy,
+  undoError,
+  onUndoMark,
+}: DecisionLogProps) {
+  const entries = [...log.decisions, ...(log.marks ?? [])].reverse();
+  const timeOf = (entry: Decision | MarkLogEntry) => Date.parse("at" in entry ? entry.at : entry.decided_at);
+  entries.sort((a, b) => timeOf(b) - timeOf(a));
   return (
     <div>
       <CollapsibleSection title="Decision feed" level={2} storageKey={`${storageKey}:feed`}>
@@ -193,53 +218,95 @@ export function DecisionLog({ log, pr, origin, now, storageKey }: DecisionLogPro
         </div>
       </CollapsibleSection>
       <CollapsibleSection title="Decisions" level={2} storageKey={`${storageKey}:decisions`}>
-        {log.decisions.length === 0 ? (
+        {undoError && <StatusMessage kind="error">{undoError}</StatusMessage>}
+        {entries.length === 0 && githubDecisions.length === 0 ? (
           <p className="text-muted">No decision recorded through diffpilot yet.</p>
         ) : (
           <ol className="m-0 grid list-none gap-2 p-0 text-[13px]">
-            {[...log.decisions].reverse().map((d) => (
-              <li
-                key={d.id}
-                className={`rounded-lg border border-border bg-surface px-3 py-2 ${d.undone_at ? "text-muted" : ""}`}
-              >
-                <b className={d.undone_at ? "line-through" : undefined}>
-                  {dateTimeText(d.decided_at)} · {decisionItemId(d)} · {decisionLabel(d)}
-                </b>{" "}
-                {d.undone_at && (
-                  <>
-                    <b>Undone {dateTimeText(d.undone_at)}</b>{" "}
-                  </>
-                )}
-                by {d.decided_by} · {VIA[d.via] ?? d.via} · resolve: {d.resolve_ticked ? "yes" : "no"}
-                {d.recommendation && (
-                  <>
-                    {" "}
-                    · recommendation then: {CHOICE_LABEL[d.recommendation.kind] ?? d.recommendation.kind}{" "}
-                    <ProvenanceTag source="llm" />
-                  </>
-                )}
-                {d.reply_text && (
-                  <div>
-                    Public reply: &quot;
-                    <GithubCommentText text={d.reply_text} />
-                    &quot;
-                  </div>
-                )}
-                {d.reason && !d.reply_text?.includes(d.reason) && (
-                  <div>Reason (not posted): &quot;{d.reason}&quot;</div>
-                )}
-                {d.comment && (
-                  <div>Your comment (sent to the agent, not posted): &quot;{d.comment}&quot;</div>
-                )}
-                {d.effects.length > 0 && (
-                  <ul className="m-0 mt-1 pl-5">
-                    {d.effects.map((e) => (
-                      <EffectLine key={e.id} effect={e} now={now} pr={pr} />
-                    ))}
-                  </ul>
-                )}
+            {githubDecisions.map((item) => (
+              <li key={item.id} className="rounded-lg border border-border bg-surface px-3 py-2">
+                <b>{itemId(item)}</b> · <GithubDecision item={item} />
               </li>
             ))}
+            {entries.map((d) =>
+              "at" in d ? (
+                <li
+                  key={d.id}
+                  className={`rounded-lg border border-border bg-surface px-3 py-2 ${d.undone_at ? "text-muted" : ""}`}
+                >
+                  <b className={d.undone_at ? "line-through" : undefined}>
+                    {dateTimeText(d.at)} · C{d.item_no} · {CHOICE_LABEL.not_a_review_point}
+                  </b>{" "}
+                  by {d.by}
+                  {d.follows != null && ` · follows C${d.follows}`}
+                  {d.reason && <div>Reason (not posted): &quot;{d.reason}&quot;</div>}
+                  {d.undone_at ? (
+                    <div>
+                      Undone {dateTimeText(d.undone_at)} by {d.undone_by}
+                    </div>
+                  ) : (
+                    onUndoMark && (
+                      <div className="mt-1">
+                        <Tooltip tip="Removes this mark and restores the item's previous queue status.">
+                          <button
+                            type="button"
+                            aria-label={`Undo mark on C${d.item_no}`}
+                            aria-disabled={undoBusy || undefined}
+                            className={buttonClass("plain", true)}
+                            onClick={() => !undoBusy && onUndoMark(d)}
+                          >
+                            Undo
+                          </button>
+                        </Tooltip>
+                      </div>
+                    )
+                  )}
+                </li>
+              ) : (
+                <li
+                  key={d.id}
+                  className={`rounded-lg border border-border bg-surface px-3 py-2 ${d.undone_at ? "text-muted" : ""}`}
+                >
+                  <b className={d.undone_at ? "line-through" : undefined}>
+                    {dateTimeText(d.decided_at)} · {decisionItemId(d)} · {decisionLabel(d)}
+                  </b>{" "}
+                  {d.undone_at && (
+                    <>
+                      <b>Undone {dateTimeText(d.undone_at)}</b>{" "}
+                    </>
+                  )}
+                  by {d.decided_by} · {VIA[d.via] ?? d.via} · resolve: {d.resolve_ticked ? "yes" : "no"}
+                  {d.recommendation && (
+                    <>
+                      {" "}
+                      · recommendation then: {CHOICE_LABEL[d.recommendation.kind] ??
+                        d.recommendation.kind}{" "}
+                      <ProvenanceTag source="llm" />
+                    </>
+                  )}
+                  {d.reply_text && (
+                    <div>
+                      Public reply: &quot;
+                      <GithubCommentText text={d.reply_text} />
+                      &quot;
+                    </div>
+                  )}
+                  {d.reason && !d.reply_text?.includes(d.reason) && (
+                    <div>Reason (not posted): &quot;{d.reason}&quot;</div>
+                  )}
+                  {d.comment && (
+                    <div>Your comment (sent to the agent, not posted): &quot;{d.comment}&quot;</div>
+                  )}
+                  {d.effects.length > 0 && (
+                    <ul className="m-0 mt-1 pl-5">
+                      {d.effects.map((e) => (
+                        <EffectLine key={e.id} effect={e} now={now} pr={pr} />
+                      ))}
+                    </ul>
+                  )}
+                </li>
+              ),
+            )}
           </ol>
         )}
       </CollapsibleSection>

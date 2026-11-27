@@ -1,7 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { ciText, ciTip } from "./ci";
+import { ciBadgeText, ciText, ciTip } from "./ci";
 const zero = { passed: 0, failed: 0, pending: 0, skipped: 0, neutral: 0 };
 describe("CI evidence", () => {
+  it("counts outcomes from both sources and distinguishes absent counts from empty counts", () => {
+    const summary = { state: "no_failures" as const, total: 15, failing: [] };
+    expect(
+      ciBadgeText({
+        ...summary,
+        check_runs: { ...zero, passed: 12 },
+        statuses: { ...zero, passed: 2, pending: 1 },
+      }),
+    ).toBe("CI: 14 passed, 1 pending");
+    expect(ciBadgeText(summary)).toBe("CI: not checked");
+    expect(ciBadgeText({ ...summary, check_runs: zero })).toBe("CI: none reported");
+    expect(ciBadgeText({ ...summary, statuses: { ...zero, skipped: 1 } })).toBe("CI: 1 skipped");
+  });
   it("only claims all passing with complete successful source counts", () => {
     const ci = {
       state: "passing" as const,

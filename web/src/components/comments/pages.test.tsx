@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { expectTagsWithTips } from "../../__tests__/provenance";
 import { expectTrustWording } from "../../__tests__/wording";
-import type { CommentLog, Decision } from "../../api/generated/types";
+import type { CommentLog, Decision, MarkLogEntry } from "../../api/generated/types";
 import {
   carryOvers,
   log,
@@ -12,17 +12,14 @@ import {
   prPage,
   resetChannels,
   resetReviewLoop,
-  watches,
 } from "../../mocks/review-loop";
 import { CollapsibleSection } from "../collapsible/CollapsibleSection";
 import { NotificationChannelCard } from "../settings/NotificationChannelCard";
 import { CarryOvers } from "./CarryOvers";
 import { DecisionLog } from "./DecisionLog";
 import { ProcessCommentsCard } from "./ProcessCommentsCard";
-import { WatchToggle } from "./PrHeader";
 import { RoundsTable } from "./RoundsTable";
 import { StateBadge } from "./StateBadge";
-import { WatchedList } from "./WatchedList";
 
 const NOW = new Date("2026-11-18T09:27:00Z");
 const PR = { repo: { owner: "acme", name: "node-client" }, number: 482 };
@@ -83,21 +80,6 @@ describe("StateBadge (B1–B5)", () => {
   });
 });
 
-describe("WatchToggle (US19)", () => {
-  it("toggles with aria-pressed and says what watching costs", async () => {
-    const onChange = vi.fn();
-    const { rerender } = render(<WatchToggle watch={null} busy={false} onChange={onChange} now={NOW} />);
-    const button = screen.getByRole("button", { name: "Watch" });
-    expect(button).toHaveAttribute("aria-pressed", "false");
-    expect(button).toHaveAccessibleDescription(/LLM tokens/);
-    await userEvent.click(button);
-    expect(onChange).toHaveBeenCalledWith(true);
-    rerender(<WatchToggle watch={watches().watches[0]!} busy={false} onChange={onChange} now={NOW} />);
-    expect(screen.getByRole("button", { name: "Watching" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByText(/Assessed automatically 09:12 · 5 questions/)).toBeVisible();
-  });
-});
-
 describe("ProcessCommentsCard (V0)", () => {
   it("names a GitHub read that never succeeded in the card only", () => {
     const page = prPage();
@@ -117,32 +99,6 @@ describe("ProcessCommentsCard (V0)", () => {
     expect(screen.getByRole("status")).toHaveTextContent(
       "GitHub could not be read (GitHub did not answer as expected). Nothing was read from GitHub yet.",
     );
-  });
-});
-
-describe("WatchedList (V6)", () => {
-  it("lists watches with state badges and Unwatch; an ended watch says so", async () => {
-    const onUnwatch = vi.fn();
-    render(
-      <WatchedList
-        list={watches()}
-        prHref={() => "/pr/x"}
-        onNavigate={vi.fn()}
-        onUnwatch={onUnwatch}
-        busy={false}
-        now={NOW}
-      />,
-    );
-    expect(screen.getByText(/4 of 20 watched/)).toBeVisible();
-    expect(screen.getByText(/Assessments charged to you in the last 24 hours: 7 of 80/)).toBeVisible();
-    expect(screen.getByText("Waiting for bot round")).toBeVisible();
-    expect(screen.getByText(/watching ended/)).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "Unwatch acme/wire-codec #77" }));
-    expect(onUnwatch).toHaveBeenCalledWith({ repo: { owner: "acme", name: "wire-codec" }, number: 77 });
-    expect(
-      screen.getByRole("link", { name: "Open acme/wire-codec #77 on GitHub (new tab)" }),
-    ).toHaveAttribute("href", "https://github.com/acme/wire-codec/pull/77");
-    expectTrustWording(text());
   });
 });
 
@@ -255,6 +211,55 @@ describe("DecisionLog (V3)", () => {
     expect(screen.getAllByText(/Agent laptop-cli reports: done/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Found on GitHub/).length).toBeGreaterThan(0);
     expectTrustWording(text());
+  });
+
+  it("shows mark history and offers Undo only for the active entry", async () => {
+    const active: MarkLogEntry = {
+      id: "mark-active",
+      item_no: 30,
+      by: "alice",
+      at: "2026-11-18T09:12:00Z",
+      follows: 14,
+      reason: null,
+      undone_at: null,
+      undone_by: null,
+    };
+    const ended: MarkLogEntry = {
+      ...active,
+      id: "mark-ended",
+      item_no: 31,
+      reason: "Fixture only.",
+      undone_at: "2026-11-18T09:15:00Z",
+      undone_by: "bob",
+    };
+    const props = {
+      log: { ...log(), marks: [ended, active] },
+      pr: PR,
+      now: NOW,
+      storageKey: "t",
+      origin: "http://agentic:3000",
+      onUndoMark: vi.fn(),
+    };
+    const { rerender } = render(<DecisionLog {...props} undoBusy />);
+    const activeEntry = screen.getByText(/C30 · Not a review point/).closest("li")!;
+    expect(activeEntry).toHaveTextContent(/18 Nov 2026, .* by alice · follows C14/);
+    const undo = within(activeEntry).getByRole("button", { name: "Undo mark on C30" });
+    expect(undo).toHaveAttribute("aria-disabled", "true");
+    await userEvent.click(undo);
+    expect(props.onUndoMark).not.toHaveBeenCalled();
+
+    const endedTitle = screen.getByText(/C31 · Not a review point/);
+    const endedEntry = endedTitle.closest("li")!;
+    expect(endedEntry).toHaveTextContent(/Undone 18 Nov 2026, .* by bob/);
+    expect(within(endedEntry).queryByRole("button", { name: /Undo/ })).toBeNull();
+    expect(endedEntry).toHaveClass("text-muted");
+    expect(endedTitle).toHaveClass("line-through");
+    expect(within(endedEntry).getByText('Reason (not posted): "Fixture only."')).toBeVisible();
+
+    rerender(<DecisionLog {...props} undoError="C30 changed. Read it again." />);
+    expect(screen.getByRole("alert")).toHaveTextContent("C30 changed. Read it again.");
+    await userEvent.click(undo);
+    expect(props.onUndoMark).toHaveBeenCalledExactlyOnceWith(active);
   });
 
   it("shows the stored public reply; a reason left out of an edited reply is marked as not posted", () => {

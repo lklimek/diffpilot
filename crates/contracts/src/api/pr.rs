@@ -4,9 +4,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::api::analyses::AnalysisSummary;
-use crate::common::RepoRef;
-use crate::ids::CommitSha;
+use crate::api::analyses::{AnalysisStatus, AnalysisSummary};
+use crate::api::review_loop::WatchState;
+use crate::common::{PrRef, RepoRef};
+use crate::ids::{AnalysisId, CommitSha};
+use crate::time::Timestamp;
 
 /// Body of `POST /api/v1/pr/resolve`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
@@ -82,4 +84,75 @@ pub struct SizeWarning {
     /// Rough estimate of plan and PR context from recent local runs (the same as
     /// `ResolvePrResponse.planning_estimate`); null without enough history.
     pub estimate: Option<crate::api::analyses::AnalysisEstimate>,
+}
+
+/// Query of `GET /api/v1/me/prs`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct PrHistoryQuery {
+    /// Most rows to return.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub limit: Option<u32>,
+    /// Opaque cursor issued by the previous page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub cursor: Option<String>,
+}
+
+/// Page of pull requests the reader analysed, watched, or opened.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct PrHistory {
+    /// One entry per pull request, newest activity first.
+    pub prs: Vec<PrHistoryItem>,
+    /// Cursor of the next page, or null at the end.
+    pub next_cursor: Option<String>,
+}
+
+/// The reader's activity on one pull request.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct PrHistoryItem {
+    /// Pull request.
+    pub pr: PrRef,
+    /// Latest stored pull request title.
+    pub title: String,
+    /// Latest activity across all included sources.
+    pub last_activity_at: Timestamp,
+    /// When the reader last opened the pull request page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub opened_at: Option<Timestamp>,
+    /// Latest analysis requested by the reader.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub analysis: Option<PrHistoryAnalysis>,
+    /// The reader's watch, including an ended watch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub watch: Option<PrHistoryWatch>,
+}
+
+/// The reader's most recent analysis of a pull request.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct PrHistoryAnalysis {
+    /// Analysis id.
+    pub id: AnalysisId,
+    /// Stored analysis status.
+    pub status: AnalysisStatus,
+    /// Head the analysis was requested for.
+    pub head_sha: CommitSha,
+    /// When the reader requested the analysis.
+    pub requested_at: Timestamp,
+    /// Whether the pull request has moved to a different head.
+    pub head_moved: bool,
+}
+
+/// The reader's watch of a pull request.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct PrHistoryWatch {
+    /// Current or ended watch state.
+    pub state: WatchState,
+    /// When the watch began.
+    pub since: Timestamp,
+    /// When the watch ended, if it did.
+    pub ended_at: Option<Timestamp>,
 }

@@ -21,16 +21,18 @@ impl LogCapture {
     pub(crate) fn start() -> Self {
         static INSTALLED: OnceLock<()> = OnceLock::new();
         INSTALLED.get_or_init(|| {
-            let subscriber = tracing_subscriber::fmt()
-                .with_max_level(tracing::Level::TRACE)
-                .with_ansi(false)
-                .with_writer(|| ThreadWriter)
-                .finish()
-                // The same payload cap as the server's log setup.
-                .with(crate::memcan::payload_log_cap());
-            // Fails only if another global subscriber exists, which this crate's tests never install.
-            let _ = tracing::subscriber::set_global_default(subscriber);
+            let _ = tracing::subscriber::set_global_default(subscriber());
         });
+        Self::begin_capture()
+    }
+
+    /// Captures on this thread even when another test has already installed a global subscriber.
+    pub(crate) fn start_scoped() -> (Self, tracing::subscriber::DefaultGuard) {
+        let guard = tracing::subscriber::set_default(subscriber());
+        (Self::begin_capture(), guard)
+    }
+
+    fn begin_capture() -> Self {
         let buffer = Arc::new(Mutex::new(Vec::new()));
         BUFFER.with(|current| *current.borrow_mut() = Some(Arc::clone(&buffer)));
         Self(buffer)
@@ -40,6 +42,15 @@ impl LogCapture {
     pub(crate) fn text(&self) -> String {
         String::from_utf8_lossy(&self.0.lock().unwrap_or_else(PoisonError::into_inner)).into_owned()
     }
+}
+
+fn subscriber() -> impl tracing::Subscriber + Send + Sync {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::TRACE)
+        .with_ansi(false)
+        .with_writer(|| ThreadWriter)
+        .finish()
+        .with(crate::memcan::payload_log_cap())
 }
 
 impl Drop for LogCapture {

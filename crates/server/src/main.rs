@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use db::error::DbError;
 use db::repo::Db;
 use server::api;
-use server::config::{Config, ConfigError, LISTEN_ADDR, RUNNER_LISTEN_ADDR};
+use server::config::{Config, ConfigError, LISTEN_ADDR, RUNNER_LISTEN_ADDR, WEBHOOK_LISTEN_ADDR};
 use server::state::AppState;
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
@@ -123,6 +123,7 @@ async fn run(dotenv: Result<PathBuf, dotenvy::Error>) -> Result<(), StartError> 
         .map_err(StartError::AllowedLogins)?;
     let public = bind(LISTEN_ADDR, config.listen_addr).await?;
     let runner = bind(RUNNER_LISTEN_ADDR, config.runner_listen_addr).await?;
+    let webhook = bind(WEBHOOK_LISTEN_ADDR, config.webhook_listen_addr).await?;
     let state = AppState::with_queue(config, db);
     tokio::spawn(server::jobs::github_tokens::run_worker(
         state.db.clone(),
@@ -149,26 +150,30 @@ async fn run(dotenv: Result<PathBuf, dotenvy::Error>) -> Result<(), StartError> 
         .await
         .map_err(StartError::RecoverDashboard)?;
     // After the recovery, so a scheduled start never meets a refresh the restart left live.
-    server::dashboard::schedule::spawn(state.clone());
-    server::dashboard::plugin::spawn(state.clone());
-    server::dashboard::fresh::spawn(state.clone());
-    server::review_loop::feed::spawn(state.clone());
-    server::review_loop::notify::spawn(state.clone());
+    state.spawn_background();
 
     let (stop, stopped) = (state.stopping.clone(), state.stopping.subscribe());
     tokio::spawn(async move {
         shutdown_signal().await;
-        // Both servers may already be gone; nothing to notify then.
+        // The listeners may already be gone; nothing to notify then.
         let _ = stop.send(true);
     });
+    let hooks = server::webhooks::Webhooks::from_app(&state);
+    let _webhook_worker = hooks.spawn(state.clone(), stopped.clone());
     let public = axum::serve(
         public,
         api::router(state.clone()).into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(stop_requested(stopped.clone()));
+    let metrics = state.webhook_metrics.clone();
     let runner = axum::serve(runner, api::runner_router(state))
-        .with_graceful_shutdown(stop_requested(stopped));
-    tokio::try_join!(public.into_future(), runner.into_future()).map_err(StartError::Serve)?;
+        .with_graceful_shutdown(stop_requested(stopped.clone()));
+    let webhook = server::webhooks::serve(webhook, api::webhook_router(hooks), metrics, stopped);
+    tokio::try_join!(public.into_future(), runner.into_future(), async {
+        webhook.await;
+        Ok(())
+    })
+    .map_err(StartError::Serve)?;
     Ok(())
 }
 

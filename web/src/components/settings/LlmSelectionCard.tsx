@@ -1,112 +1,153 @@
-import { useId, useState, type ReactNode } from "react";
-import type { LlmSelection, ModelChoice, ReasoningEffort } from "../../api/generated/types";
-import { SettingsCard } from "./Card";
 import { Tooltip } from "../tooltip/Tooltip";
+import { useEffect, useId, useState } from "react";
+import type { LlmSelection, ModelChoice, ReasoningEffort } from "../../api/generated/types";
+import { Section } from "./Section";
+import { FormRow } from "./FormRow";
 import { buttonClass } from "../button/button";
 import { dateTimeText } from "../format/time";
+import { useAction } from "../inspector/action";
 import { HelpTip } from "./HelpTip";
 
-/** One installation choice, passed in by Settings; saving never starts an analysis. */
+export interface LlmChoiceChanges {
+  model?: ModelChoice;
+  ask?: ReasoningEffort;
+  ranking?: ReasoningEffort;
+}
+
+/** The installation-wide model and efforts, saved together. */
 export function LlmSelectionCard({
   selection,
-  busy,
-  saved,
-  error,
   onSave,
-  children,
+  onDirtyChange,
 }: {
   selection: LlmSelection;
-  busy: boolean;
-  saved?: boolean;
-  error?: string;
-  onSave: (choice: ModelChoice) => void;
-  /** Further installation choices shown in this card (the Ask and dashboard ranking efforts). */
-  children?: ReactNode;
+  onSave: (changes: LlmChoiceChanges) => Promise<void>;
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   const id = useId();
-  const [choice, setChoice] = useState(selection.current);
+  const action = useAction();
+  const [draft, setDraft] = useState<Partial<ModelChoice> & Omit<LlmChoiceChanges, "model">>({});
+  const [saved, setSaved] = useState(false);
+  const model = draft.model ?? selection.current.model;
+  const effort = draft.reasoning_effort ?? selection.current.reasoning_effort;
+  const ask = draft.ask ?? selection.ask_effort ?? "medium";
+  const ranking = draft.ranking ?? selection.judge_effort ?? "low";
+  const changes: LlmChoiceChanges = {};
+  if (model !== selection.current.model || effort !== selection.current.reasoning_effort) {
+    changes.model = { model, reasoning_effort: effort };
+  }
+  if (ask !== (selection.ask_effort ?? "medium")) changes.ask = ask;
+  if (ranking !== (selection.judge_effort ?? "low")) changes.ranking = ranking;
+  const dirty = Object.keys(changes).length > 0;
+  useEffect(() => onDirtyChange?.(dirty), [dirty, onDirtyChange]);
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
+  const save = async () => {
+    setSaved(false);
+    if (await action.run(() => onSave(changes))) {
+      setDraft({});
+      setSaved(true);
+    }
+  };
+  const edit = (change: typeof draft) => {
+    setDraft({ ...draft, ...change });
+    action.setError(null);
+    setSaved(false);
+  };
   return (
-    <SettingsCard title="LLM model">
-      <span className="flex items-center gap-2">
-        <label htmlFor={`${id}-model`}>Model</label>
-        <HelpTip topic="llm_model" />
-      </span>
-      <Tooltip
-        tip={
-          busy
-            ? "Saving; the choice cannot be changed yet."
-            : "The model used by new jobs across this installation."
-        }
+    <Section title="Model and effort">
+      <FormRow
+        label="Model"
+        htmlFor={`${id}-model`}
+        help="The model used by new jobs across this installation."
       >
         <select
           id={`${id}-model`}
-          value={choice.model}
-          aria-disabled={busy || undefined}
-          onChange={(e) => !busy && setChoice({ ...choice, model: e.target.value })}
-          className="w-full min-w-0 rounded border border-border bg-surface px-2 py-1"
-        >
-          {selection.models.map((model) => (
-            <option key={model.id} value={model.id}>
-              {model.label}
-            </option>
-          ))}
-        </select>
-      </Tooltip>
-      <span className="flex items-center gap-2">
-        <label htmlFor={`${id}-effort`}>Reasoning effort</label>
-        <HelpTip topic="llm_effort" />
-      </span>
-      <Tooltip
-        tip={
-          busy
-            ? "Saving; the choice cannot be changed yet."
-            : "How much reasoning the model is asked to do. Higher effort can take longer."
-        }
-      >
-        <select
-          id={`${id}-effort`}
-          value={choice.reasoning_effort}
-          aria-disabled={busy || undefined}
+          value={model}
+          disabled={action.busy}
           onChange={(e) =>
-            !busy && setChoice({ ...choice, reasoning_effort: e.target.value as ReasoningEffort })
+            edit({ model: e.target.value === selection.current.model ? undefined : e.target.value })
           }
           className="w-full rounded border border-border bg-surface px-2 py-1"
         >
-          {selection.efforts.map((effort) => (
-            <option key={effort} value={effort}>
-              {effort}
+          {selection.models.map(({ id, label }) => (
+            <option key={id} value={id}>
+              {label}
             </option>
           ))}
         </select>
-      </Tooltip>
-      <Tooltip
-        tip={
-          busy
-            ? "Saving the installation choice. Wait for it to finish."
-            : "Saves the choice for everyone using this installation."
-        }
-      >
-        <button
-          type="button"
-          aria-disabled={busy || undefined}
-          className={`${buttonClass("primary")} w-fit`}
-          onClick={() => !busy && onSave(choice)}
+      </FormRow>
+      {(
+        [
+          [
+            "reasoning_effort",
+            "Reasoning effort",
+            effort,
+            selection.current.reasoning_effort,
+            "llm_effort",
+            "Reasoning used for new analysis jobs.",
+          ],
+          [
+            "ask",
+            "Ask effort",
+            ask,
+            selection.ask_effort ?? "medium",
+            "ask_effort",
+            "Reasoning used when answering an Ask question.",
+          ],
+          [
+            "ranking",
+            "Dashboard ranking effort",
+            ranking,
+            selection.judge_effort ?? "low",
+            "judge_effort",
+            "Reasoning used when ranking My work items.",
+          ],
+        ] as const
+      ).map(([field, label, value, baseline, topic, help]) => (
+        <FormRow
+          key={field}
+          label={label}
+          htmlFor={`${id}-${field}`}
+          help={
+            <>
+              {help} <HelpTip topic={topic} />
+            </>
+          }
         >
-          Save
-        </button>
-      </Tooltip>
-      <p className="text-xs text-muted">
-        Applies to jobs started from now on, including the remaining jobs of running analyses. A job already
-        submitted keeps its choice.
-      </p>
+          <select
+            id={`${id}-${field}`}
+            value={value}
+            disabled={action.busy}
+            onChange={(e) =>
+              edit({ [field]: e.target.value === baseline ? undefined : (e.target.value as ReasoningEffort) })
+            }
+            className="w-full rounded border border-border bg-surface px-2 py-1"
+          >
+            {selection.efforts.map((option) => (
+              <option key={option}>{option}</option>
+            ))}
+          </select>
+        </FormRow>
+      ))}
       {selection.changed_by && selection.changed_at && (
         <p className="text-xs text-muted">
           changed by {selection.changed_by} at {dateTimeText(selection.changed_at)}
         </p>
       )}
-      {saved && <p role="status">LLM choice saved.</p>}
-      {error && <p role="alert">The LLM choice was not saved: {error}</p>}
-      {children}
-    </SettingsCard>
+      <div className="grid justify-items-end gap-1">
+        <Tooltip tip="Saves the changed model and efforts for this installation.">
+          <button
+            type="button"
+            aria-disabled={!dirty || action.busy || undefined}
+            className={buttonClass("primary")}
+            onClick={() => dirty && void save()}
+          >
+            {action.busy ? "Saving…" : "Save"}
+          </button>
+        </Tooltip>
+        {saved && <p role="status">Saved</p>}
+        {action.error && <p role="alert">Could not save: {action.error}</p>}
+      </div>
+    </Section>
   );
 }

@@ -283,7 +283,7 @@ export function AnalysisProgress({
                 href={reviewHref}
                 className="font-semibold whitespace-nowrap text-accent no-underline hover:underline"
               >
-                Open <span aria-hidden="true">→</span>
+                Open review <span aria-hidden="true">→</span>
               </a>
             </Tooltip>
           )}

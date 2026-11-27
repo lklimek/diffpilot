@@ -1,3 +1,5 @@
+import { settingsGuideHref } from "./helpOrigin";
+
 // Help of every Settings option: the `?` tips, the in-app guide at /settings/help and docs/settings.md (generated
 // from this map by `settingsHelpMarkdown`; a test keeps the file current). Facts follow the server code.
 import type {
@@ -11,14 +13,11 @@ import type {
 /** Sections in the order of the Settings page. */
 export const HELP_SECTIONS = [
   "Account",
-  "LLM",
-  "Memory",
-  "Language",
-  "Notifications",
-  "GitHub App",
-  "Repository settings",
-  "Dashboard",
-  "Access tokens",
+  "LLM & usage",
+  "GitHub sync",
+  "Repositories",
+  "Review loop",
+  "MemCan",
 ] as const;
 
 /** A section of the guide. */
@@ -57,26 +56,27 @@ const HELP = {
   sign_out: {
     section: "Account",
     title: "Sign out",
+    onPage: false,
     what: "Ends your session in this browser. Other browsers stay signed in.",
     when: "When you press Sign out.",
     empty: "Your unsent comment drafts in this tab are removed. Your GitHub pending review stays on GitHub.",
     example: "Sign out on a shared computer before you leave it.",
     details: [
-      "With the automatic refresh on and a time zone stored, the server keeps your GitHub sign-in after your last session ends, so the daily refresh can still scan. It keeps it for up to 30 days after your last sign-in; after that the automatic refresh says it needs you to sign in again.",
+      "With the nightly scan on and a time zone stored, the server keeps your GitHub sign-in after your last session ends, so the nightly scan can keep running. It keeps it for up to 30 days after your last sign-in; after that the nightly scan says it needs you to sign in again.",
       "Personal access tokens keep working after Sign out.",
     ],
   },
   sign_out_everywhere: {
     section: "Account",
     title: "Sign out everywhere",
-    what: "Ends every session of yours in every browser, revokes all your personal access tokens and deletes the GitHub sign-in this server keeps for the automatic refresh. Nothing changes on GitHub.",
+    what: "Ends every session of yours in every browser, revokes all your personal access tokens and deletes the GitHub sign-in this server keeps for the nightly scan. Nothing changes on GitHub.",
     when: "When you press Sign out everywhere and confirm. The API does the same for POST /auth/logout with everywhere set.",
     empty:
-      "Until you sign in again, the automatic refresh records that it needs you to sign in. Your unsent comment drafts in this tab are removed.",
+      "Until you sign in again, the nightly scan records that it needs you to sign in. Your unsent comment drafts in this tab are removed.",
     example: "Use it when a token or a browser session may have leaked.",
   },
   llm_model: {
-    section: "LLM",
+    section: "LLM & usage",
     title: "Model",
     what: "The LLM model of every job on this installation: analyses, Ask answers and the ranking of My work. One choice for everyone.",
     when: "Each new job reads the current choice; a running job keeps the one it started with.",
@@ -85,7 +85,7 @@ const HELP = {
     example: "Pick Astra 6 for a hard pull request, then switch back.",
   },
   llm_effort: {
-    section: "LLM",
+    section: "LLM & usage",
     title: "Reasoning effort",
     what: "How much the model reasons in analysis jobs: the plan, the PR context and each flow.",
     when: "Each new analysis job reads it.",
@@ -94,7 +94,7 @@ const HELP = {
     example: "Medium is often enough for small pull requests.",
   },
   ask_effort: {
-    section: "LLM",
+    section: "LLM & usage",
     title: "Ask effort",
     what: "How much the model reasons when it answers a question you ask about a step.",
     when: "Each new Ask answer reads it. It applies to everyone on this installation.",
@@ -103,7 +103,7 @@ const HELP = {
     example: "Low for quick questions such as where a value is set.",
   },
   judge_effort: {
-    section: "LLM",
+    section: "LLM & usage",
     title: "Dashboard ranking effort",
     what: "How much the model reasons when it ranks the items of My work.",
     when: "Each ranking job of a refresh reads it. It applies to everyone on this installation.",
@@ -112,15 +112,25 @@ const HELP = {
     example: "Medium if the ranking reasons look too thin.",
   },
   llm_status: {
-    section: "LLM",
+    section: "LLM & usage",
     title: "LLM status",
     what: "The outcome of the most recent LLM call and its time, and the tokens the provider reported for your use.",
     when: "Updated by every LLM call. Read-only.",
     empty: "Not known yet until the first analysis calls the LLM.",
     example: "After a failed call the provider's message stands below the status.",
   },
+  token_usage: {
+    section: "LLM & usage",
+    title: "Token usage",
+    what: "The tokens the provider reported for jobs linked to analyses in your tenant, grouped by completion time.",
+    when: "Today starts at midnight in the server's time zone. Last 7 days includes today and the previous six calendar days. This month starts at midnight on the first day of the current calendar month.",
+    empty: "No totals appear for a window without usage reports.",
+    example:
+      "In the standard UTC deployment, Today starts at 00:00 UTC, Last 7 days starts at 00:00 UTC six days ago, and This month starts at 00:00 UTC on the first of the month.",
+    onPage: false,
+  },
   memcan_status: {
-    section: "Memory",
+    section: "MemCan",
     title: "Memory",
     what: "Whether MemCan, the memory service, is configured and reachable. Analyses read project knowledge from it and My work reads TODOs from it.",
     when: "Shown as it was last checked. Read-only.",
@@ -128,42 +138,46 @@ const HELP = {
     example: "Not configured: the server has no MemCan address.",
   },
   language: {
-    section: "Language",
+    section: "LLM & usage",
     title: "Language of LLM texts",
     what: "The language of explanations, questions and assessments the LLM writes for you.",
-    when: "Read when an analysis starts; an analysis keeps the language it started with, its Ask answers too. Dashboard ranking texts follow it from the next refresh; until they are judged again they show as provisional.",
+    when: "An analysis and its Ask answers keep the language chosen when the analysis started. Changing the language makes existing My work judgements outdated. Refresh updates facts and can judge new items. To update existing ranking texts, click the item's outdated badge or use Refresh and re-judge outdated.",
     empty: "English.",
     limits: "English, Polski or Русский.",
     example: "Polski, then analyse the pull request again to get its texts in Polish.",
   },
   notify_when_done: {
-    section: "Notifications",
-    title: "Notify me when work finishes",
+    section: "Review loop",
+    title: "Browser notifications",
     what: "A browser notification when an Ask answer of yours arrives, a flow is analysed, or an analysis is ready to review, finishes or fails. It names the pull request and the flow or step, never the answer text; a click opens it.",
     when: "While a diffpilot tab showing that review or its progress is open and you are in another tab or window. A tab you are looking at does not notify. Several open tabs notify once.",
-    empty: "Off. Turning it on asks the browser's permission; the choice is kept in this browser only.",
+    empty:
+      "Off. The browser asks for permission the first time you enable notifications. Each browser keeps its own choice.",
     limits:
       "Needs https (or localhost) and the browser's permission. Closed tabs do not notify. Mobile browsers show none.",
     example: "Ask a question, switch to your editor, and get a notification when the answer is ready.",
   },
   app_installations: {
-    section: "GitHub App",
+    section: "GitHub sync",
     title: "GitHub App",
     what: "The installations of the diffpilot GitHub App your GitHub sign-in can see. Comments go into your pending review only where the App is installed.",
     when: "Read when Settings opens. Read-only; install or change the App on GitHub.",
     empty: "No installation: pull requests can be analysed, but comments must be written on GitHub.",
     example: "Install the App on dashpay to comment on dashpay/platform from here.",
+    details: [
+      "The card shows the URL to enter in the GitHub App when the operator configures it. My work receives live GitHub updates for tracked repositories with an active App installation and a configured webhook secret. Your tenant tracks repositories through its repository rules, owners listed under When GitHub search refuses an account, active watches, analyses and My work snapshots. Use Refresh to recover missed facts or wait for the nightly scan. Existing judgements can become outdated when their facts change.",
+    ],
   },
   repository_settings: {
-    section: "Repository settings",
+    section: "Repositories",
     title: "Repository settings",
     what: "Read-only facts about one repository: the built-in rules that put tests, docs and generated files under Not analysed, the related repositories and where the project profile comes from.",
     when: "Shown for repositories that have an analysed pull request.",
-    empty: "No repository is listed before the first analysis.",
+    empty: "Analysis rules appear after the first analysis of that repository.",
     example: "dashpay/platform: related repositories found in Cargo.toml and Cargo.lock.",
   },
   controlled_owners: {
-    section: "Repository settings",
+    section: "GitHub sync",
     title: "Controlled organisations",
     what: 'GitHub organisations or users whose repositories are yours. The Dependencies view marks their repositories and crates "yours", lists their crates among a changed crate\'s dependencies, and the PR-context agent looks up issues and pull requests in them.',
     when: "Every time a Dependencies view or a PR context prompt is built; a change applies at once, without analysing again.",
@@ -173,17 +187,20 @@ const HELP = {
     example: "dashpay: a pull request in dashpay/dash-evo-tool shows dashpay/platform crates as yours.",
   },
   linked_logins: {
-    section: "Dashboard",
+    section: "GitHub sync",
     title: "Linked logins",
-    what: "Other GitHub accounts of yours. Their pull requests, review requests, assigned and mentioning issues count as yours, and their approvals and ownership count as yours.",
+    what: "Other GitHub accounts of yours. Their pull requests, review requests, assigned and mentioning issues count as yours, and their approvals and ownership count as yours. A linked account can use the maintainer-decision v1 marker to leave a proposal for you to confirm.",
     when: "Every refresh searches them together with your own login.",
     empty: "Only your own login is scanned; it is always scanned.",
     limits: "Up to 5 GitHub logins (letters, digits, - or _, up to 39); not your own login.",
     example:
       "A bot account that opens pull requests you take care of (e.g. Claudius-Maginificent): put it here so its pull requests count as yours, and keep it in Known bots so its reviews count as a bot's. Do not put it into Excluded authors.",
+    details: [
+      "In the item's thread, the linked account writes the proposed decision in plain text and puts the matching marker on a line of its own outside quotes and code. For example, a proposal to reject uses `<!-- maintainer-decision v1 kind=reject -->`. Diffpilot checks the account's numeric GitHub ID and shows an eligible proposal in Needs you for you to confirm.",
+    ],
   },
   repo: {
-    section: "Dashboard",
+    section: "Repositories",
     title: "Repository",
     what: "A repository you work in, as owner/name. The row holds that repository's short name, issue watch, ownership policy and release branches; the repository name is also read as a MemCan project for TODOs.",
     when: "Every refresh. Your pull requests and issues are found by search even without a row.",
@@ -192,7 +209,7 @@ const HELP = {
     example: "dashpay/platform.",
   },
   alias: {
-    section: "Dashboard",
+    section: "Repositories",
     title: "Short name",
     what: "The prefix of the repository's item ids on My work and of the tab title of its reviews.",
     when: "Whenever an item or a review of the repository is shown.",
@@ -202,7 +219,7 @@ const HELP = {
     example: "DET for dashpay/dash-evo-tool: items show as DET-512, the review tab as DET#512.",
   },
   watch_issues: {
-    section: "Dashboard",
+    section: "Repositories",
     title: "Watch issues",
     what: "Also lists every open issue of the repository, not only the issues assigned to you or mentioning you.",
     when: "Every refresh searches the open issues of the watched repositories.",
@@ -210,7 +227,7 @@ const HELP = {
     example: "On for a small repository where you triage all issues.",
   },
   ownership_policy: {
-    section: "Dashboard",
+    section: "Repositories",
     title: "Ownership policy",
     what: "Optional. A JSON file listing the paths you own in this repository, in the format of dashpay/stale_prs_are_bad. In a repository with a policy, a pull request of others stays in Needs you only when it changes a fair amount of code in your paths; pull requests directed at you always stay.",
     when: "Every refresh reads the file for the repository's pull requests.",
@@ -226,7 +243,7 @@ const HELP = {
     ],
   },
   branch_patterns: {
-    section: "Dashboard",
+    section: "Repositories",
     title: "Release branches",
     what: "Names of the repository's release and long-lived branches. A pull request based on such a branch is not treated as stacked on another pull request, one that targets such a branch (other than the default branch) counts as targeting a release line, and Ready to merge lists your pull requests into such a branch as into the default branch.",
     when: "Every ranking of the repository's pull requests, and Ready to merge.",
@@ -236,7 +253,7 @@ const HELP = {
     example: "vX.Y-dev matches v1.8-dev and v5.1-dev; release/* matches release/2.1; v*-dev works too.",
   },
   ignored_checks: {
-    section: "Dashboard",
+    section: "Repositories",
     title: "Ignored checks",
     what: "Names of the repository's checks and commit statuses that are gates rather than build, test or lint results (approval, policy and review-bot checks). They never make CI failing or running; a check of them that has not passed is named in the tip of CI passing.",
     when: "Every refresh of the repository's pull requests: CI passing, Ready to merge (a PR GitHub calls unstable counts as clean when only ignored, skipped or neutral checks have not passed) and Waiting on others (CI green).",
@@ -246,7 +263,7 @@ const HELP = {
     example: "*hygiene*, PR title, PastaClaw review, docs-preview",
   },
   enumerate_owners: {
-    section: "Dashboard",
+    section: "GitHub sync",
     title: SEARCH_REFUSED_GROUP,
     what: "Optional. Organisations or users whose open pull requests and issues are listed directly when GitHub search will not answer for one of your accounts. GitHub search refuses some logins, typically bot or restricted accounts.",
     when: "Only in a refresh where search refuses one of your logins. The scan then lists the open pull requests and issues of every repository of these owners and keeps those involving the refused login, and the charts count the refused login's pull requests in these owners' repositories and in your repository rows, whoever merged them. Its reviews and its pull requests elsewhere come from its last 300 public events only.",
@@ -258,7 +275,7 @@ const HELP = {
     ],
   },
   lookback_days: {
-    section: "Dashboard",
+    section: "GitHub sync",
     title: "Look-back days",
     what: "How many days an issue counts as new.",
     when: "Every refresh: an issue opened at most this many days before the scan shows the tag new, with its opening date in the tip. It does not change the ranking.",
@@ -267,7 +284,7 @@ const HELP = {
     example: "14 if you look at My work once a week.",
   },
   ready_label: {
-    section: "Dashboard",
+    section: "GitHub sync",
     title: "Ready for a human label",
     what: "The label that marks a pull request ready for a human review.",
     when: "Every ranking: a pull request with this label ranks higher. One of yours with it needs a human: it is never listed under Ready to merge, and while nothing is your move (no conflicts, CI green with ignored checks left out, no change request, no unresolved thread, no comment awaiting your reply, no review asked of you) it is listed under Waiting on others only, not in Needs you, even when it is approved or you could merge it.",
@@ -276,7 +293,7 @@ const HELP = {
     example: "needs-review.",
   },
   skip_authors: {
-    section: "Dashboard",
+    section: "GitHub sync",
     title: "Excluded authors",
     what: "Banned authors. Pull requests and issues written by these accounts are never shown in Needs you — also when a review is requested from you or they are assigned to you. Being listed does not make an account a bot.",
     when: "Only on My work (the scan and the ranking); never in pull request analyses, flows or Ask.",
@@ -285,7 +302,7 @@ const HELP = {
     example: "Add renovate[bot] to hide Renovate's pull requests.",
   },
   known_bots: {
-    section: "Dashboard",
+    section: "GitHub sync",
     title: "Known bots",
     what: "Accounts treated as bots: their review requests and comments do not count as a person waiting for you, they are not listed among reviewers you wait on, and their reviews count as bot reviews. GitHub Apps (…[bot]) are always bots and need not be listed. Nothing else is built in.",
     when: "Only on My work (the scan and the ranking); never in pull request analyses, flows or Ask.",
@@ -296,7 +313,7 @@ const HELP = {
       "Add a review bot that runs under a normal user account, so its review requests do not wait on you.",
   },
   include_todos: {
-    section: "Dashboard",
+    section: "GitHub sync",
     title: "Show my MemCan TODOs",
     what: "Lists your open MemCan TODOs on My work next to pull requests and issues.",
     when: "Every refresh reads them from the MemCan projects below. Switching it off hides them at once.",
@@ -307,7 +324,7 @@ const HELP = {
     ],
   },
   memcan_extra_projects: {
-    section: "Dashboard",
+    section: "GitHub sync",
     title: "Extra MemCan projects",
     what: "MemCan projects whose TODOs are read besides the projects named after your repository rows.",
     when: "Every refresh with TODOs on.",
@@ -316,36 +333,36 @@ const HELP = {
     example: "home-infra.",
   },
   schedule_enabled: {
-    section: "Dashboard",
-    title: "Refresh my dashboard automatically every day",
-    what: "Runs one refresh a day at the time below, with your GitHub sign-in.",
-    when: "The server checks every minute; it starts your run up to 9 minutes after the time. A run missed (server stopped) is caught up once on the same day; a manual refresh after the time counts for the day.",
+    section: "GitHub sync",
+    title: "Run nightly scan",
+    what: "Runs once a night and judges only items never judged. Updates in between come from GitHub events and Refresh.",
+    when: "At the local time below, with your GitHub sign-in.",
     empty: "On. It needs a time zone; without one it does not run.",
     example: "On, 06:00: My work is ready when you start.",
     details: [
-      "While it is on, the server keeps your GitHub sign-in for up to 30 days after your last sign-in. When the sign-in has ended, My work says the automatic refresh needs you to sign in again.",
+      "While it is on, the server keeps your GitHub sign-in for up to 30 days after your last sign-in. When the sign-in has ended, My work says the nightly scan needs you to sign in again.",
     ],
   },
   schedule_time: {
-    section: "Dashboard",
+    section: "GitHub sync",
     title: "Time of day",
-    what: "The local time of the daily refresh.",
+    what: "The local time of the nightly scan.",
     when: "Every day in your time zone.",
     empty: "06:00.",
     limits: "HH:MM in steps of 15 minutes.",
     example: "07:30.",
   },
   time_zone: {
-    section: "Dashboard",
+    section: "GitHub sync",
     title: "Time zone",
-    what: "Your time zone for the daily refresh, the day of the daily ranking limit and the history charts.",
+    what: "Your time zone for the nightly scan, the day of the daily ranking limit and the history charts.",
     when: "Your first visit to My work stores your browser's zone when none is stored.",
-    empty: "Not set yet: the automatic refresh does not run.",
+    empty: "Not set yet: the nightly scan does not run.",
     limits: "A time zone name such as Europe/Warsaw.",
     example: "Europe/Warsaw.",
   },
   slack_names: {
-    section: "Dashboard",
+    section: "GitHub sync",
     title: "Slack names",
     what: "Your table of GitHub logins and the name to write for each in Slack. Copy for Slack in Waiting on others (the Slack icon of a row, and Copy for Slack next to Copy list) writes the Slack name instead of @login; Copy list and the plain copy icon keep @login.",
     when: "Only when you copy for Slack on My work. Nothing is sent to Slack: the text goes to your clipboard.",
@@ -355,18 +372,20 @@ const HELP = {
     example: "jun-park → @jun.park.",
   },
   ranking_limits: {
-    section: "Dashboard",
+    section: "LLM & usage",
     title: "Ranking limits",
-    what: "The LLM judges at most 48 items per refresh and 120 per day for each user.",
-    when: "Every ranking. Items not judged again because they did not change cost nothing.",
-    empty: "Fixed limits; there is no setting.",
-    example: "A first refresh with 150 items judges 48; the rest stay provisional until later refreshes.",
+    what: "Each user can send up to 120 items for judgement per day. A scan also caps sends at 48 items per refresh. Re-judging one item or ranking new items from GitHub events outside a scan uses the daily limit.",
+    when: "Items count when sent, including re-judgements. Reused judgements cost nothing. A failed or cancelled batch that reports no input or output tokens is refunded.",
+    empty:
+      "The daily count starts again at midnight in your configured time zone (UTC by default). Use Reset my limits and confirm to clear your own daily count immediately. A running ranking continues and the per-refresh cap still applies.",
+    example:
+      "A first refresh with 150 items can judge up to 48. The remaining items can stay provisional until a later refresh has room.",
     onPage: false,
   },
   access_tokens: {
-    section: "Access tokens",
+    section: "Account",
     title: "Access tokens",
-    what: "Personal access tokens let your agents read over HTTP what you can read here: My work, reviews and their questions. They are read-only.",
+    what: "Personal access tokens let agents use diffpilot over HTTP. A read token is read-only. Add review_loop_execute for an agent that claims decisions and reports their effects.",
     when: "When an agent sends Authorization: Bearer srp_… with a request.",
     empty: "No tokens: agents cannot read your data.",
     limits:
@@ -441,7 +460,7 @@ export const CONTRACT_HELP: {
 };
 
 /** The in-app guide's address of `topic`. */
-export const helpHref = (topic: HelpTopic) => `/settings/help#${topic}`;
+export const helpHref = (topic: HelpTopic, from?: string) => `${settingsGuideHref(from)}#${topic}`;
 
 /** One line of the tip and the guide: label and text. */
 export function helpLines(help: SettingHelp): [string, string][] {
@@ -465,7 +484,7 @@ export function settingsHelpMarkdown(): string {
     "<!-- Generated from web/src/components/settings/settingsHelp.ts; the in-app guide at /settings/help shows",
     "the same text. Update: UPDATE_GENERATED=1 npx vitest run src/components/settings/settingsHelp.test.ts -->",
     "",
-    "Every option on the Settings page: what it is, when diffpilot uses it, what happens when it is empty, its limits and an example. The `?` next to an option shows the same text.",
+    "The guide follows the Settings pages. Find what each setting does, when diffpilot uses it, and what happens when it is empty. The `?` next to a setting opens its entry.",
   ];
   for (const section of HELP_SECTIONS) {
     out.push("", `## ${section}`);

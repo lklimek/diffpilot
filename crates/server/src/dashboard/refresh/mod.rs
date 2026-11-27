@@ -3,6 +3,7 @@
 //! change is written first, then published as a `refresh` event. A failed or cancelled scan never replaces the
 //! previous snapshot (the database keeps it current).
 
+pub(crate) mod event;
 mod facts;
 mod history;
 pub(crate) mod mentions;
@@ -16,8 +17,8 @@ use std::future::Future;
 use std::panic::AssertUnwindSafe;
 
 use contracts::api::dashboard::{
-    RankingState, RankingStatus, RefreshFailure, RefreshFailureCode, RefreshState, RefreshStatus,
-    RefreshTrigger, ScanStepKey, StepState,
+    ItemKey, RankingState, RankingStatus, RefreshFailure, RefreshFailureCode, RefreshState,
+    RefreshStatus, RefreshTrigger, ScanStepKey, StepState,
 };
 use contracts::api::settings::MemcanState;
 use contracts::ids::RefreshId;
@@ -27,12 +28,13 @@ use db::repo::dashboard::{RefreshRecord, RestartOutcome, ScanEnd, StartOutcome};
 use futures::FutureExt;
 use jiff::SignedDuration;
 use jiff::tz::TimeZone;
+use serde::de::IgnoredAny;
 
 use self::progress::Progress;
-use self::rank::RankRun;
+use self::rank::{RankMode, RankRun};
 use self::scan::ScanInput;
 use super::score::ScoreRules;
-use super::{settings, snapshot, snooze};
+use super::{judge, settings, snapshot, snooze};
 use crate::auth::UserTokenError;
 use crate::github::work::{UserTokens, WorkClient, WorkError};
 use crate::state::AppState;
@@ -45,7 +47,7 @@ const END_ATTEMPTS: u32 = 3;
 const END_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// The user a refresh belongs to.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Scope {
     /// Tenant.
     pub tenant_id: String,
@@ -107,7 +109,10 @@ pub async fn start(
     state: &AppState,
     scope: &Scope,
     trigger: RefreshTrigger,
+    rejudge_outdated: bool,
 ) -> Result<RefreshStatus, StartError> {
+    // Order the transition to Scanning with targeted reads and their snapshot writes.
+    let _writer = state.dashboard.readers().writer(scope).await;
     let now = state.dashboard.now();
     let dashboard = state.db.dashboard();
     let limited = dashboard
@@ -140,10 +145,15 @@ pub async fn start(
     // Before the task runs, so this first status never follows the task's own events.
     state.dashboard.publish(status.clone());
     let id = refresh.id;
-    let task = run(state.clone(), scope.clone(), id, trigger);
+    let mode = if rejudge_outdated {
+        RankMode::ScanWithRejudge
+    } else {
+        RankMode::Scan
+    };
+    let task = run(state.clone(), scope.clone(), id, trigger, mode);
     state
         .dashboard
-        .spawn(id, guarded(state.clone(), scope.clone(), id, task));
+        .spawn(id, guarded(state.clone(), scope.clone(), id, 0, task));
     Ok(status)
 }
 
@@ -154,6 +164,7 @@ pub async fn cancel(
     scope: &Scope,
     id: RefreshId,
 ) -> Result<RefreshStatus, ControlError> {
+    let _writer = state.dashboard.readers().writer(scope).await;
     let dashboard = state.db.dashboard();
     // A scan that stores its snapshot meanwhile is cancelled as a ranking on the second pass.
     for _ in 0..2 {
@@ -190,12 +201,16 @@ pub async fn cancel(
             Ok(true) => {
                 state.dashboard.abort(id);
                 tracing::info!(user_id = %scope.user_id, refresh = %id, was = ?record.state, "dashboard refresh cancelled");
-                let record = dashboard
+                let status = dashboard
                     .refresh(&scope.tenant_id, &scope.user_id, id)
-                    .await?;
-                let status = status_of(&record);
-                state.dashboard.publish(status.clone());
-                return Ok(status);
+                    .await
+                    .map(|cancelled| status_of(&cancelled));
+                if let Ok(status) = &status {
+                    state.dashboard.publish(status.clone());
+                }
+                // Webhook items wait for the next event or scan after a user cancels.
+                continue_rejudges(state, scope, id, record.ranking_attempt, false).await;
+                return Ok(status?);
             }
             Ok(false) | Err(DbError::Conflict) => continue,
             Err(error) => return Err(error.into()),
@@ -211,6 +226,7 @@ pub async fn rank_again(
     scope: &Scope,
     id: RefreshId,
 ) -> Result<RefreshStatus, ControlError> {
+    let _writer = state.dashboard.readers().writer(scope).await;
     let record = match state
         .db
         .dashboard()
@@ -221,23 +237,113 @@ pub async fn rank_again(
         RestartOutcome::RefreshRunning => return Err(ControlError::Running),
         RestartOutcome::NotRetryable => return Err(ControlError::NotAllowed),
     };
+    Ok(spawn_ranking(state, scope, &record, RankMode::Scan))
+}
+
+/// Requests a replacement and makes sure the current snapshot's ranking can pick it up.
+pub(crate) async fn rejudge(
+    state: &AppState,
+    scope: &Scope,
+    key: &ItemKey,
+) -> Result<(), judge::RejudgeError> {
+    let _writer = state.dashboard.readers().writer(scope).await;
+    if judge::request_rejudge(state, scope, key).await? {
+        state.dashboard.readers().queue_rejudge(scope, key.clone());
+        rank_pending_locked(state, scope, RankMode::Rejudge).await?;
+    }
+    Ok(())
+}
+
+/// Hands unserved clicks and, when enabled, event items to a new ranking. The caller holds the writer.
+pub(super) async fn continue_rejudges(
+    state: &AppState,
+    scope: &Scope,
+    id: RefreshId,
+    attempt: u32,
+    follow_up_events: bool,
+) {
+    let readers = state.dashboard.readers();
+    readers.end_rejudge_attempt(scope, id, attempt);
+    let mode = if readers.has_waiting_rejudges(scope) {
+        Some(RankMode::Rejudge)
+    } else {
+        follow_up_events.then_some(RankMode::Pending)
+    };
+    if let Some(mode) = mode
+        && let Err(error) = rank_pending_locked(state, scope, mode).await
+    {
+        tracing::warn!(%error, %id, "pending dashboard items could not start a follow-up ranking");
+    }
+}
+
+async fn rank_pending_locked(
+    state: &AppState,
+    scope: &Scope,
+    mode: RankMode,
+) -> Result<(), DbError> {
+    let dashboard = state.db.dashboard();
+    if mode == RankMode::Pending
+        && !dashboard
+            .event_ranking_pending(&scope.tenant_id, &scope.user_id)
+            .await?
+    {
+        return Ok(());
+    }
+    let Some((record, _)) = dashboard
+        .latest_snapshot::<IgnoredAny>(&scope.tenant_id, &scope.user_id)
+        .await?
+    else {
+        return Ok(());
+    };
+    if record.state == RefreshState::Finished
+        && let RestartOutcome::Restarted(record) = dashboard
+            .restart_pending_ranking(&scope.tenant_id, &scope.user_id, record.id)
+            .await?
+    {
+        if mode == RankMode::Rejudge {
+            state.dashboard.readers().start_rejudge_attempt(
+                scope,
+                record.id,
+                record.ranking_attempt,
+            );
+        }
+        spawn_ranking(state, scope, &record, mode);
+    }
+    Ok(())
+}
+
+fn spawn_ranking(
+    state: &AppState,
+    scope: &Scope,
+    record: &RefreshRecord,
+    mode: RankMode,
+) -> RefreshStatus {
+    let id = record.id;
     tracing::info!(user_id = %scope.user_id, refresh = %id, attempt = record.ranking_attempt, "dashboard ranking restarted");
     let run = RankRun {
         scope: scope.clone(),
         refresh_id: id,
         attempt: record.ranking_attempt,
+        mode,
     };
-    let status = status_of(&record);
+    let status = status_of(record);
     state.dashboard.publish(status.clone());
     let task = state.dashboard.ranker().rank(state.clone(), run);
-    state
-        .dashboard
-        .spawn(id, guarded(state.clone(), scope.clone(), id, task));
-    Ok(status)
+    state.dashboard.spawn(
+        id,
+        guarded(
+            state.clone(),
+            scope.clone(),
+            id,
+            record.ranking_attempt,
+            task,
+        ),
+    );
+    status
 }
 
 /// Startup recovery (plan §A.4): no task survived the restart, so every live refresh ends (`scanning` → `failed`
-/// interrupted, `ranking` → ranking `interrupted`, Retry ranking offered).
+/// interrupted, `ranking` → ranking `interrupted`, Retry ranking offered) and abandoned judge sends are refunded.
 pub async fn recover(state: &AppState) -> Result<(), DbError> {
     let interrupted = state
         .db
@@ -248,6 +354,17 @@ pub async fn recover(state: &AppState) -> Result<(), DbError> {
         tracing::info!(user_id = %refresh.user_id, refresh = %refresh.id, was = ?refresh.was,
             "dashboard refresh interrupted by the server restart");
         super::judge::cancel_jobs(state, refresh.id, None).await;
+    }
+    let released = state
+        .db
+        .dashboard()
+        .reconcile_sends(state.dashboard.now())
+        .await?;
+    if released > 0 {
+        tracing::info!(
+            released,
+            "dashboard judge reservations reconciled after restart"
+        );
     }
     Ok(())
 }
@@ -297,6 +414,7 @@ pub fn status_of(record: &RefreshRecord) -> RefreshStatus {
         judged: record.counts.judged,
         reused: record.counts.reused,
         left_provisional: record.counts.left_provisional,
+        left_provisional_by: record.progress.left_provisional_by,
         steps,
         percent: if record.has_snapshot {
             100
@@ -334,6 +452,7 @@ async fn guarded(
     state: AppState,
     scope: Scope,
     id: RefreshId,
+    attempt: u32,
     task: impl Future<Output = ()> + Send,
 ) {
     if AssertUnwindSafe(task).catch_unwind().await.is_ok() {
@@ -351,18 +470,22 @@ async fn guarded(
             end_failed_scan(&state, &scope, id, internal_failure()).await;
             return;
         }
-        Ok(record) if record.state == RefreshState::Ranking => dashboard
-            .finish_ranking(
-                &scope.tenant_id,
-                &scope.user_id,
-                id,
-                record.ranking_attempt,
-                RankingState::Failed,
-                record.counts,
-                now,
-            )
-            .await
-            .map(drop),
+        Ok(record)
+            if record.state == RefreshState::Ranking && record.ranking_attempt == attempt =>
+        {
+            dashboard
+                .finish_ranking(
+                    &scope.tenant_id,
+                    &scope.user_id,
+                    id,
+                    attempt,
+                    RankingState::Failed,
+                    record.counts,
+                    now,
+                )
+                .await
+                .map(drop)
+        }
         Ok(_) => Ok(()),
         Err(error) => Err(error),
     };
@@ -412,13 +535,20 @@ async fn end_failed_scan(state: &AppState, scope: &Scope, id: RefreshId, failure
 }
 
 /// The refresh task: scan and store the snapshot, then rank it. A failed scan ends the refresh `failed`.
-async fn run(state: AppState, scope: Scope, id: RefreshId, trigger: RefreshTrigger) {
+async fn run(
+    state: AppState,
+    scope: Scope,
+    id: RefreshId,
+    trigger: RefreshTrigger,
+    mode: RankMode,
+) {
     match scan_and_store(&state, &scope, id, trigger).await {
         Ok(true) => {
             let run = RankRun {
                 scope: scope.clone(),
                 refresh_id: id,
                 attempt: 0,
+                mode,
             };
             state.dashboard.ranker().rank(state.clone(), run).await;
         }
@@ -429,6 +559,8 @@ async fn run(state: AppState, scope: Scope, id: RefreshId, trigger: RefreshTrigg
             tracing::info!(user_id = %scope.user_id, refresh = %id, code = ?failure.code,
                 "dashboard refresh failed; the previous snapshot stays");
             end_failed_scan(&state, &scope, id, failure).await;
+            let _writer = state.dashboard.readers().writer(&scope).await;
+            continue_rejudges(&state, &scope, id, 0, true).await;
         }
     }
 }
@@ -500,6 +632,7 @@ async fn scan_and_store(
     if progress.record().await.is_err() {
         return Ok(false);
     }
+    let writer = state.dashboard.readers().writer(scope).await;
     let stored = state
         .db
         .dashboard()
@@ -511,6 +644,7 @@ async fn scan_and_store(
             snapshot.scanned_at,
         )
         .await;
+    drop(writer);
     match stored {
         Ok(()) => {
             tracing::info!(user_id = %scope.user_id, refresh = %id, prs = snapshot.pull_requests.len(),

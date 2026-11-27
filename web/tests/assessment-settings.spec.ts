@@ -46,7 +46,7 @@ test("PR A/B opt-in preserves primary, quota and visible comments; report is rea
   const quotes = await cards.locator("[data-comment-text]").allTextContents();
   expect(headings.length).toBeGreaterThan(0);
   expect(quotes.length).toBeGreaterThan(0);
-  const quota = page.getByText("79 of 80 daily passes remaining; resets at 2026-11-19T00:00:00Z (UTC).");
+  const quota = page.getByText("79 of 80 daily passes remaining · resets at 19 Nov 2026, 00:00");
   await expect(quota).toBeVisible();
   await toggle.click();
   await expect(toggle).toBeChecked();
@@ -55,6 +55,8 @@ test("PR A/B opt-in preserves primary, quota and visible comments; report is rea
   await expect(toggle).not.toBeChecked();
   await expect(toggle).toBeEnabled();
   expect(assessmentWrites).toEqual([
+    { path: "/api/v1/prs/acme/node-client/482/comments/visit", body: null },
+    { path: "/api/v1/prs/acme/node-client/482/comments/assess", body: null },
     {
       path: "/api/v1/settings/comment-assessment",
       body: {
@@ -87,7 +89,7 @@ test("PR A/B opt-in preserves primary, quota and visible comments; report is rea
 });
 
 test("Settings keeps a draft after a concurrent primary and deadline update", async ({ page }) => {
-  await page.goto("/settings");
+  await page.goto("/settings/review-loop");
   const card = page.getByRole("region", { name: "Comment assessment" });
   await expect(card.getByLabel("Primary assessment method")).toHaveValue("claudius_host");
   await card.getByLabel("Primary assessment method").selectOption("prompt_v4");

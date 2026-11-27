@@ -6,6 +6,7 @@ import { Planned } from "../../__tests__/planned";
 import { expectTrustWording } from "../../__tests__/wording";
 import type { CommentItem } from "../../api/generated/types";
 import { context, listItems, resetReviewLoop } from "../../mocks/review-loop";
+import { setScenario } from "../../mocks/scenarios";
 import type { EffectsPreviewState } from "./decisions";
 import { COMMENT_HINT } from "./DecisionForm";
 import { QuestionCard, type ContextState } from "./QuestionCard";
@@ -72,11 +73,78 @@ function show(item: CommentItem, props: Partial<Parameters<typeof QuestionCard>[
 }
 
 beforeEach(() => {
+  setScenario(null);
   resetReviewLoop();
   window.localStorage.clear();
 });
 
+it.each([
+  { no: 22, by: "alice", kind: "Reject", comment: "1041" },
+  { no: 14, by: "alice-relay", kind: "Resolve (already fixed)", comment: "1042" },
+])("shows and preselects the GitHub proposal on C$no", async ({ no, by, kind, comment }) => {
+  setScenario("comments-proposals");
+  const { onDecide } = show(byNo(no));
+  expect(screen.getByText(new RegExp(`proposes: ${kind.split(" ")[0]}`, "i"))).toHaveTextContent(`@${by}`);
+  expect(screen.getByRole("link", { name: /Proposal on GitHub/ })).toHaveAttribute(
+    "href",
+    `https://github.com/acme/node-client/pull/482#discussion_r${comment}`,
+  );
+  expect(screen.getByRole("radio", { name: kind })).toBeChecked();
+  expect(onDecide).not.toHaveBeenCalled();
+  if (no === 22) await userEvent.type(screen.getByRole("textbox", { name: /Reason/ }), "My reason.");
+  await userEvent.click(screen.getByRole("button", { name: "Decide" }));
+  expect(onDecide).toHaveBeenCalledWith(expect.objectContaining({ kind: no === 22 ? "reject" : "resolve" }));
+});
+
+it.each([
+  [{ state: "undecided" }, true],
+  [{ state: "reopened" }, true],
+  [{ state: "asked_back" }, true],
+  [{ state: "assessing" }, false],
+  [{ state: "decided" }, false],
+  [{ kind: "pr_question" }, false],
+  [{ status_comment: true }, false],
+  [{ gone_at: NOW.toISOString() }, false],
+  [{ not_a_review_point: { by: "alice", at: NOW.toISOString() } }, false],
+] satisfies [Partial<CommentItem>, boolean][])(
+  "mark_action_offered_only_for_awaiting_items (%j)",
+  (fields, offered) => {
+    show({ ...byNo(22), ...fields });
+    expect(screen.queryByRole("radio", { name: "Not a review point" }) !== null).toBe(offered);
+  },
+);
+
+it("a gate mark requires a private reason and sends no effect inputs", async () => {
+  const { onDecide } = show(byNo(14));
+  await userEvent.click(screen.getByRole("radio", { name: "Not a review point" }));
+  const decide = screen.getByRole("button", { name: /^Decide$/ });
+  await userEvent.click(decide);
+  expect(onDecide).not.toHaveBeenCalled();
+  expect(screen.getByRole("alert")).toHaveTextContent("A reason is required.");
+  expect(screen.queryByRole("checkbox", { name: "Resolve this thread" })).toBeNull();
+  expect(screen.queryByRole("textbox", { name: /Reply text/ })).toBeNull();
+  await userEvent.type(screen.getByRole("textbox", { name: "Reason" }), "Only a test fixture.");
+  await userEvent.click(decide);
+  expect(onDecide).toHaveBeenCalledWith({
+    kind: "not_a_review_point",
+    reason: "Only a test fixture.",
+    target: null,
+    override: null,
+    resolve_ticked: false,
+    reply_text: null,
+    comment: null,
+    item_revision: byNo(14).revision,
+  });
+});
+
 describe("QuestionCard (plan §3.2)", () => {
+  it("renders the queued assessment as a paragraph", async () => {
+    show({ ...byNo(14), assessment_state: { state: "queued" } });
+    await userEvent.click(screen.getByRole("button", { name: "LLM assessment" }));
+    const note = screen.getByText("Waiting for assessment.");
+    expect(note.closest("p")).toHaveClass("m-0");
+  });
+
   it("shows context, evidence, the LLM assessment and the recommended option first, focused heading", () => {
     show(byNo(14));
     const heading = screen.getByRole("heading", { level: 2, name: /C14 · Retry may resend/ });
@@ -84,12 +152,26 @@ describe("QuestionCard (plan §3.2)", () => {
     expect(screen.getByText(/C14 · 2 of 9 · thepastaclaw · bot · inline thread/)).toBeVisible();
     const options = within(screen.getByRole("radiogroup", { name: "Decision on C14" })).getAllByRole("radio");
     expect(options[0]).toHaveAccessibleName("Fix here (Recommended)");
-    expect(options.at(-1)).toHaveAccessibleName(/^Accept despite the gate/);
+    expect(options[7]).toHaveAccessibleName(/^Accept despite the gate/);
     expect(options[0]).toBeChecked();
     expect(screen.getByRole("button", { name: "LLM assessment" })).toHaveAttribute("aria-expanded", "false");
     expect(screen.getByText("The LLM says")).not.toBeVisible();
     expect(screen.getByText(COMMENT_HINT)).toBeVisible();
     expectTrustWording(document.body.textContent ?? "");
+  });
+
+  it("keeps keyboard focus in Queue Status when the current question changes", () => {
+    const { rerender } = show(byNo(14));
+    render(
+      <div data-queue-status>
+        <button type="button">Queue status</button>
+      </div>,
+    );
+    const status = screen.getByRole("button", { name: "Queue status" });
+    status.focus();
+    rerender(byNo(15));
+    expect(screen.getByRole("heading", { name: /C15 ·/ })).toBeVisible();
+    expect(status).toHaveFocus();
   });
 
   it("names a round only for a comment its round's review raised; any other where GitHub says it was written", () => {

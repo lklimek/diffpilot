@@ -15,10 +15,11 @@ use std::path::Path as FilePath;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use axum::body::Bytes;
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::http::header::AUTHORIZATION;
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use contracts::time::Timestamp;
@@ -38,6 +39,8 @@ const MAX_JWT_LIFETIME_SECS: i64 = 600;
 /// GitHub's 401 answer for a JWT it cannot verify.
 const UNDECODABLE: &str = "A JSON web token could not be decoded";
 
+type Permissions = BTreeMap<String, String>;
+
 /// What the App endpoints accepted and issued (`GET /_fake/app-credentials`).
 #[derive(Clone, Debug, Default, Serialize)]
 struct Issued {
@@ -55,7 +58,7 @@ pub(crate) struct App {
     repository: String,
     installation_id: u64,
     /// Permissions granted to the installation (`rest/repo-installation.json`).
-    granted: BTreeMap<String, String>,
+    granted: Permissions,
     /// Recorded bodies, served byte for byte.
     installation: Bytes,
     missing: Bytes,
@@ -68,7 +71,7 @@ pub(crate) struct App {
 #[derive(Deserialize)]
 struct InstallationAnswer {
     id: u64,
-    permissions: BTreeMap<String, String>,
+    permissions: Permissions,
 }
 
 #[derive(Deserialize)]
@@ -84,7 +87,33 @@ struct Claims {
 struct MintRequest {
     repositories: Option<Vec<String>>,
     repository_ids: Option<Vec<u64>>,
-    permissions: Option<BTreeMap<String, String>>,
+    permissions: Option<Permissions>,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum MintError {
+    #[error("Invalid request: {}", .0.body_text())]
+    InvalidBody(#[from] JsonRejection),
+    #[error("fake-github: name the repository in `repositories`, not by id")]
+    RepositoryIds,
+    #[error(
+        "fake-github: the token request must name the pull request's repository \
+         (`repositories`); without it GitHub grants every repository of the installation"
+    )]
+    MissingRepositories,
+    #[error(
+        "There is at least one repository that does not exist or is not accessible to the parent installation."
+    )]
+    InvalidRepositories,
+    #[error(
+        "fake-github: the token request must list read-only `permissions`; without \
+         them GitHub grants the App's write access"
+    )]
+    MissingPermissions,
+    #[error("The permissions requested are not granted to this installation.")]
+    UngrantedPermissions,
+    #[error("fake-github: job tokens are read-only; `{name}: {level}` was requested")]
+    WritePermission { name: String, level: String },
 }
 
 impl App {
@@ -186,45 +215,34 @@ impl App {
     }
 
     /// The permissions a token request asks for, if the fake grants them; `Err` is the 422 message.
-    fn scope(&self, body: &[u8]) -> Result<BTreeMap<String, String>, String> {
-        let request: MintRequest =
-            serde_json::from_slice(body).map_err(|error| format!("Invalid request: {error}"))?;
+    fn scope(&self, request: MintRequest) -> Result<Permissions, MintError> {
         if request.repository_ids.is_some() {
-            return Err("fake-github: name the repository in `repositories`, not by id".to_owned());
+            return Err(MintError::RepositoryIds);
         }
         let Some(repositories) = request.repositories else {
-            return Err(
-                "fake-github: the token request must name the pull request's repository \
-                 (`repositories`); without it GitHub grants every repository of the installation"
-                    .to_owned(),
-            );
+            return Err(MintError::MissingRepositories);
         };
         let own = self.repository.rsplit('/').next().unwrap_or_default();
         if !matches!(repositories.as_slice(), [only] if only.eq_ignore_ascii_case(own)) {
-            return Err("There is at least one repository that does not exist or is not accessible to the parent installation.".to_owned());
+            return Err(MintError::InvalidRepositories);
         }
         let Some(permissions) = request
             .permissions
             .filter(|permissions| !permissions.is_empty())
         else {
-            return Err(
-                "fake-github: the token request must list read-only `permissions`; without \
-                 them GitHub grants the App's write access"
-                    .to_owned(),
-            );
+            return Err(MintError::MissingPermissions);
         };
         if !permissions
             .keys()
             .all(|name| self.granted.contains_key(name))
         {
-            return Err(
-                "The permissions requested are not granted to this installation.".to_owned(),
-            );
+            return Err(MintError::UngrantedPermissions);
         }
         if let Some((name, level)) = permissions.iter().find(|(_, level)| *level != "read") {
-            return Err(format!(
-                "fake-github: job tokens are read-only; `{name}: {level}` was requested"
-            ));
+            return Err(MintError::WritePermission {
+                name: name.clone(),
+                level: level.clone(),
+            });
         }
         Ok(permissions)
     }
@@ -246,6 +264,7 @@ fn public_key(file: &FilePath) -> Result<DecodingKey, StartError> {
 pub(crate) fn routes(app: Arc<App>) -> Router {
     Router::new()
         .route("/repos/{owner}/{repo}/installation", get(installation))
+        .route("/app/installations", get(installations))
         .route("/app/installations/{id}/access_tokens", post(access_token))
         .route("/installation/token", delete(revoke))
         .route("/_fake/app-credentials", get(credentials))
@@ -258,6 +277,17 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
         .to_str()
         .ok()?
         .strip_prefix("Bearer ")
+}
+
+async fn installations(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
+    if let Some(refusal) = app.refuse(&headers) {
+        return refusal;
+    }
+    let mut body = Vec::with_capacity(app.installation.len() + 2);
+    body.push(b'[');
+    body.extend_from_slice(&app.installation);
+    body.push(b']');
+    json_body(StatusCode::OK, Bytes::from(body))
 }
 
 async fn installation(
@@ -279,17 +309,25 @@ async fn access_token(
     State(app): State<Arc<App>>,
     Path(id): Path<u64>,
     headers: HeaderMap,
-    body: Bytes,
+    request: Result<Json<MintRequest>, JsonRejection>,
 ) -> Response {
+    let request = match request {
+        Err(JsonRejection::BytesRejection(error)) => return error.into_response(),
+        request => request,
+    };
     if let Some(refusal) = app.refuse(&headers) {
         return refusal;
     }
     if id != app.installation_id {
         return github_error(StatusCode::NOT_FOUND, "Not Found");
     }
-    let permissions = match app.scope(&body) {
+    let scope = request
+        .map_err(MintError::from)
+        .and_then(|Json(request)| app.scope(request));
+    let permissions = match scope {
         Ok(permissions) => permissions,
-        Err(message) => {
+        Err(error) => {
+            let message = error.to_string();
             tracing::warn!(%message, "fake-github refused an installation token request");
             return github_error(StatusCode::UNPROCESSABLE_ENTITY, &message);
         }

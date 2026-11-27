@@ -40,11 +40,23 @@ pub struct AppState {
     pub feed: FeedHub,
     /// Coalesces reads after agent reports within this application (ADR-023).
     pub report_reads: ReportReads,
+    /// Numeric resolutions of linked GitHub logins across assessment reads.
+    pub relay_ids: crate::review_loop::assess::RelayIds,
     /// Wakes the notification delivery task (ADR-023).
     pub notify: NotifyHub,
+    /// Process-local webhook counters shared by both HTTP listeners.
+    pub webhook_metrics: crate::webhooks::WebhookMetrics,
 }
 
 impl AppState {
+    /// Starts application tasks after startup recovery.
+    pub fn spawn_background(&self) {
+        crate::dashboard::schedule::spawn(self.clone());
+        crate::dashboard::plugin::spawn(self.clone());
+        crate::review_loop::feed::spawn(self.clone());
+        crate::review_loop::notify::spawn(self.clone());
+    }
+
     /// The state with the database queue as executor, its followers publishing to the state's progress hub.
     pub fn with_queue(config: Config, db: Db) -> Self {
         let progress = ProgressHub::default();
@@ -69,7 +81,9 @@ impl AppState {
             dashboard: DashboardHub::default(),
             feed: FeedHub::default(),
             report_reads: ReportReads::default(),
+            relay_ids: Default::default(),
             notify: NotifyHub::default(),
+            webhook_metrics: Default::default(),
         }
     }
 }

@@ -1,47 +1,46 @@
-import { Tooltip } from "../../components/tooltip/Tooltip";
-import { Link, useNavigate, useParams } from "react-router";
-import { ApiError } from "../../api/client";
+import { Link, useLocation, useNavigate, useParams } from "react-router";
+import { errorText } from "../../api/client";
 import { useMe } from "../../api/queries";
-import { usePrPage, useWatchPr } from "../../api/review-loop";
+import { usePrPage, useReadComments, useWatchPr } from "../../api/review-loop";
 import { useNow } from "../../app/now";
-import { useUserEventNotifications } from "../../app/userEvents";
-import { Banner } from "../../components/banner/Banner";
-import { buttonClass } from "../../components/button/button";
+import { usePrTabSubject } from "../../app/tabStatus";
+import { prGithubUrl } from "../../components/github/links";
+import type { AnalysisId } from "../../api/generated/types";
 import { CollapsibleSection } from "../../components/collapsible/CollapsibleSection";
-import { autoPassText, PrStatusStrip, WatchToggle } from "../../components/comments/PrHeader";
 import { ProcessCommentsCard } from "../../components/comments/ProcessCommentsCard";
 import { OpenExternal } from "../../components/dashboard/common/OpenExternal";
-import { clockText } from "../../components/format/time";
+import { StatusPopover } from "../../components/status/StatusPopover";
 import { StatusMessage } from "../../components/status/StatusMessage";
-import { TopBar } from "../../components/top-bar/TopBar";
-import { MY_WORK_PATH, REVIEW_START_PATH } from "../shell/paths";
-import { LiveReview } from "./LiveReview";
+import { ReviewTopBar } from "../shell/ReviewTopBar";
+import { MY_WORK_PATH } from "../shell/paths";
+import { PrReviewPanel } from "./PrReviewPanel";
 import { commentsPath, prOfParams } from "./paths";
 
-const errorText = (error: unknown) =>
-  error instanceof ApiError ? error.message : "Something went wrong. Try again.";
-
-/** V0 PR page (plan §3.1): header, Watch, "Review a PR" (the analysis's progress) and "Process PR comments". */
+/** V0 PR page (plan §3.1): header, "Review the code" and "Process PR comments". */
 export function PrScreen() {
   const pr = prOfParams(useParams());
   const page = usePrPage(pr);
+  const { progressId } = (useLocation().state ?? {}) as { progressId?: AnalysisId };
+  usePrTabSubject(pr);
   const me = useMe();
   const login = me.data?.user?.login ?? null;
   const watch = useWatchPr(pr);
+  const read = useReadComments(pr);
   const navigate = useNavigate();
   const now = new Date(useNow());
-  useUserEventNotifications();
   const data = page.data;
   const display = `${pr.repo.owner}/${pr.repo.name} #${pr.number}`;
   const key = (section: string) => `${login ?? "anonymous"}:pr-page:${section}`;
   return (
     <div className="flex min-h-screen flex-col">
-      <TopBar
-        pr={
-          data
-            ? { repo: pr.repo, number: pr.number, title: data.title, html_url: data.url, head_sha: data.head }
-            : undefined
-        }
+      <ReviewTopBar
+        pr={{
+          repo: pr.repo,
+          number: pr.number,
+          title: data?.title ?? "",
+          html_url: prGithubUrl(pr),
+          head_sha: data?.head ?? "",
+        }}
         ci={data?.ci ?? undefined}
         checksHref={data ? `${data.url}/checks` : undefined}
         login={login}
@@ -75,53 +74,40 @@ export function PrScreen() {
                   head <code>{data.head.slice(0, 7)}</code>
                 </p>
               </div>
-              <WatchToggle
-                watch={data.watch}
-                busy={watch.isPending}
-                onChange={(on) => watch.mutate(on)}
+              <StatusPopover
+                badge={data.badge}
+                rounds={data.comments.rounds}
+                notes={data.plugin_notes}
+                read={data.comments.read}
+                ci={data.ci}
                 now={now}
+                itemId={display}
+                busy={read.isPending}
+                onRead={() => read.mutate()}
               />
             </div>
+            {read.isError && <StatusMessage kind="error">{errorText(read.error)}</StatusMessage>}
             {watch.isError && <StatusMessage kind="error">{errorText(watch.error)}</StatusMessage>}
-            {data.watch?.last_auto_pass && (
-              <Banner tone="info" title="Watching.">
-                {autoPassText(data.watch, now)} at {clockText(data.watch.last_auto_pass.at, now)}; you were
-                notified where notifications are on.
-              </Banner>
-            )}
-            <PrStatusStrip
-              badge={data.badge}
-              rounds={data.comments.rounds}
-              notes={data.plugin_notes}
-              now={now}
-              itemId={display}
-            />
             <div className="grid items-start gap-3.5 lg:grid-cols-2">
-              <div className="rounded-lg border border-border bg-surface px-4 pb-3.5">
-                <CollapsibleSection title="Review a PR" level={2} storageKey={key("review")}>
-                  {data.analysis ? (
-                    <LiveReview analysisId={data.analysis.id} />
-                  ) : (
-                    <>
-                      <p>No analysis yet.</p>
-                      <Tooltip tip="Opens Review a PR with this pull request: check it and start its analysis.">
-                        <a
-                          href={`${REVIEW_START_PATH}?pr=${encodeURIComponent(data.url)}`}
-                          onClick={(event) => {
-                            event.preventDefault();
-                            void navigate(`${REVIEW_START_PATH}?pr=${encodeURIComponent(data.url)}`);
-                          }}
-                          className={buttonClass("primary")}
-                        >
-                          Check and start
-                        </a>
-                      </Tooltip>
-                    </>
-                  )}
-                </CollapsibleSection>
-              </div>
+              <CollapsibleSection
+                title="Review the code"
+                level={2}
+                storageKey={key("review")}
+                className="rounded-lg border border-border bg-surface px-4 pb-3.5"
+              >
+                <PrReviewPanel
+                  key={display}
+                  pr={pr}
+                  language={me.data?.user?.language}
+                  progressId={progressId}
+                  previous={data.analysis}
+                />
+              </CollapsibleSection>
               <ProcessCommentsCard
                 summary={data.comments}
+                watch={data.watch}
+                watchBusy={watch.isPending}
+                onWatchChange={(on) => watch.mutate(on)}
                 now={now}
                 questionsHref={commentsPath(pr)}
                 tableHref={commentsPath(pr, "table")}

@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>User menu and LLM activity v1.4 - diffpilot mockup</title>
+<!-- docs/v1.4-ui-plan.md U3, U5, U40 (accepted; U2 top-bar indicator rejected) win on behaviour. Fictional data. -->
+<link rel="stylesheet" href="mockup.css">
+<link rel="stylesheet" href="mockup-v14.css">
+</head>
+<body data-page="shell14">
+<a class="skip" href="#main">Skip to content</a>
+<noscript><p style="padding:8px">This mockup needs JavaScript for its menus.</p></noscript>
+<header class="topbar">
+ <a class="brand" href="index.html">diff<span>pilot</span></a><span class="crumb">/ Comments &middot; acme/node-client #482</span><span class="sp"></span>
+ <div class="mb">
+  <button class="usermenu" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="p-user" data-open-on="running-open paused-open failing-open idle-open">
+   <span class="avatar" aria-hidden="true">a</span>
+   <span class="udot warn" data-for="paused paused-open" hidden aria-hidden="true"></span>
+   <span class="udot err" data-for="failing failing-open" hidden aria-hidden="true"></span>
+   alice <span class="car" aria-hidden="true">&#9662;</span>
+   <span class="vh" data-for="running running-open idle-open">: account and LLM activity</span>
+   <span class="vh" data-for="paused paused-open" hidden>&mdash; LLM paused until 13:00</span>
+   <span class="vh" data-for="failing failing-open" hidden>&mdash; LLM not working</span>
+  </button>
+  <div class="pop upanel" id="p-user" role="dialog" aria-label="Account and LLM activity" hidden>
+   <div class="uh">Signed in as <b>alice</b> (GitHub)</div>
+   <div class="usec">
+    <div data-for="running running-open">
+     <p class="ustat"><span aria-hidden="true" style="color:var(--low)">&#9684;</span> LLM: 2 running &middot; 3 queued</p>
+     <h3>Running now (2)</h3>
+     <ul class="joblist">
+      <li><span class="g" aria-hidden="true">&#9684;</span><span>Comment assessment &middot; <a href="14-comments-v14.html">acme/node-client#482</a><small>7 comments in this pass</small></span><span class="t">since 10:44</span></li>
+      <li><span class="g" aria-hidden="true">&#9684;</span><span>Ranking &middot; <a href="11-dashboard-v14.html">My work</a><small>6 items</small></span><span class="t">since 10:42</span></li></ul>
+     <h3>Queued (3)</h3>
+     <ul class="joblist">
+      <li><span class="w" aria-hidden="true">&#9676;</span><span>Re-judge &middot; <a href="11-dashboard-v14.html">NC-482</a><small>you asked</small></span><span class="t">10:45</span></li>
+      <li><span class="w" aria-hidden="true">&#9676;</span><span>Flow analysis &middot; <a href="#">acme/platform#1203</a><small>5 flows left &middot; waits for a free runner</small></span><span class="t">10:30</span></li>
+      <li><span class="w" aria-hidden="true">&#9676;</span><span>1 job of another user<small>no subject shown</small></span><span class="t">10:40</span></li></ul>
+     <p class="small muted" style="margin:6px 0 0">Last LLM call 10:46: working.</p>
+    </div>
+    <div data-for="paused paused-open" hidden>
+     <p class="ustat warn"><span aria-hidden="true">&#9208;</span> LLM paused until 13:00</p>
+     <p class="small" style="margin:0">The Codex plan&rsquo;s 5-hour window is used up (reported by the plan). 2 jobs wait and continue by themselves at 13:00: Ranking (My work), Comment assessment (acme/node-client#482).</p>
+    </div>
+    <div data-for="failing failing-open" hidden>
+     <p class="ustat err"><span aria-hidden="true">&#10005;</span> LLM not working</p>
+     <p class="small" style="margin:0">The last LLM call failed at 10:46: Codex sign-in expired on the runner. 3 jobs wait until an administrator signs in again (see the runbook).</p>
+    </div>
+    <div data-for="idle-open" hidden>
+     <p class="ustat"><span aria-hidden="true" style="color:var(--muted)">&#9675;</span> LLM: nothing running</p>
+     <p class="small muted" style="margin:0">Last LLM call 10:46: working.</p>
+    </div>
+    <p class="small" style="margin:6px 0 0"><a href="12-settings-v14.html?s=llm">Usage and limits</a></p>
+   </div>
+   <a class="ulink" href="12-settings-v14.html">Settings</a>
+   <button class="ulink" type="button" data-toast="Keyboard shortcuts (mock)">Keyboard shortcuts <kbd>?</kbd></button>
+   <button class="ulink" type="button" data-toast="Signed out (mock)">Sign out</button>
+  </div></div>
+</header>
+<div class="states" role="group" aria-label="Mockup states"><b>mockup states:</b>
+ <button type="button" data-s="running" aria-pressed="true">jobs running (no dot)</button>
+ <button type="button" data-s="running-open" aria-pressed="false">&hellip; menu open</button>
+ <button type="button" data-s="paused" aria-pressed="false">paused at limit (amber dot)</button>
+ <button type="button" data-s="paused-open" aria-pressed="false">&hellip; menu open</button>
+ <button type="button" data-s="failing" aria-pressed="false">not working (red dot)</button>
+ <button type="button" data-s="failing-open" aria-pressed="false">&hellip; menu open</button>
+ <button type="button" data-s="idle-open" aria-pressed="false">idle, menu open</button>
+</div>
+<main class="page" id="main">
+ <h1>User menu and LLM activity</h1>
+ <p class="annot"><b>U3</b> the user menu holds the LLM activity (the only place for it; <b>U2</b> top-bar indicator rejected) &middot; <b>U40</b> a coloured dot on the trigger only when the LLM is paused at a limit (amber) or failing (red); running jobs need no attention and add no colour &middot; <b>U5</b> keyboard shortcuts in the menu.</p>
+ <div class="tiles">
+  <section class="card"><h2>UserMenu <span class="small muted">components/app-shell/UserMenu.tsx</span></h2>
+   <table class="tbl small"><thead><tr><th>LLM state</th><th>Trigger</th><th>Accessible name</th></tr></thead><tbody>
+    <tr><td>idle or running/queued</td><td>avatar + login, no dot</td><td>alice: account and LLM activity</td></tr>
+    <tr><td>paused at a limit</td><td>amber dot</td><td>alice &mdash; LLM paused until 13:00</td></tr>
+    <tr><td>last call failed</td><td>red dot</td><td>alice &mdash; LLM not working</td></tr></tbody></table>
+   <p class="small" style="margin-top:8px"><b>Props:</b> <code>login</code>, <code>activity</code> (running, queued, paused_until, last_call), <code>now</code>, <code>settingsHref</code>, <code>usageHref</code>, <code>onHelp</code>, <code>onSignOut</code>. <b>A11y:</b> button with <code>aria-expanded</code> opening a non-modal panel; Tab moves through its links; Esc closes and returns focus; an LLM failure is announced once via the shell&rsquo;s status region. <b>Trust:</b> counts and clock times only &mdash; no percentage, no ETA.</p></section>
+  <section class="card"><h2>LlmActivityList <span class="small muted">inside the panel</span></h2>
+   <p class="small">Status line, then <i>Running now</i> and <i>Queued</i>; each job: kind (Analysis, Flow analysis, Ranking, Re-judge, Comment assessment, Ask), subject link, &ldquo;since&rdquo; or queued time, why it waits. More than 5 per list fold behind &ldquo;Show all (N)&rdquo;. Jobs of other users: &ldquo;1 job of another user&rdquo;, no subject (private repositories). Footer: last call outcome and a link to Settings &rsaquo; LLM &amp; usage.</p></section>
+ </div>
+ <h2 style="margin-top:16px">Phone width (&lt; 640 px)</h2>
+ <div class="phone" aria-label="Phone example">
+  <div class="topbar" style="gap:8px"><a class="brand" href="#">diff<span>pilot</span></a><span class="sp"></span>
+   <span class="split"><button class="mbtn" type="button" aria-label="Refresh">&#10227;</button><span class="mb"><button class="mbtn" type="button" aria-label="More refresh options"><span class="car">&#9662;</span></button></span></span>
+   <button class="usermenu" type="button" aria-label="alice &mdash; LLM paused until 13:00"><span class="avatar" aria-hidden="true">a</span><span class="udot warn" aria-hidden="true"></span><span class="car" aria-hidden="true">&#9662;</span></button></div>
+  <div style="padding:10px 12px;font-size:13px"><p class="small muted">Same menu and dot; the panel takes the full width below the top bar. Refresh is icon-only with an accessible name.</p></div>
+ </div>
+</main>
+<footer class="mock-foot">Mockup &mdash; static example data &middot; v1.4 plan: docs/v1.4-ui-plan.md</footer>
+<dialog id="help" aria-labelledby="help-t"><h2 id="help-t">Keyboard shortcuts</h2><p class="small">Each page lists its own.</p><form method="dialog"><button class="btn pri">Close</button></form></dialog>
+<div id="tip" role="tooltip" hidden></div><div id="toast" role="status" hidden></div>
+<script src="mockup.js"></script>
+<script src="mockup-v14.js"></script>
+</body>
+</html>

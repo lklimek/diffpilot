@@ -24,7 +24,7 @@ use jiff::SignedDuration;
 use sha2::{Digest, Sha256};
 
 use crate::auth::{Session, UserTokenError, user_access_token, user_token_rejected};
-use crate::github::graphql::{GraphqlError, GraphqlErrorType};
+use crate::github::graphql::{GraphqlError, GraphqlErrorType, ReadBudget};
 use crate::github::review_loop::{self as reads, ReadError};
 use crate::github::{checks, mirror, rest};
 use crate::state::AppState;
@@ -40,6 +40,7 @@ mod handin;
 mod markers;
 pub mod notify;
 mod observe;
+pub(crate) mod propagation;
 mod queue;
 pub(crate) mod seen;
 pub mod views;
@@ -76,6 +77,9 @@ pub enum LoopError {
     /// "Read GitHub again" within [`MIN_REREAD`] of the last read.
     #[error("the pull request was read moments ago")]
     TooSoon,
+    /// An event read has to wait for its GitHub budget.
+    #[error("GitHub webhook read budget reached")]
+    EventBudget(std::time::Duration),
     /// These items (`C<no>`) changed since the revisions named.
     #[error("items changed since the decision was prepared")]
     ItemChanged(Vec<u32>),
@@ -94,6 +98,9 @@ pub enum LoopError {
     /// A gate item in a group or bulk batch, or a table batch leaving out a waiting gate item.
     #[error("gate items need their own decision")]
     GateRow(Vec<u32>),
+    /// A follower has a live agent claim.
+    #[error("an agent has claimed the effects of follower C{0}")]
+    FollowerClaimed(u32),
     /// The item action does not apply now (nothing to undo, an effect already claimed).
     #[error("the action does not apply to the item now")]
     NotApplicable,
@@ -170,9 +177,8 @@ async fn last_attempt(state: &AppState, id: i64) -> Result<Option<Timestamp>, Db
 }
 
 /// The pull request for a page: read from GitHub first when its last read is older than [`READ_INTERVAL`] (or
-/// always with `force`). Reads use the reader's GitHub token; a read that finds new comments asks for an on-demand
-/// assessment pass. An access-token request is served what is stored and never reads GitHub: a token read leaves
-/// the database unchanged (ADR-019).
+/// always with `force`). Browser reads use the reader's GitHub token without scheduling assessment.
+/// Access-token requests read stored data without updating the database (ADR-019).
 pub async fn ensure_read(
     state: &AppState,
     session: &Session,
@@ -182,24 +188,11 @@ pub async fn ensure_read(
     if session.is_access_token() {
         return find(state, &session.tenant_id, pr).await;
     }
-    let read = read_if_due(state, &session.tenant_id, &session.user_id, pr, force).await?;
-    if let ReadOutcome::Read { new } = read.outcome
-        && new > 0
-        && let Err(error) = assess::request_pass_for(
-            state,
-            read.handle.id,
-            assess::PassReason::NewComments,
-            &session.user_id,
-        )
-        .await
-    {
-        tracing::warn!(
-            ?error,
-            pr = read.handle.id,
-            "assessment pass for new comments could not be requested"
-        );
-    }
-    Ok(read.handle)
+    Ok(
+        read_if_due(state, &session.tenant_id, &session.user_id, pr, force)
+            .await?
+            .handle,
+    )
 }
 
 /// What [`read_if_due`] did.
@@ -232,6 +225,17 @@ pub(crate) async fn read_if_due(
     pr: &PrRef,
     force: bool,
 ) -> Result<Read, LoopError> {
+    read_if_due_with_budget(state, tenant, user, pr, force, None).await
+}
+
+async fn read_if_due_with_budget(
+    state: &AppState,
+    tenant: &str,
+    user: &str,
+    pr: &PrRef,
+    force: bool,
+    budget: Option<ReadBudget<'_>>,
+) -> Result<Read, LoopError> {
     if !rest::is_valid_repo(&pr.repo) || pr.number == 0 {
         return Err(LoopError::NotFound);
     }
@@ -259,7 +263,7 @@ pub(crate) async fn read_if_due(
             return Ok(skipped(handle));
         }
     }
-    read_now(state, tenant, user, pr).await
+    read_now(state, tenant, user, pr, budget).await
 }
 
 fn failure_of(error: &ReadError) -> ReadFailure {
@@ -304,6 +308,7 @@ async fn read_now(
     tenant: &str,
     user: &str,
     pr: &PrRef,
+    budget: Option<ReadBudget<'_>>,
 ) -> Result<Read, LoopError> {
     let token = match user_access_token(state, user).await {
         Ok(token) => token,
@@ -313,8 +318,11 @@ async fn read_now(
         Err(error) => return Err(error.into()),
     };
     let config = &state.config.github;
-    let read = match reads::read(config, &token, pr).await {
+    let read = match reads::read(config, &token, pr, budget).await {
         Ok(read) => read,
+        Err(ReadError::Graphql(GraphqlError::EventBudget(delay))) => {
+            return Err(LoopError::EventBudget(delay));
+        }
         Err(ReadError::NotFound) => return Err(LoopError::NotFound),
         Err(ReadError::Graphql(error)) if error.kind() == Some(GraphqlErrorType::NotFound) => {
             return Err(LoopError::NotFound);
@@ -390,14 +398,14 @@ async fn read_now(
         .settings(tenant, user)
         .await?
         .map_or_else(default_known_bots, |stored| stored.settings.known_bots);
-    let (mut observed, mut snapshot) = observe::observe(&read, &BotRule::new(&known_bots));
+    let bots = BotRule::new(&known_bots);
+    let (mut observed, mut snapshot) = observe::observe(&read, &bots);
     let (mut pr_data, sources) = handin::build(
         &read,
         &format!("{}/{}", summary.repo.owner, summary.repo.name),
         &known_bots,
         state.db.users().member_logins(tenant).await?,
     );
-    pr_data.manifest.delegates = state.config.maintainer_delegates.clone();
     observed.retain(|entry| {
         entry.item.kind == CommentItemKind::Thread
             || entry.item.url.as_ref().is_some_and(|url| {
@@ -432,6 +440,30 @@ async fn read_now(
             .map(str::to_owned)
             .unwrap_or_else(|| raw["id"].to_string());
         let review = source.kind == contracts::api::review_loop::CommentSourceKind::ReviewBody;
+        let comment = if review {
+            None
+        } else {
+            read.comments
+                .iter()
+                .find(|comment| comment.url == source.url)
+        };
+        let (author_kind, status_comment) = if let Some(comment) = comment {
+            bots.pr_comment(comment)
+        } else {
+            let kind = if known_bots
+                .iter()
+                .any(|bot| bot.eq_ignore_ascii_case(&source.author))
+                || source.author.ends_with("[bot]")
+            {
+                AuthorKind::Bot
+            } else {
+                AuthorKind::Human
+            };
+            (kind, false)
+        };
+        if status_comment {
+            pr_data.scope.sources.retain(|url| *url != source.url);
+        }
         observed.push(Observed {
             thread: None,
             item: ObservedItem {
@@ -442,15 +474,8 @@ async fn read_now(
                 },
                 stable_key: format!("{}:{raw_id}:1", if review { "review" } else { "comment" }),
                 author: source.author.clone(),
-                author_kind: if known_bots
-                    .iter()
-                    .any(|b| b.eq_ignore_ascii_case(&source.author))
-                    || source.author.ends_with("[bot]")
-                {
-                    AuthorKind::Bot
-                } else {
-                    AuthorKind::Human
-                },
+                author_kind,
+                status_comment,
                 url: Some(source.url.clone()),
                 location: None,
                 title: markers::title_of(&source.body),
@@ -491,7 +516,9 @@ async fn read_now(
         })
         .map(|item| item.stable_key.as_str())
         .collect();
-    observed.retain(|entry| !zero_keys.contains(entry.item.stable_key.as_str()));
+    observed.retain(|entry| {
+        entry.item.status_comment || !zero_keys.contains(entry.item.stable_key.as_str())
+    });
     snapshot.pr_data = Some(pr_data);
     snapshot.ci = ci;
     snapshot.pending_checks = pending_checks;
@@ -650,7 +677,8 @@ async fn apply(
         // carried from there.
         let raised = before
             .filter(|record| {
-                item.outside.is_none()
+                !item.status_comment
+                    && item.outside.is_none()
                     && !queue::is_open(record.state)
                     && (record.state != ItemState::Outside || record.author_kind != AuthorKind::Bot)
             })
@@ -751,7 +779,11 @@ async fn ask_again(
                 "a decided item whose carried decision no longer fits is asked again"
             );
         }
-        ActionOutcome::ItemChanged | ActionOutcome::NoDecision | ActionOutcome::EffectClaimed => {
+        ActionOutcome::ItemChanged
+        | ActionOutcome::MarkUndone(_)
+        | ActionOutcome::NoDecision
+        | ActionOutcome::EffectClaimed
+        | ActionOutcome::FollowerClaimed(_) => {
             tracing::debug!(
                 item = record.no,
                 "item changed during the read; asking again is left for the next read"
@@ -810,7 +842,13 @@ async fn carry_over(
 ) -> Result<(), LoopError> {
     let rl = state.db.review_loop();
     let source = stored.decision.id;
+    let automatic = matches!(
+        stored.decision.via,
+        DecisionVia::ImportedGithub | DecisionVia::FollowsPrimary
+    );
     let (kind, reason, evidence) = match verdict {
+        // Keep the original provenance when an automatic decision's point is repeated.
+        carry::Verdict::Carry(evidence) if automatic => (CarryKind::Carried, None, evidence),
         carry::Verdict::Carry(evidence) => {
             let request = DecideRequest {
                 kind: stored.decision.kind,
@@ -838,6 +876,7 @@ async fn carry_over(
             };
             let user = rl.decision_user(source).await?;
             let new = NewDecision {
+                origin: None,
                 item: record.id,
                 item_revision: record.revision,
                 user_id: user,
@@ -856,7 +895,7 @@ async fn carry_over(
             };
             match rl.decide(tenant, &[new], Timestamp::now()).await? {
                 DecideOutcome::Stored(_) => state.feed.wake_sync(),
-                DecideOutcome::ItemChanged(_) => {
+                DecideOutcome::ItemChanged(_) | DecideOutcome::FollowerClaimed(_) => {
                     tracing::debug!(
                         item = record.no,
                         "item changed during the read; carry left for the next read"
@@ -868,18 +907,24 @@ async fn carry_over(
         }
         carry::Verdict::Reask(reason, evidence) => (CarryKind::AskedAgain, Some(reason), evidence),
     };
-    rl.record_carry(
-        tenant,
-        &NewCarryEvent {
-            item: record.id,
-            source_decision: source,
-            kind,
-            reason,
-            evidence,
-        },
-        Timestamp::now(),
-    )
-    .await?;
+    let recorded = rl
+        .record_carry(
+            tenant,
+            &NewCarryEvent {
+                item: record.id,
+                source_decision: source,
+                kind,
+                reason,
+                evidence,
+            },
+            automatic.then_some(record.revision),
+            Timestamp::now(),
+        )
+        .await;
+    if automatic && matches!(recorded, Err(DbError::Conflict)) {
+        return Ok(());
+    }
+    recorded?;
     if kind == CarryKind::AskedAgain {
         // The earlier decision's unclaimed effects were cancelled: they leave the feed.
         state.feed.wake_sync();
@@ -1010,6 +1055,7 @@ async fn add_pr_questions(
         stable_key: key,
         author: "diffpilot".to_owned(),
         author_kind: AuthorKind::Diffpilot,
+        status_comment: false,
         url: None,
         location: None,
         title: title.to_owned(),
@@ -1067,8 +1113,7 @@ async fn add_pr_questions(
     Ok(())
 }
 
-/// Bots whose latest review requests changes while every item they raised (not resolved outside) has a standing
-/// decision and is not asked again.
+/// Bot change requests whose remaining review points all have standing decisions.
 fn stale_reviews<'a>(
     snapshot: &'a Snapshot,
     items: &[ItemRecord],
@@ -1081,7 +1126,12 @@ fn stale_reviews<'a>(
             let raised: Vec<&ItemRecord> = items
                 .iter()
                 .filter(|item| item.author.eq_ignore_ascii_case(&request.login))
-                .filter(|item| item.state != ItemState::Outside && item.gone_at.is_none())
+                .filter(|item| {
+                    item.state != ItemState::Outside
+                        && item.gone_at.is_none()
+                        && !item.status_comment
+                        && item.active_mark.is_none()
+                })
                 .collect();
             !raised.is_empty()
                 && raised.iter().all(|item| {
@@ -1116,6 +1166,7 @@ pub(crate) struct Loaded {
     pub(crate) row: db::repo::review_loop::CommentPrRecord,
     pub(crate) snapshot: Option<Snapshot>,
     pub(crate) items: Vec<ItemRecord>,
+    item_numbers: HashMap<contracts::ids::CommentItemId, u32>,
     pub(crate) decisions: Vec<StoredDecision>,
     pub(crate) assessments: BTreeMap<u32, StoredAssessment>,
 }
@@ -1123,12 +1174,12 @@ pub(crate) struct Loaded {
 impl Loaded {
     pub(crate) async fn of(state: &AppState, handle: PrHandle) -> Result<Self, LoopError> {
         let view = state.db.review_loop().pr_view(handle.id).await?;
-        Self::from_view(handle, view)
+        Self::from_view(handle, view).ok_or(LoopError::NotFound)
     }
 
     /// The pull request as `view` read it.
-    fn from_view(handle: PrHandle, view: PrView) -> Result<Self, LoopError> {
-        let row = view.row.ok_or(LoopError::NotFound)?;
+    fn from_view(handle: PrHandle, view: PrView) -> Option<Self> {
+        let row = view.row?;
         let snapshot = row
             .github_snapshot
             .clone()
@@ -1142,12 +1193,13 @@ impl Loaded {
                 numbers.get(&item).map(|no| (*no, stored))
             })
             .collect();
-        Ok(Self {
+        Some(Self {
             decisions: view.decisions,
             handle,
             row,
             snapshot,
             items: view.items,
+            item_numbers: numbers,
             assessments,
         })
     }
@@ -1165,6 +1217,10 @@ impl Loaded {
             .iter()
             .find(|item| item.no == no)
             .ok_or(LoopError::NotFound)
+    }
+
+    fn number_of(&self, id: contracts::ids::CommentItemId) -> Option<u32> {
+        self.item_numbers.get(&id).copied()
     }
 
     pub(crate) fn standing(&self) -> HashMap<String, &StoredDecision> {
@@ -1203,7 +1259,9 @@ impl Loaded {
         self.items
             .iter()
             // An item the read no longer produces waits for nobody (plan §2.1).
-            .filter(|record| record.gone_at.is_none())
+            .filter(|record| {
+                record.gone_at.is_none() && !record.status_comment && record.active_mark.is_none()
+            })
             .map(|record| queue::QueueItem {
                 no: record.no,
                 state: record.state,
@@ -1330,16 +1388,36 @@ impl Loaded {
     }
 
     /// Plans the effects of `rows` (validated against their items).
-    pub(crate) fn plan(
+    pub(crate) fn plan<K: Copy + Into<DecisionKind>>(
         &self,
-        rows: &[DecisionBatchRow],
+        rows: &[DecisionBatchRow<K>],
     ) -> Result<Vec<(&ItemRecord, effects::Planned)>, LoopError> {
         let deciding: Vec<u32> = rows.iter().map(|row| row.item_no).collect();
         let scope = self.scope(&deciding)?;
         rows.iter()
             .map(|row| {
                 let record = self.item(row.item_no)?;
-                let dismissing = row.decision.kind == DecisionKind::DismissStaleReviews
+                let kind = row.decision.kind.into();
+                if kind == DecisionKind::NotAReviewPoint {
+                    if record.revision != row.decision.item_revision {
+                        return Err(LoopError::ItemChanged(vec![record.no]));
+                    }
+                    if record.kind == CommentItemKind::PrQuestion
+                        || record.status_comment
+                        || record.active_mark.is_some()
+                        || !matches!(
+                            record.state,
+                            ItemState::Undecided | ItemState::Reopened | ItemState::AskedBack
+                        )
+                        || record.gone_at.is_some()
+                    {
+                        return Err(LoopError::Decision {
+                            no: record.no,
+                            error: DecisionError::KindNotOffered,
+                        });
+                    }
+                }
+                let dismissing = kind == DecisionKind::DismissStaleReviews
                     && matches!(question_of(record), Some((PrQuestion::Dismiss, _)));
                 let listed;
                 let scope = if dismissing {
@@ -1377,16 +1455,26 @@ pub async fn decide(
         .db
         .review_loop()
         .decide_planned(&session.tenant_id, pr, Timestamp::now(), |view| {
-            Loaded::from_view(handle, view)?.new_decisions(&session.user_id, rows, via)
+            let loaded = Loaded::from_view(handle, view).ok_or(LoopError::NotFound)?;
+            let mut decisions = loaded.new_decisions(&session.user_id, rows, via)?;
+            loaded.append_propagated(&mut decisions, false);
+            Ok::<_, LoopError>(decisions)
         })
         .await?;
     match outcome {
         DecideOutcome::Stored(stored) => {
-            tracing::info!(pr, count = stored.len(), ?via, "decisions stored");
-            state.feed.wake_sync();
-            Ok(stored)
+            let real = stored
+                .iter()
+                .filter(|d| d.kind != DecisionKind::NotAReviewPoint)
+                .count();
+            if real != 0 {
+                tracing::info!(pr, count = real, ?via, "decisions stored");
+                state.feed.wake_sync();
+            }
+            Ok(stored.into_iter().take(rows.len()).collect())
         }
         DecideOutcome::ItemChanged(nos) => Err(LoopError::ItemChanged(nos)),
+        DecideOutcome::FollowerClaimed(no) => Err(LoopError::FollowerClaimed(no)),
     }
 }
 
@@ -1401,6 +1489,12 @@ impl Loaded {
         let mut seen = Vec::new();
         for row in rows {
             if seen.contains(&row.item_no) {
+                return Err(LoopError::Decision {
+                    no: row.item_no,
+                    error: DecisionError::KindNotOffered,
+                });
+            }
+            if row.decision.kind == DecisionKind::NotAReviewPoint && via == DecisionVia::Bulk {
                 return Err(LoopError::Decision {
                     no: row.item_no,
                     error: DecisionError::KindNotOffered,
@@ -1431,11 +1525,26 @@ impl Loaded {
         {
             return Err(LoopError::Decision { no, error });
         }
+        if rows.len() > 1 {
+            let gated_marks: Vec<_> = rows
+                .iter()
+                .filter(|row| {
+                    row.decision.kind == DecisionKind::NotAReviewPoint
+                        && gated.contains(&row.item_no)
+                })
+                .map(|row| row.item_no)
+                .collect();
+            if !gated_marks.is_empty() {
+                return Err(LoopError::GateRow(gated_marks));
+            }
+        }
+        let single_gate_mark = matches!(rows, [row]
+            if row.decision.kind == DecisionKind::NotAReviewPoint && gated.contains(&row.item_no));
         match via {
             DecisionVia::Group | DecisionVia::Bulk if !gated.is_empty() => {
                 return Err(LoopError::GateRow(gated));
             }
-            DecisionVia::Table => {
+            DecisionVia::Table if !single_gate_mark => {
                 let queue_items = self.queue_items(&[]);
                 let missing: Vec<u32> = queue::waiting(&queue_items)
                     .into_iter()
@@ -1465,6 +1574,7 @@ impl Loaded {
             .iter()
             .zip(planned)
             .map(|(row, (record, planned))| NewDecision {
+                origin: None,
                 item: record.id,
                 item_revision: row.decision.item_revision,
                 user_id: user.to_owned(),
@@ -1552,8 +1662,10 @@ pub async fn act(
             state.feed.wake_sync();
             Ok(*record)
         }
+        ActionOutcome::MarkUndone(record) => Ok(*record),
         ActionOutcome::ItemChanged => Err(LoopError::ItemChanged(vec![no])),
         ActionOutcome::NoDecision | ActionOutcome::EffectClaimed => Err(LoopError::NotApplicable),
+        ActionOutcome::FollowerClaimed(no) => Err(LoopError::FollowerClaimed(no)),
     }
 }
 
@@ -1587,6 +1699,7 @@ pub async fn skip(
 /// The owner marks (or clears his mark of) a gate.
 pub async fn mark_gate(
     state: &AppState,
+    session: &Session,
     handle: &PrHandle,
     no: u32,
     gate: Gate,
@@ -1614,10 +1727,19 @@ pub async fn mark_gate(
         });
     }
     match rl
-        .set_gates(record.id, revision, &gates, Timestamp::now())
+        .set_gates(
+            (&session.tenant_id, &session.user_id),
+            record.id,
+            revision,
+            &gates,
+            Timestamp::now(),
+        )
         .await
     {
-        Ok(record) => {
+        Ok(updated) => {
+            if updated.state == ItemState::Reopened && record.state != ItemState::Reopened {
+                state.feed.wake_sync();
+            }
             tracing::info!(
                 pr = handle.id,
                 item = no,
@@ -1625,7 +1747,7 @@ pub async fn mark_gate(
                 marked,
                 "gate mark changed by the owner"
             );
-            Ok(record)
+            Ok(updated)
         }
         Err(DbError::Conflict) => Err(LoopError::ItemChanged(vec![no])),
         Err(error) => Err(error.into()),

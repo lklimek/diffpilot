@@ -294,11 +294,6 @@ async fn a_change_signal_rereads_only_the_changed_pull_requests_with_the_details
     assert_eq!(lookups, 2);
     let summary = w.summary(ALICE).await;
     assert_ne!(summary.revision, revision, "a re-read changes the revision");
-    assert_eq!(
-        summary.snapshot.expect("snapshot").facts_checked_at,
-        None,
-        "a signalled re-read is no check of every listed pull request (plan §M)"
-    );
 
     let none = HashSet::from([PrKey::new(
         &RepoRef {
@@ -542,12 +537,49 @@ async fn a_personal_access_token_read_does_not_mark_its_user_active() {
         w.state.plugins.active_users().is_empty(),
         "a token read is not a user in the session"
     );
-    assert!(
-        w.state
-            .dashboard
-            .readers()
-            .open(w.state.dashboard.now())
-            .is_empty(),
-        "a token read does not open My work (plan §M)"
+}
+
+#[tokio::test]
+async fn concurrent_targeted_rereads_keep_both_updates() {
+    let w = world().await;
+    w.refreshed().await;
+    let (id, mut snapshot) = stored(&w).await;
+    let a = pr_mut(&mut snapshot, "acme/wallet-ui", 320);
+    a.facts.title = "stale A".into();
+    pr_mut(&mut snapshot, "acme/node-client", 476).facts.title = "stale B".into();
+    write(&w, id, &snapshot).await;
+    w.gate.close();
+    let state = w.state.clone();
+    let first = tokio::spawn(async move {
+        reread(
+            &state,
+            &alice(),
+            &HashSet::from([PrKey::new(&repo("acme", "wallet-ui"), 320)]),
+        )
+        .await
+    });
+    w.gate.held().await;
+    let state = w.state.clone();
+    let second = tokio::spawn(async move {
+        reread(
+            &state,
+            &alice(),
+            &HashSet::from([PrKey::new(&repo("acme", "node-client"), 476)]),
+        )
+        .await
+    });
+    // A serialised reader waits for the first; an unguarded reader reaches GitHub with a stale snapshot.
+    let _ = tokio::time::timeout(Duration::from_millis(100), w.gate.held()).await;
+    w.gate.open();
+    first.await.expect("first task").expect("reread");
+    second.await.expect("plugin task").expect("reread");
+    let (_, mut after) = stored(&w).await;
+    assert_ne!(
+        pr_mut(&mut after, "acme/wallet-ui", 320).facts.title,
+        "stale A"
+    );
+    assert_ne!(
+        pr_mut(&mut after, "acme/node-client", 476).facts.title,
+        "stale B"
     );
 }

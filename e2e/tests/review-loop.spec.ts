@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
-import { checkScreen, PR_PAGE_PATH, signIn } from "../support/app";
+import { checkScreen, PR_PAGE_PATH, signIn, sql } from "../support/app";
 import { expect, test } from "../support/fixtures";
 
 test.use({ reviewLoop: true });
@@ -88,35 +88,54 @@ test("PR page → Comments → the LLM assessment arrives → a decision stores 
       previews.push(response.json());
   });
 
-  // Opening the PR page reads the PR's threads, reviews and comments from GitHub and queues the assessment.
+  // The PR page reads GitHub; opening Comments starts the assessment.
   await page.goto(PR_PAGE_PATH);
   const card = page.getByRole("region", { name: "Process PR comments" });
   await expect(card.getByRole("term")).toHaveText([
     "Unresolved threads on GitHub",
-    "Questions for you",
+    "Needs you",
     "Waiting for agents",
     "LLM assessment",
     "Round",
   ]);
-  // D3 includes three extra prose sources; gate and CI status comments are ignored.
+  // The assessment excludes the bot's status comment and the gate and CI statements.
   await expect(card.getByRole("definition")).toHaveText([
     /^6 read \d\d:\d\d/,
-    "13",
+    "1",
     "0 decisions",
-    "LLM assessment running: 0 of 12 comments",
+    "0 of 11 comments assessed",
     "3 (thepastaclaw)",
   ]);
-  await expect(page.getByRole("region", { name: "Review a PR" })).toContainText("No analysis yet.");
+  await expect(page.getByRole("region", { name: "Review the code" })).toContainText("No analysis yet.");
   await checkScreen(page);
+  expect(sql(stack, "SELECT COUNT(*) FROM assessment_passes")).toEqual(["0"]);
 
+  const assessment = page.waitForResponse(
+    (response) => response.request().method() === "POST" && response.url().endsWith(`${API}/comments/assess`),
+  );
   await card.getByRole("link", { name: "Open Comments →" }).click();
+  expect((await assessment).status()).toBe(202);
   await expect(page).toHaveURL(new RegExp(`${COMMENTS_PATH}$`));
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Comments of acme/node-client #482");
-  const question = page.getByRole("article", { name: `${ITEM} · ${ITEM_TITLE}` });
-  await expect(question).toBeVisible();
+  const heading = page.getByRole("heading", {
+    level: 1,
+    name: /^acme\/node-client #482 feat\(rpc\): retry with backoff on timeout\b/,
+  });
+  await expect(heading).toBeVisible();
+  await expect(
+    heading.getByRole("link", { name: "Open acme/node-client #482 on GitHub (new tab)" }),
+  ).toHaveAttribute("href", "https://github.com/acme/node-client/pull/482");
+  const queue = page.getByRole("navigation", { name: "Queue" });
+  const queueStatus = queue.getByRole("button", { name: /^Status: / });
+  await queueStatus.click();
+  await queue.getByRole("menuitemradio", { name: /^All · / }).click();
+  await queue.getByRole("button", { name: new RegExp(`^${ITEM} ${ITEM_TITLE}`) }).click();
+  const questionTitle = `${ITEM} · ${ITEM_TITLE}`;
+  await expect(page.getByRole("heading", { name: questionTitle, exact: true })).toBeVisible();
   await checkScreen(page);
 
   // The assessment lands on the open question: the recommendation and the queue's mark.
+  const question = page.getByRole("article", { name: new RegExp(`^${ITEM} · `) });
+  await expect(question).toBeVisible({ timeout: 60_000 });
   await question.getByRole("button", { name: "LLM assessment", exact: true }).click();
   await expect(question).toContainText("Recommendation: Fix here — Fake recommendation for tests.", {
     timeout: 60_000,
@@ -128,9 +147,12 @@ test("PR page → Comments → the LLM assessment arrives → a decision stores 
   await expect(question.getByRole("region", { name: "LLM assessment" })).toContainText(
     "partly valid at the PR head",
   );
-  const queue = page.getByRole("navigation", { name: "Queue" });
+  await queueStatus.click();
+  await expect(queue.getByRole("menuitemradio", { name: "Status comments · 1", exact: true })).toBeVisible();
+  // Needs you includes the eleven assessed comments and the separate PR-level merge question.
+  await queue.getByRole("menuitemradio", { name: "Needs you · 12", exact: true }).click();
   await expect(
-    queue.getByRole("button", { name: new RegExp(`^${ITEM} ${ITEM_TITLE} .*LLM recommends Fix here$`) }),
+    queue.getByRole("button", { name: new RegExp(`^${ITEM} .*LLM recommends Fix here$`) }),
   ).toBeVisible();
   await checkScreen(page);
 
@@ -164,7 +186,7 @@ test("PR page → Comments → the LLM assessment arrives → a decision stores 
   );
   await form.getByRole("button", { name: "Decide" }).click();
   expect((await decided).status()).toBe(201);
-  await expect(page.getByRole("article", { name: `${ITEM} · ${ITEM_TITLE}` })).toHaveCount(0);
+  await expect(question).toHaveCount(0);
   await checkScreen(page);
 
   const [stored] = await decisionLog(page);

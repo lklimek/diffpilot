@@ -1,15 +1,15 @@
 //! Alias-batched GraphQL lookups: pull request details (Q2), issue milestones (Q9), history details (Q13) and the
 //! reach diagnostic (Q15).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
-use contracts::api::dashboard::ScanNote;
+use contracts::api::dashboard::{ScanNote, Stack, StackPosition};
 use contracts::common::RepoRef;
 use contracts::time::Timestamp;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::batch::{MAX_PR_BATCH, PR_BATCH, literal};
+use super::batch::{PR_BATCH, literal, query};
 use super::client::{TokenSource, WorkClient, WorkError};
 use super::{Fetched, ItemRef, Milestone, note, repo_name, timestamp};
 
@@ -23,7 +23,10 @@ const REACH_BATCH: usize = 50;
 const PULL_FRAGMENT: &str = " fragment Pull on PullRequest { number title url state isDraft \
 isCrossRepository body additions deletions createdAt updatedAt mergeable mergeStateStatus reviewDecision \
 baseRefName baseRefOid headRefName headRefOid milestone { title number state } \
-baseRepository { nameWithOwner isPrivate viewerPermission defaultBranchRef { name } } author { __typename login } \
+stackEntry { position stack { id baseRefName size entries(first: 100) { pageInfo { hasNextPage endCursor } \
+nodes { position pullRequest { number state } } } } } \
+baseRepository { nameWithOwner isPrivate viewerPermission defaultBranchRef { name } } \
+headRepository { nameWithOwner } author { __typename login } \
 labels(first: 20) { nodes { name } } participants { totalCount } \
 closingIssuesReferences(first: 5) { nodes { number title labels(first: 10) { nodes { name } } } } \
 assignees(first: 10) { nodes { login } } \
@@ -35,18 +38,6 @@ reviewThreads(first: 100) { nodes { isResolved isOutdated \
 comments(first: 5) { nodes { author { __typename login } body createdAt } } } } \
 timelineItems(last: 50, itemTypes: [REVIEW_REQUESTED_EVENT]) { nodes { ... on ReviewRequestedEvent { \
 createdAt requestedReviewer { __typename ... on User { login } ... on Bot { login } } } } } \
-commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 100) { \
-pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion startedAt \
-checkSuite { workflowRun { workflow { name } } } } ... on StatusContext { context state createdAt } } } } } } } }";
-
-/// Pull requests per change probe (Q18): 25 answered in about 4 s for 2 points, 100 in one query failed with HTTP 502
-/// (`dashpay/platform`, 2026-11-23).
-pub const PROBE_BATCH: usize = MAX_PR_BATCH;
-
-/// The selection of Q18: what moves a pull request's change mark (plan §M), the same fields as in Q2.
-const PROBE_FRAGMENT: &str = " fragment Probe on PullRequest { state updatedAt headRefOid mergeable \
-mergeStateStatus reviewDecision isDraft labels(first: 20) { nodes { name } } \
-reviewRequests(first: 20) { totalCount } reviewThreads(first: 100) { nodes { isResolved } } \
 commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 100) { \
 pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion startedAt \
 checkSuite { workflowRun { workflow { name } } } } ... on StatusContext { context state createdAt } } } } } } } }";
@@ -299,6 +290,31 @@ fn workflow_name<'de, De: serde::Deserializer<'de>>(
         .map(str::to_owned))
 }
 
+/// A pull request's head repository.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeadRepository {
+    /// Repository owner and name.
+    pub name_with_owner: String,
+}
+
+/// Current facts of an issue.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct IssueDetail {
+    pub(crate) state: String,
+    pub(crate) title: String,
+    pub(crate) body: String,
+    pub(crate) author: Option<Actor>,
+    pub(crate) labels: Nodes<Name>,
+    pub(crate) milestone: Option<Milestone>,
+    pub(crate) created_at: Timestamp,
+    pub(crate) updated_at: Timestamp,
+    pub(crate) comments: Count,
+    #[serde(skip)]
+    pub(crate) private: Option<bool>,
+}
+
 /// Details of one open pull request (Q2).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -341,10 +357,14 @@ pub struct PullDetail {
     /// Base commit.
     #[serde(default)]
     pub base_ref_oid: Option<String>,
+    stack_entry: Option<PullStackEntry>,
     /// Milestone.
     pub milestone: Option<Milestone>,
     /// Base repository.
     pub base_repository: Option<PullRepository>,
+    /// Head repository, absent if the fork was deleted.
+    #[serde(default)]
+    pub head_repository: Option<HeadRepository>,
     /// Author (null for a deleted account).
     pub author: Option<Actor>,
     /// Labels (first 20).
@@ -369,64 +389,93 @@ pub struct PullDetail {
     pub commits: Nodes<CommitNode>,
 }
 
-/// A pull request's change probe (Q18): the fields of its change mark (plan §M).
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+struct PullStackEntry {
+    position: u32,
+    stack: Option<PullStack>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PullProbe {
-    /// `OPEN`, `CLOSED`, `MERGED`.
-    pub state: String,
-    /// Last update.
-    pub updated_at: Timestamp,
-    /// Head commit.
-    pub head_ref_oid: String,
-    /// `MERGEABLE`, `CONFLICTING`, `UNKNOWN`.
-    pub mergeable: String,
-    /// `CLEAN`, `BLOCKED`, `BEHIND`, …
-    pub merge_state_status: String,
-    /// `APPROVED`, `CHANGES_REQUESTED`, `REVIEW_REQUIRED` or null.
-    pub review_decision: Option<String>,
-    /// Draft.
-    pub is_draft: bool,
-    /// Labels (first 20).
-    pub labels: Nodes<Name>,
-    /// Pending review requests.
-    pub review_requests: Count,
-    /// Review threads (first 100).
-    pub review_threads: Nodes<Resolved>,
-    /// The head commit's CI rollup and contexts.
-    pub commits: Nodes<ProbeCommit>,
+struct PullStack {
+    id: String,
+    base_ref_name: String,
+    size: u32,
+    entries: StackEntries,
 }
 
-/// A review thread's `isResolved`.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Resolved {
-    /// Resolved.
-    pub is_resolved: bool,
+struct StackEntries {
+    nodes: Option<Vec<Option<StackMember>>>,
+    page_info: Option<StackPageInfo>,
 }
 
-/// The last commit's CI rollup and contexts.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-pub struct ProbeCommit {
-    /// The commit.
-    pub commit: ProbeRollup,
+impl StackEntries {
+    fn next_cursor(&self) -> Option<&str> {
+        let info = self.page_info.as_ref().filter(|page| page.has_next_page)?;
+        info.end_cursor.as_deref()
+    }
 }
 
-/// A commit's CI rollup and contexts.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ProbeRollup {
-    /// Null without any check or status.
-    pub status_check_rollup: Option<RollupState>,
+struct StackPageInfo {
+    has_next_page: bool,
+    end_cursor: Option<String>,
 }
 
-/// The rollup inputs of the change mark, like Q2.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-pub struct RollupState {
-    /// `SUCCESS`, `FAILURE`, `PENDING`, `ERROR`, `EXPECTED`.
-    pub state: String,
-    /// Context states and recency used by effective CI (K12), like Q2.
-    pub contexts: Contexts,
+#[serde(rename_all = "camelCase")]
+struct StackMember {
+    position: u32,
+    pull_request: Option<StackPull>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+struct StackPull {
+    number: u32,
+    state: String,
+}
+
+impl PullDetail {
+    /// The GitHub-native stack and its open layers above this pull request.
+    pub(crate) fn stack(&self) -> Option<Stack> {
+        let entry = self.stack_entry.as_ref()?;
+        let stack = entry.stack.as_ref()?;
+        if stack.size < 2 || entry.position == 0 || entry.position > stack.size {
+            return None;
+        }
+        let mut dependents: Vec<_> = stack
+            .entries
+            .nodes
+            .iter()
+            .flatten()
+            .flatten()
+            .filter(|member| member.position > entry.position)
+            .filter_map(|member| {
+                member
+                    .pull_request
+                    .as_ref()
+                    .filter(|pr| pr.state == "OPEN")
+                    .map(|pr| (member.position, pr.number))
+            })
+            .collect();
+        dependents.sort_unstable();
+        let position = if dependents.is_empty() {
+            StackPosition::Top
+        } else if self.base_ref_name == stack.base_ref_name {
+            // GitHub retargets the next open layer to the stack's base when the bottom merges.
+            StackPosition::Bottom
+        } else {
+            StackPosition::Middle
+        };
+        Some(Stack {
+            position,
+            size: stack.size,
+            dependents: dependents.into_iter().map(|(_, number)| number).collect(),
+        })
+    }
 }
 
 /// History facts of one pull request (Q13).
@@ -498,7 +547,14 @@ impl<T: TokenSource> WorkClient<T> {
         let mut fetched = Fetched::default();
         for (pr, value) in answers.resolved {
             match serde_json::from_value::<Option<PullDetail>>(value["pullRequest"].clone()) {
-                Ok(Some(detail)) => {
+                Ok(Some(mut detail)) => {
+                    if let Some(stack) = detail
+                        .stack_entry
+                        .as_mut()
+                        .and_then(|entry| entry.stack.as_mut())
+                    {
+                        self.read_remaining_stack_entries(&pr, stack).await?;
+                    }
                     fetched.found.insert(pr, detail);
                 }
                 Ok(None) => fetched.notes.push(left_out(&pr, "Details", false)),
@@ -514,33 +570,57 @@ impl<T: TokenSource> WorkClient<T> {
         Ok(fetched)
     }
 
-    /// Change probes of pull requests (Q18), [`PROBE_BATCH`] per query. A pull request GitHub does not resolve, or
-    /// whose batch fails, is absent.
-    pub async fn pr_probes(
+    async fn read_remaining_stack_entries(
         &self,
-        pulls: &[ItemRef],
-    ) -> Result<BTreeMap<ItemRef, PullProbe>, WorkError> {
-        let answers = self
-            .batched(pulls, PROBE_BATCH, PROBE_FRAGMENT, |pr| {
-                repository(
-                    &pr.repo,
-                    &format!("pullRequest(number: {}) {{ ...Probe }}", pr.number),
-                )
-            })
-            .await?;
-        Ok(answers
-            .resolved
-            .into_iter()
-            .filter_map(|(pr, value)| {
-                match serde_json::from_value::<Option<PullProbe>>(value["pullRequest"].clone()) {
-                    Ok(probe) => Some((pr, probe?)),
-                    Err(error) => {
-                        tracing::debug!(%pr, %error, "GitHub pull request probe did not parse");
-                        None
-                    }
+        pr: &ItemRef,
+        stack: &mut PullStack,
+    ) -> Result<(), WorkError> {
+        let mut cursors = HashSet::new();
+        while let Some(cursor) = stack.entries.next_cursor() {
+            if !cursors.insert(cursor.to_owned()) {
+                break;
+            }
+            let lookup = repository(
+                &pr.repo,
+                &format!(
+                    "pullRequest(number: {}) {{ stackEntry {{ stack {{ id entries(first: 100, after: {}) {{ \
+                     pageInfo {{ hasNextPage endCursor }} nodes {{ position pullRequest {{ number state }} }} \
+                     }} }} }} }}",
+                    pr.number,
+                    literal(cursor)
+                ),
+            );
+            let data = match self.graphql(&query("", &[lookup])).await {
+                Ok(data) => data,
+                Err(error) if error.ends_refresh() => return Err(error),
+                Err(error) => {
+                    tracing::debug!(%pr, ?error, "could not read the next GitHub stack page");
+                    break;
                 }
-            })
-            .collect())
+            };
+            let page =
+                &data.get("a0").unwrap_or(&Value::Null)["pullRequest"]["stackEntry"]["stack"];
+            if page["id"].as_str() != Some(stack.id.as_str()) {
+                break;
+            }
+            let Ok(StackEntries {
+                nodes: Some(nodes),
+                page_info,
+            }) = serde_json::from_value(page["entries"].clone())
+            else {
+                break;
+            };
+            if nodes.is_empty() {
+                break;
+            }
+            let members = stack.entries.nodes.get_or_insert_default();
+            members.extend(nodes);
+            if members.len() >= stack.size as usize {
+                break;
+            }
+            stack.entries.page_info = page_info;
+        }
+        Ok(())
     }
 
     /// `mergeStateStatus` of open pull requests, read again (Q17), ten per query. A pull request GitHub does not
@@ -564,6 +644,47 @@ impl<T: TokenSource> WorkClient<T> {
                 Some((pr, state))
             })
             .collect())
+    }
+
+    /// Issue facts, with a null issue in a visible repository treated as absent.
+    pub(crate) async fn issues(
+        &self,
+        issues: &[ItemRef],
+    ) -> Result<Fetched<Option<IssueDetail>>, WorkError> {
+        let answers = self
+            .batched(issues, PR_BATCH, "", |issue| {
+                repository(
+                    &issue.repo,
+                    &format!(
+                        "isPrivate issue(number: {}) {{ state title body
+                 author {{ login }} labels(first: 20) {{ nodes {{ name }} }}
+                 comments {{ totalCount }}
+                 milestone {{ title number state }} createdAt updatedAt }}",
+                        issue.number
+                    ),
+                )
+            })
+            .await?;
+        let mut fetched = Fetched::default();
+        for (issue, value) in answers.resolved {
+            match value
+                .get("issue")
+                .cloned()
+                .map(serde_json::from_value::<Option<IssueDetail>>)
+            {
+                Some(Ok(mut detail)) => {
+                    if let Some(detail) = &mut detail {
+                        detail.private = value["isPrivate"].as_bool();
+                    }
+                    fetched.found.insert(issue, detail);
+                }
+                _ => fetched.notes.push(left_out(&issue, "Details", true)),
+            }
+        }
+        for issue in answers.failed {
+            fetched.notes.push(left_out(&issue, "Details", true));
+        }
+        Ok(fetched)
     }
 
     /// Milestones of issues (Q9), fifty per query; `None` for an issue without one.

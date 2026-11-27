@@ -1,4 +1,4 @@
-import { test } from "./fixtures";
+import { expect, test } from "./fixtures";
 import { openTour } from "./support";
 
 // Light and dark screenshots of the three blocks for the visual comparison with docs/mockups (plan §12.5).
@@ -17,11 +17,17 @@ for (const colorScheme of ["light", "dark"] as const) {
       const shot = (name: string) => page.screenshot({ path: `${dir}/${name}-${colorScheme}-${width}.png` });
       await shot("pr-context");
       await page.keyboard.press("j");
+      await expect(
+        page.getByRole("heading", { level: 2, name: "1 Send an RPC request with retry" }),
+      ).toBeVisible();
       await shot("flow-intro");
       await page.keyboard.press("j");
       await page.getByRole("region", { name: /lines 126 to 132/ }).waitFor();
       await shot("step1");
-      await page.getByRole("navigation").getByRole("button", { name: "Step 5: Retry allowed?" }).click();
+      await page
+        .getByRole("navigation", { name: "Flows and steps" })
+        .getByRole("button", { name: "Step 5: Retry allowed?" })
+        .click();
       await page.getByRole("region", { name: /lines 99 to 99/ }).waitFor();
       await shot("step5");
       await page.close();

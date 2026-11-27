@@ -4,6 +4,13 @@
   "description": "Query of RC4.",
   "type": "object",
   "properties": {
+    "imported_unseen": {
+      "description": "Limit the list to items with an import since the entry preceding this visit.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
     "state": {
       "description": "Only items in this state.",
       "anyOf": [

@@ -48,14 +48,28 @@ async function recordNotifications(page: Page, { optedIn, focused }: { optedIn: 
 
 test("Settings: turning the opt-in on asks the browser and is kept in this browser", async ({ page }) => {
   await recordNotifications(page, { optedIn: false, focused: true });
-  await page.goto("/settings");
-  const box = page.getByRole("checkbox", { name: "Notify me when work finishes" });
-  await expect(box).not.toBeChecked();
-  await box.check();
-  await expect(box).toBeChecked();
+  await page.goto("/settings#notifications");
+  await expect(page).toHaveURL(/\/settings\/review-loop#notifications$/);
+  const browser = page.getByRole("region", { name: "Browser" });
+  await browser.getByRole("button", { name: "Enable browser notifications" }).click();
+  await expect(browser.getByRole("status")).toHaveText("✓ Allowed in this browser");
   expect(await page.evaluate(() => sessionStorage.getItem("test-permission"))).toBe("granted");
   await page.reload();
-  await expect(page.getByRole("checkbox", { name: "Notify me when work finishes" })).toBeChecked();
+  await browser.getByRole("button", { name: "Turn off" }).click();
+  await expect(browser.getByRole("status")).toHaveText("Allowed by the browser, off for diffpilot");
+  await page.evaluate(() => sessionStorage.setItem("test-permission", "denied"));
+  await page.reload();
+  await expect(browser.getByRole("status")).toContainText("Blocked by the browser for this site.");
+  const checkAgain = browser.getByRole("button", { name: "Check again" });
+  // Expose the new permission during the click so an unrelated render cannot hide the button first.
+  await checkAgain.evaluate((button) => {
+    button.addEventListener("click", () => sessionStorage.setItem("test-permission", "granted"), {
+      capture: true,
+      once: true,
+    });
+  });
+  await checkAgain.click();
+  await expect(browser.getByRole("status")).toHaveText("Allowed by the browser, off for diffpilot");
 });
 
 test("a tab in the background notifies of an analysed flow and an Ask answer; a click opens it", async ({
@@ -122,4 +136,22 @@ test("in the Files view an Ask answer notifies too; a click opens its lines ther
     .click();
   await page.evaluate(() => window.__notifications.at(-1)!.onclick!(new Event("click")));
   await expect(page).toHaveURL(/\/files#lines\?file=src%2Frpc%2Fclient\.rs&side=head&line=98&end=101$/);
+});
+
+test("a review-loop notification opens the PR page without starting an assessment", async ({ page }) => {
+  await recordNotifications(page, { optedIn: true, focused: false });
+  const assessments: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().endsWith("/comments/assess")) {
+      assessments.push(request.url());
+    }
+  });
+  await page.goto("/prs?scenario=review-loop-notification");
+  await expect
+    .poll(() => page.evaluate(() => window.__notifications.map((n) => n.options.body)))
+    .toContain("acme/node-client #482: 3 questions ready");
+  await page.evaluate(() => window.__notifications[0]!.onclick!(new Event("click")));
+  await expect(page.getByRole("link", { name: /^Open Comments/ })).toBeVisible();
+  await expect(page).toHaveURL("/pr/acme/node-client/482");
+  expect(assessments).toHaveLength(0);
 });

@@ -56,6 +56,10 @@ test("keyboard: focus shows the popup, Escape closes it", async ({ page }) => {
   await open(page);
   await code(page).getByRole("button", { name: "Comment on line 89" }).focus();
   await page.keyboard.press("Tab");
+  await expect(
+    code(page).getByRole("link", { name: "Open line 89 of src/rpc/client.rs on GitHub, new tab" }),
+  ).toBeFocused();
+  await page.keyboard.press("Tab");
   await expect(icon(page)).toBeFocused();
   await expect(popup(page)).toBeVisible();
   await page.keyboard.press("Escape");

@@ -44,10 +44,36 @@ describe("chatGeometry (proposal AC2, AC14)", () => {
     });
   });
 
+  it("clamps a moved window and keeps its horizontal position in full height", () => {
+    const view = { width: 800, height: 600 };
+    const moved = { ...size, position: { right: 100, bottom: -200 } };
+    expect(chatGeometry(view, null, null, null, moved)).toMatchObject({ right: 100, bottom: 8 });
+    expect(chatGeometry(view, null, null, null, { ...moved, full: true })).toMatchObject({
+      right: 100,
+      height: 584,
+    });
+    expect(chatGeometry(view, null, null, null, { ...moved, position: "top-left" })).toMatchObject({
+      right: 332,
+      bottom: 154,
+    });
+  });
+
+  it("keeps a preset's resize edges when it reaches the opposite viewport limit", () => {
+    const view = { width: 1600, height: 900 };
+    expect(chatGeometry(view, ws, null, null, { ...size, position: "top-right", width: 5000 })).toMatchObject(
+      { resizeFromRight: false, resizeFromBottom: true },
+    );
+    expect(
+      chatGeometry(view, ws, null, null, { ...size, position: "bottom-left", full: true }),
+    ).toMatchObject({ resizeFromRight: true, resizeFromBottom: false });
+  });
+
   it("is a full-width bottom sheet in a narrow window", () => {
-    expect(chatGeometry({ width: 1000, height: 800 }, ws, null, null, size)).toMatchObject({
+    expect(chatGeometry({ width: 390, height: 800 }, ws, null, null, size)).toMatchObject({
       narrow: true,
-      width: 984,
+      width: 390,
+      bottom: 0,
+      height: 400,
     });
   });
 });

@@ -21,8 +21,8 @@ function Steps({ pr, origin }: { pr: PrRef; origin: string }) {
     <>
       <p className="m-0">
         Decided effects wait until an agent claims their decision. An agent needs an access token with the{" "}
-        <b>review_loop_execute</b> scope (its checkbox in Settings › Access tokens). In a checkout of this
-        repository, start a Claude Code session with this prompt:
+        <b>review_loop_execute</b> scope (its checkbox in Settings › Account › Access tokens). In a checkout
+        of this repository, start a Claude Code session with this prompt:
       </p>
       <pre
         data-agent-prompt

@@ -1,6 +1,13 @@
 // Journey (a), part 1: progress while planning, cancel, analyse again; failure before any flow → Retry runs a
 // new round to the end with progress k of n.
-import { analyseAllRemainingFlows, analyze, checkScreen, PR_URL, signIn, waitForState } from "../support/app";
+import {
+  analyseAllRemainingFlows,
+  analyze,
+  checkScreen,
+  PR_PAGE_PATH,
+  signIn,
+  waitForState,
+} from "../support/app";
 import { expect, test } from "../support/fixtures";
 
 test.describe.configure({ mode: "serial" });
@@ -8,17 +15,14 @@ test.describe.configure({ mode: "serial" });
 const progress = (page: import("@playwright/test").Page) =>
   page.getByRole("progressbar", { name: "Analysis progress" });
 
-test("cancel while planning: Home says the analysis was cancelled, with the URL filled in", async ({
-  page,
-  stack,
-}) => {
+test("cancel while planning: the PR page offers a fresh start", async ({ page, stack }) => {
   test.skip(!stack.script, "needs the fake provider's script (a local stack)");
   stack.script?.([{ id: "slow-plan", job: "plan", action: { replay: { step_delay_ms: 1000 } } }]);
   await signIn(page);
   const id = await analyze(page);
   await expect(page.getByText("Planning flows…")).toBeVisible();
   await expect(progress(page)).not.toHaveAttribute("aria-valuenow", /.*/);
-  await expect(page.getByRole("link", { name: "Open", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Open review", exact: true })).toHaveCount(0);
   await checkScreen(page);
 
   await page.getByRole("button", { name: "Cancel analysis" }).click();
@@ -26,11 +30,11 @@ test("cancel while planning: Home says the analysis was cancelled, with the URL 
     "The agent's session for this pull request is kept. Pause keeps everything.",
   );
   await page.getByRole("button", { name: "Confirm cancel", exact: true }).click();
-  await expect(page).toHaveURL(/\/review$/);
+  await expect(page).toHaveURL(PR_PAGE_PATH);
   await expect(
-    page.getByRole("status").filter({ hasText: "Analysis cancelled. Check the PR to start again." }),
+    page.getByRole("status").filter({ hasText: "Analysis cancelled. Its partial results were discarded." }),
   ).toBeVisible();
-  await expect(page.getByLabel("GitHub pull request URL")).toHaveValue(PR_URL);
+  await expect(page.getByRole("button", { name: /^Start analysis( anyway)?$/ })).toBeEnabled();
   await waitForState(page, id, "cancelled", 20_000);
   await checkScreen(page);
 });
@@ -48,7 +52,7 @@ test("failure before any flow: plain description; Retry runs a new round to the 
   const id = await analyze(page);
   await waitForState(page, id, "failed");
   await expect(page.getByText("The analysis failed before any flow was planned")).toBeVisible();
-  await expect(page.getByRole("link", { name: "Open", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Open review", exact: true })).toHaveCount(0);
   await checkScreen(page);
 
   await page.getByRole("button", { name: "Retry" }).click();
@@ -64,7 +68,7 @@ test("failure before any flow: plain description; Retry runs a new round to the 
   await checkScreen(page);
   await waitForState(page, id, "finished");
   await expect(page.getByText("5 of 5 flows analysed")).toBeVisible();
-  await expect(page.getByRole("link", { name: "Open", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Open review", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Cancel analysis" })).toHaveCount(0);
   await checkScreen(page);
 });

@@ -20,6 +20,9 @@ pub enum AssessmentError {
     /// No slot was consumed.
     #[error(transparent)]
     Admission(#[from] AssessmentAdmissionFailure),
+    /// A comment was marked while the pass input was being prepared.
+    #[error("an assessment item is marked as not a review point")]
+    MarkedItem,
     /// Storage or contract validation failed; the transaction is rolled back.
     #[error(transparent)]
     Database(#[from] DbError),
@@ -70,12 +73,16 @@ pub struct MethodResult {
 #[derive(Debug)]
 pub struct Assessments<'a> {
     pool: &'a SqlitePool,
+    job_changes: &'a super::jobs::JobChanges,
 }
 
 impl Db {
     /// Assessment persistence and atomic quota primitives.
     pub fn assessments(&self) -> Assessments<'_> {
-        Assessments { pool: &self.pool }
+        Assessments {
+            pool: &self.pool,
+            job_changes: &self.job_changes,
+        }
     }
 }
 
@@ -212,6 +219,24 @@ impl Assessments<'_> {
             tx.commit().await.map_err(DbError::from)?;
             return Ok(pass);
         }
+        let input = &request.input;
+        if let Some(review) = review {
+            if review.pull_request_id != input.pull_request_id
+                || review.head != input.head
+                || review.user_id.as_deref() != Some(user.0.as_str())
+                || review.question.is_some()
+            {
+                return Err(DbError::Conflict.into());
+            }
+            if super::review_loop::active_in_pass(&mut tx, tenant, &review.sent).await? {
+                return Err(AssessmentError::MarkedItem);
+            }
+            let busy: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM comment_passes WHERE pull_request_id=? AND state IN ('queued','running'))")
+                .bind(input.pull_request_id).fetch_one(&mut *tx).await.map_err(DbError::from)?;
+            if busy {
+                return Err(DbError::Conflict.into());
+            }
+        }
         let usable:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM llm_credentials c JOIN memberships m ON m.user_id=c.user_id WHERE c.user_id=? AND m.tenant_id=? AND c.mode='chatgpt_plan' AND c.state='linked' AND (c.paused_until IS NULL OR julianday(c.paused_until)<=julianday(?)))")
             .bind(&user.0).bind(tenant).bind(ts(now)).fetch_one(&mut *tx).await.map_err(DbError::from)?;
         if !usable {
@@ -226,7 +251,6 @@ impl Assessments<'_> {
         if reserved.rows_affected() != 1 {
             return Err(AssessmentAdmissionFailure::AssessmentDailyLimit { resets_at }.into());
         }
-        let input = &request.input;
         sqlx::query("INSERT INTO assessment_passes(id,tenant_id,payer_id,pull_request_id,request_key,head,base,input_hash,scope_hash,snapshot_ref,primary_method,paired,config,input,day_utc,admitted_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
             .bind(request.id.to_string()).bind(tenant).bind(&user.0).bind(input.pull_request_id).bind(&request.request_key)
             .bind(&input.head.0).bind(&input.base.0).bind(&input.input_hash).bind(&input.scope_hash).bind(&input.snapshot_ref)
@@ -246,18 +270,6 @@ impl Assessments<'_> {
                 .bind(format!("verify:{}",request.id)).bind(ts(now)).execute(&mut *tx).await.map_err(DbError::from)?;
         }
         if let Some(review) = review {
-            if review.pull_request_id != input.pull_request_id
-                || review.head != input.head
-                || review.user_id.as_deref() != Some(user.0.as_str())
-                || review.question.is_some()
-            {
-                return Err(DbError::Conflict.into());
-            }
-            let busy: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM comment_passes WHERE pull_request_id=? AND state IN ('queued','running'))")
-                .bind(input.pull_request_id).fetch_one(&mut *tx).await.map_err(DbError::from)?;
-            if busy {
-                return Err(DbError::Conflict.into());
-            }
             sqlx::query("INSERT INTO comment_passes(id,tenant_id,pull_request_id,user_id,cause,head,items,state,created_at,sent,job_id) VALUES(?,?,?,?,?,?,?,'running',?,?,?)")
                 .bind(request.id.to_string()).bind(tenant).bind(input.pull_request_id).bind(&user.0)
                 .bind(wire_name(review.cause)?).bind(&input.head.0).bind(review.sent.len() as i64).bind(ts(now))
@@ -265,6 +277,7 @@ impl Assessments<'_> {
                 .execute(&mut *tx).await.map_err(DbError::from)?;
         }
         tx.commit().await.map_err(DbError::from)?;
+        self.job_changes.publish(tenant);
         Ok(AssessmentPass {
             id: request.id,
             payer: user.clone(),
@@ -308,6 +321,20 @@ impl Assessments<'_> {
     ) -> Result<bool, DbError> {
         self.finish_with_primary(tenant, user, run, attempt, result, &[])
             .await
+    }
+
+    /// Whether the pass projected at least one primary assessment card.
+    pub async fn primary_made_progress(&self, pass: &AssessmentPass) -> Result<bool, DbError> {
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM assessment_comparison_items c
+             JOIN comment_assessments a ON a.item_id=c.primary_item_id AND a.pass_id=c.pass_id
+             WHERE c.pass_id=? AND c.method=? AND c.payer_id=?)",
+        )
+        .bind(pass.id.to_string())
+        .bind(wire_name(pass.config.primary_method)?)
+        .bind(&pass.payer.0)
+        .fetch_one(self.pool)
+        .await?)
     }
 
     /// Atomically accept a method and project only its frozen primary's validated cards.
@@ -426,7 +453,8 @@ impl Assessments<'_> {
             .bind(wire_name(result.status)?).bind(accepted).bind(result.failure.map(wire_name).transpose()?)
             .bind(result.reported_head.as_ref().map(|head| &head.0)).bind(run.pass_id.to_string()).bind(wire_name(run.method)?).bind(tenant).bind(&user.0).bind(attempt).execute(&mut *tx).await?;
         let mut items = result.items.clone();
-        super::assessment_primary::apply(&mut tx, tenant, &pass, primary, &mut items).await?;
+        let suppressed =
+            super::assessment_primary::apply(&mut tx, tenant, &pass, primary, &mut items).await?;
         if run.method != pass.config.primary_method {
             for item in &mut items {
                 let aligned: Option<(Option<String>,Option<String>,String)> = sqlx::query_as("SELECT primary_item_id,primary_item_hash,source FROM assessment_comparison_items WHERE pass_id=? AND method=? AND comparison_key=? AND status='matched'")
@@ -500,7 +528,9 @@ impl Assessments<'_> {
                     sqlx::query("UPDATE comment_sources SET read_at=coalesce(read_at,?) WHERE tenant_id=? AND pull_request_id=? AND url=? AND body_hash=?")
                         .bind(ts(Timestamp::now())).bind(tenant).bind(pass.input.pull_request_id).bind(url).bind(version).execute(&mut *tx).await?;
                     if run.method == AssessmentMethod::ClaudiusHost {
-                        sqlx::query("UPDATE comment_items SET gone_at=?,revision=revision+1 WHERE tenant_id=? AND pull_request_id=? AND url=? AND kind IN ('review_body','pr_comment') AND source_id IS NULL AND gone_at IS NULL AND state IN ('assessing','undecided','asked_back','reopened') AND NOT EXISTS(SELECT 1 FROM assessment_comparison_items c WHERE c.pass_id=? AND c.method=? AND c.primary_item_id=comment_items.id AND c.status NOT IN ('missing_row','context','head_mismatch'))")
+                        sqlx::query("UPDATE comment_items SET gone_at=?,revision=revision+1 WHERE tenant_id=? AND pull_request_id=? AND url=? AND kind IN ('review_body','pr_comment') AND source_id IS NULL AND gone_at IS NULL AND state IN ('assessing','undecided','asked_back','reopened')
+                                     AND NOT EXISTS(SELECT 1 FROM comment_item_marks m WHERE m.item_id=comment_items.id AND m.undone_at IS NULL)
+                                     AND NOT EXISTS(SELECT 1 FROM assessment_comparison_items c WHERE c.pass_id=? AND c.method=? AND c.primary_item_id=comment_items.id AND c.status NOT IN ('missing_row','context','head_mismatch'))")
                             .bind(ts(Timestamp::now())).bind(tenant).bind(pass.input.pull_request_id).bind(url).bind(pass.id.to_string()).bind(wire_name(run.method)?).execute(&mut *tx).await?;
                     }
                 }
@@ -510,7 +540,9 @@ impl Assessments<'_> {
                     && let AssessmentSource::Body { url, quote, .. } = &row.source
                     && quote.is_empty()
                 {
-                    sqlx::query("UPDATE comment_items SET gone_at=?,revision=revision+1 WHERE tenant_id=? AND pull_request_id=? AND url=? AND kind IN ('review_body','pr_comment') AND source_id IS NULL AND NOT EXISTS(SELECT 1 FROM comment_assessments a WHERE a.item_id=comment_items.id)")
+                    sqlx::query("UPDATE comment_items SET gone_at=?,revision=revision+1 WHERE tenant_id=? AND pull_request_id=? AND url=? AND kind IN ('review_body','pr_comment') AND source_id IS NULL
+                                 AND NOT EXISTS(SELECT 1 FROM comment_item_marks m WHERE m.item_id=comment_items.id AND m.undone_at IS NULL)
+                                 AND NOT EXISTS(SELECT 1 FROM comment_assessments a WHERE a.item_id=comment_items.id)")
                         .bind(ts(Timestamp::now())).bind(tenant).bind(pass.input.pull_request_id).bind(url).execute(&mut *tx).await?;
                 }
             }
@@ -519,6 +551,14 @@ impl Assessments<'_> {
                 .bind(ts(Timestamp::now())).bind(tenant).bind(pass.input.pull_request_id).execute(&mut *tx).await?;
         }
         tx.commit().await?;
+        for (item, source) in suppressed {
+            tracing::info!(
+                pr = pass.input.pull_request_id,
+                item,
+                source,
+                "fresh assessment point suppressed by an internal mark"
+            );
+        }
         Ok(true)
     }
 
@@ -579,6 +619,7 @@ impl Assessments<'_> {
         sqlx::query("UPDATE assessment_method_runs SET status='queued' WHERE pass_id=? AND method=? AND tenant_id=? AND payer_id=?")
             .bind(run.pass_id.to_string()).bind(wire_name(run.method)?).bind(tenant).bind(&user.0).execute(&mut *tx).await?;
         tx.commit().await?;
+        self.job_changes.publish(tenant);
         Ok(())
     }
 

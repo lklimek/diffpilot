@@ -1,29 +1,15 @@
 // What the dashboard shows for a summary (docs/contracts/http-api.md "Refresh states", plan §A.5, §B.3, §B.4):
 // pure functions of the screen, tested without rendering.
 import { ApiError } from "../../api/client";
-import type {
-  DashboardSummary,
-  RankingStatus,
-  RefreshId,
-  RefreshStatus,
-  SnapshotMeta,
-  WorkItem,
-} from "../../api/generated/types";
-import { commentsPath } from "../pr/paths";
-import { REVIEW_START_PATH } from "../shell/paths";
-
-/** The ranking banner of the shown snapshot (plan §B.3). */
-export interface RankingNotice {
-  status: RankingStatus;
-  /** The refresh whose ranking "Retry ranking" (R4) restarts. */
-  refreshId: RefreshId;
-  /** When the snapshot's scan finished. */
-  scannedAt: string;
-}
+import type { DashboardSummary, RefreshStatus, SnapshotMeta, WorkItem } from "../../api/generated/types";
+import { dateTimeText } from "../../components/format/time";
+import type { RankingNotice } from "../../components/dashboard/refresh-control/RefreshControl";
+import { commentsPath, prPath } from "../pr/paths";
+import { PRS_PATH } from "../shell/paths";
 
 /** A schedule or limit note, shown as a banner. */
 export interface DashboardNote {
-  id: "time_zone" | "left_provisional" | "older_prompt";
+  id: "time_zone";
   tone: "info" | "warn";
   title: string;
   text: string;
@@ -37,16 +23,12 @@ export interface DashboardView {
   scanning: RefreshStatus | null;
   /** The latest refresh when its scan failed (failure, steps and log). */
   failure: RefreshStatus | null;
-  /** Null while ranked, while a new scan runs (it supersedes the ranking) or when the ranking is unknown. */
-  ranking: RankingNotice | null;
   /** The list is a previous snapshot while a scan runs or after one failed. */
   stale: boolean;
   /** A snapshot in which nothing needs the user. */
   empty: boolean;
   notes: DashboardNote[];
 }
-
-const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 /**
  * The daily refresh cannot run without a time zone (the scheduled run's failure is the refresh control's);
@@ -59,85 +41,103 @@ function timeZoneNotes(summary: DashboardSummary, saveFailed: boolean): Dashboar
     {
       id: "time_zone",
       tone: saveFailed ? "warn" : "info",
-      title: `The daily refresh at ${schedule.time} starts once your time zone is known.`,
+      title: `The nightly scan at ${schedule.time} starts once your time zone is known.`,
       text: saveFailed
-        ? "Your browser's time zone could not be saved; set it in Settings."
-        : "This page saves your browser's time zone; you can change it in Settings.",
+        ? "Your browser's time zone could not be saved; set it in GitHub sync."
+        : "This page saves your browser's time zone; you can change it in GitHub sync.",
     },
   ];
 }
 
-/**
- * Items left provisional: the server names the ranking limit that applied in the ranking step's detail (this
- * refresh's or today's); a failed ranking's detail is its failure, so no limit is named then.
- */
-function limitNotes(summary: DashboardSummary, holder: RefreshStatus | undefined): DashboardNote[] {
-  const notes: DashboardNote[] = [];
-  const left = holder?.left_provisional ?? 0;
-  if (left > 0) {
-    const named =
-      holder?.ranking?.state === "failed"
-        ? null
-        : holder?.steps.find((step) => step.key === "ranking")?.detail;
-    notes.push({
-      id: "left_provisional",
-      tone: "info",
-      title: named ? `${named}.` : `${plural(left, "item", "items")} left provisional.`,
-      text: "They keep approximate scores until a later refresh ranks them.",
-    });
-  }
-  if (summary.older_prompt_judgements > 0) {
-    notes.push({
-      id: "older_prompt",
-      tone: "info",
-      title: `${plural(summary.older_prompt_judgements, "item", "items")} judged with an older ranking prompt.`,
-      text: "They are judged again within the ranking limits.",
-    });
-  }
-  return notes;
-}
-
-/**
- * The dashboard's view of `summary`. `snapshotRefresh` is the status of the refresh holding the snapshot when that
- * is not the latest refresh (R2b); without it, its ranking and counts are unknown. `timeZoneSaveFailed`: R6b
- * refused or failed.
- */
-export function dashboardView(
-  summary: DashboardSummary,
-  snapshotRefresh: RefreshStatus | undefined,
-  timeZoneSaveFailed = false,
-): DashboardView {
-  const latest = summary.latest_refresh;
-  const snapshot = summary.snapshot;
-  const holder =
-    snapshot === null
-      ? undefined
-      : [latest, snapshotRefresh].find((r): r is RefreshStatus => r?.id === snapshot.refresh_id);
+/** Dashboard scan state and the nightly schedule’s time zone notice. */
+export function dashboardView(summary: DashboardSummary, timeZoneSaveFailed = false): DashboardView {
+  const { latest_refresh: latest, snapshot } = summary;
   const scanning = latest?.state === "scanning" ? latest : null;
   const failure = latest?.state === "failed" ? latest : null;
-  const ranking = holder?.ranking;
   return {
     snapshot,
     scanning,
     failure,
-    ranking:
-      snapshot && holder && ranking && ranking.state !== "finished" && !scanning
-        ? { status: ranking, refreshId: holder.id, scannedAt: snapshot.scanned_at }
-        : null,
     stale: snapshot !== null && (scanning !== null || failure !== null),
     empty: snapshot !== null && snapshot.item_counts.total === 0,
-    notes: [...timeZoneNotes(summary, timeZoneSaveFailed), ...limitNotes(summary, holder)],
+    notes: timeZoneNotes(summary, timeZoneSaveFailed),
+  };
+}
+
+/** The refresh that supplied the visible snapshot, even when a later scan failed. */
+export function refreshHoldingSnapshot(summary: DashboardSummary, snapshotRefresh?: RefreshStatus) {
+  return summary.latest_refresh?.id === summary.snapshot?.refresh_id
+    ? summary.latest_refresh
+    : snapshotRefresh?.id === summary.snapshot?.refresh_id
+      ? snapshotRefresh
+      : undefined;
+}
+
+/** Feedback about ranking the snapshot on screen. */
+export function rankingFeedback(
+  summary: DashboardSummary,
+  snapshotRefresh?: RefreshStatus,
+  resetsAt?: string,
+) {
+  const holder = refreshHoldingSnapshot(summary, snapshotRefresh);
+  const ranking = holder?.ranking;
+  const notices: RankingNotice[] = [];
+  let retryId: string | undefined;
+  if (
+    holder?.state === "finished" &&
+    ranking &&
+    ["failed", "interrupted", "cancelled"].includes(ranking.state)
+  ) {
+    retryId = holder.id;
+    const state =
+      ranking.state === "cancelled"
+        ? "cancelled"
+        : ranking.state === "interrupted"
+          ? "interrupted"
+          : "failed";
+    notices.push({
+      label: `Ranking ${state}`,
+      detail: ranking.message ?? `The LLM ranking was ${state}.`,
+    });
+  }
+  const left = holder?.left_provisional ?? 0;
+  const limit = holder?.left_provisional_by;
+  if (left > 0) {
+    const estimate = `${left} ${left === 1 ? "item was" : "items were"} left provisional by the last ranking.`;
+
+    if (limit === "daily") {
+      const reset = resetsAt ? dateTimeText(resetsAt) : undefined;
+      const reached = ranking?.state === "finished" ? "Daily limit reached" : "Daily ranking limit";
+      notices.push({
+        label: reset ? `${reached} · resets at ${reset}` : reached,
+        detail: reset ? `${estimate} The daily allowance resets at ${reset}.` : estimate,
+      });
+    } else {
+      notices.push({
+        label: limit === "per_refresh" ? "Per-refresh ranking limit" : `${left} left provisional`,
+        detail: estimate,
+      });
+    }
+  }
+  const notJudged = notices.map(({ label, detail }) => `${label}. ${detail}`).join(" ") || undefined;
+  const older = summary.older_prompt_judgements;
+  const olderPrompt =
+    older > 0
+      ? `${older} ${older === 1 ? "item was" : "items were"} judged with an older ranking prompt.`
+      : undefined;
+  if (olderPrompt) notices.push({ label: `${older} judged with older prompt`, detail: olderPrompt });
+  return {
+    notices,
+    retryId,
+    statusDescriptions: { not_judged: notJudged },
   };
 }
 
 /**
- * Where a pull request row's review action goes (plan §F.1): its review when an analysis of the current head
- * exists, else the review start page with the PR (it says when the PR moved since an analysis).
+ * The review action of a My work row opens the PR main page.
  */
 export function reviewHref(item: WorkItem): string {
-  const review = item.review;
-  if (review && !review.head_moved) return `/analyses/${review.analysis_id}`;
-  return `${REVIEW_START_PATH}?pr=${encodeURIComponent(item.url ?? "")}`;
+  return item.repo && item.number !== null ? prPath({ repo: item.repo, number: item.number }) : PRS_PATH;
 }
 
 /** In-app href of a pull request row's Comments (owner 2026-11-23). */
@@ -154,11 +154,13 @@ export function railText(snapshot: SnapshotMeta): string {
  * Why a Watch from a My work row failed: a private repository (RW1 reads public ones only, so trying again cannot
  * help), the 20-PR limit, or the server's reason with a retry hint.
  */
-export function watchErrorText(error: unknown): string {
+export function watchErrorText(error: unknown, watching = true): string {
+  if (!watching)
+    return `Could not stop watching this pull request. Try again. ${error instanceof ApiError ? error.message : ""}`.trim();
   if (error instanceof ApiError && error.code === "private_repository")
     return "Could not watch this pull request: its repository is private, and diffpilot reads public repositories only.";
   if (error instanceof ApiError && error.code === "watch_limit_reached")
-    return "Could not watch this pull request: you watch 20 already. Unwatch one in Watched PRs first.";
+    return "Could not watch this pull request: you watch 20 already. Stop watching one under Pull requests first.";
   const reason = error instanceof ApiError ? error.message : "Something went wrong.";
   return `Could not watch this pull request. Try again. ${reason}`;
 }

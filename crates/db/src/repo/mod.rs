@@ -5,6 +5,7 @@
 
 use std::fmt;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use sqlx::migrate::{Migration, MigrationType, Migrator};
@@ -26,6 +27,7 @@ pub mod dashboard;
 pub mod documents;
 pub mod feedback;
 pub mod flow_work;
+pub mod github;
 pub mod jobs;
 pub mod llm_credentials;
 pub mod pull_requests;
@@ -85,7 +87,7 @@ pub mod testing {
             .max_connections(1)
             .connect_with(options)
             .await?;
-        super::migrate(&pool, super::MIGRATIONS.len() - 1).await?;
+        super::migrate(&pool, super::migration_count_through(29)).await?;
         sqlx::raw_sql(include_str!("../../tests/fixtures/pre_0030.sql"))
             .execute(&pool)
             .await?;
@@ -95,6 +97,17 @@ pub mod testing {
             .execute(&pool)
             .await?;
         pool.close().await;
+        Ok(())
+    }
+
+    /// Injects a malformed saved read timestamp to test error isolation.
+    pub async fn corrupt_comment_read_timestamp(db: &Db, pr: i64) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE comment_prs SET read_at = 'invalid timestamp' WHERE pull_request_id = ?",
+        )
+        .bind(pr)
+        .execute(&db.pool)
+        .await?;
         Ok(())
     }
 
@@ -142,7 +155,7 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The schema migrations in order, as `(version, description, SQL)`: the initial schema, then additive
 /// changes that upgrade an existing database in place.
-const MIGRATIONS: [(i64, &str, &str); 27] = [
+const MIGRATIONS: [(i64, &str, &str); 35] = [
     (1, "init", include_str!("../../migrations/0001_init.sql")),
     (
         2,
@@ -274,6 +287,46 @@ const MIGRATIONS: [(i64, &str, &str); 27] = [
         "v13_containers",
         include_str!("../../migrations/0030_v13_containers.sql"),
     ),
+    (
+        31,
+        "github_webhooks",
+        include_str!("../../migrations/0031_github_webhooks.sql"),
+    ),
+    (
+        32,
+        "ranking_v14",
+        include_str!("../../migrations/0032_ranking_v14.sql"),
+    ),
+    (
+        33,
+        "review_loop_v14",
+        include_str!("../../migrations/0033_review_loop_v14.sql"),
+    ),
+    (
+        34,
+        "pr_history",
+        include_str!("../../migrations/0034_pr_history.sql"),
+    ),
+    (
+        35,
+        "app_repository_lookup",
+        include_str!("../../migrations/0035_app_repository_lookup.sql"),
+    ),
+    (
+        36,
+        "comment_imports",
+        include_str!("../../migrations/0036_comment_imports.sql"),
+    ),
+    (
+        37,
+        "comment_import_followup",
+        include_str!("../../migrations/0037_comment_import_followup.sql"),
+    ),
+    (
+        38,
+        "comment_item_marks",
+        include_str!("../../migrations/0038_comment_item_marks.sql"),
+    ),
 ];
 
 /// Starts a transaction that may write: `BEGIN IMMEDIATE` takes the write lock at once and waits on the busy
@@ -296,6 +349,11 @@ pub(crate) async fn read_tx(pool: &SqlitePool) -> Result<Transaction<'static, Sq
     )]
     let tx = pool.begin_with("BEGIN DEFERRED").await?;
     Ok(tx)
+}
+
+#[cfg(any(test, feature = "test-util"))]
+fn migration_count_through(version: i64) -> usize {
+    MIGRATIONS.partition_point(|(number, ..)| *number <= version)
 }
 
 /// Applies the first `count` of [`MIGRATIONS`] that the database does not have yet.
@@ -324,6 +382,7 @@ pub const DEFAULT_TENANT: &str = "default";
 #[derive(Clone)]
 pub struct Db {
     pool: SqlitePool,
+    job_changes: Arc<jobs::JobChanges>,
 }
 
 impl fmt::Debug for Db {
@@ -369,17 +428,30 @@ impl Db {
 
     async fn migrated(pool: SqlitePool) -> Result<Self, DbError> {
         migrate(&pool, MIGRATIONS.len()).await?;
-        Ok(Self { pool })
+        Ok(Self::from_pool(pool))
+    }
+
+    fn from_pool(pool: SqlitePool) -> Self {
+        Self {
+            pool,
+            job_changes: Arc::default(),
+        }
     }
 
     /// The job queue.
     pub fn jobs(&self) -> jobs::Jobs<'_> {
-        jobs::Jobs { pool: &self.pool }
+        jobs::Jobs {
+            pool: &self.pool,
+            changes: &self.job_changes,
+        }
     }
 
     /// Analyses.
     pub fn analyses(&self) -> analyses::Analyses<'_> {
-        analyses::Analyses { pool: &self.pool }
+        analyses::Analyses {
+            pool: &self.pool,
+            db: self,
+        }
     }
 
     /// JSON documents of an analysis.

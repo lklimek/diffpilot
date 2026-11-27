@@ -1,6 +1,6 @@
 //! Frozen assessment passes, independent method results and owner-decision comparison.
 
-use crate::api::review_loop::{DecisionKind, DecisionTarget};
+use crate::api::review_loop::{DecisionTarget, ReviewDecisionKind};
 use crate::ids::{CommentItemId, CommitSha, DecisionId, JobId, PassId, UserId};
 use crate::job::result::Usage;
 use crate::job::spec::ModelChoice;
@@ -311,7 +311,7 @@ pub struct AssessmentOwnerDecision {
     /// Actual decision time.
     pub at: Timestamp,
     /// Actual chosen kind.
-    pub kind: DecisionKind,
+    pub kind: ReviewDecisionKind,
     /// Actual target.
     pub target: Option<DecisionTarget>,
 }

@@ -79,6 +79,26 @@ async fn world() -> World {
         .expect("user");
     state
         .db
+        .llm_credentials()
+        .put_status(
+            DEFAULT_TENANT,
+            "u1",
+            &contracts::gateway::CredentialStatus {
+                telemetry: Default::default(),
+                challenge: None,
+                mode: contracts::gateway::CredentialMode::ChatgptPlan,
+                state: contracts::gateway::CredentialState::Linked,
+                relink_reason: None,
+                label: None,
+                plan: None,
+                paused_until: None,
+                last_call: None,
+            },
+        )
+        .await
+        .expect("fake linked plan");
+    state
+        .db
         .assessments()
         .set_config(
             DEFAULT_TENANT,
@@ -152,6 +172,23 @@ impl World {
                 .expect("infallible"),
         )
         .await
+    }
+
+    async fn pr_id(&self) -> i64 {
+        self.state
+            .db
+            .pull_requests()
+            .find(
+                DEFAULT_TENANT,
+                &contracts::common::RepoRef {
+                    owner: "acme".into(),
+                    name: "node-client".into(),
+                },
+                482,
+            )
+            .await
+            .expect("find PR")
+            .expect("stored PR")
     }
 
     /// One claim of the pipeline credential, as the runner sends it.
@@ -245,29 +282,34 @@ fn fake_provider_answer(prompt: &str) -> Value {
     json!({"purpose": "Fake purpose for tests.", "items": items, "answer": null})
 }
 
-/// Opening Comments reads the PR's threads from GitHub, queues a `verify_comments` pass whose job the runner
-/// answers, the assessments land on the items, and a decision is stored with its effects.
+#[tokio::test]
+async fn pr_page_opening_queues_no_llm_work() {
+    let w = world().await;
+    let (status, page) = w.call("GET", PR, None).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    let pr = w.pr_id().await;
+    let rl = w.state.db.review_loop();
+    assert!(
+        !rl.items(pr).await.unwrap().is_empty(),
+        "the read found comments"
+    );
+    let (status, items) = w.call("GET", &format!("{PR}/comments/items"), None).await;
+    assert_eq!(status, StatusCode::OK, "{items}");
+    assert!(rl.latest_pass(pr).await.unwrap().is_none());
+    assert!(w.claim().await.is_none());
+}
+
+/// Comments reads the PR's threads. The explicit assessment request queues a job the runner answers,
+/// the assessments land on the items, and a decision is stored with its effects.
 #[tokio::test]
 async fn comments_open_assess_and_decide_end_to_end() {
     let w = world().await;
     let (status, overview) = w.call("GET", &format!("{PR}/comments"), None).await;
     assert_eq!(status, StatusCode::OK, "{overview}");
     assert_eq!(overview["read"]["complete"], true);
-    let pr = w
-        .state
-        .db
-        .pull_requests()
-        .find(
-            DEFAULT_TENANT,
-            &contracts::common::RepoRef {
-                owner: "acme".into(),
-                name: "node-client".into(),
-            },
-            482,
-        )
-        .await
-        .expect("find")
-        .expect("stored");
+    let pr = w.pr_id().await;
+    let rl = w.state.db.review_loop();
+
     let (_, items) = w.call("GET", &format!("{PR}/comments/items"), None).await;
     let threads = items
         .as_array()
@@ -276,9 +318,19 @@ async fn comments_open_assess_and_decide_end_to_end() {
         .filter(|item| item["kind"] == "thread")
         .count();
     assert!(threads > 0, "{items}");
+    assert!(
+        w.state
+            .db
+            .review_loop()
+            .live_passes()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let (status, body) = w.call("POST", &format!("{PR}/comments/assess"), None).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
 
     assert!(w.run_passes(pr).await >= 1);
-    let rl = w.state.db.review_loop();
     let pass = rl.latest_pass(pr).await.expect("pass").expect("a pass");
     assert_eq!(pass.state, PassState::Finished);
     assert_eq!(

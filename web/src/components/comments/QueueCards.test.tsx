@@ -12,6 +12,12 @@ import { DecideRestCard, EmptyQueueCard, GroupCard, PrQuestionCard } from "./Que
 import { QueueList } from "./QueueList";
 
 const byNo = (no: number) => listItems().find((i) => i.no === no)!;
+const proposal = {
+  kind: "resolve",
+  by: "alice-relay",
+  at: "2026-11-18T09:20:00Z",
+  evidence_url: "https://github.com/acme/node-client/pull/482#discussion_r900",
+} as const;
 const NOW = new Date("2026-11-18T09:27:00Z");
 const PENDING = "Planning the effects of your current input; you can decide once they are shown.";
 const REFUSED = "The server refused this input (its message is shown above); change it to decide.";
@@ -69,6 +75,37 @@ describe("GroupCard (US5)", () => {
     const rows = onDecide.mock.calls[0]![0];
     expect(rows.map((r: { item_no: number }) => r.item_no)).toEqual([18, 19]);
     expect(rows[0]).toMatchObject({ kind: "reject", resolve_ticked: true });
+  });
+
+  it("shows the proposed choice in the group and uses it only after confirmation", async () => {
+    byNo(18).import_proposal = proposal;
+    const { onDecide } = showGroup();
+    expect(screen.getByText(/@alice-relay proposes: Resolve/)).toBeVisible();
+    expect(onDecide).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Decide 2 items" }));
+    expect(onDecide.mock.calls[0]![0]).toMatchObject([
+      { item_no: 18, kind: "resolve" },
+      { item_no: 19, kind: "reject" },
+    ]);
+  });
+
+  it("marks every item through the group decision callback", async () => {
+    const { onDecide } = showGroup();
+    await userEvent.click(screen.getByRole("button", { name: "Not a review point" }));
+    expect(onDecide).toHaveBeenCalledTimes(1);
+    expect(onDecide).toHaveBeenCalledWith(
+      [18, 19].map((item_no) => ({
+        item_no,
+        kind: "not_a_review_point",
+        reason: null,
+        target: null,
+        override: null,
+        resolve_ticked: false,
+        reply_text: null,
+        comment: null,
+        item_revision: byNo(item_no).revision,
+      })),
+    );
   });
 
   it("the LLM tag of the assessment column header takes keyboard focus and shows its tip (brief §4 rule 3)", () => {
@@ -245,6 +282,7 @@ describe("QueueList", () => {
     render(
       <QueueList
         queue={[{ item_nos: items.map((i) => i.no), reason: "group" }]}
+        counts={{ needs_you: items.length, needs_you_gates: 0, not_a_review_point: 0 }}
         items={new Map(items.map((i) => [i.no, i]))}
         current={null}
         onOpen={vi.fn()}
@@ -307,6 +345,22 @@ describe("DecideRestCard (US7)", () => {
     expectPlanAgain(preview);
     await userEvent.click(apply);
     expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it("starts from the proposal in Decide the rest and requires the owner's reason", async () => {
+    byNo(22).import_proposal = { ...proposal, kind: "reject" };
+    const onConfirm = showRest();
+    expect(screen.getByText(/@alice-relay proposes: Reject/)).toBeVisible();
+    const apply = screen.getByRole("button", { name: /^Apply \d+ decisions$/ });
+    await userEvent.click(apply);
+    expect(onConfirm).not.toHaveBeenCalled();
+    await userEvent.type(screen.getByRole("textbox", { name: /^C22 · Reason/ }), "Owner's reason");
+    await userEvent.click(apply);
+    expect(onConfirm.mock.calls[0]![0]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ item_no: 22, kind: "reject", reason: "Owner's reason" }),
+      ]),
+    );
   });
 
   it("lists the server's rows, names every item left out with its reason, stores nothing before Apply", async () => {
@@ -620,6 +674,29 @@ describe("CommentsTable (US8, US27)", () => {
       override: { type: "blocker_gate", gate: "G-SECRET" },
       resolve_ticked: true,
     });
+  });
+
+  it("submits a gate mark alone after a reason is given", async () => {
+    const onSubmit = show();
+    await userEvent.selectOptions(
+      screen.getByRole("combobox", { name: /Decision for C14/ }),
+      "not_a_review_point",
+    );
+    const mark = screen.getByRole("button", { name: "Mark C14" });
+    expect(mark).toHaveAttribute("aria-disabled", "true");
+    await userEvent.type(screen.getByRole("textbox", { name: /Reason or target for C14/ }), "Test only.");
+    await userEvent.click(screen.getByRole("button", { name: /Record \d+ decisions/ }));
+    expect(onSubmit).not.toHaveBeenCalled();
+    await userEvent.click(mark);
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(onSubmit).toHaveBeenCalledWith([
+      expect.objectContaining({
+        item_no: 14,
+        kind: "not_a_review_point",
+        reason: "Test only.",
+        resolve_ticked: false,
+      }),
+    ]);
   });
 
   it("an item the latest read no longer shows is listed with that fact and needs no decision (plan §2.1)", async () => {

@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type { ChangeSizeMark, SizeMark } from "../../../api/generated/types";
-import { ALL_SIZES, SIZE_RULE, sizeShown } from "./size";
+import { ALL_SIZES, SIZE_RULE } from "./size";
 import { SizePill } from "./Tags";
 
 const mark = (size: SizeMark, additions: number, deletions: number): ChangeSizeMark => ({
@@ -33,15 +33,5 @@ describe("size marks", () => {
     expect(container.querySelector("[data-size-pill]")).toBeNull();
     rerender(<SizePill mark={mark("micro" as SizeMark, 3, 1)} />);
     expect(screen.getByText("micro")).toBeInTheDocument();
-  });
-
-  it("the size filter governs pull requests only; issues, TODOs, unknown sizes and PRs without one stay", () => {
-    const shown: SizeMark[] = ["small"];
-    expect(sizeShown({ kind: "pr", change_size: mark("small", 1, 1) }, shown)).toBe(true);
-    expect(sizeShown({ kind: "pr", change_size: mark("huge", 9000, 1000) }, shown)).toBe(false);
-    expect(sizeShown({ kind: "pr" }, shown)).toBe(true);
-    expect(sizeShown({ kind: "pr", change_size: mark("micro" as SizeMark, 1, 0) }, shown)).toBe(true);
-    expect(sizeShown({ kind: "issue" }, shown)).toBe(true);
-    expect(sizeShown({ kind: "todo" }, shown)).toBe(true);
   });
 });

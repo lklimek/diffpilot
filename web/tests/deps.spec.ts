@@ -43,7 +43,7 @@ async function seriousViolations(page: Page, width: number) {
     .analyze();
   // Below 1000 px the shared top bar crowds its controls in every review view (Files too): not this view's.
   const sharedBar = (id: string, html: string) =>
-    width < 1000 && id === "target-size" && /aria-label="(Settings, signed in|View: )/.test(html);
+    width < 1000 && id === "target-size" && /aria-label="(View: )/.test(html);
   // The heading outline (best practice, any impact): no skipped level.
   const headings = await new AxeBuilder({ page }).withRules(["heading-order"]).analyze();
   return [
@@ -68,6 +68,7 @@ test("no serious axe violations in any state, wide and narrow, light and dark; t
           page
             .getByRole("list", { name: "Repositories" })
             .or(page.getByRole("alert"))
+            .or(page.getByText("No dependency is changed and none has notes or facts."))
             .or(page.getByText(/^Dependencies: not available/)),
         ).toBeVisible();
         await openAll(page);
@@ -122,7 +123,7 @@ test("a fact's line opens the Files view at that line; the breadcrumb leads back
   );
   const crumbs = page.getByRole("navigation", { name: "Breadcrumb" });
   await crumbs.getByRole("button", { name: "View: Files" }).click();
-  await crumbs.getByRole("link", { name: "Dependencies" }).click();
+  await crumbs.getByRole("menuitemradio", { name: "Dependencies" }).click();
   await expect(page).toHaveURL(new RegExp(`${DEPS}$`));
   await expect(page.getByRole("heading", { level: 1, name: "Dependencies" })).toBeVisible();
 });
@@ -134,4 +135,27 @@ test("the facts say what the token rules cover; LLM notes carry the LLM label", 
   const note = crate.getByRole("listitem").filter({ hasText: "retry with backoff" });
   await expect(note.locator("[data-provenance=llm]")).toHaveAccessibleDescription(/written by the LLM/);
   await expect(crate).toContainText("+3 more notes, not listed.");
+});
+
+test("unchanged crates start hidden, a direct link reveals its crate, and the checkbox persists", async ({
+  page,
+}) => {
+  await openDeps(page, "deps-multi");
+  const show = page.getByRole("checkbox", { name: "Show unchanged dependencies (2)" });
+  await expect(show).not.toBeChecked();
+  await expect(page.getByRole("button", { name: /^crates.io/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^node-proto.*2 conversions/ })).toBeVisible();
+
+  await page.goto(
+    `${DEPS}?scenario=deps-multi#crate=${encodeURIComponent("registry:crates.io/tokio@1.48.0")}`,
+  );
+  const tokio = page.getByRole("button", { name: /^tokio.*unchanged/ });
+  await expect(tokio).toBeVisible();
+  await expect(tokio).toBeFocused();
+  await expect(show).not.toBeChecked();
+  await show.check();
+  await page.goto(`${DEPS}?scenario=deps-multi`);
+  await expect(show).toBeChecked();
+  await expect(page.getByRole("button", { name: /^crates.io/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^\.\.\/vendored\/hdrhist/ })).toBeVisible();
 });

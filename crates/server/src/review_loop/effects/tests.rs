@@ -457,8 +457,14 @@ fn pr_level_questions_plan_follow_ups_and_dismissals() {
     );
     let dismiss = EffectItem {
         question: Some(PrQuestion::Dismiss),
-        ..merge
+        ..merge.clone()
     };
+    for question in [&merge, &dismiss] {
+        assert_eq!(
+            plan(question, &request(DecisionKind::NotAReviewPoint), &scope),
+            Err(DecisionError::KindNotOffered)
+        );
+    }
     let p3 = plan(
         &dismiss,
         &request(DecisionKind::DismissStaleReviews),

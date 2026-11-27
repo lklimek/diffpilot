@@ -5,12 +5,12 @@ const heading = (page: import("@playwright/test").Page) =>
   page.locator("main h2:not([data-column-title])").first();
 
 test("PR URL → PR context → flow 1 introduction → step 1 via j", async ({ page }) => {
-  await page.goto("/review");
+  await page.goto("/prs");
   await page.getByLabel("GitHub pull request URL").fill("https://github.com/acme/node-client/pull/482");
-  await page.getByRole("button", { name: "Check" }).click();
+  await page.getByRole("button", { name: "Open", exact: true }).click();
   await page.getByRole("button", { name: "Start analysis", exact: true }).click();
   await expect(page).toHaveURL(/\/pr\/acme\/node-client\/482$/);
-  await page.getByRole("link", { name: "Open", exact: true }).click();
+  await page.getByRole("link", { name: "Open review", exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}#pr_context$`));
   await expect(heading(page)).toHaveText("PR context: acme/node-client #482");
 
@@ -50,7 +50,7 @@ test("Previous / Next walk the sequence; after a flow's last step comes the next
 });
 
 test("j / k are ignored while typing in a field", async ({ page }) => {
-  await page.goto("/review");
+  await page.goto("/prs");
   const field = page.getByLabel("GitHub pull request URL");
   await field.fill("j");
   await field.press("j");
@@ -98,7 +98,10 @@ for (const state of ["default", "wrong", "missed", "noq", "noprofile", "resume"]
       const count = await steps.count();
       for (let i = 0; i < count; i += 1) {
         await steps.nth(i).click();
-        await expect(page.getByRole("status")).toHaveCount(0);
+        const statuses = page.getByRole("status");
+        await expect(statuses.and(page.locator("[data-ask-announcement]"))).toBeEmpty();
+        await expect(page.getByRole("banner").getByRole("status")).toBeEmpty();
+        await expect(statuses).toHaveCount(2);
         await expectTrustWording(page);
       }
     }
@@ -325,27 +328,26 @@ test("every top-bar control explains itself in a tooltip", async ({ page }) => {
   await openTour(page);
   const banner = page.getByRole("banner").first();
   await expect(
-    banner.getByRole("link", { name: /^Pull request #482 on GitHub/ }),
+    banner.getByRole("link", { name: "Open acme/node-client#482 on GitHub, new tab" }),
   ).toHaveAccessibleDescription(/GitHub/);
   await expect(banner.getByRole("link", { name: "acme/node-client #482" })).toHaveAccessibleDescription(
-    /PR context/,
+    "acme/node-client #482",
   );
   await expect(banner.getByRole("button", { name: "View: Flows" })).toHaveAccessibleDescription(/Files/);
   // The chip (link or span) carries the tooltip; its text may sit in an inner truncating span.
   await expect(
-    banner
-      .locator("[aria-describedby]")
-      .filter({ hasText: /^Check runs:/ })
-      .first(),
+    banner.locator("[aria-describedby]").filter({ hasText: /^CI:/ }).first(),
   ).toHaveAccessibleDescription(/Failing checks/);
   await expect(banner.getByText(/^Your progress/)).toHaveAccessibleDescription(/No percentage/);
   await expect(banner.getByRole("button", { name: /^Pending review/ })).toHaveAccessibleDescription(
     /pending review/,
   );
-  await expect(banner.getByRole("button", { name: /^Help/ })).toHaveAccessibleDescription(/Keyboard/);
-  await expect(banner.getByRole("link", { name: /^Settings, signed in/ })).toHaveAccessibleDescription(
-    /Settings/,
-  );
+  const user = banner.getByRole("button", { name: "alice: account and LLM activity", exact: true });
+  await expect(user).toHaveAccessibleDescription("Signed in as alice (GitHub)");
+  await user.click();
+  await expect(banner.getByRole("link", { name: "Settings" })).toHaveAttribute("href", "/settings");
+  await banner.getByRole("button", { name: "Keyboard shortcuts" }).click();
+  await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeVisible();
 });
 
 test("widths stored on a 21:9 screen leave the centre usable at 1440 px and after a window resize", async ({

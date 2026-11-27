@@ -75,6 +75,37 @@ const TAGS: &[&str] = &[
     "ul",
 ];
 
+/// The single protocol marker outside code, blockquotes and other HTML comments.
+pub(super) fn relay_marker(body: &str) -> Option<&str> {
+    let mut marker = None;
+    let mut fence: Option<Fence> = None;
+    let mut comment = false;
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if let Some(open) = fence {
+            if open.closed_by(trimmed) {
+                fence = None;
+            }
+            continue;
+        }
+        if !comment {
+            fence = Fence::of(trimmed);
+            if fence.is_some() {
+                continue;
+            }
+            if line.len() - line.trim_start_matches(' ').len() < 4
+                && !line.starts_with('\t')
+                && super::markers::relay_kind(trimmed).is_some()
+                && marker.replace(trimmed).is_some()
+            {
+                return None;
+            }
+        }
+        comment = without_comments(line, comment).1;
+    }
+    marker
+}
+
 /// The description without bot-written blocks and HTML comment lines; `None` when nothing is left.
 pub fn description(text: &str) -> Option<String> {
     let mut lines: Vec<&str> = text.lines().collect();

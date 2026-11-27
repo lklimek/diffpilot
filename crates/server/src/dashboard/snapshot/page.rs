@@ -33,8 +33,8 @@ fn short_hash(bytes: &[u8]) -> String {
 
 /// Opaque revision of `snapshot`, held by `record`, as `view` shows it: changes when the snapshot or its ranking
 /// changes (state, attempt and judgement counts; WP11-JUDGE records the counts as judgements land), when TODOs are
-/// hidden, when pull requests are re-read, when the shown plug-in statements change (ADR-022) and when the user's
-/// snoozes change (owner SN1).
+/// hidden, when GitHub items are re-read, when the shown plug-in statements change (ADR-022) and when the user's
+/// snoozes or repository live status change.
 pub fn revision(record: &RefreshRecord, snapshot: &Snapshot, view: &View) -> String {
     let mut source = format!(
         "{}|{:?}|{:?}|{}|{}|{}|{}|{:?}|{:?}|{}|{:?}",
@@ -52,6 +52,9 @@ pub fn revision(record: &RefreshRecord, snapshot: &Snapshot, view: &View) -> Str
     );
     if let Some(at) = snapshot.prs_reread_at {
         source.push_str(&format!("|reread {at}"));
+    }
+    if let Some(at) = snapshot.last_event_at {
+        source.push_str(&format!("|webhook {at}"));
     }
     if !snapshot.snoozes.is_empty() {
         let snoozed: Vec<_> = snapshot
@@ -77,6 +80,24 @@ pub fn revision(record: &RefreshRecord, snapshot: &Snapshot, view: &View) -> Str
         let ready: Vec<_> = view.ready_to_merge.iter().map(|item| &item.id).collect();
         source.push_str(&format!("|plugins {notes:?} {plugin_waits:?} {ready:?}"));
     }
+    let live: Vec<_> = view
+        .items
+        .iter()
+        .filter_map(|item| item.item.live.map(|live| (&item.item.key, live)))
+        .collect();
+    if !live.is_empty() {
+        source.push_str(&format!("|live {live:?}"));
+    }
+    let judgements: Vec<_> = view
+        .items
+        .iter()
+        .filter_map(|item| {
+            item.item
+                .judgement
+                .map(|judgement| (&item.item.key, judgement))
+        })
+        .collect();
+    source.push_str(&format!("|judgements {judgements:?}"));
     format!("r-{}", short_hash(source.as_bytes()))
 }
 

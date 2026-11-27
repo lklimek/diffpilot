@@ -26,17 +26,21 @@ export const setLlm = route("setLlm", async ({ request }) => {
   return HttpResponse.json(savedSelection);
 });
 /** `PUT /api/v1/settings/llm/ask-effort`: kept with the shared mock selection. */
-export const setAskEffort = route("setAskEffort", async ({ request }) => {
-  if (scenario().llmSaveFails) return apiError(503, "unavailable", "Try again later.");
-  const { reasoning_effort } = (await request.json()) as SetAskEffortRequest;
-  const selection = savedSelection ?? SETTINGS.llm_selection!;
-  if (!selection.efforts.includes(reasoning_effort))
-    return apiError(400, "invalid_request", "Choose an available effort.");
-  savedSelection = {
-    ...selection,
-    ask_effort: reasoning_effort,
-    changed_by: "alice",
-    changed_at: new Date().toISOString(),
-  };
-  return HttpResponse.json(savedSelection);
-});
+const saveEffort = (name: "setAskEffort" | "setJudgeEffort", field: "ask_effort" | "judge_effort") =>
+  route(name, async ({ request }) => {
+    if (scenario().llmSaveFails) return apiError(503, "unavailable", "Try again later.");
+    const { reasoning_effort } = (await request.json()) as SetAskEffortRequest;
+    const selection = savedSelection ?? SETTINGS.llm_selection!;
+    if (!selection.efforts.includes(reasoning_effort))
+      return apiError(400, "invalid_request", "Choose an available effort.");
+    savedSelection = {
+      ...selection,
+      [field]: reasoning_effort,
+      changed_by: "alice",
+      changed_at: new Date().toISOString(),
+    };
+    return HttpResponse.json(savedSelection);
+  });
+
+export const setAskEffort = saveEffort("setAskEffort", "ask_effort");
+export const setJudgeEffort = saveEffort("setJudgeEffort", "judge_effort");

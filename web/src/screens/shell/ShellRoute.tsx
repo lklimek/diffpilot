@@ -3,10 +3,11 @@ import { createPortal } from "react-dom";
 import { Navigate, Outlet, useLocation, useOutletContext } from "react-router";
 import { useMe } from "../../api/queries";
 import type { AppSection } from "../../components/app-shell/AppNav";
-import { useUserEventNotifications } from "../../app/userEvents";
-import { ALL_CARRY_OVERS_PATH, WATCHING_PATH } from "../pr/paths";
-import { MY_WORK_PATH, REVIEW_START_PATH, SETTINGS_HELP_PATH, SETTINGS_PATH } from "./paths";
+import { ALL_CARRY_OVERS_PATH } from "../pr/paths";
+import { MY_WORK_PATH, PRS_PATH, SETTINGS_HELP_PATH, SETTINGS_PAGES, SETTINGS_PATH } from "./paths";
 import { ShellLayout } from "./ShellLayout";
+import { useSessionSignOut } from "./useSessionSignOut";
+import { ShellUserMenu } from "./ShellUserMenu";
 import { DashboardScreen } from "../dashboard/DashboardScreen";
 
 /** What a page inside the shell may set: My work's count (kept while other pages show), help, top-bar actions. */
@@ -14,42 +15,50 @@ export interface ShellSlots {
   /** Where a page renders its top-bar actions (`createPortal`); null until the bar is mounted. */
   actions: HTMLElement | null;
   setCount: (count: number | null) => void;
-  /** The page's keyboard help; null removes the help button. */
+  /** The page's keyboard help; null removes the shortcut from the user menu. */
   setHelp: (help: (() => void) | null) => void;
+  signOut: ReturnType<typeof useSessionSignOut>;
 }
 
 const PAGES: Record<string, { section: AppSection; crumb: string }> = {
   [MY_WORK_PATH]: { section: "my-work", crumb: "My work" },
-  [REVIEW_START_PATH]: { section: "review", crumb: "Review a PR" },
+  [PRS_PATH]: { section: "prs", crumb: "Pull requests" },
   [SETTINGS_PATH]: { section: "settings", crumb: "Settings" },
   [SETTINGS_HELP_PATH]: { section: "settings", crumb: "Settings guide" },
-  [WATCHING_PATH]: { section: "watching", crumb: "Watched PRs" },
-  [ALL_CARRY_OVERS_PATH]: { section: "watching", crumb: "Carry-overs" },
+  [ALL_CARRY_OVERS_PATH]: { section: "prs", crumb: "Carry-overs" },
 };
 
-/** Layout route of `/`, `/review` and `/settings` (plan §F.2): the shell stays while its pages change. */
+/** Layout route of `/`, `/prs` and `/settings` (plan §F.2): the shell stays while its pages change. */
 export function ShellRoute() {
   const { pathname } = useLocation();
-  const me = useMe();
-  useUserEventNotifications();
-  // The router matches `/review/` as `/review`.
-  const page = PAGES[pathname.replace(/(.)\/+$/, "$1")] ?? PAGES[MY_WORK_PATH]!;
+  const login = useMe().data?.user?.login ?? null;
+  // The router matches `/prs/` as `/prs`.
+  const path = pathname.replace(/(.)\/+$/, "$1");
+  const settingsPage = SETTINGS_PAGES.find(({ href }) => href === path);
+  const page = settingsPage
+    ? { section: "settings" as const, crumb: settingsPage.label }
+    : (PAGES[path] ?? PAGES[MY_WORK_PATH]!);
   const [actions, setActions] = useState<HTMLElement | null>(null);
   const [count, setCount] = useState<number | null>(null);
   const [help, setHelp] = useState<{ open: () => void } | null>(null);
   const setPageHelp = useCallback((open: (() => void) | null) => setHelp(open ? { open } : null), []);
-  // Stable setters: pages call them from effects; a new function per render would loop.
+  const signOut = useSessionSignOut(login);
   const slots = useMemo<ShellSlots>(
-    () => ({ actions, setCount, setHelp: setPageHelp }),
-    [actions, setPageHelp],
+    () => ({ actions, setCount, setHelp: setPageHelp, signOut }),
+    [actions, setPageHelp, signOut],
   );
   return (
     <ShellLayout
       current={page.section}
       crumb={page.crumb}
-      login={me.data?.user?.login ?? null}
+      settingsPages={SETTINGS_PAGES.map(({ id, label, href }) => ({
+        icon: id,
+        label,
+        href,
+        active: id === settingsPage?.id,
+      }))}
+      userMenu={login && <ShellUserMenu key={login} login={login} onHelp={help?.open} signOut={signOut} />}
       myWorkCount={count}
-      onHelp={help?.open}
       actions={<span ref={setActions} className="contents" />}
     >
       <Outlet context={slots} />
@@ -67,13 +76,12 @@ export function ShellActions({ children }: { children: ReactNode }) {
 }
 
 /**
- * `/`: My work; with `pr` or `login_error` in the query (old deep links, the OAuth error redirect) the review start
- * page with the same query.
+ * `/`: My work, with fallbacks for old PR deep links and OAuth errors.
  */
 export function StartRoute() {
   const { search } = useLocation();
   const query = new URLSearchParams(search);
-  if (query.has("pr") || query.has("login_error"))
-    return <Navigate to={{ pathname: REVIEW_START_PATH, search }} replace />;
+  if (query.has("pr")) return <Navigate to={{ pathname: "/review", search }} replace />;
+  if (query.has("login_error")) return <Navigate to={{ pathname: PRS_PATH, search }} replace />;
   return <DashboardScreen />;
 }

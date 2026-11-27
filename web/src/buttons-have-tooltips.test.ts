@@ -7,10 +7,20 @@ import { describe, expect, it } from "vitest";
 // be on this list, with the reason it does without one.
 const ALLOWED: { file: string; match: string; reason: string }[] = [
   {
+    file: "components/menu/MenuButton.tsx",
+    match: "<button {...props}",
+    reason: "Action inside a menu: its label and description are visible and accessible on focus.",
+  },
+  {
     file: "components/code-view/CodeView.tsx",
     match: "data-line-action",
     reason:
       "Line numbers: one per displayed line (hundreds); each has an aria-label and a native title naming the action.",
+  },
+  {
+    file: "components/code-view/ClassicDiff.tsx",
+    match: "data-line-action",
+    reason: "One keyboard line number per row, each with a native title explaining its GitHub action.",
   },
   {
     file: "components/code-view/CodeView.tsx",

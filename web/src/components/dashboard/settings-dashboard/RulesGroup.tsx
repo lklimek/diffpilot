@@ -1,4 +1,5 @@
 import { useId } from "react";
+import { FormRow } from "../../settings/FormRow";
 import { HelpTip } from "../../settings/HelpTip";
 import { ListEditor } from "./ListEditor";
 import { ERROR, FIELD } from "./look";
@@ -36,13 +37,16 @@ export function RulesGroup({
   const id = useId();
   return (
     <div className="grid content-start gap-3">
-      <div className="grid gap-1">
-        <span className="flex items-center gap-2">
-          <label htmlFor={`${id}-days`} className="text-sm font-semibold">
-            Look-back days
-          </label>
-          <HelpTip topic="lookback_days" />
-        </span>
+      <FormRow
+        htmlFor={`${id}-days`}
+        label={"Look-back days"}
+        help={
+          <>
+            <span id={`${id}-days-help`}>An issue opened within this many days is marked new (1 to 30).</span>{" "}
+            <HelpTip topic="lookback_days" />
+          </>
+        }
+      >
         <input
           id={`${id}-days`}
           type="number"
@@ -55,40 +59,37 @@ export function RulesGroup({
           className={`${FIELD} w-24`}
           onChange={(e) => onChange({ lookback_days: e.target.value })}
         />
-        <p id={`${id}-days-help`} className="text-xs text-muted">
-          An issue opened within this many days is marked new (1 to 30).
-        </p>
         {errors.lookback_days && (
           <p id={`${id}-days-error`} className={ERROR}>
             {errors.lookback_days}
           </p>
         )}
-      </div>
-      <div className="grid gap-1">
-        <span className="flex items-center gap-2">
-          <label htmlFor={`${id}-label`} className="text-sm font-semibold">
-            &quot;Ready for a human&quot; label
-          </label>
-          <HelpTip topic="ready_label" />
-        </span>
+      </FormRow>
+      <FormRow
+        htmlFor={`${id}-label`}
+        label={'"Ready for a human" label'}
+        help={
+          <>
+            <span id={`${id}-label-help`}>A pull request with this label counts as ready for review.</span>{" "}
+            <HelpTip topic="ready_label" />
+          </>
+        }
+      >
         <input
           id={`${id}-label`}
           value={readyLabel}
           autoComplete="off"
           aria-invalid={errors.ready_label ? true : undefined}
           aria-describedby={`${id}-label-help${errors.ready_label ? ` ${id}-label-error` : ""}`}
-          className={`${FIELD} w-56 font-mono`}
+          className={`${FIELD} w-56 max-w-full font-mono`}
           onChange={(e) => onChange({ ready_label: e.target.value })}
         />
-        <p id={`${id}-label-help`} className="text-xs text-muted">
-          A pull request with this label counts as ready for review.
-        </p>
         {errors.ready_label && (
           <p id={`${id}-label-error`} className={ERROR}>
             {errors.ready_label}
           </p>
         )}
-      </div>
+      </FormRow>
       <ListEditor
         label="Excluded authors (never shown)"
         addLabel="Add an excluded author"

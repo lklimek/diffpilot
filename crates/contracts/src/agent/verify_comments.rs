@@ -12,7 +12,7 @@ use crate::agent::JobKind;
 use crate::agent::judge_work::escape_separators;
 use crate::api::review_loop::{
     AssessmentEvidence, AuthorKind, BotThreadStatus, CodeSummary, CommentItemKind, DecisionKind,
-    Elsewhere, FixSize, Gate, ItemLocation, NecessityVerdict, Validity,
+    Elsewhere, FixSize, Gate, ItemLocation, NecessityVerdict, ReviewDecisionKind, Validity,
 };
 
 /// Items per job at most (plan §4.2); 10 take about 5 minutes and 23 KB of output at high effort (spike S13-3).
@@ -115,7 +115,7 @@ pub struct EarlierDecision {
     /// `C<no>`.
     pub item: String,
     /// The decision made in diffpilot; null for one a reply records, whose text is `reason`.
-    pub decision: Option<DecisionKind>,
+    pub decision: Option<ReviewDecisionKind>,
     /// The owner's reason, if given, or the reply's text.
     pub reason: Option<String>,
 }
@@ -294,7 +294,7 @@ pub enum RecommendedDecision {
     Todo,
 }
 
-impl From<RecommendedDecision> for DecisionKind {
+impl From<RecommendedDecision> for ReviewDecisionKind {
     fn from(value: RecommendedDecision) -> Self {
         match value {
             RecommendedDecision::Resolve => Self::Resolve,
@@ -305,6 +305,12 @@ impl From<RecommendedDecision> for DecisionKind {
             RecommendedDecision::UpstreamIssue => Self::UpstreamIssue,
             RecommendedDecision::Todo => Self::Todo,
         }
+    }
+}
+
+impl From<RecommendedDecision> for DecisionKind {
+    fn from(value: RecommendedDecision) -> Self {
+        ReviewDecisionKind::from(value).into()
     }
 }
 

@@ -23,7 +23,7 @@ use crate::dashboard::score::{
 };
 use crate::dashboard::snapshot::{self, Snapshot, StoredIssue, StoredPr, StoredTodo};
 
-/// Version of the judged inputs and their fingerprint; a bump re-judges every item within the caps.
+/// Version of the judged inputs and their fingerprint; a bump marks stored judgements outdated.
 pub const JUDGE_INPUT_VERSION: u32 = 3;
 /// Body excerpt sent per pull request or issue, in characters.
 const EXCERPT_CHARS: usize = 300;

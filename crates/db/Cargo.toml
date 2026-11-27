@@ -11,12 +11,14 @@ license.workspace = true
 test-util = []
 
 [dependencies]
+uuid.workspace = true
 contracts.workspace = true
 jiff.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
 
 [dev-dependencies]
@@ -24,7 +26,6 @@ tracing.workspace = true
 jiff = { workspace = true, features = ["tz-system"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
-uuid.workspace = true
 
 [lints]
 workspace = true

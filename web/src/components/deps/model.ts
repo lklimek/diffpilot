@@ -27,6 +27,7 @@ export interface DepsLinks {
   flow: (id: FlowId) => string;
   /** In-app link to Settings. */
   settings: string;
+  crate?: (key: string) => string;
   /** Follows an in-app link (a plain click). */
   onNavigate: (href: string) => void;
 }
@@ -41,6 +42,12 @@ export function repositoryKey(repo: DependencyRepository, index: number): string
 /** Stable key of a crate level (open state): one per package version of its source. */
 export const crateKey = (repoKey: string, crate: DependencyCrate): string =>
   `${repoKey}/${crate.name}@${crate.version ?? ""}`;
+
+export const unchangedCrate = (crate: DependencyCrate) => crate.changes === null && crate.facts_about === 0;
+
+/** A dependency deep link identifies one crate including its source and version. */
+export const crateHash = (key: string) => `#crate=${encodeURIComponent(key)}`;
+export const crateFromHash = (hash: string) => new URLSearchParams(hash.slice(1)).get("crate");
 
 /** Open unless toggled: this repository and changed crates start open, everything else closed. */
 export const isOpen = (open: Readonly<Record<string, boolean>>, key: string, byDefault: boolean) =>

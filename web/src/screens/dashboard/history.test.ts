@@ -4,7 +4,6 @@ import {
   barPullRequests,
   chartPoints,
   dailySeries,
-  fullDayLabel,
   headline,
   localDay,
   pullRequestUrl,
@@ -12,7 +11,6 @@ import {
   weeklyCounts,
   weeklySeries,
   workingDay,
-  yesterday,
 } from "./history";
 
 // Local times only, so the assertions hold in every time zone the tests run in.
@@ -47,27 +45,50 @@ describe("workingDay", () => {
 });
 
 describe("headline (pull requests only, closed − opened)", () => {
-  it("counts this week from Monday to now, the previous working day, last week and four weeks", () => {
-    const h = headline(EVENTS, NOW);
-    expect(h.week).toEqual({ label: "Mon–Wed", closed: 3, opened: 1, net: 2 });
-    expect(h.yesterday).toEqual({ label: "Tue 17 Nov", closed: 2, opened: 0, net: 2 });
-    // Mon 9 – Sun 15 Nov: opened Mon 9 and Sat 14, merged Sun 15.
-    expect(h.lastWeek).toEqual({ label: "9–13 Nov", closed: 1, opened: 2, net: -1 });
-    expect(h.fourWeeks).toEqual({ net: 1, before: 0 });
+  it("counts calendar days, this week and month to date", () => {
+    const figures = headline(EVENTS, new Date(2026, 10, 18, 13));
+    expect(figures.today).toMatchObject({ label: "Wed 18 Nov", closed: 1, opened: 0 });
+    expect(figures.yesterday).toMatchObject({ label: "Tue 17 Nov", closed: 2, opened: 0 });
+    expect(figures.week).toMatchObject({ closed: 3, opened: 1 });
+    expect(figures.month).toMatchObject({ closed: 4, opened: 3 });
   });
 
-  it("on a Monday, yesterday is the Friday with the weekend after it", () => {
-    const h = headline(EVENTS, new Date(2026, 10, 16, 9));
-    expect(h.yesterday).toEqual({ label: "Fri 13 Nov", closed: 1, opened: 1, net: 0 });
-    expect(h.week.label).toBe("Mon");
-    expect(headline([], new Date(2026, 11, 2, 9)).lastWeek.label).toBe("23–27 Nov");
-    expect(headline([], new Date(2026, 11, 9, 9)).lastWeek.label).toBe("30 Nov – 4 Dec");
+  it("uses the configured time zone at midnight and includes weekend events on their calendar day", () => {
+    const events: HistoryEvent[] = [
+      { at: "2026-10-31T23:30:00Z", kind: "pr_opened", item_id: "acme/a#1" },
+      { at: "2026-11-01T02:00:00Z", kind: "pr_merged", item_id: "acme/a#2" },
+      { at: "2026-11-01T08:00:00Z", kind: "pr_merged", item_id: "acme/a#3" },
+    ];
+    const now = new Date("2026-11-01T07:00:00Z");
+    expect(headline(events, now, "Europe/Warsaw").today).toMatchObject({ closed: 1, opened: 1 });
+    expect(headline(events, now, "America/Los_Angeles").yesterday).toMatchObject({ closed: 1, opened: 1 });
+  });
+  it("labels Monday and the first of the month as single dates", () => {
+    expect(headline([], new Date(2026, 10, 23, 12)).week.label).toBe("Mon 23 Nov");
+    expect(headline([], new Date(2026, 11, 1, 12)).month.label).toBe("Tue 1 Dec");
   });
 
-  it("counts the four weeks before the last twenty working days", () => {
-    const h = headline([ev("pr_merged", 10, 21), ev("pr_merged", 9, 23), ev("pr_opened", 9, 22)], NOW);
-    // Window: Thu 22 Oct – Wed 18 Nov; before: Thu 24 Sep – Wed 21 Oct.
-    expect(h.fourWeeks).toEqual({ net: 0, before: 1 });
+  it("falls back to browser calendar days when the stored zone is unknown", () => {
+    const figures = headline(EVENTS, NOW, "Etc/Unknown");
+    expect(figures.today).toEqual(headline(EVENTS, NOW).today);
+    expect(figures.zoneLabel).toBe(headline(EVENTS, NOW).zoneLabel);
+    expect(figures.unsupportedZone).toBe("Etc/Unknown");
+  });
+
+  it("uses the same Sunday for the headline and side panel on a Monday in the dashboard zone", () => {
+    const date = new Date("2026-11-16T00:30:00Z");
+    const events: HistoryEvent[] = [
+      { kind: "pr_merged", at: "2026-11-15T17:00:00Z", item_id: "acme/a#1" },
+      { kind: "review_given", at: "2026-11-15T18:00:00Z", item_id: "acme/a#2" },
+      { kind: "pr_opened", at: "2026-11-15T23:30:00Z", item_id: "acme/a#3" },
+    ];
+    const figures = headline(events, date, "Europe/Warsaw");
+    expect(figures.yesterday).toMatchObject({ label: "Sun 15 Nov", closed: 1, opened: 0 });
+    expect(figures.yesterdayDetails).toMatchObject({
+      day: "2026-11-15",
+      prs: { closed: 1, opened: 0, merged: 1 },
+      reviews: 1,
+    });
   });
 });
 
@@ -126,8 +147,8 @@ describe("weeklyCounts", () => {
 });
 
 describe("yesterday", () => {
-  it("sums pull requests and reviews of the previous working day and names the merged ones", () => {
-    expect(yesterday(EVENTS, NOW)).toEqual({
+  it("sums pull requests and reviews of the previous calendar day and names the merged ones", () => {
+    expect(headline(EVENTS, NOW).yesterdayDetails).toEqual({
       day: "2026-11-17",
       prs: { closed: 2, opened: 0, net: 2, merged: 2 },
       reviews: 1,
@@ -158,7 +179,6 @@ describe("chart labels", () => {
       true,
     ]);
     expect(weeks.at(-1)).toMatchObject({ label: "16 Nov", full: "Week of 16 Nov" });
-    expect(fullDayLabel("2026-11-17")).toBe("Tue 17 Nov");
   });
 
   it("throughput weeks: merged pull requests and reviews given", () => {

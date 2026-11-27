@@ -10,7 +10,7 @@ RUN apt-get update \
  && install -d -m 0755 /usr/share/doc/diffpilot \
  && dpkg-query -W -f='${Package} ${Version} ${source:Package} ${source:Version}\n' \
     > /usr/share/doc/diffpilot/packages.txt
-COPY --chmod=0644 --from=workspace LICENSE.md /usr/share/doc/diffpilot/LICENSE.md
+COPY --chmod=0644 --from=workspace LICENSE NOTICE /usr/share/doc/diffpilot/
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/egress-proxy-entrypoint
 COPY --chmod=0644 squid.conf /etc/squid/squid.conf
 USER proxy

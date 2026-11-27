@@ -3,9 +3,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "../../api/client";
 import { useMe } from "../../api/queries";
-import type { RefreshStatus, SizeMark } from "../../api/generated/types";
+import type { RefreshStatus } from "../../api/generated/types";
 import { useNow } from "../../app/now";
-import { ALL_SIZES } from "../../components/dashboard/common/size";
 import { ALL_KINDS, type ItemKind } from "../../components/dashboard/work-list/WorkList";
 import {
   SUMMARY_KEY,
@@ -16,7 +15,8 @@ import {
   useWatchItem,
   useDashboardItems,
   useDashboardSummary,
-  useRankAgain,
+  useRejudgeItem,
+  useRetryRanking,
   useRefreshEvents,
   useSaveBrowserTimeZone,
   useSlackNames,
@@ -28,8 +28,6 @@ import { dashboardView } from "./state";
 
 /** localStorage key of the kinds shown (a JSON array such as `["pr","todo"]`). */
 export const FILTER_KEY = "sr.dashboard.kinds";
-/** localStorage key of the size classes shown (a JSON array such as `["small","medium"]`). */
-export const SIZE_FILTER_KEY = "sr.dashboard.sizes";
 /** localStorage key of the earlier single-choice switch, read once when `FILTER_KEY` is absent. */
 export const LEGACY_FILTER_KEY = "sr.dashboard.kind";
 /** How long the "Ranking finished" notice stays. */
@@ -80,41 +78,24 @@ function useKindFilter(): [ItemKind[], (filter: ItemKind[]) => void] {
   return [filter, set];
 }
 
-/** The size classes shown (pull requests only), remembered across visits; every size at first. */
-function useSizeFilter(): [SizeMark[], (sizes: SizeMark[]) => void] {
-  const [sizes, setSizes] = useState<SizeMark[]>(() => {
-    try {
-      return parseChoice(localStorage.getItem(SIZE_FILTER_KEY) ?? "", ALL_SIZES) ?? ALL_SIZES;
-    } catch {
-      return ALL_SIZES;
-    }
-  });
-  const set = useCallback((next: SizeMark[]) => {
-    setSizes(next);
-    try {
-      localStorage.setItem(SIZE_FILTER_KEY, JSON.stringify(next));
-    } catch {
-      // Not remembered without storage; the choice still applies.
-    }
-  }, []);
-  return [sizes, set];
-}
-
 const LIVE_RANKING = ["running", "waiting_for_analysis", "paused"];
 
 /** Calls `report` with the item count when the ranking of refresh `id` goes from live to `finished`. */
-function useFinishedRanking(status: RefreshStatus | null | undefined, report: (total: number) => void): void {
+function useFinishedRanking(
+  status: RefreshStatus | null | undefined,
+  report: (judged: number) => void,
+): void {
   const id = status?.id;
   const state = status?.ranking?.state;
-  const total = status?.ranking?.total;
+  const judged = status?.ranking?.judged;
   const seen = useRef<{ id?: string; state?: string }>({});
   useEffect(() => {
     const before = seen.current;
     seen.current = { id, state };
     if (before.id === id && before.state !== undefined && LIVE_RANKING.includes(before.state)) {
-      if (state === "finished" && total !== undefined) report(total);
+      if (state === "finished" && judged !== undefined) report(judged);
     }
-  }, [id, state, total, report]);
+  }, [id, state, judged, report]);
 }
 
 /** "Ranking finished" for a while after a ranking this page watched reached `finished` (plan §B.3 B-S5). */
@@ -140,13 +121,12 @@ function actionError(error: unknown, action: "refresh" | "cancel" | "rank"): str
   if (error instanceof ApiError) {
     if (error.code === "refresh_running") {
       return action === "rank"
-        ? "A refresh is running; rank again after it finished."
+        ? "Wait for the running refresh to finish before retrying ranking."
         : "A refresh is already scanning; its progress is shown.";
     }
     if (error.code === "conflict") {
-      return action === "cancel"
-        ? "This refresh had already ended."
-        : "This ranking can no longer be retried.";
+      if (action === "cancel") return "This refresh had already ended.";
+      if (action === "rank") return "This ranking can no longer be retried.";
     }
     return error.message;
   }
@@ -174,10 +154,10 @@ export function useDashboardPage() {
   const timeZoneSave = useSaveBrowserTimeZone(data);
   const now = useNow();
   const [filter, setFilter] = useKindFilter();
-  const [sizes, setSizes] = useSizeFilter();
   const start = useStartRefresh();
   const cancel = useCancelRefresh();
-  const rank = useRankAgain();
+  const rejudge = useRejudgeItem();
+  const rank = useRetryRanking();
   const notice = useRankingFinished(data?.latest_refresh, snapshotRefresh.data);
 
   // An action's error belongs to the refresh it was about: a change of the latest refresh clears it.
@@ -188,8 +168,8 @@ export function useDashboardPage() {
   useEffect(() => {
     resetStart();
     resetCancel();
-    resetRank();
-  }, [latestKey, resetStart, resetCancel, resetRank]);
+  }, [latestKey, resetStart, resetCancel]);
+  useEffect(() => resetRank(), [data?.snapshot?.refresh_id, resetRank]);
 
   // Items of a newer revision than the summary: the summary is behind, read it again.
   const itemsRevision = items.data?.revision;
@@ -199,10 +179,7 @@ export function useDashboardPage() {
     }
   }, [client, data, itemsRevision, items.isPlaceholderData]);
 
-  const view = useMemo(
-    () => data && dashboardView(data, snapshotRefresh.data, timeZoneSave.failed),
-    [data, snapshotRefresh.data, timeZoneSave.failed],
-  );
+  const view = useMemo(() => data && dashboardView(data, timeZoneSave.failed), [data, timeZoneSave.failed]);
   const nowDate = useMemo(() => new Date(now), [now]);
 
   return {
@@ -210,6 +187,8 @@ export function useDashboardPage() {
     snooze,
     wake,
     watch,
+    rejudge,
+    snapshotRefresh: snapshotRefresh.data,
     mentionsExpanded,
     setMentionsExpanded,
     withBots,
@@ -225,25 +204,23 @@ export function useDashboardPage() {
     allItems: items.data?.items,
     filter,
     setFilter,
-    /** Size classes shown in Needs you (pull requests only). */
-    sizes,
-    setSizes,
     now: nowDate,
     notice,
     refresh: {
-      start: () => start.mutate(),
+      start: () => start.mutate(false),
+      rejudgeOutdated: () => start.mutate(true),
       starting: start.isPending,
       error: actionError(start.error, "refresh"),
+    },
+    retryRanking: {
+      run: (id: string) => rank.mutate(id),
+      pending: rank.isPending,
+      error: actionError(rank.error, "rank"),
     },
     cancel: {
       run: (id: string) => cancel.mutate(id),
       pending: cancel.isPending,
       error: actionError(cancel.error, "cancel"),
-    },
-    rankAgain: {
-      run: (id: string) => rank.mutate(id),
-      pending: rank.isPending,
-      error: actionError(rank.error, "rank"),
     },
   };
 }

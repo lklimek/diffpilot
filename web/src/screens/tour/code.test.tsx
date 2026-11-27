@@ -119,10 +119,19 @@ describe("code of long and disjoint ranges", () => {
 
   it("reads the rest of a long removed block in parts of at most the limit", async () => {
     show(<RangeCode ctx={ctx()} query={{ path: "a.rs", side: "head", from: 1, to: 1 }} />);
-    await userEvent.click(await screen.findByRole("button", { name: "Show 3001 more deleted lines" }));
-    await screen.findByRole("region", { name: /a\.rs, lines 2100 to 4099, removed code/ });
-    await userEvent.click(screen.getByRole("button", { name: "Show lines 4100–5100 of a.rs (base commit)" }));
-    await screen.findByRole("region", { name: /a\.rs, lines 4100 to 5100, removed code/ });
+    const user = userEvent.setup();
+    const moreDeleted = await screen.findByLabelText("Show 3001 more deleted lines", { selector: "button" });
+    expect(moreDeleted).toHaveAccessibleName("Show 3001 more deleted lines");
+    await user.click(moreDeleted);
+    await screen.findByLabelText("a.rs, lines 2100 to 4099, removed code at the base commit", {
+      selector: '[role="region"]',
+    });
+    const next = screen.getByText("Show lines 4100–5100 of a.rs (base commit)", { selector: "button" });
+    expect(next).toHaveAccessibleName("Show lines 4100–5100 of a.rs (base commit)");
+    await user.click(next);
+    await screen.findByLabelText("a.rs, lines 4100 to 5100, removed code at the base commit", {
+      selector: '[role="region"]',
+    });
     expect(requests.slice(1).map((q) => [q.side, q.from, q.to])).toEqual([
       ["base", 2100, 4099],
       ["base", 4100, 5100],

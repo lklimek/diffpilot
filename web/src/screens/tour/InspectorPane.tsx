@@ -1,3 +1,4 @@
+import { errorText } from "../../api/client";
 import type { UseQueryResult } from "@tanstack/react-query";
 import type { ReactNode, RefObject } from "react";
 import type {
@@ -41,7 +42,7 @@ import {
 import type { SectionControl } from "../../components/inspector/sectionState";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { useAskChat } from "../review/askChat";
-import { DiffCode, errorText } from "./code";
+import { DiffCode } from "./code";
 import { stepQuery } from "./sequence";
 
 /** The line a comment is being written on, with the displayed lines it was chosen in. */
@@ -78,6 +79,7 @@ interface InspectorPaneProps {
   commentRef: RefObject<HTMLTextAreaElement | null>;
   /** "Ask about this line" from a code line of the step. */
   onAskLine?: (target: CommentTarget) => void;
+  onAskRemark?: (annotation: Annotation) => void;
   /** "Use as review comment" on a flag of the step; absent while commenting is unavailable. */
   onFlagAsComment?: (flag: Annotation) => void;
   /** Draft text for the comment composer ("Use as review comment"); `onCommentPrefilled` once it is in. */
@@ -215,6 +217,7 @@ export function InspectorPane(props: InspectorPaneProps) {
     <Inspector
       sections={props.sections}
       onFlagAsComment={props.onFlagAsComment}
+      onAskRemark={props.onAskRemark}
       questions={here}
       tour={tour}
       block={block}

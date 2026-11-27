@@ -1,3 +1,4 @@
+import { focusQuestionHeading } from "./cardKeys";
 import { ProposalText } from "./ProposalText";
 import { Tooltip } from "../tooltip/Tooltip";
 import { Fragment, useEffect, useRef, type ReactNode } from "react";
@@ -9,7 +10,6 @@ import type {
   DecisionBatchRow,
   FlowStepRef,
   Gate,
-  NotAssessedReason,
 } from "../../api/generated/types";
 import { busyTip, buttonClass } from "../button/button";
 import { OpenExternal } from "../dashboard/common/OpenExternal";
@@ -18,8 +18,12 @@ import { clockText, dateTimeText } from "../format/time";
 import { ProvenanceTag } from "../section/ProvenanceTag";
 import { CollapsibleSection } from "../collapsible/CollapsibleSection";
 import { CHOICE_LABEL, decisionLabel, type EffectsPreviewState } from "./decisions";
+import { BotHeading, CommentTitle } from "./CommentTitle";
+import { DuplicateLinks, DuplicateOfLink } from "./DuplicateLinks";
+import { NOT_ASSESSED } from "./queueStatus";
 import { DecisionForm } from "./DecisionForm";
 import { GateMenu } from "./GateMenu";
+import { GithubProposal } from "./GithubDecision";
 import { GithubCommentText } from "./GithubCommentText";
 import { NotesElsewhere } from "./NotesElsewhere";
 import { CodeText } from "../section/CodeText";
@@ -32,15 +36,10 @@ export type ContextState =
   | { state: "none" }
   | { state: "ready"; value: CodeContext };
 
-const NOT_ASSESSED: Record<NotAssessedReason, string> = {
-  daily_limit: "daily limit",
-  failed: "the assessment failed",
-  missing: "left out of the pass",
-  not_run: "no assessment has run for it yet",
-};
-
 interface QuestionCardProps {
   item: CommentItem;
+  duplicates?: CommentItem[];
+  primaryHref?: string;
   /** The carry-over event that asked this repeat again (US9), when it is one. */
   reask?: CarryEvent;
   /** "Question 2 of 9". */
@@ -178,6 +177,7 @@ function Raised({ item }: { item: CommentItem }) {
 /** The LLM assessment of the item, or why there is none; `prHead` is the pull request's head now. */
 function Assessment({ item, prHead }: { item: CommentItem; prHead: string }) {
   const a = item.assessment;
+  if (item.assessment_state.state === "queued") return <p className="m-0">Waiting for assessment.</p>;
   if (item.assessment_state.state === "running")
     return <p className="m-0">LLM assessment running for this comment.</p>;
   if (item.assessment_state.state === "not_assessed")
@@ -285,7 +285,7 @@ function Reask({ event, now, storageKey }: { event: CarryEvent; now: Date; stora
 export function QuestionCard(props: QuestionCardProps) {
   const { item, context, now, storageKey } = props;
   const heading = useRef<HTMLHeadingElement>(null);
-  useEffect(() => heading.current?.focus(), [item.id]);
+  useEffect(() => focusQuestionHeading(heading.current), [item.id]);
   const ctx = context.state === "ready" ? context.value : null;
   const assessedAt = item.assessment ? clockText(item.assessment.assessed_at, now) : null;
   const rec = item.assessment?.recommendation;
@@ -299,9 +299,15 @@ export function QuestionCard(props: QuestionCardProps) {
         {itemId(item)} · {props.position.index} of {props.position.total} · {sourceText(item)}
         <Raised item={item} />
       </p>
-      <h2 id={`q-${item.id}`} ref={heading} tabIndex={-1} className="mt-1 mb-1.5 text-lg font-semibold">
-        {itemId(item)} · {item.title}
+      <h2
+        id={`q-${item.id}`}
+        ref={heading}
+        tabIndex={-1}
+        className="mt-1 mb-1.5 text-lg font-semibold wrap-anywhere"
+      >
+        {itemId(item)} · <CommentTitle item={item} />
       </h2>
+      <BotHeading item={item} />
       <div className="flex flex-wrap items-center gap-1.5">
         {item.gates.map((g) => (
           <GateChip key={g.gate} gate={g.gate} source={g.source} />
@@ -345,6 +351,7 @@ export function QuestionCard(props: QuestionCardProps) {
         {ctx ? <NotesElsewhere notes={ctx.notes} /> : <span className="text-muted">—</span>}
       </div>
 
+      <GithubProposal item={item} />
       {props.reask && <Reask event={props.reask} now={now} storageKey={key("reask")} />}
 
       <CollapsibleSection
@@ -408,9 +415,10 @@ export function QuestionCard(props: QuestionCardProps) {
             )}
           </>
         )}
-        {item.duplicate_of !== null && item.duplicate_of !== undefined && (
+        <DuplicateLinks primary={item} duplicates={props.duplicates ?? []} />
+        {item.duplicate_of != null && (
           <p>
-            Same problem as C{item.duplicate_of} <ProvenanceTag source="llm" />
+            <DuplicateOfLink item={item} href={props.primaryHref} onNavigate={props.onNavigate} />
           </p>
         )}
         <blockquote

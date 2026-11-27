@@ -56,6 +56,15 @@ const CLEANED: &[&str] = &[
     "working_sessions",
 ];
 const NEW: &[&str] = &[
+    "app_repositories",
+    "comment_decision_origins",
+    "comment_visits",
+    "comment_linked_account_pins",
+    "comment_item_marks",
+    "dashboard_ranking_resets",
+    "dashboard_sends",
+    "github_deliveries",
+    "pr_page_openings",
     "analytic_threads",
     "assessment_attempt_usage",
     "assessment_comparison_items",
@@ -225,7 +234,7 @@ async fn migration_0030_cleans_populated_0029_and_preserves_identity_and_setting
     assert_eq!(
         tables(&db.pool).await,
         expected,
-        "classify every post-0030 table"
+        "classify every table after startup migrations"
     );
     assert_clean(&db).await;
     db.pool.close().await;
@@ -290,5 +299,48 @@ async fn migration_0030_cleanup_failure_rolls_back_data_and_schema() {
         .await
         .unwrap();
     migrate(&old, MIGRATIONS.len()).await.unwrap();
-    assert_clean(&Db { pool: old }).await;
+    assert_clean(&Db::from_pool(old)).await;
+}
+
+#[tokio::test]
+async fn migration_0035_preserves_installed_repositories_and_installation_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("diffpilot.sqlite");
+    let before = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(&path)
+                .create_if_missing(true),
+        )
+        .await
+        .unwrap();
+    migrate(&before, migration_count_through(34)).await.unwrap();
+    sqlx::query(
+        "INSERT INTO app_repositories VALUES ('Acme', 'Core', 17, 42, 1, '2026-11-25T09:00:00Z')",
+    )
+    .execute(&before)
+    .await
+    .unwrap();
+    let rows = snapshot(&before, "app_repositories", &[]).await.1;
+    before.close().await;
+
+    let db = Db::open(&path).await.unwrap();
+    assert_eq!(snapshot(&db.pool, "app_repositories", &[]).await.1, rows);
+    let columns: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM pragma_index_info('app_repositories_by_installation')",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(columns, ["installation_id"]);
+    let inserted = sqlx::query(
+        "INSERT INTO app_repositories VALUES
+        ('Acme', 'First', NULL, 42, 0, '2026-11-25T10:00:00Z'),
+        ('Acme', 'Second', NULL, 42, 0, '2026-11-25T10:00:00Z')",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(inserted.rows_affected(), 2);
 }

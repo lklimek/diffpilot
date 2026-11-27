@@ -1,12 +1,12 @@
 # Licence notices in the container images
 
-The current Dockerfiles are authoritative. diffpilot uses [FSL-1.1-ALv2](../../LICENSE.md).
+The current Dockerfiles are authoritative. diffpilot uses [Apache-2.0](../../LICENSE).
 
 | Image | Included notices |
 |---|---|
-| server/gateway | `LICENSE.md`, `packages.txt`, `third-party-rust-server.txt` (shared server crate with embed-ui), `third-party-npm-web.txt` under `/usr/share/doc/diffpilot/` |
-| runner/launcher | diffpilot `LICENSE.md`; Debian package copyright files under `/usr/share/doc/` |
-| worker | diffpilot `LICENSE.md`, Codex `LICENSE`/`NOTICE`/bubblewrap `COPYING` under `/usr/share/doc/diffpilot/`; curated claudius `LICENSE`, `SOURCE`, `SOURCE_COMMIT` under `/etc/codex/claudius/`; Debian package copyright files |
+| server/gateway | `LICENSE`, `NOTICE`, `packages.txt`, `third-party-rust-server.txt` (shared server crate with embed-ui), `third-party-npm-web.txt` under `/usr/share/doc/diffpilot/` |
+| runner/launcher | diffpilot `LICENSE` and `NOTICE`; Debian package copyright files under `/usr/share/doc/` |
+| worker | diffpilot `LICENSE` and `NOTICE`, Codex `LICENSE`/`NOTICE`/bubblewrap `COPYING` under `/usr/share/doc/diffpilot/`; curated claudius `LICENSE`, `SOURCE`, `SOURCE_COMMIT` under `/etc/codex/claudius/`; Debian package copyright files |
 | fetch | Upstream digest-pinned Rust image notices; installed Debian package copyright files |
 | egress-proxy | diffpilot licence and Ubuntu package manifest/copyright files |
 

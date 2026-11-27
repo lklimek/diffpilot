@@ -1,10 +1,11 @@
 //! PR read state, items with revisions, LLM assessments and assessment passes.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, Sqlite, Transaction};
 
-use contracts::api::dashboard::CommentTally;
 use contracts::api::review_loop::{
     AuthorKind, CommentAssessment, CommentItemKind, GateMark, ItemGithubFacts, ItemLocation,
     ItemState, OutsideResolution, ReadFailure,
@@ -15,6 +16,7 @@ use contracts::time::Timestamp;
 
 use super::super::jobs::ts;
 use super::super::{read_tx, write_tx};
+use super::marks::{ACTIVE_MARK_COLUMN, active_in_pass, end_marks, log_changes};
 use super::{
     ReviewLoop, json, json_col, opt_json_col, opt_ts_col, opt_wire_col, ts_col, u32_col, wire,
     wire_col,
@@ -63,6 +65,8 @@ pub struct ObservedItem {
     pub author: String,
     /// Author kind.
     pub author_kind: AuthorKind,
+    /// A bot PR status or summary comment.
+    pub status_comment: bool,
     /// GitHub link.
     pub url: Option<String>,
     /// Discussed lines.
@@ -88,6 +92,12 @@ pub struct ObservedItem {
 /// A stored item.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ItemRecord {
+    /// Candidate grounded and authorised by the host for this point.
+    #[serde(skip)]
+    pub import_candidate: Option<super::ImportCandidate>,
+    /// Active internal disposition.
+    #[serde(skip)]
+    pub active_mark: Option<super::ActiveMark>,
     /// Versioned source for a grounded body/comment point.
     pub source_id: Option<i64>,
     /// Verbatim source span.
@@ -108,6 +118,9 @@ pub struct ItemRecord {
     pub author: String,
     /// Author kind.
     pub author_kind: AuthorKind,
+    /// A bot PR status or summary comment.
+    #[serde(default)]
+    pub status_comment: bool,
     /// GitHub link.
     pub url: Option<String>,
     /// Discussed lines.
@@ -142,6 +155,32 @@ pub struct ItemRecord {
     pub updated_at: Timestamp,
 }
 
+impl ItemRecord {
+    /// Matches a reported body point by author and source span, quote or overlapping lines.
+    pub fn matches_body_point(
+        &self,
+        old_quote: &str,
+        reviewer: &str,
+        url: &str,
+        quote: &str,
+        location: Option<&ItemLocation>,
+    ) -> bool {
+        let same_source_span = self.url.as_deref() == Some(url)
+            && (quote.contains(old_quote) || old_quote.contains(quote));
+        self.author.eq_ignore_ascii_case(reviewer)
+            && (same_source_span
+                || quote == old_quote
+                || location
+                    .zip(self.location.as_ref())
+                    .is_some_and(|(new, old)| {
+                        new.path == old.path
+                            && new.lines.zip(old.lines).is_some_and(|(new, old)| {
+                                new.start_line <= old.end_line && old.start_line <= new.end_line
+                            })
+                    }))
+    }
+}
+
 /// Result of [`ReviewLoop::upsert_item`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UpsertOutcome {
@@ -160,13 +199,34 @@ pub struct StoredAssessment {
     pub assessment: CommentAssessment,
     /// Fingerprint of comment text, code at its lines and PR purpose.
     pub fingerprint: String,
+    /// Description from the primary method's report, when provided.
+    pub description: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct AssessmentBody<T> {
+    #[serde(flatten)]
+    assessment: T,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+}
+
+fn stored_assessment(
+    body: AssessmentBody<CommentAssessment>,
+    fingerprint: String,
+) -> StoredAssessment {
+    StoredAssessment {
+        assessment: body.assessment,
+        fingerprint,
+        description: body.description,
+    }
 }
 
 /// What started an assessment pass.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PassCause {
-    /// Comments or the PR page opened with unassessed items.
+    /// A session requested a pass for the PR's comments.
     Opened,
     /// A read found new comments or a moved head.
     Read,
@@ -241,14 +301,43 @@ pub struct PassRecord {
     pub sent: Vec<SentItem>,
     /// The question a question pass answers.
     pub question: Option<QuestionId>,
+    /// The batch whose continuation this question interrupted.
+    pub resume_after_question: Option<PassId>,
+    /// Whether the primary method can still produce progress, or already did.
+    pub may_continue: bool,
+    /// When the live pass was admitted.
+    pub created_at: Timestamp,
     /// When it ended (finished or failed).
     pub finished_at: Option<Timestamp>,
 }
 
-const PASS_COLUMNS: &str =
-    "id, pull_request_id, user_id, cause, head, state, job_id, sent, question_id, finished_at";
+// The primary job is linked on admission. A terminal primary without a card promises no follow-up,
+// even while the secondary method still holds the pass open.
+const PASS_MAY_CONTINUE: &str = "NOT EXISTS (
+    SELECT 1 FROM jobs j LEFT JOIN assessment_method_runs r ON r.job_id=j.id
+    WHERE j.id=p.job_id AND (
+        j.state IN ('failed','cancelled') OR j.cancel_requested OR
+        r.status IN ('failed','cancelled') OR (r.status='succeeded' AND NOT EXISTS (
+            SELECT 1 FROM assessment_comparison_items c
+            JOIN comment_assessments a ON a.item_id=c.primary_item_id AND a.pass_id=c.pass_id
+            WHERE c.pass_id=r.pass_id AND c.method=r.method
+        ))
+    )) AS may_continue";
+
+const PASS_COLUMNS: &str = "p.id, p.pull_request_id, p.user_id, p.cause, p.head, p.state, p.job_id, p.sent, p.question_id, p.created_at, p.finished_at";
+
+// Keep the sent-item array readable by older binaries when adding a question handoff.
+#[derive(Deserialize, Serialize)]
+struct PassInputItem<T> {
+    #[serde(flatten)]
+    item: T,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resume_after_question: Option<PassId>,
+}
 
 fn pass_from_row(row: &SqliteRow) -> Result<PassRecord, DbError> {
+    let input: Vec<PassInputItem<SentItem>> = json_col(row, "sent")?;
+    let resume_after_question = input.first().and_then(|entry| entry.resume_after_question);
     Ok(PassRecord {
         id: wire_col(row, "id")?,
         pull_request_id: row.try_get("pull_request_id")?,
@@ -257,8 +346,11 @@ fn pass_from_row(row: &SqliteRow) -> Result<PassRecord, DbError> {
         head: CommitSha(row.try_get("head")?),
         state: wire_col(row, "state")?,
         job_id: opt_wire_col(row, "job_id")?,
-        sent: json_col(row, "sent")?,
+        sent: input.into_iter().map(|entry| entry.item).collect(),
         question: opt_wire_col(row, "question_id")?,
+        resume_after_question,
+        may_continue: row.try_get("may_continue")?,
+        created_at: ts_col(row, "created_at")?,
         finished_at: opt_ts_col(row, "finished_at")?,
     })
 }
@@ -270,11 +362,16 @@ pub enum PassStart {
     Started(PassId),
     /// Another pass of the PR is queued or running (one per PR).
     Busy(PassId),
+    /// A sent item was marked while preparing the batch.
+    MarkedItem,
 }
 
 const ITEM_COLUMNS: &str = "id, pull_request_id, item_no, kind, stable_key, author, author_kind, url, path,
     start_line, end_line, title, body, body_hash, first_seen_head, first_round, bot_severity, gate_marks, github,
-    state, revision, outside, repeat_of, gone_at, updated_at, source_id, quote, duplicate_of";
+    state, revision, outside, repeat_of, gone_at, updated_at, source_id, quote, duplicate_of, status_comment,
+    CASE WHEN EXISTS (SELECT 1 FROM memberships m WHERE m.tenant_id = comment_items.tenant_id
+        AND m.user_id = json_extract(comment_items.import_candidate, '$.user_id'))
+        THEN import_candidate END AS import_candidate";
 
 fn item_from_row(row: &SqliteRow) -> Result<ItemRecord, DbError> {
     let path: Option<String> = row.try_get("path")?;
@@ -291,6 +388,8 @@ fn item_from_row(row: &SqliteRow) -> Result<ItemRecord, DbError> {
     };
     let first_round: Option<i64> = row.try_get("first_round")?;
     Ok(ItemRecord {
+        import_candidate: opt_json_col(row, "import_candidate")?,
+        active_mark: opt_json_col(row, "active_mark")?,
         source_id: row.try_get("source_id")?,
         quote: row.try_get("quote")?,
         duplicate_of: opt_wire_col(row, "duplicate_of")?,
@@ -301,6 +400,7 @@ fn item_from_row(row: &SqliteRow) -> Result<ItemRecord, DbError> {
         stable_key: row.try_get("stable_key")?,
         author: row.try_get("author")?,
         author_kind: wire_col(row, "author_kind")?,
+        status_comment: row.try_get("status_comment")?,
         url: row.try_get("url")?,
         location: path.map(|path| ItemLocation { path, lines }),
         title: row.try_get("title")?,
@@ -325,13 +425,70 @@ fn item_from_row(row: &SqliteRow) -> Result<ItemRecord, DbError> {
     })
 }
 
+/// Why the live source prevents projection of a reported point.
+pub(in crate::repo) enum SourcePointExclusion {
+    /// A live status comment is excluded from assessment.
+    StatusComment,
+    /// A fresh ID repeats an actively marked point.
+    Marked(u32),
+}
+
+fn same_marked_quote(marked: &str, fresh: &str) -> bool {
+    let marked = marked.split_whitespace().collect::<Vec<_>>().join(" ");
+    let fresh = fresh.split_whitespace().collect::<Vec<_>>().join(" ");
+    if marked.is_empty() || fresh.is_empty() {
+        return false;
+    }
+    // A contained excerpt must cover at least half the marked text and be longer than a generic anchor.
+    let minimum = marked.chars().count().div_ceil(2).max(20);
+    fresh == marked || (fresh.chars().count() >= minimum && marked.contains(&fresh))
+}
+
+/// Checks live status comments and marked points under the assessment's write lock.
+pub(in crate::repo) async fn source_point_exclusion_in(
+    tx: &mut Transaction<'static, Sqlite>,
+    tenant: &str,
+    pr: i64,
+    url: &str,
+    quote: &str,
+    observed: Option<&ObservedItem>,
+) -> Result<Option<SourcePointExclusion>, DbError> {
+    let candidates = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT {ITEM_COLUMNS}, {ACTIVE_MARK_COLUMN}
+         FROM comment_items
+         WHERE tenant_id = ? AND pull_request_id = ? AND url = ?
+           AND ((status_comment AND gone_at IS NULL) OR (? AND EXISTS (
+                SELECT 1 FROM comment_item_marks m
+                WHERE m.item_id = comment_items.id AND m.undone_at IS NULL
+           )))"
+    )))
+    .bind(tenant)
+    .bind(pr)
+    .bind(url)
+    .bind(observed.is_some())
+    .fetch_all(&mut **tx)
+    .await?;
+    for row in &candidates {
+        let item = item_from_row(row)?;
+        if item.status_comment && item.gone_at.is_none() {
+            return Ok(Some(SourcePointExclusion::StatusComment));
+        }
+        if observed.is_some_and(|point| item.author.eq_ignore_ascii_case(&point.author))
+            && same_marked_quote(item.quote.as_deref().unwrap_or(&item.body), quote)
+        {
+            return Ok(Some(SourcePointExclusion::Marked(item.no)));
+        }
+    }
+    Ok(None)
+}
+
 /// The item `id` inside `tx`.
 pub(super) async fn item_in(
     tx: &mut Transaction<'static, Sqlite>,
     id: CommentItemId,
 ) -> Result<ItemRecord, DbError> {
     let row = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "SELECT {ITEM_COLUMNS} FROM comment_items WHERE id = ?"
+        "SELECT {ITEM_COLUMNS}, {ACTIVE_MARK_COLUMN} FROM comment_items WHERE id = ?"
     )))
     .bind(id.to_string())
     .fetch_optional(&mut **tx)
@@ -533,7 +690,7 @@ impl ReviewLoop<'_> {
     /// The PR's items by `C<no>`.
     pub async fn items(&self, pull_request_id: i64) -> Result<Vec<ItemRecord>, DbError> {
         sqlx::query(sqlx::AssertSqlSafe(format!(
-            "SELECT {ITEM_COLUMNS} FROM comment_items WHERE pull_request_id = ? ORDER BY item_no"
+            "SELECT {ITEM_COLUMNS}, {ACTIVE_MARK_COLUMN} FROM comment_items WHERE pull_request_id = ? ORDER BY item_no"
         )))
         .bind(pull_request_id)
         .fetch_all(self.pool)
@@ -550,7 +707,7 @@ impl ReviewLoop<'_> {
         no: u32,
     ) -> Result<Option<ItemRecord>, DbError> {
         sqlx::query(sqlx::AssertSqlSafe(format!(
-            "SELECT {ITEM_COLUMNS} FROM comment_items WHERE pull_request_id = ? AND item_no = ?"
+            "SELECT {ITEM_COLUMNS}, {ACTIVE_MARK_COLUMN} FROM comment_items WHERE pull_request_id = ? AND item_no = ?"
         )))
         .bind(pull_request_id)
         .bind(no)
@@ -583,6 +740,7 @@ impl ReviewLoop<'_> {
     /// Replaces an item's gates when it is still at `revision` (`Conflict` otherwise).
     pub async fn set_gates(
         &self,
+        (tenant, user): (&str, &str),
         id: CommentItemId,
         revision: u32,
         gates: &[GateMark],
@@ -603,24 +761,61 @@ impl ReviewLoop<'_> {
             item_in(&mut tx, id).await?;
             return Err(DbError::Conflict);
         }
+        if !gates.is_empty() {
+            super::origins::reopen_follower(&mut tx, id, now).await?;
+        }
         let item = item_in(&mut tx, id).await?;
+        if !gates.is_empty()
+            && item
+                .active_mark
+                .as_ref()
+                .is_some_and(|m| m.mark.follows.is_some())
+        {
+            let marks = end_marks(&mut tx, tenant, id, user, now).await?;
+            let item = item_in(&mut tx, id).await?;
+            tx.commit().await?;
+            log_changes(marks);
+            return Ok(item);
+        }
         tx.commit().await?;
         Ok(item)
     }
 
     /// Stores an assessment of an item. A recommendation or gates other than the latest assessment's raise the item's
     /// revision, so a decision prepared on what was shown before is refused as changed.
+    /// Returns false for status comments and actively marked items.
     pub async fn add_assessment(
         &self,
         tenant_id: &str,
         item: CommentItemId,
         assessment: &CommentAssessment,
         fingerprint: &str,
-    ) -> Result<(), DbError> {
+    ) -> Result<bool, DbError> {
+        self.add_assessment_with_description(tenant_id, item, assessment, fingerprint, None)
+            .await
+    }
+
+    /// Stores a validated assessment with its report description, including when it is reused at a new head.
+    pub async fn add_assessment_with_description(
+        &self,
+        tenant_id: &str,
+        item: CommentItemId,
+        assessment: &CommentAssessment,
+        fingerprint: &str,
+        description: Option<&str>,
+    ) -> Result<bool, DbError> {
         let mut tx = write_tx(self.pool).await?;
-        add_assessment_in(&mut tx, tenant_id, item, assessment, fingerprint).await?;
+        let stored = add_assessment_in(
+            &mut tx,
+            tenant_id,
+            item,
+            assessment,
+            fingerprint,
+            description,
+        )
+        .await?;
         tx.commit().await?;
-        Ok(())
+        Ok(stored)
     }
 
     /// The newest assessment of an item.
@@ -635,10 +830,7 @@ impl ReviewLoop<'_> {
         .fetch_optional(self.pool)
         .await?
         .map(|row| {
-            Ok(StoredAssessment {
-                assessment: json_col(&row, "body")?,
-                fingerprint: row.try_get("fingerprint")?,
-            })
+            Ok(stored_assessment(json_col(&row, "body")?, row.try_get("fingerprint")?))
         })
         .transpose()
     }
@@ -648,6 +840,18 @@ impl ReviewLoop<'_> {
         tenant_id: &str,
         pass: &NewPass,
         now: Timestamp,
+    ) -> Result<PassStart, DbError> {
+        self.start_pass_with_continuation(tenant_id, pass, now, None)
+            .await
+    }
+
+    /// Queues a pass and stores the interrupted batch with a question, if there was one.
+    pub async fn start_pass_with_continuation(
+        &self,
+        tenant_id: &str,
+        pass: &NewPass,
+        now: Timestamp,
+        resume_after_question: Option<PassId>,
     ) -> Result<PassStart, DbError> {
         let mut tx = write_tx(self.pool).await?;
         let live: Option<String> = sqlx::query_scalar(
@@ -660,6 +864,9 @@ impl ReviewLoop<'_> {
             return Ok(PassStart::Busy(super::super::jobs::parse_wire(
                 &live, "id",
             )?));
+        }
+        if active_in_pass(&mut tx, tenant_id, &pass.sent).await? {
+            return Ok(PassStart::MarkedItem);
         }
         let id = PassId::new_random();
         let items =
@@ -677,7 +884,11 @@ impl ReviewLoop<'_> {
         .bind(&pass.head.0)
         .bind(items)
         .bind(ts(now))
-        .bind(json(&pass.sent)?)
+        .bind(match (resume_after_question, pass.cause, pass.sent.as_slice()) {
+            (Some(id), PassCause::Question, [item]) => json(&[PassInputItem { item, resume_after_question: Some(id) }])?,
+            (Some(_), _, _) => return Err(DbError::Conflict),
+            (None, _, items) => json(&items)?,
+        })
         .bind(pass.question.map(|question| question.to_string()))
         .execute(&mut *tx)
         .await?;
@@ -724,7 +935,7 @@ impl ReviewLoop<'_> {
     /// A pass.
     pub async fn pass(&self, id: PassId) -> Result<PassRecord, DbError> {
         let row = sqlx::query(sqlx::AssertSqlSafe(format!(
-            "SELECT {PASS_COLUMNS} FROM comment_passes WHERE id = ?"
+            "SELECT {PASS_COLUMNS}, {PASS_MAY_CONTINUE} FROM comment_passes p WHERE p.id = ?"
         )))
         .bind(id.to_string())
         .fetch_optional(self.pool)
@@ -736,8 +947,8 @@ impl ReviewLoop<'_> {
     /// The PR's latest assessment pass.
     pub async fn latest_pass(&self, pull_request_id: i64) -> Result<Option<PassRecord>, DbError> {
         sqlx::query(sqlx::AssertSqlSafe(format!(
-            "SELECT {PASS_COLUMNS} FROM comment_passes WHERE pull_request_id = ?
-             ORDER BY created_at DESC, rowid DESC LIMIT 1"
+            "SELECT {PASS_COLUMNS}, {PASS_MAY_CONTINUE} FROM comment_passes p WHERE p.pull_request_id = ?
+             ORDER BY p.created_at DESC, p.rowid DESC LIMIT 1"
         )))
         .bind(pull_request_id)
         .fetch_optional(self.pool)
@@ -750,8 +961,8 @@ impl ReviewLoop<'_> {
     /// Queued and running passes of every pull request, oldest first (server start: follow them again).
     pub async fn live_passes(&self) -> Result<Vec<PassRecord>, DbError> {
         sqlx::query(sqlx::AssertSqlSafe(format!(
-            "SELECT {PASS_COLUMNS} FROM comment_passes WHERE state IN ('queued', 'running')
-             ORDER BY created_at, rowid"
+            "SELECT {PASS_COLUMNS}, {PASS_MAY_CONTINUE} FROM comment_passes p WHERE p.state IN ('queued', 'running')
+             ORDER BY p.created_at, p.rowid"
         )))
         .fetch_all(self.pool)
         .await?
@@ -763,7 +974,7 @@ impl ReviewLoop<'_> {
     /// The item `id`.
     pub async fn item(&self, id: CommentItemId) -> Result<ItemRecord, DbError> {
         sqlx::query(sqlx::AssertSqlSafe(format!(
-            "SELECT {ITEM_COLUMNS} FROM comment_items WHERE id = ?"
+            "SELECT {ITEM_COLUMNS}, {ACTIVE_MARK_COLUMN} FROM comment_items WHERE id = ?"
         )))
         .bind(id.to_string())
         .fetch_optional(self.pool)
@@ -774,10 +985,8 @@ impl ReviewLoop<'_> {
     }
 
     /// For each of `prs` (repository and number) that the tenant read successfully or `user_id` watches: its comment
-    /// counts after a successful read (comment items without PR-level questions and items the read no longer
-    /// produces, and those waiting for a decision), and whether the user watches it, in list order. Waiting matches
-    /// the server's queue: an open state, and not listed in a standing "merge now" decision's follow-up PR. One
-    /// statement for the whole list. Read-only.
+    /// count of current comment items after a successful read, and whether the user watches it, in list order.
+    /// One read-only statement for the whole list.
     pub async fn comment_tallies(
         &self,
         tenant_id: &str,
@@ -789,7 +998,7 @@ impl ReviewLoop<'_> {
                 .map(|(repo, number)| serde_json::json!([repo.owner, repo.name, number]))
                 .collect(),
         );
-        let rows: Vec<(i64, bool, bool, i64, i64)> = sqlx::query_as(
+        let rows: Vec<(i64, i64, bool, bool, i64, i64)> = sqlx::query_as(
             "WITH wanted AS (
                  SELECT CAST(j.key AS INTEGER) AS idx, json_extract(j.value, '$[0]') AS owner,
                      json_extract(j.value, '$[1]') AS name, json_extract(j.value, '$[2]') AS number
@@ -802,21 +1011,18 @@ impl ReviewLoop<'_> {
                          AND pw.user_id = ?3 AND pw.state <> 'ended') AS watched
                  FROM wanted w
                  JOIN repos r ON r.tenant_id = ?2 AND r.owner = w.owner AND r.name = w.name
-                 JOIN pull_requests p ON p.tenant_id = ?2 AND p.repo_id = r.id AND p.number = w.number),
-             followed AS (
-                 SELECT k.pr, CAST(n.value AS INTEGER) AS no
-                 FROM known k
-                 JOIN comment_items q ON q.pull_request_id = k.pr
-                 JOIN comment_decisions d ON d.item_id = q.id AND d.kind = 'merge_with_follow_ups'
-                 JOIN comment_effects e ON e.decision_id = d.id AND e.kind = 'follow_up_pr'
-                     AND e.state <> 'cancelled'
-                 JOIN json_each(e.params, '$.item_nos') n
-                 WHERE k.was_read
-                   AND NOT EXISTS (SELECT 1 FROM comment_decisions s WHERE s.supersedes = d.id)
-                   AND NOT EXISTS (SELECT 1 FROM comment_decision_undos u WHERE u.decision_id = d.id))
-             SELECT k.idx, k.was_read, k.watched, COUNT(i.id),
-                 COALESCE(SUM(i.state IN ('assessing', 'undecided', 'asked_back', 'reopened')
-                     AND NOT EXISTS (SELECT 1 FROM followed f WHERE f.pr = k.pr AND f.no = i.item_no)), 0)
+                 JOIN pull_requests p ON p.tenant_id = ?2 AND p.repo_id = r.id AND p.number = w.number)
+             SELECT k.idx, k.pr, k.was_read, k.watched, COUNT(i.id),
+                 (SELECT COUNT(*) FROM comment_decision_origins o
+                    JOIN comment_decisions d ON d.id = o.decision_id
+                    JOIN comment_items ci ON ci.id = d.item_id
+                    LEFT JOIN comment_visits v ON v.tenant_id = ci.tenant_id
+                        AND v.pull_request_id = ci.pull_request_id AND v.user_id = ?3
+                    WHERE ci.tenant_id = ?2 AND ci.pull_request_id = k.pr
+                        AND o.origin = 'imported_github'
+                        AND NOT EXISTS (SELECT 1 FROM comment_decision_undos u WHERE u.decision_id = d.id)
+                        AND NOT EXISTS (SELECT 1 FROM comment_decisions n WHERE n.supersedes = d.id)
+                        AND (v.visited_at IS NULL OR rtrim(d.decided_at, 'Z') > rtrim(v.visited_at, 'Z')))
              FROM known k
              LEFT JOIN comment_items i ON k.was_read AND i.pull_request_id = k.pr AND i.kind <> 'pr_question'
                  AND i.gone_at IS NULL
@@ -829,25 +1035,147 @@ impl ReviewLoop<'_> {
         .bind(user_id)
         .fetch_all(self.pool)
         .await?;
-        let count = |value: i64, column: &'static str| {
-            u32::try_from(value).map_err(|_| DbError::Corrupt { column })
-        };
         rows.into_iter()
-            .map(|(index, was_read, watched, total, needs_you)| {
-                Ok(PrCommentTally {
-                    index: usize::try_from(index).unwrap_or(usize::MAX),
-                    counts: was_read
-                        .then(|| {
-                            Ok::<_, DbError>(CommentTally {
-                                total: count(total, "comment_items")?,
-                                needs_you: count(needs_you, "comment_items.state")?,
+            .map(
+                |(index, pull_request_id, was_read, watched, total, unseen)| {
+                    Ok(PrCommentTally {
+                        index: usize::try_from(index).unwrap_or(usize::MAX),
+                        pull_request_id,
+                        total: was_read
+                            .then(|| {
+                                u32::try_from(total).map_err(|_| DbError::Corrupt {
+                                    column: "comment_items",
+                                })
                             })
-                        })
-                        .transpose()?,
-                    watched,
-                })
-            })
+                            .transpose()?,
+                        imported_unseen: u32::try_from(unseen).unwrap_or(u32::MAX),
+                        watched,
+                    })
+                },
+            )
             .collect()
+    }
+
+    /// Reads the queue inputs for all requested dashboard PRs in one transaction.
+    /// A malformed PR is returned as a row-local error.
+    pub async fn comment_tally_views(
+        &self,
+        tenant_id: &str,
+        prs: &[i64],
+    ) -> Result<HashMap<i64, Result<PrTallyView, DbError>>, DbError> {
+        if prs.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let wanted = json(&prs)?;
+        let mut tx = read_tx(self.pool).await?;
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT c.pull_request_id, c.read_at, c.read_failure, c.read_failed_at, NULL AS github_snapshot,
+                    c.round_count, c.purpose, p.id, p.user_id, p.cause, p.head, p.state, p.job_id,
+                    p.sent, p.question_id, p.created_at, p.finished_at, {PASS_MAY_CONTINUE}
+             FROM comment_prs c LEFT JOIN comment_passes p ON p.id = (
+                 SELECT id FROM comment_passes WHERE pull_request_id = c.pull_request_id
+                 ORDER BY created_at DESC, rowid DESC LIMIT 1)
+             WHERE c.tenant_id = ? AND c.read_at IS NOT NULL
+               AND c.pull_request_id IN (SELECT value FROM json_each(?))",
+        )))
+        .bind(tenant_id)
+        .bind(wanted)
+        .fetch_all(&mut *tx)
+        .await?;
+        let mut views = HashMap::with_capacity(rows.len());
+        for row in &rows {
+            let id: i64 = row.try_get("pull_request_id")?;
+            views.insert(
+                id,
+                (|| {
+                    Ok(PrTallyView {
+                        pr: PrView {
+                            row: Some(pr_state_from_row(row)?),
+                            items: vec![],
+                            assessments: vec![],
+                            decisions: vec![],
+                        },
+                        latest_pass: row
+                            .try_get::<Option<String>, _>("id")?
+                            .map(|_| pass_from_row(row))
+                            .transpose()?,
+                    })
+                })(),
+            );
+        }
+        let ids: Vec<i64> = views
+            .iter()
+            .filter_map(|(&id, view)| view.is_ok().then_some(id))
+            .collect();
+        if ids.is_empty() {
+            tx.commit().await?;
+            return Ok(views);
+        }
+        let ids = json(&ids)?;
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT i.*, i.pull_request_id AS tally_pr, a.body AS assessment_body, a.fingerprint AS assessment_fingerprint
+             FROM (SELECT {ITEM_COLUMNS}, {ACTIVE_MARK_COLUMN} FROM comment_items WHERE pull_request_id IN (SELECT value FROM json_each(?))) i
+             LEFT JOIN comment_assessments a ON a.id = (SELECT MAX(l.id) FROM comment_assessments l WHERE l.item_id = i.id)
+             ORDER BY i.pull_request_id, i.item_no",
+        )))
+        .bind(&ids)
+        .fetch_all(&mut *tx)
+        .await?;
+        apply_tally_rows(&mut views, &rows, |view, row| {
+            let item = item_from_row(row)?;
+            if let Some(assessment) = opt_json_col(row, "assessment_body")? {
+                view.pr.assessments.push((
+                    item.id,
+                    stored_assessment(assessment, row.try_get("assessment_fingerprint")?),
+                ));
+            }
+            view.pr.items.push(item);
+            Ok(())
+        })?;
+        use super::decisions::{DECISION_COLUMNS, ORIGIN_JOIN, decision_from_row, effect_from_row};
+        let decisions = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {DECISION_COLUMNS}, i.pull_request_id AS tally_pr
+             FROM comment_decisions d JOIN comment_items i ON i.id = d.item_id
+             JOIN users u ON u.id = d.user_id {ORIGIN_JOIN}
+             WHERE i.pull_request_id IN (SELECT value FROM json_each(?))
+             ORDER BY d.decided_at, d.rowid",
+        )))
+        .bind(&ids)
+        .fetch_all(&mut *tx)
+        .await?;
+        let mut by_decision = HashMap::new();
+        apply_tally_rows(&mut views, &decisions, |view, row| {
+            let decision = decision_from_row(row)?;
+            by_decision.insert(decision.decision.id.to_string(), view.pr.decisions.len());
+            view.pr.decisions.push(decision);
+            Ok(())
+        })?;
+        // Only follow-up effects affect queue membership.
+        let effects = sqlx::query(
+            "SELECT i.pull_request_id AS tally_pr, e.decision_id,
+                 e.id, e.seq, e.after_seq, e.kind, e.executor, e.params, e.state,
+                 NULL AS claim_token_name, e.lease_until, e.seen_on_github_at, e.updated_at
+             FROM comment_effects e JOIN comment_decisions d ON d.id = e.decision_id
+             JOIN comment_items i ON i.id = d.item_id
+             WHERE i.pull_request_id IN (SELECT value FROM json_each(?))
+               AND d.kind = 'merge_with_follow_ups' AND e.kind = 'follow_up_pr'
+             ORDER BY e.seq",
+        )
+        .bind(ids)
+        .fetch_all(&mut *tx)
+        .await?;
+        apply_tally_rows(&mut views, &effects, |view, row| {
+            let id: &str = row.try_get("decision_id")?;
+            if let Some(&index) = by_decision.get(id) {
+                view.pr.decisions[index]
+                    .decision
+                    .effects
+                    .push(effect_from_row(row)?);
+            }
+            Ok(())
+        })?;
+        tx.commit().await?;
+        Ok(views)
     }
 
     /// Passes charged to a user since `since` (the daily cap) and the end of the PR's latest pass (spacing).
@@ -890,7 +1218,7 @@ pub(crate) async fn upsert_item_in(
     now: Timestamp,
 ) -> Result<UpsertOutcome, DbError> {
     let existing = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "SELECT {ITEM_COLUMNS} FROM comment_items WHERE pull_request_id = ? AND stable_key = ?"
+        "SELECT {ITEM_COLUMNS}, {ACTIVE_MARK_COLUMN} FROM comment_items WHERE pull_request_id = ? AND stable_key = ?"
     )))
     .bind(pull_request_id)
     .bind(&observed.stable_key)
@@ -918,8 +1246,8 @@ pub(crate) async fn upsert_item_in(
             sqlx::query(
                 "INSERT INTO comment_items (id, tenant_id, pull_request_id, item_no, kind, stable_key, author,
                      author_kind, url, path, start_line, end_line, title, body, body_hash, first_seen_head,
-                     first_round, bot_severity, github, state, outside, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     first_round, bot_severity, github, state, outside, created_at, updated_at, status_comment)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(id.to_string())
             .bind(tenant_id)
@@ -944,6 +1272,7 @@ pub(crate) async fn upsert_item_in(
             .bind(observed.outside.as_ref().map(json).transpose()?)
             .bind(ts(now))
             .bind(ts(now))
+            .bind(observed.status_comment)
             .execute(&mut **tx)
             .await?;
             UpsertOutcome::New(item_in(tx, id).await?)
@@ -957,6 +1286,7 @@ pub(crate) async fn upsert_item_in(
             let changed = item.kind != observed.kind
                 || item.author != observed.author
                 || item.author_kind != observed.author_kind
+                || item.status_comment != observed.status_comment
                 || item.url != observed.url
                 || item.location != observed.location
                 || item.title != observed.title
@@ -972,7 +1302,7 @@ pub(crate) async fn upsert_item_in(
                     "UPDATE comment_items SET kind = ?, author = ?, author_kind = ?, url = ?, path = ?,
                          start_line = ?, end_line = ?, title = ?, body = ?, body_hash = ?, bot_severity = ?,
                          github = ?, state = ?, outside = ?, gone_at = NULL, revision = revision + 1,
-                         updated_at = ?
+                         updated_at = ?, status_comment = ?
                      WHERE id = ?",
                 )
                 .bind(wire(observed.kind)?)
@@ -990,6 +1320,7 @@ pub(crate) async fn upsert_item_in(
                 .bind(wire(state)?)
                 .bind(observed.outside.as_ref().map(json).transpose()?)
                 .bind(ts(now))
+                .bind(observed.status_comment)
                 .bind(item.id.to_string())
                 .execute(&mut **tx)
                 .await?;
@@ -1007,8 +1338,12 @@ pub(crate) async fn upsert_item_in(
 pub struct PrCommentTally {
     /// Position in the requested list.
     pub index: usize,
-    /// Comment items and those waiting for a decision; `None` before the first successful read.
-    pub counts: Option<CommentTally>,
+    /// The stored pull request.
+    pub pull_request_id: i64,
+    /// Comment items; `None` before the first successful read.
+    pub total: Option<u32>,
+    /// GitHub imports made since the reader last entered Comments.
+    pub imported_unseen: u32,
     /// The user watches the pull request.
     pub watched: bool,
 }
@@ -1026,6 +1361,33 @@ pub struct PrView {
     pub decisions: Vec<super::StoredDecision>,
 }
 
+/// A dashboard PR's queue inputs, without its GitHub snapshot or effect reports.
+pub struct PrTallyView {
+    /// Items, their latest assessments and the decisions needed for queue membership.
+    pub pr: PrView,
+    /// The latest assessment pass.
+    pub latest_pass: Option<PassRecord>,
+}
+
+fn apply_tally_rows(
+    views: &mut HashMap<i64, Result<PrTallyView, DbError>>,
+    rows: &[SqliteRow],
+    mut read: impl FnMut(&mut PrTallyView, &SqliteRow) -> Result<(), DbError>,
+) -> Result<(), DbError> {
+    for row in rows {
+        let id: i64 = row.try_get("tally_pr")?;
+        let Some(entry) = views.get_mut(&id) else {
+            continue;
+        };
+        if let Ok(view) = entry
+            && let Err(error) = read(view, row)
+        {
+            *entry = Err(error);
+        }
+    }
+    Ok(())
+}
+
 /// The [`PrView`] of a pull request inside `tx`.
 pub(super) async fn pr_view_in(
     tx: &mut Transaction<'static, Sqlite>,
@@ -1033,7 +1395,7 @@ pub(super) async fn pr_view_in(
 ) -> Result<PrView, DbError> {
     let row = pr_state_with(&mut **tx, pull_request_id).await?;
     let items = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "SELECT {ITEM_COLUMNS} FROM comment_items WHERE pull_request_id = ? ORDER BY item_no"
+        "SELECT {ITEM_COLUMNS}, {ACTIVE_MARK_COLUMN} FROM comment_items WHERE pull_request_id = ? ORDER BY item_no"
     )))
     .bind(pull_request_id)
     .fetch_all(&mut **tx)
@@ -1053,10 +1415,7 @@ pub(super) async fn pr_view_in(
     .map(|row| {
         Ok((
             wire_col(row, "item_id")?,
-            StoredAssessment {
-                assessment: json_col(row, "body")?,
-                fingerprint: row.try_get("fingerprint")?,
-            },
+            stored_assessment(json_col(row, "body")?, row.try_get("fingerprint")?),
         ))
     })
     .collect::<Result<Vec<_>, DbError>>()?;
@@ -1086,16 +1445,20 @@ async fn pr_state_with<'e>(
     else {
         return Ok(None);
     };
-    let failure: Option<ReadFailure> = opt_wire_col(&row, "read_failure")?;
-    let failed_at = opt_ts_col(&row, "read_failed_at")?;
-    Ok(Some(CommentPrRecord {
+    Ok(Some(pr_state_from_row(&row)?))
+}
+
+fn pr_state_from_row(row: &SqliteRow) -> Result<CommentPrRecord, DbError> {
+    let failure: Option<ReadFailure> = opt_wire_col(row, "read_failure")?;
+    let failed_at = opt_ts_col(row, "read_failed_at")?;
+    Ok(CommentPrRecord {
         pull_request_id: row.try_get("pull_request_id")?,
-        read_at: opt_ts_col(&row, "read_at")?,
+        read_at: opt_ts_col(row, "read_at")?,
         read_failure: failure.zip(failed_at),
-        github_snapshot: opt_json_col(&row, "github_snapshot")?,
-        round_count: u32_col(&row, "round_count")?,
+        github_snapshot: opt_json_col(row, "github_snapshot")?,
+        round_count: u32_col(row, "round_count")?,
         purpose: row.try_get("purpose")?,
-    }))
+    })
 }
 
 /// Store a validated primary assessment under the caller's acceptance transaction.
@@ -1105,15 +1468,39 @@ pub(crate) async fn add_assessment_in(
     item: CommentItemId,
     assessment: &CommentAssessment,
     fingerprint: &str,
-) -> Result<(), DbError> {
-    let latest: Option<CommentAssessment> = sqlx::query(
-        "SELECT body FROM comment_assessments WHERE item_id = ? ORDER BY id DESC LIMIT 1",
+    description: Option<&str>,
+) -> Result<bool, DbError> {
+    let excluded: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM comment_items i WHERE i.id = ? AND (
+            i.status_comment OR EXISTS (
+                SELECT 1 FROM comment_item_marks m WHERE m.item_id = i.id AND m.undone_at IS NULL
+            )
+        ))",
+    )
+    .bind(item.to_string())
+    .fetch_one(&mut **tx)
+    .await?;
+    if excluded {
+        return Ok(false);
+    }
+    let latest = sqlx::query(
+        "SELECT body, fingerprint FROM comment_assessments WHERE item_id = ? ORDER BY id DESC LIMIT 1",
     )
     .bind(item.to_string())
     .fetch_optional(&mut **tx)
     .await?
-    .map(|row| json_col(&row, "body"))
+    .map(|row| -> Result<StoredAssessment, DbError> {
+        Ok(stored_assessment(json_col(&row, "body")?, row.try_get("fingerprint")?))
+    })
     .transpose()?;
+    let description = description.or_else(|| {
+        latest
+            .as_ref()
+            .filter(|prior| {
+                prior.assessment.head == assessment.head && prior.fingerprint == fingerprint
+            })
+            .and_then(|prior| prior.description.as_deref())
+    });
     sqlx::query(
             "INSERT INTO comment_assessments (tenant_id, item_id, job_id, head, fingerprint, body, prompt_version,
                  assessed_at,pass_id,method,payer_id)
@@ -1126,7 +1513,7 @@ pub(crate) async fn add_assessment_in(
         .bind(assessment.job.to_string())
         .bind(&assessment.head.0)
         .bind(fingerprint)
-        .bind(json(assessment)?)
+        .bind(json(&AssessmentBody { assessment, description: description.map(str::to_owned) })?)
         .bind(assessment.prompt_version)
         .bind(ts(assessment.assessed_at))
         .bind(assessment.job.to_string())
@@ -1134,7 +1521,8 @@ pub(crate) async fn add_assessment_in(
         .execute(&mut **tx)
         .await?;
     let shown_before = latest.is_some_and(|latest| {
-        latest.recommendation == assessment.recommendation && latest.gates == assessment.gates
+        latest.assessment.recommendation == assessment.recommendation
+            && latest.assessment.gates == assessment.gates
     });
     if !shown_before {
         sqlx::query(
@@ -1145,5 +1533,8 @@ pub(crate) async fn add_assessment_in(
         .execute(&mut **tx)
         .await?;
     }
-    Ok(())
+    if !assessment.gates.is_empty() {
+        super::origins::reopen_follower(tx, item, assessment.assessed_at).await?;
+    }
+    Ok(true)
 }

@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My work v1.4 - diffpilot mockup</title>
+<!-- docs/v1.4-ui-plan.md (accepted) wins on behaviour. Fictional data. Dashed blue boxes are mockup notes naming plan IDs. -->
+<link rel="stylesheet" href="mockup.css">
+<link rel="stylesheet" href="mockup-v14.css">
+</head>
+<body data-page="dashboard14">
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><symbol id="gh" viewBox="0 0 16 16"><path d="M6.766 11.328c-2.063-.25-3.516-1.734-3.516-3.656 0-.781.281-1.625.75-2.188-.203-.515-.172-1.609.063-2.062.625-.078 1.468.25 1.968.703.594-.187 1.219-.281 1.985-.281.765 0 1.39.094 1.953.265.484-.437 1.344-.765 1.969-.687.218.422.25 1.515.046 2.047.5.593.766 1.39.766 2.203 0 1.922-1.453 3.375-3.547 3.64.531.344.89 1.094.89 1.954v1.625c0 .468.391.734.86.547C13.781 14.359 16 11.53 16 8.03 16 3.61 12.406 0 7.984 0 3.563 0 0 3.61 0 8.031a7.880 7.880 0 0 0 5.172 7.422c.422.156.828-.125.828-.547v-1.25c-.219.094-.5.156-.75.156-1.031 0-1.64-.562-2.078-1.609-.172-.422-.36-.672-.719-.719-.187-.015-.25-.093-.25-.187 0-.188.313-.328.625-.328.453 0 .844.281 1.25.86.313.452.64.655 1.031.655s.641-.14 1-.5c.266-.265.47-.5.657-.656"/></symbol></svg>
+<a class="skip" href="#main">Skip to content</a>
+<noscript><p style="padding:8px">This mockup needs JavaScript for its menus.</p></noscript>
+<header class="topbar">
+ <a class="brand" href="index.html">diff<span>pilot</span></a><span class="crumb">/ My work</span><span class="sp"></span>
+ <span class="statusline" data-for="normal status-menu refresh-menu row-menu filtered user-menu" data-tip="Live: GitHub events update 2 of 3 repositories as they happen (last event 10:41). acme/docs-site has no GitHub App installation: nightly scan and Refresh only. Last full scan 09:14 (manual): judged 6, reused 31."><i class="live-dot" aria-hidden="true"></i>Live &middot; full scan 09:14</span>
+ <span class="statusline" data-for="scanning" hidden><span class="spin" aria-hidden="true"></span> Scanning&hellip; 0:47 &middot; list from 09:14</span>
+ <div class="split" role="group" aria-label="Refresh">
+  <button class="mbtn" type="button" aria-label="Refresh" data-for="normal status-menu refresh-menu row-menu filtered user-menu" data-tip="Scan GitHub and MemCan again (about 1&ndash;2 minutes); new items are judged. Read-only." data-toast="Refresh started (mock)"><span aria-hidden="true">&#10227;</span><span class="lbl">Refresh</span></button>
+  <button class="mbtn" type="button" aria-label="Refreshing, 0:47" data-for="scanning" hidden aria-disabled="true" data-tip="A scan is running; cancel it from the menu."><span class="spin" aria-hidden="true"></span><span class="lbl">Refreshing&hellip; 0:47</span></button>
+  <div class="mb"><button class="mbtn" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="m-refresh" aria-label="More refresh options" data-open-on="refresh-menu"><span class="car" aria-hidden="true">&#9662;</span></button>
+   <div class="menu" id="m-refresh" role="menu" aria-label="Refresh options" hidden>
+    <button role="menuitem" type="button" data-toast="Refresh started (mock)"><span class="ck"></span><span class="k">Refresh<small>Scan GitHub and MemCan; new items are judged. Outdated judgements stay as they are.</small></span></button>
+    <button role="menuitem" type="button" data-toast="Refresh and re-judge started (mock): 2 items"><span class="ck"></span><span class="k">Refresh and re-judge outdated <span class="n">(2)</span><small>Also sends the 2 outdated items to the LLM; uses 2 of today&rsquo;s 120 (37 used).</small></span></button>
+    <div data-for="scanning" hidden><hr><button role="menuitem" type="button" data-toast="Scan cancelled (mock); nothing was replaced."><span class="ck"></span><span class="k">Cancel scan<small>The list keeps the 09:14 snapshot.</small></span></button></div>
+   </div></div>
+ </div>
+ <div class="mb"><button class="usermenu" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="p-user" data-open-on="user-menu" aria-label="alice: account and LLM activity" data-tip="alice &middot; LLM: 2 running, 3 queued"><span class="avatar" aria-hidden="true">a</span>alice <span class="car" aria-hidden="true">&#9662;</span></button>
+  <div class="pop upanel" id="p-user" role="dialog" aria-label="Account and LLM activity" hidden>
+   <div class="uh">Signed in as <b>alice</b> (GitHub)</div>
+   <div class="usec"><p class="ustat"><span aria-hidden="true" style="color:var(--low)">&#9684;</span> LLM: 2 running &middot; 3 queued</p>
+    <h3>Running now (2)</h3>
+    <ul class="joblist"><li><span class="g" aria-hidden="true">&#9684;</span><span>Ranking &middot; <a href="#">My work</a><small>6 items</small></span><span class="t">since 10:42</span></li>
+     <li><span class="g" aria-hidden="true">&#9684;</span><span>Comment assessment &middot; <a href="14-comments-v14.html">acme/node-client#482</a><small>7 comments in this pass</small></span><span class="t">since 10:44</span></li></ul>
+    <h3>Queued (3)</h3>
+    <ul class="joblist"><li><span class="w" aria-hidden="true">&#9676;</span><span>Re-judge &middot; <a href="#">NC-482</a><small>you asked</small></span><span class="t">10:45</span></li>
+     <li><span class="w" aria-hidden="true">&#9676;</span><span>Flow analysis &middot; <a href="#">acme/platform#1203</a><small>5 flows left</small></span><span class="t">10:30</span></li>
+     <li><span class="w" aria-hidden="true">&#9676;</span><span>1 job of another user</span><span class="t">10:40</span></li></ul>
+    <p class="small muted" style="margin:6px 0 0">Last LLM call 10:46: working. <a href="12-settings-v14.html?s=llm">Usage and limits</a></p></div>
+   <a class="ulink" href="12-settings-v14.html">Settings</a>
+   <button class="ulink" type="button" data-toast="Keyboard shortcuts open (mock)">Keyboard shortcuts <kbd>?</kbd></button>
+   <button class="ulink" type="button" data-toast="Signed out (mock)">Sign out</button>
+  </div></div>
+</header>
+<div class="states" role="group" aria-label="Mockup states"><b>mockup states:</b>
+ <button type="button" data-s="normal" aria-pressed="true">normal</button>
+ <button type="button" data-s="status-menu" aria-pressed="false">Status dropdown open</button>
+ <button type="button" data-s="filtered" aria-pressed="false">filtered (chips)</button>
+ <button type="button" data-s="refresh-menu" aria-pressed="false">Refresh menu open</button>
+ <button type="button" data-s="row-menu" aria-pressed="false">row &ctdot; menu open</button>
+ <button type="button" data-s="scanning" aria-pressed="false">scanning</button>
+ <button type="button" data-s="user-menu" aria-pressed="false">user menu (LLM activity)</button>
+ <span class="muted">&middot; narrow the window below 640 px for the phone layout</span>
+</div>
+<div class="shell">
+<nav class="app" aria-label="Main">
+ <a href="#" aria-current="page" aria-label="My work, 1 unanswered mention"><span class="ni" aria-hidden="true">&#9638;</span><span class="lbl">My work</span><span class="count" aria-hidden="true">1</span></a>
+ <a href="#" aria-label="Review a PR"><span class="ni" aria-hidden="true">&#5833;</span><span class="lbl">Review a PR</span></a>
+ <a href="#" aria-label="Watched PRs"><span class="ni" aria-hidden="true">&#9673;</span><span class="lbl">Watched PRs</span></a>
+ <div class="sep" role="presentation"></div>
+ <a href="12-settings-v14.html" aria-label="Settings"><span class="ni" aria-hidden="true">&#9881;</span><span class="lbl">Settings</span></a>
+</nav>
+<main class="main" id="main">
+ <h1>My work</h1>
+ <p class="muted" style="margin-bottom:12px">PRs, issues and TODOs that need you, ranked by score. Read-only: this page never writes to GitHub.</p>
+ <p class="annot"><b>Top bar:</b> U8 status line &middot; U7 Refresh split button &middot; U3 user menu with LLM activity (U2 rejected; U40 dot only when the LLM is paused or failing). <b>Removed:</b> automatic-refresh texts, ranking banner (U17), <kbd>?</kbd> button (U5).</p>
+
+ <div class="strip" data-for="scanning" hidden role="status"><span class="spin" aria-hidden="true"></span><strong>Refreshing from GitHub and MemCan</strong><span>PR details 23 / 41 &middot; started 10:21</span><span class="sp"></span><details><summary class="small">Details</summary><ol class="small" style="margin:4px 0 0"><li>&#10003; Search PRs</li><li>&#10003; Issues</li><li>&#9654; PR details 23 / 41</li><li class="muted">Ownership and milestones</li><li class="muted">History</li><li class="muted">MemCan TODOs</li><li class="muted">LLM ranking of changed and new items</li></ol></details><button class="btn sm" type="button" data-toast="Scan cancelled (mock)">Cancel scan</button></div>
+
+ <div class="cols-dash">
+ <div>
+  <section class="card" aria-labelledby="hl-h">
+   <div class="hl14" style="align-items:start">
+    <div>
+     <h2 id="hl-h" style="font-size:13px;margin:0" data-tip="Net = closed &minus; opened, your PRs only. &ldquo;Today&rdquo; is in your dashboard time zone (Europe/Warsaw, Settings &rsaquo; GitHub sync).">Closed &minus; opened, today</h2>
+     <div class="hero" aria-describedby="hl-sub">+1</div>
+     <div id="hl-sub" class="small muted">Wed 25 Nov: closed <b>1</b> &middot; opened <b>0</b> PRs</div>
+     <div class="minis">
+      <div class="mini" data-tip="Tue 24 Nov: closed 1, opened 1"><div class="l">Yesterday</div><div class="v">0</div><div class="s">1 &minus; 1</div></div>
+      <div class="mini" data-tip="Mon 23 &ndash; Wed 25 Nov: closed 4, opened 3"><div class="l">This week</div><div class="v pos">+1</div><div class="s">4 &minus; 3</div></div>
+      <div class="mini" data-tip="1&ndash;25 Nov: closed 11, opened 14"><div class="l">This month</div><div class="v neg">&minus;3</div><div class="s">11 &minus; 14</div></div>
+     </div>
+    </div>
+    <div class="chart"><div class="row"><h3 style="font-size:14px;margin:0">Net per working day, with cumulative total</h3><span class="sp"></span><span class="seg" role="group" aria-label="Period"><button type="button" aria-pressed="true">Days</button><button type="button" aria-pressed="false">Weeks</button></span></div>
+     <svg viewBox="0 0 740 140" role="img" aria-label="Net per working day for the last 20 working days; cumulative total ends at minus 19 (static example)"><line class="ax" x1="30" y1="30" x2="730" y2="30"/><text x="12" y="34">0</text><text x="0" y="128">&minus;20</text><text x="40" y="139">26 Oct</text><text x="650" y="139">today</text>
+      <g class="bar-n"><rect x="40" y="30" width="16" height="18"/><rect x="74" y="30" width="16" height="24"/><rect x="108" y="30" width="16" height="6"/><rect x="142" y="30" width="16" height="12"/><rect x="176" y="30" width="16" height="12"/><rect x="210" y="30" width="16" height="18"/><rect x="278" y="30" width="16" height="12"/><rect x="312" y="30" width="16" height="12"/><rect x="346" y="30" width="16" height="12"/><rect x="380" y="30" width="16" height="6"/><rect x="482" y="30" width="16" height="6"/></g>
+      <g class="bar-p"><rect x="244" y="18" width="16" height="12"/><rect x="618" y="24" width="16" height="6"/><rect x="686" y="24" width="16" height="6"/></g>
+      <polyline class="ln" points="48,43.5 82,61.5 116,66 150,75 184,84 218,97.5 252,88.5 286,97.5 320,106.5 354,115.5 388,120 422,120 456,120 490,124.5 524,124.5 558,124.5 592,124.5 626,120 660,120 694,115.5"/></svg>
+    </div>
+   </div>
+  </section>
+  <p class="annot" style="margin-top:6px"><b>U16</b> today as hero; minis yesterday / this week / this month. <b>U42</b> the chart is only as tall as the left block.</p>
+
+  <details class="card" style="margin-top:12px;padding:6px 14px"><summary>Mentions (1)</summary><p class="small" style="margin:6px 0">@renata-s mentioned you on acme/platform#1187.</p></details>
+
+  <section aria-labelledby="ny-h" style="margin-top:14px">
+   <div class="lhead">
+    <h2 id="ny-h">Needs you</h2><span class="small muted">13 items, ranked</span><span class="sp"></span>
+    <span class="seg" role="group" aria-label="Kinds shown"><button type="button" aria-pressed="true">PRs <b>8</b></button><button type="button" aria-pressed="true">Issues <b>3</b></button><button type="button" aria-pressed="true">TODOs <b>2</b></button></span>
+    <div class="mb"><button class="mbtn attn" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="m-status" data-open-on="status-menu" aria-label="Status filter: All. 2 outdated judgements">Status: <span class="val">All</span> <span class="attn-t" aria-hidden="true">&#8635; 2 outdated</span> <span class="car" aria-hidden="true">&#9662;</span></button>
+     <div class="menu" id="m-status" role="menu" aria-label="Status" hidden>
+      <button role="menuitemradio" aria-checked="true" type="button" data-label="All"><span class="ck">&#10003;</span><span class="k">All</span><span class="n">13</span></button>
+      <button role="menuitemradio" aria-checked="false" type="button" data-label="Outdated"><span class="ck"></span><span class="k"><span style="color:var(--med);font-weight:700">&#8635;</span> Outdated judgement<small>Facts changed after the LLM judged them. Click a row&rsquo;s mark, or Refresh &#9662; &rsaquo; re-judge outdated.</small></span><span class="n">2</span></button>
+      <button role="menuitemradio" aria-checked="false" type="button" data-label="Not judged"><span class="ck"></span><span class="k">&#9676; Not judged yet<small>New items; judged automatically, 1 queued.</small></span><span class="n">1</span></button>
+      <button role="menuitemradio" aria-checked="false" type="button" data-label="Not live"><span class="ck"></span><span class="k">&#9719; Not live-updated<small>From repositories without the GitHub App: nightly scan and Refresh only.</small></span><span class="n">3</span></button>
+      <hr>
+      <button role="menuitemradio" aria-checked="false" type="button" data-label="Excluded"><span class="ck"></span><span class="k">Excluded and snoozed<small>1 excluded author &middot; 1 outside your areas &middot; 1 draft. Shown in place with Wake now.</small></span><span class="n">3</span></button>
+     </div></div>
+   </div>
+   <ul class="chips" id="chips" aria-label="Active filters" data-seed-on="filtered" data-seed="label|ci_failing|CI failing;author|dependabot|@dependabot|ex;repo|acme/platform|acme/platform">
+    <li id="chip-count" class="small muted" hidden>&middot; Showing 4 of 13 &middot; <button class="linkbtn" id="chip-clear" type="button">Clear all</button> &middot; P0 alarms stay shown &middot; URL <code id="chip-url"></code></li>
+    <li id="chip-hint" class="small muted">Click a label, size, author or repository on a row to filter. <span class="muted">(Alt-click: exclude)</span></li>
+   </ul>
+   <p class="annot"><b>U10</b> one Status dropdown (amber while something is outdated) replaces the &ldquo;Excluded: 3 &mdash;&rdquo; line. <b>U11</b> click-to-filter chips; click a chip to flip include &harr; exclude, &times; removes; size toggles removed.</p>
+
+   <div class="alarm">
+    <span class="p0">&#9650; P0 alarm</span>
+    <div><div class="ttl" style="font-weight:600">Block sync stalls after the 2.4 upgrade on three nodes <a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-hidden="true"><svg class="ghi"><use href="#gh"/></svg></a></div>
+     <div class="small muted">PLAT-1187 &middot; <button class="place" type="button" data-filter="repo|acme/platform|acme/platform">acme/platform</button>#1187 &middot; <button class="place" type="button" data-filter="author|renata-s|@renata-s">@renata-s</button> <button class="ft" type="button" data-filter="label|production_report|production report">production report</button> <button class="ft" type="button" data-filter="label|assigned|assigned to you">assigned to you</button></div>
+     <div class="small" style="margin-top:4px"><span class="llmtag" data-tip="LLM judgement of 25 Nov 09:20">LLM</span> Three operators report stalled block sync since yesterday after upgrading to 2.4.</div></div>
+    <div class="row"><span class="score">107</span><a class="btn sm" href="https://github.com/" target="_blank" rel="noopener noreferrer">Open issue <svg class="ghi" aria-hidden="true"><use href="#gh"/></svg><span class="vh">(opens on GitHub in a new tab)</span></a></div>
+   </div>
+
+   <div class="tier"><b>P1</b> score &ge; 65 &middot; 4</div>
+   <ul class="rows">
+    <li>
+     <span class="exp" aria-hidden="true">&#9656;</span>
+     <div class="idcol"><span class="kind">PR <button class="ft pill" type="button" data-filter="size|medium|medium" data-tip="512 changed lines (+412 &minus;100). Click to filter by size.">medium</button></span><span class="idc">PLAT-1203 <a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" aria-label="Open acme/platform#1203 on GitHub, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a></span></div>
+     <div><div class="ttl">fix(sync): retry header fetch after peer timeout <a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-hidden="true" data-tip="Open on GitHub"><svg class="ghi"><use href="#gh"/></svg></a></div>
+      <div class="meta"><button class="place" type="button" data-filter="repo|acme/platform|acme/platform">acme/platform</button>#1203 &middot; <button class="place" type="button" data-filter="author|mira-k|@mira-k">@mira-k</button>
+       <button class="ft" type="button" data-filter="label|review_requested|review requested" data-tip="Review requested from you 1 day ago. Click to filter.">review requested 1 d</button>
+       <button class="ft" type="button" data-filter="label|ci_passing|CI passing">CI passing</button>
+       <button class="ft stack" type="button" data-filter="label|stack_bottom|merges first" data-tip="Bottom of a stack of 3 pull requests: its base is release/2.4; #1205 and #1209 are based on it. Merge it first. (GitHub fact) Click to filter.">&#10515; merges first</button>
+       <button class="ft" type="button" data-filter="label|release_base|release base" data-tip="Base release/2.4 matches the release branches of acme/platform (Settings &rsaquo; Repositories). Click to filter.">&rarr; release/2.4</button>
+       &middot; <a href="14-comments-v14.html">3 comments &middot; 1 needs you</a></div>
+      <div class="llm"><span class="llmtag" data-tip="LLM judgement of 25 Nov 09:20 (current)">LLM</span> Likely fix for the production sync stall (PLAT-1187); small, focused change with a regression test.</div>
+      <div class="llm"><span class="nx">NEXT</span><span class="llmtag">LLM</span> Review now; the retry loop in header_sync.rs is the part to read closely.</div>
+     </div>
+     <div class="act"><span class="score" data-tip="Score 148, final. Click for the breakdown.">148</span><span class="stackb"><a class="btn sm" href="#">Review</a><a class="btn sm" href="14-comments-v14.html">Comments</a></span>
+      <div class="mb"><button class="iconbtn" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="m-row1" aria-label="More actions for PLAT-1203" data-open-on="row-menu">&ctdot;</button>
+       <div class="menu" id="m-row1" role="menu" aria-label="PLAT-1203" hidden>
+        <button role="menuitemcheckbox" aria-checked="false" type="button" data-on="Watching comments" data-off="Watch comments"><span class="ck"></span><span class="k">Watch comments<small>New comments are read and assessed automatically; uses GitHub requests and LLM tokens.</small></span></button>
+        <button role="menuitem" type="button" data-toast="Snooze panel opens (mock)"><span class="ck"></span><span class="k">Snooze&hellip;<small>1, 3, 7, 30 days or typed.</small></span></button>
+        <a role="menuitem" href="https://github.com/" target="_blank" rel="noopener noreferrer"><span class="ck"></span><span class="k">Open on GitHub <svg class="ghi" aria-hidden="true"><use href="#gh"/></svg><span class="vh">(new tab)</span></span></a>
+       </div></div></div>
+    </li>
+    <li>
+     <span class="exp" aria-hidden="true">&#9656;</span>
+     <div class="idcol"><span class="kind">PR <button class="ft pill" type="button" data-filter="size|medium|medium">medium</button></span><span class="idc">NC-482 <a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" aria-label="Open acme/node-client#482 on GitHub, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a></span></div>
+     <div><div class="ttl">feat(rpc): retry with backoff on timeout <a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-hidden="true"><svg class="ghi"><use href="#gh"/></svg></a></div>
+      <div class="meta"><button class="place" type="button" data-filter="repo|acme/node-client|acme/node-client">acme/node-client</button>#482 &middot; <button class="place" type="button" data-filter="author|dana|@dana">@dana</button>
+       <button class="ft" type="button" data-filter="label|review_requested|review requested">review requested 3 d</button>
+       <button class="ft" type="button" data-filter="label|ci_failing|CI failing">CI failing</button>
+       <button class="ft" type="button" data-filter="label|analysed|analysed">analysed</button>
+       &middot; <a href="14-comments-v14.html">15 comments &middot; 4 need you</a> <span class="muted">&middot; watching</span></div>
+      <div class="llm"><span class="llmtag">LLM</span> <button class="jm" type="button" data-rejudge="NC-482" data-tip="Outdated: 2 new commits and CI changed after the LLM judged this on 17 Nov. Click to judge this item again (uses 1 of today&rsquo;s 120; 37 used).">&#8635; outdated &middot; 17 Nov</button> Useful resilience feature for node operators; you already analysed an earlier head of it.</div>
+      <div class="llm"><span class="nx">NEXT</span><span class="llmtag">LLM</span> Open your review; the PR moved since, so re-analyze the new head first.</div>
+     </div>
+     <div class="act"><span class="score prov" data-tip="Score ~82: the LLM parts are from 17 Nov; computed parts are current.">~82</span><span class="stackb"><a class="btn sm pri" href="#">Open</a><a class="btn sm" href="14-comments-v14.html">Comments</a></span><button class="iconbtn" type="button" aria-label="More actions for NC-482">&ctdot;</button></div>
+    </li>
+    <li>
+     <span class="exp" aria-hidden="true">&#9656;</span>
+     <div class="idcol"><span class="kind">PR <button class="ft pill" type="button" data-filter="size|small|small">small</button></span><span class="idc">WUI-311 <a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" aria-label="Open acme/wallet-ui#311 on GitHub, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a></span></div>
+     <div><div class="ttl">feat(wallet): show pending withdrawals <a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-hidden="true"><svg class="ghi"><use href="#gh"/></svg></a></div>
+      <div class="meta"><button class="place" type="button" data-filter="repo|acme/wallet-ui|acme/wallet-ui">acme/wallet-ui</button>#311 &middot; <button class="place" type="button" data-filter="author|alice|@alice">@alice</button>
+       <button class="ft" type="button" data-filter="label|ci_failing|CI failing">CI failing</button>
+       <button class="ft" type="button" data-filter="label|unresolved_threads|unresolved threads">2 unresolved threads</button>
+       <button class="ft" type="button" data-filter="label|your_pr|your PR">your PR</button></div>
+      <div class="llm"><span class="llmtag">LLM</span> Your own user-facing feature for v2.5; blocked only by a failing end-to-end test and two review threads.</div>
+      <div class="llm"><span class="nx">NEXT</span><span class="llmtag">LLM</span> Fix the failing e2e test (withdrawals.spec), then answer @tobias-w&rsquo;s two threads.</div>
+     </div>
+     <div class="act"><span class="score">82</span><span class="stackb"><a class="btn sm" href="#">Review</a><a class="btn sm" href="14-comments-v14.html">Comments</a></span><button class="iconbtn" type="button" aria-label="More actions for WUI-311">&ctdot;</button></div>
+    </li>
+    <li>
+     <span class="exp" aria-hidden="true">&#9656;</span>
+     <div class="idcol"><span class="kind">PR <button class="ft pill" type="button" data-filter="size|small|small">small</button></span><span class="idc">DOC-77 <a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" aria-label="Open acme/docs-site#77 on GitHub, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a></span></div>
+     <div><div class="ttl">docs: describe the node upgrade path <a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-hidden="true"><svg class="ghi"><use href="#gh"/></svg></a></div>
+      <div class="meta"><button class="place" type="button" data-filter="repo|acme/docs-site|acme/docs-site">acme/docs-site</button>#77 <span class="ft notlive" data-tip="Not live-updated: acme/docs-site has no diffpilot GitHub App installation. This item updates only with the nightly scan and Refresh; facts as of 09:14.">&#9719; not live</span> &middot; <button class="place" type="button" data-filter="author|renata-s|@renata-s">@renata-s</button>
+       <button class="ft" type="button" data-filter="label|review_requested|review requested">review requested 2 d</button>
+       <button class="ft" type="button" data-filter="label|ci_passing|CI passing">CI passing</button></div>
+      <div class="llm"><span class="llmtag">LLM</span> Operators need this page for the 2.4 upgrade; short and ready.</div>
+      <div class="llm"><span class="nx">NEXT</span><span class="llmtag">LLM</span> Read and approve if the rollback section matches PLAT-1203.</div>
+     </div>
+     <div class="act"><span class="score">78</span><span class="stackb"><a class="btn sm" href="#">Review</a><a class="btn sm" href="#">Comments</a></span><button class="iconbtn" type="button" aria-label="More actions for DOC-77">&ctdot;</button></div>
+    </li>
+   </ul>
+   <p class="annot"><b>U6</b> one judgement mark on the LLM line (NC-482: click to re-judge) replaces the &ldquo;~ provisional&rdquo; and &ldquo;~ 17 Nov&rdquo; pills. <b>U9</b> &#9719; not live (DOC-77). <b>U12</b> Watch moved into &ctdot;. <b>U13</b> GitHub icon after the title. <b>U14/U15</b> &ldquo;merges first&rdquo; and &ldquo;&rarr; release/2.4&rdquo; fact tags (PLAT-1203). <b>P8</b> every GitHub link uses the GitHub icon.</p>
+
+   <div class="tier"><b>P2</b> score 35&ndash;&lt;65 &middot; 2</div>
+   <ul class="rows">
+    <li>
+     <span class="exp" aria-hidden="true">&#9656;</span>
+     <div class="idcol"><span class="kind">PR <button class="ft pill" type="button" data-filter="size|medium|medium">medium</button></span><span class="idc">CON-1534 <a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" aria-label="Open acme/consensus#1534 on GitHub, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a></span></div>
+     <div><div class="ttl">refactor(abci): move proposal checks into the validator <a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-hidden="true"><svg class="ghi"><use href="#gh"/></svg></a></div>
+      <div class="meta"><button class="place" type="button" data-filter="repo|acme/consensus|acme/consensus">acme/consensus</button>#1534 &middot; <button class="place" type="button" data-filter="author|jun-park|@jun-park">@jun-park</button>
+       <button class="ft" type="button" data-filter="label|review_requested|review requested">review requested 6 d</button>
+       <button class="ft" type="button" data-filter="label|not_ready|not ready">not ready: 3 unresolved threads</button></div>
+      <div class="llm"><span class="llmtag">LLM</span> <span class="jm run" data-tip="The LLM is judging this item again (you asked at 10:45). The text below is the 18 Nov judgement until then.">&#9684; judging&hellip;</span> Puts validation in the right component and unblocks CON-1520; not urgent.</div>
+      <div class="llm"><span class="nx">NEXT</span><span class="llmtag">LLM</span> Wait for @jun-park to resolve the three threads, then review.</div>
+     </div>
+     <div class="act"><span class="score prov">~62</span><span class="stackb"><a class="btn sm" href="#">Review</a><a class="btn sm" href="#">Comments</a></span><button class="iconbtn" type="button" aria-label="More actions for CON-1534">&ctdot;</button></div>
+    </li>
+    <li>
+     <span class="exp" aria-hidden="true">&#9656;</span>
+     <div class="idcol"><span class="kind">Issue</span><span class="idc">PLAT-1210 <a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" aria-label="Open acme/platform#1210 on GitHub, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a></span></div>
+     <div><div class="ttl">Wallet balance shows a stale value after a reorg <a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-hidden="true"><svg class="ghi"><use href="#gh"/></svg></a></div>
+      <div class="meta"><button class="place" type="button" data-filter="repo|acme/platform|acme/platform">acme/platform</button>#1210 &middot; <button class="place" type="button" data-filter="author|olek-d|@olek-d">@olek-d</button>
+       <button class="ft" type="button" data-filter="label|assigned|assigned to you">assigned to you</button></div>
+      <div class="llm"><span class="llmtag">LLM</span> <button class="jm" type="button" data-rejudge="PLAT-1210" data-tip="Outdated: the ranking prompt changed after the LLM judged this on 18 Nov. Click to judge this item again.">&#8635; outdated &middot; 18 Nov</button> Real but uncommon: users see a wrong balance for up to a minute after a reorg.</div>
+     </div>
+     <div class="act"><span class="score prov">~56</span><a class="btn sm" href="https://github.com/" target="_blank" rel="noopener noreferrer">Open issue <svg class="ghi" aria-hidden="true"><use href="#gh"/></svg><span class="vh">(opens on GitHub in a new tab)</span></a><button class="iconbtn" type="button" aria-label="More actions for PLAT-1210">&ctdot;</button></div>
+    </li>
+   </ul>
+
+   <div class="tier"><b>Not judged yet</b> new since the last ranking &middot; 1</div>
+   <ul class="rows">
+    <li>
+     <span class="exp" aria-hidden="true">&#9656;</span>
+     <div class="idcol"><span class="kind">PR <button class="ft pill" type="button" data-filter="size|tiny|tiny">tiny</button></span><span class="idc">WUI-320 <a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" aria-label="Open acme/wallet-ui#320 on GitHub, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a></span></div>
+     <div><div class="ttl">fix(ui): restore the focus ring on tabs <a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-hidden="true"><svg class="ghi"><use href="#gh"/></svg></a></div>
+      <div class="meta"><button class="place" type="button" data-filter="repo|acme/wallet-ui|acme/wallet-ui">acme/wallet-ui</button>#320 &middot; <button class="place" type="button" data-filter="author|jun-park|@jun-park">@jun-park</button>
+       <button class="ft" type="button" data-filter="label|review_requested|review requested">review requested today</button>
+       <button class="ft" type="button" data-filter="label|ci_passing|CI passing">CI passing</button></div>
+      <div class="llm"><span class="jm new" data-tip="New since the last ranking (GitHub event 10:39). It is queued for the LLM; until then it is scored from computed parts and fixed estimates.">&#9676; not judged yet &middot; queued</span> <span class="small muted">Scored from computed parts and fixed estimates.</span></div>
+     </div>
+     <div class="act"><span class="score prov">~90</span><span class="stackb"><a class="btn sm" href="#">Review</a><a class="btn sm" href="#">Comments</a></span><button class="iconbtn" type="button" aria-label="More actions for WUI-320">&ctdot;</button></div>
+    </li>
+   </ul>
+  </section>
+ </div>
+
+ <aside class="side" aria-label="More">
+  <div class="card"><h3>&#9662; Waiting on others <span class="muted small">3 PRs &middot; oldest 11 d</span></h3><p class="small muted">Unchanged in v1.4 (tags become filter buttons there too).</p></div>
+  <div class="card"><h3>&#9662; Ready to merge <span class="muted small">1 PR</span></h3><p class="small"><b>WUI-311</b> feat(wallet): show pending withdrawals</p></div>
+ </aside>
+ </div>
+</main>
+</div>
+<footer class="mock-foot">Mockup &mdash; static example data &middot; v1.4 plan: docs/v1.4-ui-plan.md</footer>
+<dialog id="help" aria-labelledby="help-t"><h2 id="help-t">Keyboard shortcuts</h2><table><tbody><tr><td><kbd>j</kbd> <kbd>k</kbd></td><td>next / previous item</td></tr><tr><td><kbd>Enter</kbd></td><td>show the score breakdown</td></tr><tr><td><kbd>v</kbd></td><td>open the PR&rsquo;s review</td></tr><tr><td><kbd>g</kbd></td><td>open the item on GitHub</td></tr><tr><td><kbd>Esc</kbd></td><td>close a menu; in the filter row: clear the filters</td></tr></tbody></table><form method="dialog"><button class="btn pri">Close</button></form></dialog>
+<div id="tip" role="tooltip" hidden></div><div id="toast" role="status" hidden></div>
+<script src="mockup.js"></script>
+<script src="mockup-v14.js"></script>
+</body>
+</html>

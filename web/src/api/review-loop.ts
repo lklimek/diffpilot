@@ -1,16 +1,19 @@
 // Queries and mutations of the review loop (docs/review-workflow-plan.md §6: RC1–RC17, RW1–RW2, RN1–RN3) and the
 // Ask questions about its items (RC7).
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   keepPreviousData,
   useInfiniteQuery,
   useMutation,
   useQuery,
   useQueryClient,
+  type QueryClient,
 } from "@tanstack/react-query";
-import { api, ApiError } from "./client";
-import { withoutRetried } from "./queries";
+import { api, ApiError, AssessmentAdmissionError, errorText, type AssessmentAdmissionIssue } from "./client";
+import { withoutRetried } from "./questionHistory";
 import type {
+  CommentItem,
+  CommentsOverview,
   AnalysisId,
   AnchoredAskRequest,
   AskQuestion,
@@ -31,6 +34,12 @@ export const COMMENTS_POLL_MS = 60_000;
 
 const prKey = (pr: PrRef) => [pr.repo.owner, pr.repo.name, pr.number] as const;
 
+const overviewKey = (pr: PrRef) => ["comments", ...prKey(pr)] as const;
+const itemsKey = (pr: PrRef | null) => ["comment-items", ...(pr ? prKey(pr) : [])] as const;
+
+export const cachedCommentsOverview = (client: QueryClient, pr: PrRef) =>
+  client.getQueryData<CommentsOverview>(overviewKey(pr));
+
 /** One read of an analysis (the old progress URL finds its PR with it). */
 export const useAnalysisOnce = (id: AnalysisId) =>
   useQuery({ queryKey: ["analysis-once", id], queryFn: () => api.getAnalysis(id) });
@@ -40,20 +49,30 @@ export const usePrPage = (pr: PrRef) =>
   useQuery({ queryKey: ["pr-page", ...prKey(pr)], queryFn: () => api.getPrPage(pr) });
 
 /** Comments overview: header, counts, rounds, queue (RC2); read again every minute. */
-export const useCommentsOverview = (pr: PrRef) =>
+export const useCommentsOverview = (pr: PrRef, enabled = true) =>
   useQuery({
-    queryKey: ["comments", ...prKey(pr)],
+    queryKey: overviewKey(pr),
     queryFn: () => api.getComments(pr),
+    enabled,
     refetchInterval: COMMENTS_POLL_MS,
   });
 
 /** Every item with its assessment, decisions and effects (RC4); none without a PR or while not `enabled`. */
 export const useCommentItems = (pr: PrRef | null, enabled = true) =>
   useQuery({
-    queryKey: ["comment-items", ...(pr ? prKey(pr) : [])],
+    queryKey: itemsKey(pr),
     queryFn: () => api.listCommentItems(pr!),
     refetchInterval: COMMENTS_POLL_MS,
     enabled: pr !== null && enabled,
+  });
+
+/** Standing GitHub imports since the visit preceding this one. */
+export const useImportedCommentItems = (pr: PrRef, enabled: boolean) =>
+  useQuery({
+    queryKey: [...itemsKey(pr), "imported-unseen"],
+    queryFn: () => api.listCommentItems(pr, { state: null, kind: null, imported_unseen: true }),
+    refetchInterval: enabled ? COMMENTS_POLL_MS : false,
+    enabled,
   });
 
 /** The code an item (`C<no>`) discusses, its flows and notes elsewhere (RC5); none without an item. */
@@ -67,6 +86,17 @@ export const useCommentContext = (pr: PrRef, no: number | null, query: ContextQu
 /** Decision log and feed state (RC10). */
 export const useCommentLog = (pr: PrRef) =>
   useQuery({ queryKey: ["comment-log", ...prKey(pr)], queryFn: () => api.getCommentLog(pr) });
+
+const MARKED_ITEMS_KEY = ["marked-items"] as const;
+
+export function useMarkedItems() {
+  return useInfiniteQuery({
+    queryKey: MARKED_ITEMS_KEY,
+    queryFn: ({ pageParam }) => api.listMarkedItems(pageParam),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.next_cursor,
+  });
+}
 
 /** Carry-overs of one PR (`owner/name/number`) or of all (RC11): the newest page, then older ones on request. */
 export function useCarryOvers(pr: string | null) {
@@ -94,7 +124,7 @@ export const PREVIEW_DEBOUNCE_MS = 250;
 export const transientFailure = (error: unknown) =>
   !(error instanceof ApiError) ||
   error.status === 0 ||
-  error.status >= 500 ||
+  (error.status >= 500 && error.status !== 501) ||
   error.status === 408 ||
   error.status === 429;
 
@@ -156,17 +186,91 @@ export const useWatches = () => useQuery({ queryKey: ["watches"], queryFn: api.l
 function useInvalidatePr(pr: PrRef) {
   const client = useQueryClient();
   return () =>
-    Promise.all(
-      ["pr-page", "comments", "comment-items", "comment-log", "decide-rest", "effects-preview"].map((key) =>
-        client.invalidateQueries({ queryKey: [key, ...prKey(pr)] }),
+    Promise.all([
+      ...["pr-page", "comments", "comment-items", "comment-log", "decide-rest", "effects-preview"].map(
+        (key) => client.invalidateQueries({ queryKey: [key, ...prKey(pr)] }),
       ),
-    );
+      client.invalidateQueries({ queryKey: MARKED_ITEMS_KEY }),
+    ]);
 }
 
-/** Read GitHub again (RC3), then everything of the PR. */
-export function useReadComments(pr: PrRef) {
+/** Records one entry so the import notice stays stable on later reads. */
+export function useVisitComments(pr: PrRef) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.visitComments(pr),
+    // A lost response can follow a committed write. Replaying it would advance the import cutoff.
+    retry: false,
+    onSuccess: () =>
+      Promise.all([
+        client.invalidateQueries({ queryKey: overviewKey(pr), exact: true }),
+        client.invalidateQueries({ queryKey: [...itemsKey(pr), "imported-unseen"], exact: true }),
+        client.invalidateQueries({ queryKey: ["dashboard-items"] }),
+      ]),
+  });
+}
+
+export type AssessmentStartIssue =
+  AssessmentAdmissionIssue | { code: "failed"; message: string } | { code: "busy" };
+
+const ASSESSMENT_CONFLICT_BACKOFF_MS = [2_000, 8_000];
+
+async function startCommentAssessment(pr: PrRef, signal?: AbortSignal): Promise<AssessmentStartIssue | null> {
+  for (let attempt = 0; !signal?.aborted; attempt += 1) {
+    try {
+      await api.startCommentAssessment(pr, signal);
+      return null;
+    } catch (error) {
+      if (error instanceof AssessmentAdmissionError) return error.issue;
+      if (!(error instanceof ApiError && error.status === 409 && error.code === "conflict")) {
+        return { code: "failed", message: errorText(error, "Try again later.") };
+      }
+      if (!signal) return null;
+    }
+    const delay = ASSESSMENT_CONFLICT_BACKOFF_MS[attempt];
+    if (delay === undefined) return { code: "busy" };
+    await new Promise((resolve) => setTimeout(resolve, delay));
+  }
+  return null;
+}
+
+/** Start a pass on entry to Comments. */
+export const useStartCommentAssessment = (pr: PrRef) =>
+  useMutation({ mutationFn: () => startCommentAssessment(pr) });
+
+/** Read GitHub again (RC3). A follow-up assessment has its own lifetime, separate from the read. */
+export function useReadComments(pr: PrRef, onAssessment?: (issue: AssessmentStartIssue | null) => void) {
+  const client = useQueryClient();
   const invalidate = useInvalidatePr(pr);
-  return useMutation({ mutationFn: () => api.readComments(pr), onSuccess: invalidate });
+  const visit = useRef<{ controller: AbortController; assessing: boolean } | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    visit.current = { controller, assessing: false };
+    return () => controller.abort();
+  }, []);
+  return useMutation({
+    mutationFn: async () => {
+      const before = onAssessment ? client.getQueryData<CommentItem[]>(itemsKey(pr)) : undefined;
+      const known = before && new Set(before.map(({ no }) => no));
+      await api.readComments(pr);
+      await invalidate();
+      const fresh = client.getQueryState<CommentItem[]>(itemsKey(pr));
+      return known && fresh?.status === "success" && fresh.data?.some(({ no }) => !known.has(no));
+    },
+    onSuccess: (newItems) => {
+      const current = visit.current;
+      if (!newItems || !onAssessment || !current || current.assessing || current.controller.signal.aborted)
+        return;
+      current.assessing = true;
+      onAssessment(null);
+      void startCommentAssessment(pr, current.controller.signal).then((issue) => {
+        current.assessing = false;
+        if (current.controller.signal.aborted) return;
+        onAssessment(issue);
+        if (!issue) void invalidate();
+      });
+    },
+  });
 }
 
 /** One decision on item `C<no>` (RC8). */
@@ -201,13 +305,20 @@ export function useItemAction(pr: PrRef) {
  * read again first, so an Undo right after deciding never sends the revision from before that decision. When the
  * item's latest decision is no longer that one (another tab or reader decided since), nothing is sent.
  */
+export type UndoTarget = { no: number; decision: DecisionId; mark?: boolean };
+
 export function useUndoDecision(pr: PrRef) {
   const invalidate = useInvalidatePr(pr);
   const client = useQueryClient();
   return useMutation({
-    mutationFn: async ({ no, decision }: { no: number; decision: DecisionId }) => {
+    mutationFn: async ({ no, decision, mark }: UndoTarget) => {
       const item = (await api.listCommentItems(pr)).find((i) => i.no === no);
-      if (!item || item.decisions.at(-1)?.id !== decision)
+      // The item exposes the active mark but its ID comes from the log. Read the revision before checking the ID.
+      const matches = mark
+        ? item?.not_a_review_point &&
+          (await api.getCommentLog(pr)).marks?.some((entry) => entry.id === decision && !entry.undone_at)
+        : !item?.not_a_review_point && item?.decisions.at(-1)?.id === decision;
+      if (!item || !matches)
         throw new ApiError(409, "item_changed", `C${no} changed since your decision. Read it again.`);
       return api.undoCommentDecision(pr, no, { item_revision: item.revision });
     },
@@ -283,25 +394,12 @@ export function useWatchPr(pr: PrRef) {
   const invalidate = useInvalidatePr(pr);
   return useMutation({
     mutationFn: (watch: boolean) => (watch ? api.watchPr(pr) : api.unwatchPr(pr)),
-    onSettled: () => Promise.all([invalidate(), client.invalidateQueries({ queryKey: ["watches"] })]),
-  });
-}
-
-/** Unwatch any PR from the watched list (RW1). */
-export function useUnwatch() {
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: (pr: PrRef) => api.unwatchPr(pr),
-    onSettled: () => client.invalidateQueries({ queryKey: ["watches"] }),
-  });
-}
-
-/** Watch a pasted PR (RW1), then refresh the watched list (RW2). */
-export function useAddWatch() {
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: (pr: PrRef) => api.watchPr(pr),
-    onSuccess: () => client.invalidateQueries({ queryKey: ["watches"] }),
+    onSettled: () =>
+      Promise.all([
+        invalidate(),
+        client.invalidateQueries({ queryKey: ["watches"] }),
+        client.invalidateQueries({ queryKey: ["pr-history"] }),
+      ]),
   });
 }
 

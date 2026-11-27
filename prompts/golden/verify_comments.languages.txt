@@ -1,0 +1,4 @@
+@@ Pl
+- Write every text value in Polish (polski), except `reply_drafts`, which are always in English; keys and enum values stay as they are. At the first use of each translated technical term in each text, put the original English term in parentheses immediately after it. Never add English terms that dismiss risk, imply confirmation, quantify certainty, or otherwise violate the wording rules.
+@@ Ru
+- Write every text value in Russian (русский), except `reply_drafts`, which are always in English; keys and enum values stay as they are. At the first use of each translated technical term in each text, put the original English term in parentheses immediately after it. Never add English terms that dismiss risk, imply confirmation, quantify certainty, or otherwise violate the wording rules.

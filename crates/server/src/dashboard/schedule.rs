@@ -8,7 +8,6 @@
 //! token pair kept for the schedule. A run a restart interrupted is recorded `failed` at start-up and does not count
 //! for its date, so the day's catch-up decides again.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use contracts::api::dashboard::{
@@ -53,9 +52,6 @@ const NO_PAIR: &str = "Sign in again to keep the daily refresh running.";
 const FAILED_ON_SERVER: &str = "The automatic refresh failed on the server.";
 /// Reason of a run a restart interrupted; such a record does not count for its date (see [`counted_run_date`]).
 pub(crate) const INTERRUPTED: &str = "The automatic refresh was interrupted by a server restart.";
-
-/// Set once the process's scheduler runs.
-static SPAWNED: AtomicBool = AtomicBool::new(false);
 
 /// A user's daily refresh time in their time zone.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -167,11 +163,11 @@ pub fn offset(user_id: &str) -> SignedDuration {
     SignedDuration::from_mins(i64::from(first % STAGGER_MINUTES))
 }
 
-/// Starts the process's scheduler; `false` (and nothing started) when one already runs.
+/// Starts this application's scheduler; `false` (and nothing started) when one already runs.
 pub fn spawn(state: AppState) -> bool {
-    if SPAWNED.swap(true, Ordering::SeqCst) {
+    if !state.dashboard.claim_scheduler() {
         tracing::warn!(
-            "the dashboard scheduler already runs in this process; a second one was not started"
+            "the dashboard scheduler already runs for this application; a second one was not started"
         );
         return false;
     }
@@ -197,6 +193,7 @@ pub(crate) enum Tick {
 async fn run(state: AppState) {
     let mut stopping = state.stopping.subscribe();
     tracing::info!("dashboard scheduler started");
+    tokio::spawn(super::installations::run(state.clone(), TICK));
     if let Some(Err(error)) = guarded(recover(state.clone())).await {
         tracing::warn!(%error, "scheduled runs interrupted by the restart could not be marked failed");
     }
@@ -263,7 +260,7 @@ struct DueRun {
     scope: Scope,
 }
 
-/// One evaluation: sweeps token pairs no longer kept (ADR-020), then handles the first due user, if any.
+/// One evaluation: sweeps expired credentials and ranking sends, then handles the first due user, if any.
 pub(crate) async fn tick(state: AppState) -> Result<Tick, DbError> {
     // Session times are real time, like the sign-in path's sweep.
     if let Err(error) = state
@@ -275,6 +272,9 @@ pub(crate) async fn tick(state: AppState) -> Result<Tick, DbError> {
         tracing::warn!(%error, "expired sessions and token pairs could not be swept; the next evaluation tries again");
     }
     let now = state.dashboard.now();
+    if let Err(error) = state.db.dashboard().prune_sends(now).await {
+        tracing::warn!(%error, "old dashboard sends could not be pruned; the next evaluation tries again");
+    }
     let mut next: Option<Timestamp> = None;
     let mut due = Vec::new();
     for candidate in state.db.dashboard().schedule_candidates().await? {
@@ -459,7 +459,9 @@ async fn run_due(state: &AppState, run: &DueRun) -> Result<(), DbError> {
     record(state, run, ScheduledOutcome::Started, None).await?;
     // Before the start, so the scan's end is never missed.
     let mut events = state.dashboard.subscribe();
-    let (outcome, reason) = match refresh::start(state, scope, RefreshTrigger::Scheduled).await {
+    let (outcome, reason) = match refresh::start(state, scope, RefreshTrigger::Scheduled, false)
+        .await
+    {
         Ok(status) => match scan_end(state, scope, status.id, &mut events).await {
             Some(ended) => match outcome_of(&ended) {
                 Some(outcome) => outcome,

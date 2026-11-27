@@ -6,7 +6,7 @@ mod page;
 mod view;
 
 use contracts::api::dashboard::{
-    DashboardSettings, HistoryEvent, KindCounts, ScanNote, TodosState, TodosStatus,
+    DashboardSettings, HistoryEvent, ItemKey, KindCounts, ScanNote, TodosState, TodosStatus,
 };
 use contracts::time::Timestamp;
 use db::error::DbError;
@@ -66,6 +66,15 @@ pub struct Snapshot {
     /// while none was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prs_reread_at: Option<Timestamp>,
+    /// Latest GitHub webhook event applied to this dashboard.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_event_at: Option<Timestamp>,
+    /// Times of webhook additions within the current local day.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_additions: Vec<Timestamp>,
+    /// New webhook items awaiting judgement by a scan or an event ranking.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_event_items: Vec<ItemKey>,
     /// TODO rows hidden because the current settings hide TODOs (read time only, never stored).
     #[serde(skip)]
     pub todos_hidden: bool,
@@ -79,10 +88,16 @@ pub struct Snapshot {
 pub struct StoredPr {
     /// Scoring facts.
     pub facts: PrFacts,
+    /// GitHub-native stack membership at the latest GitHub read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack: Option<contracts::api::dashboard::Stack>,
     /// From a private repository.
     pub private: bool,
     /// Head commit at scan time (review links compare it with the analysed head).
     pub head_sha: String,
+    /// Head repository for check/status events from forks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_repository: Option<contracts::common::RepoRef>,
     /// Base commit at scan time (the PR badge takes Ready to merge only at this base); none in a snapshot stored
     /// before it was kept.
     #[serde(default)]
@@ -99,41 +114,6 @@ pub struct StoredPr {
     /// Issues it closes (`closingIssuesReferences`, first 5); empty in a snapshot stored before they were kept.
     #[serde(default)]
     pub linked_issues: Vec<StoredLinkedIssue>,
-    /// Its change mark when read (plan §M); none in a snapshot stored before marks were kept (counts as changed).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mark: Option<PrMark>,
-}
-
-/// What a fact check compares to tell that a pull request changed on GitHub (plan §M): built alike from the scan's
-/// details (Q2) and the change probe (Q18). Comments and reviews move `updated_at`; CI, merge state and resolved
-/// threads do not, hence their own fields.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PrMark {
-    /// GitHub's `state` (`OPEN`, `CLOSED`, `MERGED`).
-    pub state: String,
-    /// `updatedAt`.
-    pub updated_at: Timestamp,
-    /// Head commit.
-    pub head: String,
-    /// `mergeable`.
-    pub mergeable: String,
-    /// `mergeStateStatus`.
-    pub merge_state: String,
-    /// `reviewDecision`.
-    pub review_decision: Option<String>,
-    /// Draft.
-    pub draft: bool,
-    /// Label names, sorted.
-    pub labels: Vec<String>,
-    /// The head commit's CI rollup state; none without checks.
-    pub ci: Option<String>,
-    /// Digest of CI context identities, states and recency (K12); absent in snapshots stored before it was kept.
-    #[serde(default)]
-    pub ci_contexts_digest: Option<String>,
-    /// Review threads not resolved (of the first 100).
-    pub unresolved_threads: u32,
-    /// Pending review requests.
-    pub review_requests: u32,
 }
 
 /// An issue a pull request closes. The scan reads no repository for it: it is shown under the pull request's.

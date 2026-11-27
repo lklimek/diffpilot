@@ -3,8 +3,9 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppNav } from "./AppNav";
 import { ShellTopBar } from "./ShellTopBar";
+import { UserMenu } from "./UserMenu";
 
-const HREFS = { "my-work": "/", review: "/review", watching: "/watching", settings: "/settings" };
+const HREFS = { "my-work": "/", prs: "/prs", settings: "/settings" };
 
 describe("AppNav", () => {
   beforeEach(() => window.localStorage.clear());
@@ -15,7 +16,7 @@ describe("AppNav", () => {
     expect(myWork).toHaveAttribute("aria-current", "page");
     expect(myWork).toHaveAttribute("href", "/");
     expect(myWork).toHaveTextContent("14");
-    expect(screen.getByRole("link", { name: "Review a PR" })).not.toHaveAttribute("aria-current");
+    expect(screen.getByRole("link", { name: "Pull requests" })).not.toHaveAttribute("aria-current");
   });
 
   it("navigates in the app on a plain click", () => {
@@ -26,21 +27,21 @@ describe("AppNav", () => {
   });
 
   it("collapses to icons with accessible names and remembers it", async () => {
-    const { unmount } = render(<AppNav current="review" hrefs={HREFS} myWorkCount={3} />);
+    const { unmount } = render(<AppNav current="prs" hrefs={HREFS} myWorkCount={3} />);
     await userEvent.click(screen.getByRole("button", { name: "Collapse navigation" }));
-    expect(screen.getByRole("link", { name: "Review a PR" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "Pull requests" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("button", { name: "Expand navigation" })).toHaveAttribute(
       "aria-expanded",
       "false",
     );
     unmount();
-    render(<AppNav current="review" hrefs={HREFS} myWorkCount={3} />);
+    render(<AppNav current="prs" hrefs={HREFS} myWorkCount={3} />);
     expect(screen.getByRole("button", { name: "Expand navigation" })).toBeInTheDocument();
   });
 
   it("explains each entry in a tooltip on focus", () => {
     render(<AppNav current={null} hrefs={HREFS} myWorkCount={null} />);
-    fireEvent.focus(screen.getByRole("link", { name: "Review a PR" }));
+    fireEvent.focus(screen.getByRole("link", { name: "Pull requests" }));
     expect(screen.getByRole("tooltip")).toHaveTextContent("Open a pull request by URL");
   });
 });
@@ -49,25 +50,38 @@ describe("ShellTopBar", () => {
   it("starts with a skip link and holds the page actions, help and the user", async () => {
     const onHelp = vi.fn();
     render(
-      <ShellTopBar crumb="My work" homeHref="/" settingsHref="/settings" login="alice" onHelp={onHelp}>
+      <ShellTopBar
+        crumb="My work"
+        homeHref="/"
+        userMenu={
+          <UserMenu
+            login="alice"
+            settingsHref="/settings"
+            usageHref="/settings#llm-usage"
+            now={new Date()}
+            activity={null}
+            onHelp={onHelp}
+            onSignOut={vi.fn()}
+          />
+        }
+      >
         <button type="button">Refresh</button>
       </ShellTopBar>,
     );
     const links = screen.getAllByRole("link");
     expect(links[0]).toHaveTextContent("Skip to content");
     expect(links[0]).toHaveAttribute("href", "#main");
-    expect(screen.getByRole("link", { name: "Settings, signed in as alice" })).toHaveAttribute(
-      "href",
-      "/settings",
-    );
+    expect(screen.queryByRole("button", { name: "Keyboard shortcuts" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "alice: account and LLM activity" }));
+    expect(screen.getByRole("link", { name: "Settings" })).toHaveAttribute("href", "/settings");
     expect(screen.getByRole("button", { name: "Refresh" })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Keyboard shortcuts" }));
     expect(onHelp).toHaveBeenCalledOnce();
   });
 
-  it("has no user link when signed out", () => {
-    render(<ShellTopBar homeHref="/" settingsHref="/settings" login={null} />);
-    expect(screen.queryByRole("link", { name: /signed in/ })).toBeNull();
+  it("has no user menu when signed out", () => {
+    render(<ShellTopBar homeHref="/" />);
+    expect(screen.queryByRole("button", { name: "alice: account and LLM activity" })).toBeNull();
   });
 });
 
@@ -79,4 +93,16 @@ it("pluralizes the mention count and preserves the section description", () => {
     "Your PRs, issues and TODOs, ranked; throughput charts",
   );
   expect(screen.getByRole("tooltip")).toHaveTextContent("1 unanswered mention from people");
+});
+
+it("keeps the navigation labels on a phone until the reader collapses it", () => {
+  window.localStorage.removeItem("diffpilot.nav.collapsed");
+  const matchMedia = vi.fn().mockReturnValue({ matches: true });
+  vi.stubGlobal("matchMedia", matchMedia);
+  try {
+    render(<AppNav current="settings" hrefs={HREFS} myWorkCount={null} />);
+    expect(screen.getByRole("button", { name: "Collapse navigation" })).toBeVisible();
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });

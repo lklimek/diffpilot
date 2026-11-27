@@ -1035,7 +1035,7 @@
         },
         "kind": {
           "description": "Actual chosen kind.",
-          "$ref": "#/$defs/DecisionKind"
+          "$ref": "#/$defs/ReviewDecisionKind"
         },
         "target": {
           "description": "Actual target.",
@@ -1062,8 +1062,8 @@
       "type": "string",
       "format": "uuid"
     },
-    "DecisionKind": {
-      "description": "A decision (D1–D7; D8 is `reject` with a `blocker_gate` override; P1–P4 for PR-level questions). Open enum.",
+    "ReviewDecisionKind": {
+      "description": "A review decision (D1–D7 and P1–P4) eligible for external use.",
       "oneOf": [
         {
           "description": "D1: resolve, already fixed.",

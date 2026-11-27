@@ -1,12 +1,14 @@
 //! The ranked items and the snapshot facts of R1/R1b, computed from a stored snapshot and the judgements present
 //! when read. Tags and facts come from scan facts only; LLM text only from a judgement.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use contracts::api::dashboard::{
     AwaitingItem, AwaitingReason, EXCLUDED_ITEMS_LIMIT, ExcludedItem, ExclusionCount,
-    ExclusionReason, Exclusions, Fact, FactTag, ItemCounts, ItemKey, ItemKind, ItemTarget,
-    ItemText, RankingState, ReadyToMergeItem, ScoreState, SnapshotMeta, Tier, WorkItem,
+    ExclusionReason, Exclusions, Fact, FactFilter, FactTag, ItemCounts, ItemKey, ItemKind,
+    ItemTarget, ItemText, Judgement as JudgementView, JudgementState, OutdatedBecause,
+    RankingState, ReadyToMergeItem, RefreshState, ScoreState, SnapshotMeta, StatusCounts, Tier,
+    WorkItem,
 };
 use contracts::common::RepoRef;
 use contracts::time::Timestamp;
@@ -18,8 +20,8 @@ use super::{Snapshot, StoredIssue, StoredPr, StoredTodo};
 use crate::dashboard::plugin::{Move, Overlay};
 use crate::dashboard::refresh::rank::ItemJudgement;
 use crate::dashboard::score::{
-    self, CiEffective, Judgement, Mergeable, Milestone, PrFacts, Relation, ScoreError, ScoreRules,
-    Scored, TodoStatus, merge_ready, todo_display_ids,
+    self, CiEffective, Freshness, Judgement, Mergeable, Milestone, PrFacts, Relation, ScoreError,
+    ScoreRules, Scored, TodoStatus, merge_ready, todo_display_ids,
 };
 
 /// A ranked item with what the request-time review link needs.
@@ -36,6 +38,8 @@ pub struct ViewItem {
 pub struct View {
     /// Ranked items.
     pub items: Vec<ViewItem>,
+    /// Repository counts for visible ranked items (live, not live).
+    pub(crate) repository_counts: (u32, u32),
     /// Counts by kind and tier.
     pub item_counts: ItemCounts,
     /// Items left out of the ranking: counts per rule and the capped list.
@@ -49,14 +53,79 @@ pub struct View {
 }
 
 impl View {
+    /// Applies webhook coverage to GitHub items and counts distinct repositories among the ranked items.
+    pub(crate) fn apply_installations(&mut self, live: &HashSet<RepoRef>) {
+        let repositories: HashSet<_> = self
+            .items
+            .iter_mut()
+            .filter_map(|entry| {
+                let repo = crate::dashboard::installations::key(entry.item.repo.as_ref()?);
+                entry.item.live = Some(live.contains(&repo));
+                Some(repo)
+            })
+            .collect();
+        let live_count = repositories.intersection(live).count();
+        self.repository_counts = (
+            u32::try_from(live_count).unwrap_or(u32::MAX),
+            u32::try_from(repositories.len() - live_count).unwrap_or(u32::MAX),
+        );
+    }
+
+    /// Shows only the items covered by a single-item ranking as queued or judging.
+    pub(crate) fn apply_rejudge_targets(
+        &mut self,
+        record: &RefreshRecord,
+        targets: &HashSet<ItemKey>,
+    ) {
+        let capped: HashSet<_> = record.progress.left_provisional_keys.iter().collect();
+        for entry in &mut self.items {
+            if let Some(judgement) = &mut entry.item.judgement {
+                match judgement.state {
+                    JudgementState::Judging if !targets.contains(&entry.item.key) => {
+                        judgement.state = JudgementState::Outdated;
+                    }
+                    JudgementState::Queued => {
+                        judgement.state = if capped.contains(&entry.item.key) {
+                            JudgementState::Capped
+                        } else {
+                            JudgementState::NotJudged
+                        };
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    /// Summary counts across the ranked items, before item filters and pagination.
+    pub(crate) fn status_counts(&self) -> StatusCounts {
+        let mut counts = StatusCounts {
+            outdated: 0,
+            not_judged: 0,
+            not_live: 0,
+            excluded: self.exclusions.total,
+        };
+        for entry in &self.items {
+            match entry.item.judgement.map(|j| j.state) {
+                Some(JudgementState::Outdated | JudgementState::Judging) => counts.outdated += 1,
+                Some(
+                    JudgementState::NotJudged | JudgementState::Queued | JudgementState::Capped,
+                ) => {
+                    counts.not_judged += 1;
+                }
+                _ => {}
+            }
+            counts.not_live += u32::from(entry.item.live == Some(false));
+        }
+        counts
+    }
+
     /// `SnapshotMeta` of the snapshot held by `record`; the excluded items are listed only when `list_excluded`.
-    /// `checked` is the last fact check of this snapshot (plan §M): `facts_checked_at` when later than the scan.
     pub fn meta(
         &self,
         snapshot: &Snapshot,
         record: &RefreshRecord,
         list_excluded: bool,
-        checked: Option<Timestamp>,
     ) -> SnapshotMeta {
         let exclusions = Exclusions {
             items: self.exclusions.items.clone().filter(|_| list_excluded),
@@ -79,7 +148,6 @@ impl View {
             unreachable: snapshot.unreachable.clone(),
             checked: snapshot.checked,
             exclusions: Some(exclusions),
-            facts_checked_at: checked.filter(|at| *at > snapshot.scanned_at),
         }
     }
 }
@@ -98,7 +166,17 @@ pub fn build(
     judgements: &HashMap<ItemKey, ItemJudgement>,
     memcan_ui: Option<&str>,
     overlay: &Overlay,
+    record: Option<&RefreshRecord>,
 ) -> View {
+    let ranking_live = record.is_some_and(|record| record.state == RefreshState::Ranking);
+    let capped: HashSet<_> = record
+        .into_iter()
+        .flat_map(|record| &record.progress.left_provisional_keys)
+        .collect();
+    let bulk: HashSet<_> = record
+        .into_iter()
+        .flat_map(|record| &record.progress.bulk_rejudge_keys)
+        .collect();
     let rules = ScoreRules::new(&snapshot.own_login, &snapshot.settings);
     let at = snapshot.scanned_at;
     let look_back = LookBack {
@@ -175,10 +253,18 @@ pub fn build(
             continue;
         };
         count(&mut counts, &item);
-        let text = judgements
-            .get(&item.key)
-            .and_then(|judged| judged.text.clone());
+        let judged = judgements.get(&item.key);
+        let text = judged.and_then(|judged| judged.text.clone());
+        let judgement = (item.asks_eligibility || !item.asks.is_empty()).then(|| {
+            judgement_for(
+                judged,
+                ranking_live,
+                capped.contains(&item.key),
+                bulk.contains(&item.key),
+            )
+        });
         let mut view_item = work_item(&rules, &look_back, item, source, text, memcan_ui);
+        view_item.item.judgement = judgement;
         if let Source::Pr(pr) = source {
             view_item.item.plugin_notes = overlay.notes(&pr.facts.repo, pr.facts.number);
         }
@@ -199,11 +285,49 @@ pub fn build(
     }
     View {
         items,
+        repository_counts: (0, 0),
         item_counts: counts,
         exclusions: exclusions(ranking.excluded, &sources, &snapshot.snoozes, memcan_ui),
         awaiting,
         ready_to_merge,
         merge_state_pending,
+    }
+}
+
+fn judgement_for(
+    stored: Option<&ItemJudgement>,
+    ranking_live: bool,
+    capped: bool,
+    bulk_requested: bool,
+) -> JudgementView {
+    let Some(stored) = stored else {
+        return JudgementView {
+            state: if ranking_live {
+                JudgementState::Queued
+            } else if capped {
+                JudgementState::Capped
+            } else {
+                JudgementState::NotJudged
+            },
+            judged_at: None,
+            outdated_because: None,
+        };
+    };
+    let stale = stored.judgement.freshness == Freshness::Inherited;
+    JudgementView {
+        state: if !stale {
+            JudgementState::Current
+        } else if ranking_live && (stored.rejudge_requested || bulk_requested) {
+            JudgementState::Judging
+        } else {
+            JudgementState::Outdated
+        },
+        judged_at: Some(stored.judgement.judged_at),
+        outdated_because: stale.then_some(if stored.older_prompt {
+            OutdatedBecause::PromptChanged
+        } else {
+            OutdatedBecause::FactsChanged
+        }),
     }
 }
 
@@ -370,11 +494,23 @@ fn count(counts: &mut ItemCounts, item: &Scored) {
     }
 }
 
-fn tag(text: impl Into<String>, tip: impl Into<String>) -> FactTag {
+fn tag(key: impl Into<String>, label: &str, tip: impl Into<String>) -> FactTag {
     FactTag {
-        text: text.into(),
+        filter: FactFilter {
+            key: key.into(),
+            label: label.to_owned(),
+        },
+        text: label.to_owned(),
         tip: tip.into(),
     }
+}
+
+fn label_tag(label: &str) -> FactTag {
+    tag(
+        format!("label:{}", label.to_lowercase()),
+        label,
+        "GitHub label",
+    )
 }
 
 fn fact(label: &str, value: impl Into<String>) -> Fact {
@@ -441,7 +577,7 @@ fn work_item(
                     f.author.clone(),
                     issue.private,
                     f.updated_at,
-                    issue_tags(&f.relations, issue.opened_at, look_back),
+                    issue_tags(issue, look_back),
                     issue_facts(issue),
                     None,
                 )
@@ -459,8 +595,23 @@ fn work_item(
                 None,
             ),
         };
+    let (stack, release_base) = match source {
+        Source::Pr(pr) => (
+            pr.stack.clone(),
+            pr.facts
+                .base_ref
+                .as_ref()
+                .filter(|base| rules.matches_branch_pattern(&pr.facts.repo, base))
+                .cloned(),
+        ),
+        Source::Issue(_) | Source::Todo(_) => (None, None),
+    };
     ViewItem {
         item: WorkItem {
+            judgement: None,
+            live: None,
+            stack,
+            release_base,
             id: scored.id,
             key: scored.key,
             kind: scored.kind,
@@ -481,6 +632,7 @@ fn work_item(
             llm,
             review: None,
             comments: None,
+            imported_unseen: None,
             watched: false,
             plugin_notes: Vec::new(),
         },
@@ -491,10 +643,12 @@ fn work_item(
 fn ci_tag(pr: &StoredPr) -> Option<FactTag> {
     match pr.facts.ci {
         CiEffective::Green if pr.ci_ignored.is_empty() => Some(tag(
+            "ci_passing",
             "CI passing",
             "Every build, test and lint check on the head commit passed",
         )),
         CiEffective::Green => Some(tag(
+            "ci_passing",
             "CI passing",
             format!(
                 "Every build, test and lint check on the head commit passed; ignored checks not passing: {}",
@@ -502,10 +656,12 @@ fn ci_tag(pr: &StoredPr) -> Option<FactTag> {
             ),
         )),
         CiEffective::Red => Some(tag(
+            "ci_failing",
             "CI failing",
             format!("Failing: {}", pr.ci_red.join(", ")),
         )),
         CiEffective::Pending => Some(tag(
+            "ci_running",
             "CI running",
             if pr.ci_pending.is_empty() {
                 "Checks have not reported yet".to_owned()
@@ -514,6 +670,7 @@ fn ci_tag(pr: &StoredPr) -> Option<FactTag> {
             },
         )),
         CiEffective::Unknown => Some(tag(
+            "ci_partly_read",
             "CI partly read",
             "More checks exist than were read; none of those read failed",
         )),
@@ -526,35 +683,54 @@ fn pr_tags(rules: &ScoreRules, pr: &StoredPr) -> Vec<FactTag> {
     let mut tags = Vec::new();
     if f.relations.contains(&Relation::ReviewRequested) {
         tags.push(tag(
+            "review_requested",
             "review requested",
             "Your review is requested, directly or through a team",
         ));
     }
     if f.relations.contains(&Relation::Assigned) {
-        tags.push(tag("assigned to you", "You are an assignee of this PR"));
+        tags.push(tag(
+            "assigned_to_you",
+            "assigned to you",
+            "You are an assignee of this PR",
+        ));
     }
     if f.is_draft {
-        tags.push(tag("draft", "The PR is a draft"));
+        tags.push(tag("draft", "draft", "The PR is a draft"));
     }
     tags.extend(ci_tag(pr));
     if f.mergeable == Mergeable::Conflicting {
-        tags.push(tag("conflicts", "GitHub reports merge conflicts"));
+        tags.push(tag(
+            "conflicts",
+            "conflicts",
+            "GitHub reports merge conflicts",
+        ));
     }
     if !f.changes_requested_by.is_empty() {
         tags.push(tag(
+            "changes_requested",
             "changes requested",
             format!("Requested by {}", f.changes_requested_by.join(", ")),
         ));
     }
     if f.unresolved_threads > 0 {
-        tags.push(tag(
-            format!("{} unresolved threads", f.unresolved_threads),
-            "Review threads not resolved on GitHub",
-        ));
+        tags.push(FactTag {
+            text: format!("{} unresolved threads", f.unresolved_threads),
+            ..tag(
+                "unresolved_threads",
+                "unresolved threads",
+                "Review threads not resolved on GitHub",
+            )
+        });
     }
-    if f.labels.iter().any(|l| rules.is_ready_label(l)) {
-        tags.push(tag("ready label", "Marked ready for a human review"));
-    }
+    tags.extend(f.labels.iter().map(|label| {
+        let mut tag = label_tag(label);
+        if rules.is_ready_label(label) {
+            tag.text = "ready label".to_owned();
+            tag.tip = "Marked ready for a human review".to_owned();
+        }
+        tag
+    }));
     tags
 }
 
@@ -583,14 +759,12 @@ fn pr_facts(pr: &StoredPr) -> Vec<Fact> {
     facts
 }
 
-fn issue_tags(
-    relations: &[Relation],
-    opened_at: Option<Timestamp>,
-    look_back: &LookBack,
-) -> Vec<FactTag> {
+fn issue_tags(issue: &StoredIssue, look_back: &LookBack) -> Vec<FactTag> {
+    let relations = &issue.facts.relations;
     let mut tags = Vec::new();
-    if let Some(opened) = opened_at.filter(|at| *at >= look_back.since) {
+    if let Some(opened) = issue.opened_at.filter(|at| *at >= look_back.since) {
         tags.push(tag(
+            "new",
             "new",
             format!(
                 "Opened {} (UTC), within your look-back of {} {}",
@@ -601,17 +775,27 @@ fn issue_tags(
         ));
     }
     if relations.contains(&Relation::Assigned) {
-        tags.push(tag("assigned to you", "You are an assignee of this issue"));
+        tags.push(tag(
+            "assigned_to_you",
+            "assigned to you",
+            "You are an assignee of this issue",
+        ));
     }
     if relations.contains(&Relation::Mentioned) {
-        tags.push(tag("mentions you", "The issue or a comment mentions you"));
+        tags.push(tag(
+            "mentions_you",
+            "mentions you",
+            "The issue or a comment mentions you",
+        ));
     }
     if relations.contains(&Relation::RepoOpen) {
         tags.push(tag(
+            "watched_repository",
             "watched repository",
             "Open issue of a repository whose issues you watch",
         ));
     }
+    tags.extend(issue.facts.labels.iter().map(|label| label_tag(label)));
     tags
 }
 
@@ -626,15 +810,19 @@ fn issue_facts(issue: &StoredIssue) -> Vec<Fact> {
 }
 
 fn todo_tags(todo: &StoredTodo) -> Vec<FactTag> {
-    let status = match todo.facts.status {
-        TodoStatus::Pending => "pending",
-        TodoStatus::InProgress => "in progress",
-        TodoStatus::Blocked => "blocked",
-        TodoStatus::Postponed => "postponed",
+    let (key, status) = match todo.facts.status {
+        TodoStatus::Pending => ("pending", "pending"),
+        TodoStatus::InProgress => ("in_progress", "in progress"),
+        TodoStatus::Blocked => ("blocked", "blocked"),
+        TodoStatus::Postponed => ("postponed", "postponed"),
     };
     vec![
-        tag(todo.project.clone(), "MemCan project"),
-        tag(status, "MemCan status"),
+        tag(
+            format!("project:{}", todo.project),
+            &todo.project,
+            "MemCan project",
+        ),
+        tag(key, status, "MemCan status"),
     ]
 }
 
@@ -799,7 +987,45 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
-    use crate::dashboard::score::{Freshness, Judgement, TodoFacts, TodoStatus};
+    use crate::dashboard::score::{TodoFacts, TodoStatus};
+
+    #[test]
+    fn judgement_states_table() {
+        use JudgementState::*;
+        use OutdatedBecause::*;
+
+        let answer = |freshness, older_prompt, rejudge_requested| ItemJudgement {
+            judgement: Judgement {
+                parts: Vec::new(),
+                eligibility: None,
+                alarm: false,
+                also: Vec::new(),
+                judged_at: at(),
+                freshness,
+            },
+            text: None,
+            older_prompt,
+            rejudge_requested,
+        };
+        let fresh = answer(Freshness::Current, false, false);
+        let changed = answer(Freshness::Inherited, false, false);
+        let bumped = answer(Freshness::Inherited, true, true);
+        for (stored, live, capped, state, reason) in [
+            (None, false, false, NotJudged, None),
+            (None, true, false, Queued, None),
+            (None, true, true, Queued, None),
+            (None, false, true, Capped, None),
+            (Some(&fresh), false, false, Current, None),
+            (Some(&changed), true, false, Outdated, Some(FactsChanged)),
+            (Some(&bumped), false, false, Outdated, Some(PromptChanged)),
+            (Some(&bumped), true, false, Judging, Some(PromptChanged)),
+        ] {
+            let rendered = judgement_for(stored, live, capped, false);
+            assert_eq!(rendered.state, state);
+            assert_eq!(rendered.outdated_because, reason);
+            assert_eq!(rendered.judged_at, stored.map(|_| at()));
+        }
+    }
 
     fn at() -> Timestamp {
         "2026-11-18T09:00:00Z".parse().expect("time")

@@ -7,11 +7,14 @@ import { CollapsibleSection } from "../collapsible/CollapsibleSection";
 import { useCardKeys } from "./cardKeys";
 import {
   CHOICE_LABEL,
+  canMark,
   choicesFor,
   decideBlocked,
   gateOf,
+  githubProposal,
   missingInput,
   needOf,
+  NEED_LABEL,
   plannedReply,
   previewFor,
   recommendedValue,
@@ -28,14 +31,6 @@ export const COMMENT_HINT =
   "Saved with the decision and sent to the agent that executes it. Not posted to GitHub: the reply text below is what gets posted.";
 
 const INPUT = "w-full rounded-md border border-muted bg-surface px-2 py-1 text-text";
-
-const NEED_LABEL: Record<NonNullable<ReturnType<typeof needOf>>, string> = {
-  reason: "Reason (posted as the public reply)",
-  pr: "Existing pull request",
-  title: "Title of the new follow-up PR (optional)",
-  upstream: 'Upstream issue or PR URL, or "create"',
-  todo: "TODO title",
-};
 
 interface DecisionFormProps {
   item: CommentItem;
@@ -69,8 +64,10 @@ export function DecisionForm(props: DecisionFormProps) {
   const id = useId();
   const choices = choicesFor(item);
   const recommended = item.assessment?.recommendation.kind ?? null;
-  const [choice, setChoice] = useState<Choice>(choices[0]!);
-  const [value, setValue] = useState(() => recommendedValue(item));
+  const initialChoice = githubProposal(item)?.kind ?? choices[0]!;
+  const initialValue = initialChoice === recommended ? recommendedValue(item) : "";
+  const [choice, setChoice] = useState<Choice>(initialChoice);
+  const [value, setValue] = useState(initialValue);
   const [resolve, setResolve] = useState(true);
   const [comment, setComment] = useState("");
   const [reply, setReply] = useState<string | null>(null);
@@ -80,8 +77,8 @@ export function DecisionForm(props: DecisionFormProps) {
   const [touched, setTouched] = useState(false);
   if (item.revision !== seen && !touched) {
     setSeen(item.revision);
-    setChoice(choices[0]!);
-    setValue(recommendedValue(item));
+    setChoice(initialChoice);
+    setValue(initialValue);
   }
   const changed = item.revision !== seen;
   const touch = () => {
@@ -93,7 +90,8 @@ export function DecisionForm(props: DecisionFormProps) {
   const thread = item.kind === "thread";
   const gate = gateOf(item);
   const locked = resolveLocked(choice);
-  const need = needOf(choice);
+  const marking = choice === "not_a_review_point";
+  const need = needOf(choice, gate);
   const outOfScope = choice === "fix_here" && item.assessment?.necessity.verdict === "out";
   const edited = reply?.trim() ? reply : null;
   const requestFor = (revision: number, text: string | null, note: string): DecideRequest => {
@@ -101,13 +99,16 @@ export function DecisionForm(props: DecisionFormProps) {
     return outOfScope ? { ...request, override: { type: "necessity_gate" } } : request;
   };
   // The server plans the reply that gets posted (its default, or the edited one); the comment changes no effect.
-  const missing = missingInput({ choice, value });
+  const missing =
+    marking && !canMark(item)
+      ? "This item no longer awaits a decision."
+      : missingInput({ choice, value }, gate);
   const draft = missing ? null : [{ item_no: item.no, ...requestFor(item.revision, edited, "") }];
   useDraft(draft, props.onDraft);
   const blocked = decideBlocked(props.preview, draft);
   const effects = previewFor(props.preview, item.no);
   const planned = effects ? plannedReply(effects) : null;
-  const shownReply = edited ?? planned;
+  const shownReply = marking ? null : (edited ?? planned);
   // The reply shown is of the previous draft until the server planned this one.
   const updating = props.preview.state === "ready" && props.preview.updating && edited === null;
 
@@ -182,7 +183,7 @@ export function DecisionForm(props: DecisionFormProps) {
                   className="mt-1"
                 />
                 <span aria-hidden="true" className="min-w-3 font-mono text-muted">
-                  {i + 1}
+                  {i < 8 ? i + 1 : null}
                 </span>
                 <span>
                   {CHOICE_LABEL[c]}
@@ -206,7 +207,7 @@ export function DecisionForm(props: DecisionFormProps) {
           {need && (
             <div className="mt-2">
               <label htmlFor={`${id}-value`} className="mb-0.5 block text-xs font-semibold">
-                {NEED_LABEL[need]}
+                {marking ? "Reason" : NEED_LABEL[need]}
               </label>
               <input
                 ref={valueRef}
@@ -234,61 +235,69 @@ export function DecisionForm(props: DecisionFormProps) {
               Recorded with a scope override: the LLM says this is out of scope for this pull request.
             </p>
           )}
-          {thread ? (
-            <div className="mt-2.5 rounded-md border border-border bg-surface-2 px-2.5 py-1.5">
-              <label className="flex min-h-6 cursor-pointer items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={locked || resolve}
-                  disabled={locked}
-                  aria-describedby={`${id}-resolve-d`}
-                  onChange={(e) => {
-                    touch();
-                    setResolve(e.target.checked);
-                  }}
-                />
-                Resolve this thread
-              </label>
-              <p id={`${id}-resolve-d`} className="m-0 text-xs text-muted">
-                {resolveNote}
-              </p>
-            </div>
+          {marking ? (
+            <p className="mt-2 text-xs text-muted">This action only changes the item in diffpilot.</p>
           ) : (
-            <p className="mt-2 text-xs text-muted">
-              No thread to resolve: the reply goes into one PR-level comment per review.
-            </p>
+            <>
+              {thread ? (
+                <div className="mt-2.5 rounded-md border border-border bg-surface-2 px-2.5 py-1.5">
+                  <label className="flex min-h-6 cursor-pointer items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={locked || resolve}
+                      disabled={locked}
+                      aria-describedby={`${id}-resolve-d`}
+                      onChange={(e) => {
+                        touch();
+                        setResolve(e.target.checked);
+                      }}
+                    />
+                    Resolve this thread
+                  </label>
+                  <p id={`${id}-resolve-d`} className="m-0 text-xs text-muted">
+                    {resolveNote}
+                  </p>
+                </div>
+              ) : (
+                <p className="mt-2 text-xs text-muted">
+                  No thread to resolve: the reply goes into one PR-level comment per review.
+                </p>
+              )}
+              <label htmlFor={`${id}-comment`} className="mt-2 mb-0.5 block text-xs font-semibold">
+                Your comment (optional)
+              </label>
+              <textarea
+                id={`${id}-comment`}
+                rows={2}
+                value={comment}
+                aria-describedby={`${id}-comment-d`}
+                placeholder="e.g. keep the test small; touch only retry.rs"
+                onChange={(e) => {
+                  touch();
+                  setComment(e.target.value);
+                }}
+                className={INPUT}
+              />
+              <p id={`${id}-comment-d`} className="mt-0.5 text-xs text-muted">
+                {COMMENT_HINT}
+              </p>
+            </>
           )}
-          <label htmlFor={`${id}-comment`} className="mt-2 mb-0.5 block text-xs font-semibold">
-            Your comment (optional)
-          </label>
-          <textarea
-            id={`${id}-comment`}
-            rows={2}
-            value={comment}
-            aria-describedby={`${id}-comment-d`}
-            placeholder="e.g. keep the test small; touch only retry.rs"
-            onChange={(e) => {
-              touch();
-              setComment(e.target.value);
-            }}
-            className={INPUT}
-          />
-          <p id={`${id}-comment-d`} className="mt-0.5 text-xs text-muted">
-            {COMMENT_HINT}
-          </p>
         </fieldset>
       </CollapsibleSection>
       <CollapsibleSection title="What happens next" storageKey={`${storageKey}:effects`}>
         <PlannedEffects
-          preview={props.preview}
+          preview={
+            marking && props.preview.state === "ready" && (!draft || blocked) ? undefined : props.preview
+          }
           nos={[item.no]}
           idle={
             missing ? "Fill in what this choice needs; then its effects show here." : "Planning what happens…"
           }
         >
-          {!locked && thread && !resolve && <li>Thread stays open (not ticked).</li>}
+          {!marking && !locked && thread && !resolve && <li>Thread stays open (not ticked).</li>}
           {choice === "accept" && gate && <li>Recorded as Reject with a gate override ({gate}).</li>}
-          {comment.trim() && (
+          {!marking && comment.trim() && (
             <li>The executing agent receives your comment with the decision; it is not posted.</li>
           )}
         </PlannedEffects>

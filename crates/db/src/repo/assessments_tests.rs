@@ -53,6 +53,8 @@ async fn assessment_review_admission_rolls_back_pass_jobs_and_quota_together() {
         sent: vec![],
         question: None,
     };
+    let mut activity = db.jobs().subscribe_activity(DEFAULT_TENANT);
+    let other_tenant = db.jobs().subscribe_activity("other");
     let pass = db
         .assessments()
         .admit_review(
@@ -64,6 +66,36 @@ async fn assessment_review_admission_rolls_back_pass_jobs_and_quota_together() {
         )
         .await
         .unwrap();
+    assert!(
+        activity.has_changed().unwrap(),
+        "admitting queued jobs publishes"
+    );
+    activity.changed().await.unwrap();
+    assert!(!other_tenant.has_changed().unwrap());
+    let jobs = db.jobs().activity(DEFAULT_TENANT, "u1").await.unwrap().jobs;
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].kind, contracts::agent::JobKind::VerifyComments);
+    assert!(!jobs[0].running);
+    assert_eq!(
+        jobs[0].own.as_ref().unwrap().id,
+        request.jobs[0].spec.job_id
+    );
+    let same = db
+        .assessments()
+        .admit_review(
+            DEFAULT_TENANT,
+            &user(),
+            &request,
+            &review,
+            at("2026-11-23T00:00:00Z"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(same.id, pass.id);
+    assert!(
+        !activity.has_changed().unwrap(),
+        "an idempotent admission inserts no jobs"
+    );
     assert_eq!(
         db.review_loop().pass(pass.id).await.unwrap().user_id,
         Some("u1".into())
@@ -80,6 +112,10 @@ async fn assessment_review_admission_rolls_back_pass_jobs_and_quota_together() {
             )
             .await
             .is_err()
+    );
+    assert!(
+        !activity.has_changed().unwrap(),
+        "a rolled-back admission publishes nothing"
     );
     assert_eq!(
         db.assessments()
@@ -991,10 +1027,15 @@ async fn assessment_results_fence_attempts_and_keep_secondary_comparison_only() 
         .execute(&db.pool)
         .await
         .unwrap();
+    let activity = db.jobs().subscribe_activity(DEFAULT_TENANT);
     db.assessments()
         .retry_method("default", &user(), &run, 1)
         .await
         .unwrap();
+    assert!(
+        activity.has_changed().unwrap(),
+        "assessment requeue publishes"
+    );
     assert_eq!(
         db.assessments()
             .quota(&user(), now)
@@ -1680,6 +1721,7 @@ async fn assessment_stale_canonical_leaves_duplicate_missing_without_aborting_va
         stable_key: "T2".into(),
         author: "reviewer".into(),
         author_kind: contracts::api::review_loop::AuthorKind::Human,
+        status_comment: false,
         url: None,
         location: None,
         title: "Duplicate".into(),
@@ -1731,6 +1773,7 @@ async fn assessment_stale_canonical_leaves_duplicate_missing_without_aborting_va
         _ => panic!("new"),
     };
     let point = |key: &str, id, hash: String, duplicate| PrimaryPoint {
+        import: None,
         carry: None,
         key: key.into(),
         existing: Some((id, hash)),
@@ -1739,6 +1782,7 @@ async fn assessment_stale_canonical_leaves_duplicate_missing_without_aborting_va
         source: None,
         duplicate,
         assessment: None,
+        description: None,
         fingerprint: "fp".into(),
     };
     let writes = vec![
@@ -1796,6 +1840,7 @@ async fn assessment_primary_preserves_items_gone_during_the_pass() {
             .await
             .unwrap();
         let point = PrimaryPoint {
+            import: None,
             carry: None,
             key: "current".into(),
             existing: Some((id, "a".repeat(64))),
@@ -1804,6 +1849,7 @@ async fn assessment_primary_preserves_items_gone_during_the_pass() {
             source: None,
             duplicate: None,
             assessment: None,
+            description: None,
             fingerprint: "fp".into(),
         };
         assert!(

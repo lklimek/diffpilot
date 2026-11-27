@@ -1,12 +1,12 @@
 import { type Page } from "@playwright/test";
-import { test } from "./fixtures";
+import { expect, test } from "./fixtures";
 import { ANALYSIS_ID, openTour } from "./support";
 
 // The six fixture states in light and dark at 1440 and 3440 px for the comparison with docs/mockups
 // (plan §12.5). Runs only with SCREENSHOT_DIR set, e.g. SCREENSHOT_DIR=/data/artifacts/diffpilot/<date>/wp3-tour.
 const dir = process.env.SCREENSHOT_DIR;
 
-const nav = (page: Page) => page.getByRole("navigation");
+const nav = (page: Page) => page.getByRole("navigation", { name: "Flows and steps" });
 
 // What each state shows (as the mockup's state switcher does).
 const STATES: Record<string, (page: Page) => Promise<void>> = {
@@ -114,7 +114,9 @@ const EXTRA: Record<string, [string, (page: Page) => Promise<void>]> = {
     async (page) => {
       await openStep(page, 1, 2);
       await page.getByRole("button", { name: "Comment on line 96" }).click();
-      await page.getByRole("textbox", { name: /comment/i }).fill("Each attempt gets the full timeout.");
+      await page
+        .getByRole("textbox", { name: /^Comment on src\/rpc\/client\.rs:96/ })
+        .fill("Each attempt gets the full timeout.");
       await page.getByRole("button", { name: "Add to GitHub pending review" }).click();
       await page.getByText(/Also recorded as missed by the LLM/).waitFor();
     },
@@ -156,15 +158,11 @@ const EXTRA: Record<string, [string, (page: Page) => Promise<void>]> = {
     "default",
     async (page) => {
       await page.locator("body").click({ position: { x: 1, y: 1 } });
-      await nav(page)
-        .getByRole("button", { name: /^PR context/ })
-        .focus();
-      // Tab through the flows to the Unexplained row.
+      await page.keyboard.press("Tab");
       const target = nav(page).getByRole("button", { name: /^Unexplained/ });
-      for (let i = 0; i < 12 && !(await target.evaluate((el) => el === document.activeElement)); i += 1) {
-        await page.keyboard.press("Tab");
-      }
-      await page.getByRole("tooltip").filter({ visible: true }).waitFor();
+      await target.focus();
+      await expect(target).toBeFocused();
+      await expect(page.getByRole("tooltip").filter({ visible: true })).toBeVisible();
     },
   ],
   "tooltip-after-click": [

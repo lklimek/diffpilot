@@ -14,10 +14,12 @@ use super::jobs::{parse_ts, parse_wire, wire_name};
 use crate::error::DbError;
 
 mod actions;
-pub(crate) use actions::cancel_unclaimed as cancel_unclaimed_in;
+pub(crate) use origins::reopen_with_followers;
 mod carry;
 mod decisions;
 mod items;
+mod marks;
+mod origins;
 pub(crate) use items::{add_assessment_in, upsert_item_in};
 mod notify;
 mod watches;
@@ -30,12 +32,17 @@ pub use decisions::{
 };
 pub use items::{
     CommentPrRecord, ItemRecord, NewPass, ObservedItem, PassCause, PassRecord, PassStart,
-    PassState, PrCommentTally, PrView, ReadResult, SentItem, StoredAssessment, UpsertOutcome,
+    PassState, PrCommentTally, PrTallyView, PrView, ReadResult, SentItem, StoredAssessment,
+    UpsertOutcome,
 };
+pub(super) use items::{SourcePointExclusion, source_point_exclusion_in};
+pub use marks::ActiveMark;
+pub(super) use marks::active_in_pass;
 pub use notify::{
     ChannelInput, ChannelRecord, DeliveryRecord, DeliveryTarget, FailureTransition, PushInput,
     SecretUpdate, SubscriptionRecord,
 };
+pub use origins::{ImportCandidate, NewOrigin};
 pub use watches::{NewUserEvent, WatchOutcome, WatchRecord};
 
 #[cfg(test)]

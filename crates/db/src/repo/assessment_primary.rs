@@ -10,6 +10,8 @@ use sqlx::{Sqlite, Transaction};
 /// A grounded primary row; secondary adapters never submit these writes.
 #[derive(Clone, Debug)]
 pub struct PrimaryPoint {
+    /// A host-validated record of a decision on this point.
+    pub import: Option<review_loop::ImportCandidate>,
     /// A snapshot-bound standing decision and whether its point must be asked again.
     pub carry: Option<PrimaryCarry>,
     /// Common comparison key.
@@ -26,6 +28,8 @@ pub struct PrimaryPoint {
     pub duplicate: Option<String>,
     /// Validated card; absent for duplicates or merged-only thread members.
     pub assessment: Option<CommentAssessment>,
+    /// Primary report description, when provided by the method.
+    pub description: Option<String>,
     /// Frozen normalized point/code fingerprint.
     pub fingerprint: String,
 }
@@ -41,21 +45,40 @@ pub struct PrimaryCarry {
     pub evidence: contracts::api::review_loop::CarryEvidence,
 }
 
-pub(super) async fn apply(
+/// Projects accepted points and returns the marked points that suppressed fresh IDs.
+pub(super) async fn apply<'a>(
     tx: &mut Transaction<'static, Sqlite>,
     tenant: &str,
     pass: &AssessmentPass,
-    points: &[PrimaryPoint],
+    points: &'a [PrimaryPoint],
     rows: &mut [AssessmentComparisonItem],
-) -> Result<(), DbError> {
+) -> Result<Vec<(u32, &'a str)>, DbError> {
     let mut applied = std::collections::HashMap::new();
+    let mut suppressed = Vec::new();
     for point in points
         .iter()
         .filter(|p| p.duplicate.is_none())
         .chain(points.iter().filter(|p| p.duplicate.is_some()))
     {
+        if let Some((url, _, quote)) = &point.source
+            && let Some(exclusion) = review_loop::source_point_exclusion_in(
+                tx,
+                tenant,
+                pass.input.pull_request_id,
+                url,
+                quote,
+                point.observed.as_ref().filter(|_| point.existing.is_none()),
+            )
+            .await?
+        {
+            if let review_loop::SourcePointExclusion::Marked(no) = exclusion {
+                suppressed.push((no, url.as_str()));
+            }
+            mark_missing(rows, &point.key);
+            continue;
+        }
         let id = if let Some((id, hash)) = &point.existing {
-            let current: Option<String> = sqlx::query_scalar("SELECT body_hash FROM comment_items WHERE id=? AND tenant_id=? AND pull_request_id=?")
+            let current: Option<String> = sqlx::query_scalar("SELECT body_hash FROM comment_items WHERE id=? AND tenant_id=? AND pull_request_id=? AND NOT status_comment")
                 .bind(id.to_string()).bind(tenant).bind(pass.input.pull_request_id).fetch_optional(&mut **tx).await?;
             if current.as_ref() != Some(hash) {
                 mark_missing(rows, &point.key);
@@ -111,9 +134,10 @@ pub(super) async fn apply(
                 .execute(&mut **tx)
                 .await?;
         }
-        sqlx::query("UPDATE comment_items SET duplicate_of=?,duplicate_fingerprint=? WHERE id=?")
+        sqlx::query("UPDATE comment_items SET duplicate_of=?,duplicate_fingerprint=?,import_candidate=? WHERE id=?")
             .bind(duplicate.map(|id: CommentItemId| id.to_string()))
             .bind(duplicate.map(|_| point.fingerprint.as_str()))
+            .bind(point.import.as_ref().map(serde_json::to_string).transpose()?)
             .bind(id.to_string())
             .execute(&mut **tx)
             .await?;
@@ -121,7 +145,15 @@ pub(super) async fn apply(
             if assessment.head != pass.input.head {
                 return Err(DbError::Conflict);
             }
-            review_loop::add_assessment_in(tx, tenant, id, assessment, &point.fingerprint).await?;
+            review_loop::add_assessment_in(
+                tx,
+                tenant,
+                id,
+                assessment,
+                &point.fingerprint,
+                point.description.as_deref(),
+            )
+            .await?;
         }
         let hash: String = sqlx::query_scalar("SELECT body_hash FROM comment_items WHERE id=?")
             .bind(id.to_string())
@@ -140,23 +172,18 @@ pub(super) async fn apply(
                     .bind(contracts::ids::CarryEventId::new_random().to_string()).bind(tenant).bind(pass.input.pull_request_id).bind(id.to_string()).bind(carry.decision.to_string())
                     .bind(if carry.reason.is_some(){"asked_again"}else{"carried"}).bind(carry.reason.map(super::jobs::wire_name).transpose()?).bind(serde_json::to_string(&carry.evidence)?).bind(super::jobs::ts(pass.admitted_at)).execute(&mut **tx).await?;
                 if carry.reason.is_some() {
-                    review_loop::cancel_unclaimed_in(
+                    review_loop::reopen_with_followers(
                         tx,
                         &carry.decision.to_string(),
+                        id,
                         pass.admitted_at,
                     )
-                    .await?;
-                    sqlx::query(
-                        "UPDATE comment_items SET state='reopened',revision=revision+1 WHERE id=?",
-                    )
-                    .bind(id.to_string())
-                    .execute(&mut **tx)
                     .await?;
                 }
             }
         }
     }
-    Ok(())
+    Ok(suppressed)
 }
 
 fn mark_missing(rows: &mut [AssessmentComparisonItem], key: &str) {
@@ -180,7 +207,7 @@ pub(super) async fn capture_owner(
         SELECT p.id,p.primary_method,c.comparison_key,p.tenant_id,p.payer_id,c.primary_item_id,d.id,(SELECT count(*) FROM history),d.user_id,d.decided_at,d.kind,d.target
         FROM comment_decisions d JOIN assessment_comparison_items c ON c.primary_item_id=d.item_id AND c.tenant_id=d.tenant_id
         JOIN assessment_passes p ON p.id=c.pass_id AND p.primary_method=c.method JOIN memberships m ON m.tenant_id=d.tenant_id AND m.user_id=d.user_id
-        WHERE d.id=? AND d.tenant_id=? AND d.via<>'carried' AND c.status='matched' AND d.head=p.head AND d.body_hash=c.primary_item_hash
+        WHERE d.id=? AND d.tenant_id=? AND d.via<>'carried' AND NOT EXISTS (SELECT 1 FROM comment_decision_origins o WHERE o.decision_id=d.id) AND c.status='matched' AND d.head=p.head AND d.body_hash=c.primary_item_hash
         AND (json_extract(c.source,'$.kind')='inline' OR d.source_version=json_extract(c.source,'$.version'))
         ON CONFLICT(pass_id,comparison_key,decision_id) DO NOTHING")
         .bind(id.to_string()).bind(id.to_string()).bind(tenant).execute(&mut **tx).await?;

@@ -244,6 +244,8 @@ fn execute_scope_is_only_on_feed_write_routes() {
 
 fn decision() -> Decision {
     Decision {
+        imported: None,
+        follows: None,
         id: DecisionId(Uuid::nil()),
         item_no: 14,
         kind: DecisionKind::Reject,
@@ -434,4 +436,29 @@ fn job_spec_has_no_channel_secret() {
             "{forbidden}: {names:?}"
         );
     }
+}
+
+#[test]
+fn llm_activity_event_carries_only_the_other_jobs_opaque_id_and_kind() {
+    use contracts::api::llm::{LlmActivity, LlmJob, LlmJobKind};
+    use contracts::api::review_loop::UserStreamEvent;
+
+    let event = UserStreamEvent::LlmActivity {
+        activity: LlmActivity {
+            running: vec![LlmJob::Other {
+                id: "0".into(),
+                kind: LlmJobKind::Ranking,
+            }],
+            queued: vec![],
+            paused_until: None,
+            last_call: None,
+        },
+    };
+    let wire = serde_json::to_value(&event).unwrap();
+    assert_eq!(event.name(), "llm_activity");
+    assert_eq!(wire["event"], "llm_activity");
+    assert_eq!(
+        wire["activity"]["running"][0],
+        json!({"owner": "other", "id": "0", "kind": "ranking"})
+    );
 }

@@ -1,11 +1,10 @@
 use contracts::api::access_tokens::AccessTokenId;
-use contracts::api::dashboard::CommentTally;
 use contracts::api::review_loop::{
     AuthorKind, CarryEvidence, CarryKind, ChannelKind, CommentAssessment, CommentItemKind,
     DecisionKind, DecisionVia, DeliveryOutcome, EffectKind, EffectParams, EffectState, Executor,
     Gate, GateMark, GateSource, ItemGithubFacts, ItemLocation, ItemState, Necessity,
-    NecessityVerdict, OutsideResolution, ReaskReason, Recommendation, ReportOutcome, UserEventKind,
-    Validity, WatchState,
+    NecessityVerdict, OutsideResolution, ReaskReason, Recommendation, ReportOutcome,
+    ReviewDecisionKind, UserEventKind, Validity, WatchState,
 };
 use contracts::common::{LineRange, RepoRef};
 use contracts::ids::{CommitSha, JobId};
@@ -58,6 +57,7 @@ fn observed(key: &str, body: &str) -> ObservedItem {
         stable_key: key.into(),
         author: "thepastaclaw".into(),
         author_kind: AuthorKind::Bot,
+        status_comment: false,
         url: Some(format!(
             "https://github.com/acme/node-client/pull/482#{key}"
         )),
@@ -101,6 +101,7 @@ async fn new_item(db: &Db, key: &str) -> ItemRecord {
 
 fn fix_decision(item: &ItemRecord) -> NewDecision {
     NewDecision {
+        origin: None,
         item: item.id,
         item_revision: item.revision,
         user_id: "u1".into(),
@@ -157,6 +158,7 @@ async fn decide_one(
     {
         DecideOutcome::Stored(mut stored) => stored.pop().expect("one"),
         DecideOutcome::ItemChanged(nos) => panic!("item changed: {nos:?}"),
+        DecideOutcome::FollowerClaimed(no) => panic!("follower C{no} claimed"),
     }
 }
 
@@ -241,6 +243,7 @@ async fn items_are_numbered_once_and_revised_only_on_change() {
     ));
     let gated = rl
         .set_gates(
+            (T, "u1"),
             first.id,
             4,
             &[GateMark {
@@ -300,12 +303,8 @@ async fn read_failure_keeps_the_last_good_read() {
     ));
 }
 
-#[tokio::test]
-async fn assessments_keep_their_fingerprint_and_newest_wins() {
-    let db = db().await;
-    let rl = db.review_loop();
-    let item = new_item(&db, "dedupe-a").await;
-    let assessment = |reason: &str| CommentAssessment {
+fn assessment(reason: &str) -> CommentAssessment {
+    CommentAssessment {
         proposed_decision: None,
         evidence_text: None,
         recorded_decision: None,
@@ -328,7 +327,7 @@ async fn assessments_keep_their_fingerprint_and_newest_wins() {
         fix_size: None,
         reply_drafts: vec![],
         recommendation: Recommendation {
-            kind: DecisionKind::FixHere,
+            kind: ReviewDecisionKind::FixHere,
             reason: reason.into(),
             target: None,
             reason_class: "real bug".into(),
@@ -336,7 +335,14 @@ async fn assessments_keep_their_fingerprint_and_newest_wins() {
         code: None,
         prompt_version: 1,
         skills_commit: Some("0123456789abcdef0123456789abcdef01234567".into()),
-    };
+    }
+}
+
+#[tokio::test]
+async fn assessments_keep_their_fingerprint_and_newest_wins() {
+    let db = db().await;
+    let rl = db.review_loop();
+    let item = new_item(&db, "dedupe-a").await;
     rl.add_assessment(T, item.id, &assessment("first"), "fp1")
         .await
         .expect("first");
@@ -895,55 +901,23 @@ async fn items_no_longer_read_are_marked_gone_and_kept() {
     assert_eq!((back.gone_at, back.revision), (None, gone.revision + 1));
 }
 
-/// My work's comment counts (R1b `WorkItem.comments`): read PRs only, no PR-level questions or gone items; waiting
-/// as the queue counts it, without items a standing "merge now" decision hands to its follow-up PR.
+/// Read PRs count current comments and report watches even for PRs without a successful read.
 #[tokio::test]
-async fn comment_tallies_count_comments_and_the_waiting_ones_per_read_pull_request_and_name_watches()
- {
+async fn comment_tallies_count_current_comments_per_read_pull_request_and_name_watches() {
     let db = db().await;
     let rl = db.review_loop();
-    let waiting = new_item(&db, "dedupe-waiting").await;
+    new_item(&db, "dedupe-waiting").await;
     let decided = new_item(&db, "dedupe-decided").await;
-    let gone = new_item(&db, "dedupe-gone").await;
-    let followed = new_item(&db, "dedupe-followed").await;
+    new_item(&db, "dedupe-gone").await;
     decide_one(&db, fix_decision(&decided), at(2)).await;
-    rl.mark_gone(
-        PR,
-        &["dedupe-waiting", "dedupe-decided", "dedupe-followed"],
-        at(3),
-    )
-    .await
-    .expect("gone");
+    rl.mark_gone(PR, &["dedupe-waiting", "dedupe-decided"], at(3))
+        .await
+        .expect("gone");
     let mut question = observed("pr:3:merge", "Merge now?");
     question.kind = CommentItemKind::PrQuestion;
-    let UpsertOutcome::New(question) = rl
-        .upsert_item(T, PR, &question, ItemState::Undecided, at(4))
+    rl.upsert_item(T, PR, &question, ItemState::Undecided, at(4))
         .await
-        .expect("question")
-    else {
-        panic!("a new question");
-    };
-    let merge = decide_one(
-        &db,
-        NewDecision {
-            kind: DecisionKind::MergeWithFollowUps,
-            reply_text: None,
-            comment: None,
-            effects: vec![NewEffect {
-                seq: 1,
-                after: None,
-                kind: EffectKind::FollowUpPr,
-                executor: Executor::Agent,
-                params: EffectParams {
-                    item_nos: vec![followed.no],
-                    ..EffectParams::default()
-                },
-            }],
-            ..fix_decision(&question)
-        },
-        at(5),
-    )
-    .await;
+        .expect("question");
     let acme = |owner: &str, name: &str, number| {
         (
             RepoRef {
@@ -981,46 +955,37 @@ async fn comment_tallies_count_comments_and_the_waiting_ones_per_read_pull_reque
     )
     .await
     .expect("read");
+    let mut views = rl.comment_tally_views(T, &[PR, 2]).await.expect("batch");
+    let ready = views.remove(&PR).expect("read PR").expect("valid rows");
+    assert_eq!(
+        ready.pr.items.len(),
+        4,
+        "queue inputs include gone items and PR questions"
+    );
+    assert_eq!(ready.latest_pass, None);
+    assert!(
+        views.is_empty(),
+        "the watched, unread PR needs no queue view"
+    );
     let tallies = rl.comment_tallies(T, "u1", &wanted).await.expect("tallies");
     assert_eq!(
         tallies,
         [
             PrCommentTally {
+                imported_unseen: 0,
                 index: 1,
-                counts: Some(CommentTally {
-                    total: 3,
-                    needs_you: 1,
-                }),
+                pull_request_id: PR,
+                total: Some(2),
                 watched: false,
             },
-            // Watched, its comments never read (the watch's first read failed).
             PrCommentTally {
+                imported_unseen: 0,
                 index: 3,
-                counts: None,
+                pull_request_id: 2,
+                total: None,
                 watched: true,
             },
         ],
-        "C{} waits; C{} is decided, C{} gone, C{} followed up",
-        waiting.no,
-        decided.no,
-        gone.no,
-        followed.no
-    );
-    let question = rl
-        .item_by_no(PR, question.no)
-        .await
-        .expect("read")
-        .expect("question");
-    rl.undo(T, question.id, question.revision, "u1", at(7))
-        .await
-        .expect("undo");
-    assert_eq!(
-        rl.comment_tallies(T, "u1", &wanted).await.expect("tallies")[0]
-            .counts
-            .map(|counts| counts.needs_you),
-        Some(2),
-        "an undone merge decision {} hands nothing over",
-        merge.id
     );
     assert_eq!(
         rl.comment_tallies(T, "u2", &wanted)
@@ -1089,7 +1054,9 @@ async fn carry_events_are_logged_and_counted() {
         reason: None,
         evidence: evidence.clone(),
     };
-    rl.record_carry(T, &carried, at(20)).await.expect("carry");
+    rl.record_carry(T, &carried, None, at(20))
+        .await
+        .expect("carry");
     let pending = rl
         .carry_events(T, Some(PR), None, 10)
         .await
@@ -1107,11 +1074,13 @@ async fn carry_events_are_logged_and_counted() {
             ..evidence
         },
     };
-    rl.record_carry(T, &asked, at(30)).await.expect("re-ask");
+    rl.record_carry(T, &asked, None, at(30))
+        .await
+        .expect("re-ask");
     let mut wrong = asked.clone();
     wrong.reason = None;
     assert!(matches!(
-        rl.record_carry(T, &wrong, at(31)).await,
+        rl.record_carry(T, &wrong, None, at(31)).await,
         Err(DbError::Conflict)
     ));
 
@@ -1122,7 +1091,7 @@ async fn carry_events_are_logged_and_counted() {
     assert_eq!(events.len(), 2);
     assert_eq!(events[0].kind, CarryKind::AskedAgain);
     assert_eq!((events[1].item_no, events[1].source_item_no), (2, 1));
-    assert_eq!(events[1].source_kind, DecisionKind::FixHere);
+    assert_eq!(events[1].source_kind, ReviewDecisionKind::FixHere);
     assert_eq!(
         events[1].effects_pending, 0,
         "asking the source again cancelled its decision's unclaimed effects"
@@ -2548,4 +2517,170 @@ async fn effect_states(
         .iter()
         .map(|effect| effect.state)
         .collect()
+}
+
+#[tokio::test]
+async fn marks_cursor_paginates_timestamp_ties_and_history_is_append_only() {
+    let db = db().await;
+    sqlx::query("INSERT INTO memberships (tenant_id, user_id, created_at) VALUES (?, 'u1', 't')")
+        .bind(T)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let rl = db.review_loop();
+    let mut marks = Vec::new();
+    for no in 1..=101 {
+        let item = new_item(&db, &format!("mark-{no}")).await;
+        let mut mark = fix_decision(&item);
+        mark.kind = DecisionKind::NotAReviewPoint;
+        mark.effects.clear();
+        marks.push(mark);
+    }
+    let DecideOutcome::Stored(stored) = rl.decide(T, &marks, at(2)).await.unwrap() else {
+        panic!("marks stored");
+    };
+    let page = rl.marked_items(T, None).await.unwrap();
+    assert_eq!(page.items.len(), 100);
+    let mut order: Vec<_> = stored.iter().map(|mark| (mark.id, mark.item_no)).collect();
+    order.sort_unstable_by_key(|mark| std::cmp::Reverse(mark.0));
+    assert_eq!(
+        page.items.iter().map(|item| item.no).collect::<Vec<_>>(),
+        order
+            .iter()
+            .take(100)
+            .map(|(_, no)| *no)
+            .collect::<Vec<_>>(),
+    );
+    let next = (at(2), order[99].0);
+    assert_eq!(page.next_cursor, Some(format!("{}/{}", next.0, next.1)));
+    let tail = rl.marked_items(T, Some(next)).await.unwrap();
+    assert_eq!(tail.items.len(), 1);
+    assert_eq!(tail.items[0].no, order[100].1);
+    assert!(tail.next_cursor.is_none());
+
+    let id = stored[0].id.to_string();
+    assert!(
+        sqlx::query("UPDATE comment_item_marks SET reason = 'edited' WHERE id = ?")
+            .bind(&id)
+            .execute(&db.pool)
+            .await
+            .is_err()
+    );
+    assert!(matches!(
+        rl.undo(T, marks[0].item, marks[0].item_revision + 1, "u1", at(3))
+            .await
+            .unwrap(),
+        ActionOutcome::MarkUndone(_)
+    ));
+    assert!(
+        sqlx::query("UPDATE comment_item_marks SET undone_by = 'u2' WHERE id = ?")
+            .bind(&id)
+            .execute(&db.pool)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn marks_exclude_a_stale_assessment_batch() {
+    let db = db().await;
+    sqlx::query("INSERT INTO memberships (tenant_id, user_id, created_at) VALUES (?, 'u1', 't')")
+        .bind(T)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let item = new_item(&db, "selected-for-a-pass").await;
+    let mut mark = fix_decision(&item);
+    mark.kind = DecisionKind::NotAReviewPoint;
+    mark.effects.clear();
+    let rl = db.review_loop();
+    rl.decide(T, &[mark], at(2)).await.unwrap();
+    let stale = NewPass {
+        pull_request_id: PR,
+        user_id: Some("u1".into()),
+        cause: PassCause::Read,
+        head: head(),
+        sent: vec![SentItem {
+            item: item.id,
+            no: item.no,
+            fingerprint: "prepared-before-mark".into(),
+        }],
+        question: None,
+    };
+    assert_eq!(
+        rl.start_pass(T, &stale, at(3)).await.unwrap(),
+        PassStart::MarkedItem
+    );
+    assert!(rl.latest_pass(PR).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn marked_item_discards_an_in_flight_assessment() {
+    let db = db().await;
+    sqlx::query("INSERT INTO memberships (tenant_id, user_id, created_at) VALUES (?, 'u1', 't')")
+        .bind(T)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let rl = db.review_loop();
+    let item = new_item(&db, "pending-assessment").await;
+    let mut mark = fix_decision(&item);
+    mark.kind = DecisionKind::NotAReviewPoint;
+    mark.effects.clear();
+    assert!(matches!(
+        rl.decide(T, &[mark], at(2)).await.unwrap(),
+        DecideOutcome::Stored(_)
+    ));
+    assert!(
+        !rl.add_assessment(T, item.id, &assessment("in flight"), "new")
+            .await
+            .unwrap()
+    );
+    assert!(rl.latest_assessment(item.id).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn blank_quotes_never_suppress_a_fresh_point() {
+    let db = db().await;
+    sqlx::query("INSERT INTO memberships (tenant_id, user_id, created_at) VALUES (?, 'u1', 't')")
+        .bind(T)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let rl = db.review_loop();
+    for (old, fresh) in [
+        ("A marked review point", ""),
+        ("A marked review point ", " "),
+        ("", "A distinct review point"),
+        (" ", "A distinct review point "),
+    ] {
+        let url = format!(
+            "https://github.com/acme/node-client/pull/482#issuecomment-{}",
+            uuid::Uuid::new_v4()
+        );
+        let mut point = observed(&url, old);
+        point.kind = CommentItemKind::PrComment;
+        point.url = Some(url.clone());
+        point.location = None;
+        let UpsertOutcome::New(item) = rl
+            .upsert_item(T, PR, &point, ItemState::Undecided, at(1))
+            .await
+            .unwrap()
+        else {
+            panic!("new point")
+        };
+        let mut mark = fix_decision(&item);
+        mark.kind = DecisionKind::NotAReviewPoint;
+        mark.effects.clear();
+        rl.decide(T, &[mark], at(2)).await.unwrap();
+
+        let mut tx = crate::repo::write_tx(&db.pool).await.unwrap();
+        assert!(
+            source_point_exclusion_in(&mut tx, T, PR, &url, fresh, Some(&point))
+                .await
+                .unwrap()
+                .is_none(),
+            "blank quote matched for {old:?} and {fresh:?}"
+        );
+    }
 }

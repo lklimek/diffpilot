@@ -6,11 +6,11 @@ import { http, HttpResponse } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeEventSource } from "../../__tests__/fake-event-source";
 import { renderRoute, startMockServer } from "../../__tests__/screen";
-import type { AnalysisSummary, CommentItem, DecideRequest, Gate } from "../../api/generated/types";
+import type { CommentItem, DecideRequest, Gate } from "../../api/generated/types";
 import { COMMENTS_POLL_MS } from "../../api/review-loop";
 import { DISMISS_MESSAGE, dismissBody } from "../../mocks/effects-plan";
-import { seedFor } from "../../mocks/fixtures";
-import { BOT_CHANGE_REQUESTS, listItems, resetReviewLoop } from "../../mocks/review-loop";
+import { BOT_CHANGE_REQUESTS, listItems, overview, resetReviewLoop } from "../../mocks/review-loop";
+import { setScenario } from "../../mocks/scenarios";
 
 const server = startMockServer();
 const PR = "/pr/acme/node-client/482";
@@ -366,18 +366,143 @@ describe("PR-level plans follow the PR: a P1 plan is made again when the items c
 describe("Decide the rest per recommendation (plan §2.4; queue.rs decide_rest)", () => {
   it("a repeat asked again (C21) is left out like the server's list, not decided in bulk", async () => {
     renderRoute(`${PR}/comments`);
-    await userEvent.click(await screen.findByRole("button", { name: /^Decide the rest per recommendation/ }));
-    await screen.findByRole("heading", { name: /^Decide the rest per recommendation/ });
+    await userEvent.click(await screen.findByRole("button", { name: /^Decide the rest \(/ }));
+    await screen.findByRole("heading", { name: /^Decide the rest — confirm/ });
     expect(screen.queryByRole("checkbox", { name: "Include C21" })).toBeNull();
   });
 });
 
 describe("202 Accepted without a body (RC3 read again, RC6 assess again; review_loop.rs answers no body)", () => {
-  it("Read GitHub again succeeds without an error", async () => {
+  it("starts assessment on entering Comments and only reads again when there are no new items", async () => {
+    const start = vi.fn(() => new HttpResponse(null, { status: 202 }));
+    const read = vi.fn(() => new HttpResponse(null, { status: 202 }));
+    const user = userEvent.setup();
+    server.use(
+      http.post("/api/v1/prs/:owner/:name/:number/comments/assess", start),
+      http.post("/api/v1/prs/:owner/:name/:number/comments/read", read),
+    );
+    renderRoute(PR);
+    const open = await screen.findByRole("link", { name: /^Open Comments/ });
+    expect(start).not.toHaveBeenCalled();
+    await user.click(open);
+    await screen.findByRole("navigation", { name: "Queue" });
+    expect(start).toHaveBeenCalledOnce();
+    await user.click(await screen.findByRole("button", { name: "Questions waiting" }));
+    await user.click(screen.getByRole("button", { name: "Read GitHub again" }));
+    await waitFor(() => expect(read).toHaveBeenCalledOnce());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Read GitHub again" })).toBeEnabled());
+    expect(start).toHaveBeenCalledOnce();
+  });
+
+  it("starts another assessment when Read GitHub again finds a new item", async () => {
+    let starts = 0;
+    const user = userEvent.setup();
+    server.use(
+      http.post("/api/v1/prs/:owner/:name/:number/comments/assess", () => {
+        starts += 1;
+        if (starts === 2) byNo(90).title = "Assessment of newly read item";
+        return new HttpResponse(null, { status: 202 });
+      }),
+      http.post("/api/v1/prs/:owner/:name/:number/comments/read", () => {
+        listItems().push({ ...byNo(14), no: 90, id: "new-item", title: "New item", llm_title: undefined });
+        return new HttpResponse(null, { status: 202 });
+      }),
+    );
+    renderRoute(`${PR}/comments`);
+    await screen.findByRole("navigation", { name: "Queue" });
+    await user.click(await screen.findByRole("button", { name: "Questions waiting" }));
+    await user.click(screen.getByRole("button", { name: "Read GitHub again" }));
+    expect(await screen.findByRole("button", { name: /C90.*Assessment of newly read item/ })).toBeVisible();
+    expect(starts).toBe(2);
+  });
+
+  it("assesses newly read items after a single-item pass releases the PR", async () => {
+    let starts = 0;
+    let busy = false;
+    server.use(
+      http.post("/api/v1/prs/:owner/:name/:number/comments/items/:item/assess", () => {
+        busy = true;
+        return new HttpResponse(null, { status: 202 });
+      }),
+      http.post("/api/v1/prs/:owner/:name/:number/comments/read", () => {
+        listItems().push({ ...byNo(14), no: 90, id: "new-item", title: "New item", llm_title: undefined });
+        return new HttpResponse(null, { status: 202 });
+      }),
+      http.post("/api/v1/prs/:owner/:name/:number/comments/assess", () => {
+        starts += 1;
+        if (busy) {
+          busy = false;
+          return HttpResponse.json(
+            { code: "conflict", message: "Assessment already running." },
+            { status: 409 },
+          );
+        }
+        if (starts > 1) byNo(90).title = "Assessment of newly read item";
+        return new HttpResponse(null, { status: 202 });
+      }),
+    );
     renderRoute(`${PR}/comments?item=C14`);
-    await userEvent.click(await screen.findByRole("button", { name: "Read GitHub again" }));
-    await act(async () => {});
-    expect(screen.queryByText("Something went wrong. Try again.")).toBeNull();
+    await screen.findByRole("heading", { name: /C14 · Retry may resend/ });
+    await userEvent.click(screen.getByRole("button", { name: "LLM assessment" }));
+    await userEvent.click(screen.getByRole("button", { name: "Assess again" }));
+    await screen.findByText(/^Asked: diffpilot's LLM assesses this comment again/);
+    await userEvent.click(screen.getByRole("button", { name: "Questions waiting" }));
+    await userEvent.click(screen.getByRole("button", { name: "Read GitHub again" }));
+    await waitFor(() => {
+      expect(starts).toBe(2);
+      expect(screen.getByRole("button", { name: "Read GitHub again" })).not.toHaveAttribute("aria-disabled");
+    });
+    expect(
+      await screen.findByRole("button", { name: /C90.*Assessment of newly read item/ }, { timeout: 4000 }),
+    ).toBeVisible();
+    expect(starts).toBe(3);
+  });
+
+  it("stops asking for a pass after bounded conflicts and lets the read finish", async () => {
+    const start = vi
+      .fn()
+      .mockReturnValueOnce(new HttpResponse(null, { status: 202 }))
+      .mockImplementation(() =>
+        HttpResponse.json({ code: "conflict", message: "Assessment already running." }, { status: 409 }),
+      );
+    server.use(
+      http.post("/api/v1/prs/:owner/:name/:number/comments/assess", start),
+      http.post("/api/v1/prs/:owner/:name/:number/comments/read", () => {
+        listItems().push({ ...byNo(14), no: 90, id: "new-item", title: "New item", llm_title: undefined });
+        return new HttpResponse(null, { status: 202 });
+      }),
+    );
+    renderRoute(`${PR}/comments`);
+    await screen.findByRole("navigation", { name: "Queue" });
+    await userEvent.click(await screen.findByRole("button", { name: "Questions waiting" }));
+    await userEvent.click(screen.getByRole("button", { name: "Read GitHub again" }));
+    try {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      for (const tries of [2, 3, 4]) {
+        await waitFor(() => expect(start).toHaveBeenCalledTimes(tries));
+        await act(() => vi.advanceTimersByTimeAsync(10_000));
+      }
+      expect(
+        await screen.findByText("A pass is still running. New comments can be assessed on your next visit."),
+      ).toBeVisible();
+      expect(start).toHaveBeenCalledTimes(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("opens Comments when the visit and assessment routes return 501", async () => {
+    const absent = () => new HttpResponse(null, { status: 501 });
+    const visit = vi.fn(absent);
+    const assess = vi.fn(absent);
+    server.use(
+      http.post("/api/v1/prs/:owner/:name/:number/comments/visit", visit),
+      http.post("/api/v1/prs/:owner/:name/:number/comments/assess", assess),
+    );
+    renderRoute(`${PR}/comments`);
+    expect(await screen.findByRole("navigation", { name: "Queue" })).toBeVisible();
+    expect(visit).toHaveBeenCalledOnce();
+    expect(assess).toHaveBeenCalledOnce();
   });
 
   it("Assess again says it was asked", async () => {
@@ -388,6 +513,19 @@ describe("202 Accepted without a body (RC3 read again, RC6 assess again; review_
     expect(
       await screen.findByText(/^Asked: diffpilot's LLM assesses this comment again\.$|Something went wrong/),
     ).toHaveTextContent("Asked: diffpilot's LLM assesses this comment again.");
+  });
+
+  it("Assess again explains a refusal for a missing Codex account", async () => {
+    server.use(
+      http.post("/api/v1/prs/:owner/:name/:number/comments/items/:item/assess", () =>
+        HttpResponse.json({ code: "credential_missing" }, { status: 409 }),
+      ),
+    );
+    renderRoute(`${PR}/comments?item=C14`);
+    await screen.findByRole("heading", { name: /C14 · Retry may resend/ });
+    await userEvent.click(screen.getByRole("button", { name: "LLM assessment" }));
+    await userEvent.click(screen.getByRole("button", { name: "Assess again" }));
+    expect(await screen.findByText("Link a Codex account in Settings to assess comments.")).toBeVisible();
   });
 });
 
@@ -402,19 +540,58 @@ describe("Keyboard (plan §3.8): s skips a group question as the card says", () 
 
 describe("V0 PR page stays reachable (plan §3.1)", () => {
   it("opening the PR page of a PR whose latest analysis was cancelled keeps the PR page", async () => {
-    const analysis = seedFor("default", "analysis") as AnalysisSummary;
+    setScenario("existing-cancelled");
     const router = renderRoute(PR);
-    await screen.findByRole("heading", { level: 1, name: /acme\/node-client #482/ });
-    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
-    act(() =>
-      FakeEventSource.latest().emit({
-        event: "analysis",
-        summary: { ...analysis, state: { state: "cancelled" } },
-      }),
-    );
-    // Give the redirect effect a chance to run.
-    await act(async () => {});
+    expect(await screen.findByText("Analysis cancelled.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Start analysis" })).toBeEnabled();
     expect(router.state.location.pathname).toBe(PR);
     expect(screen.getByRole("button", { name: "Process PR comments" })).toBeVisible();
   });
+});
+
+it("opens new GitHub imports using the server's unseen-items filter", async () => {
+  const imported = {
+    kind: "reject",
+    by: "octo-owner",
+    at: "2026-11-25T09:00:00Z",
+    evidence_url: "https://github.com/acme/node-client/pull/482#issuecomment-90",
+  } as const;
+  const user = userEvent.setup();
+  server.use(
+    http.get("/api/v1/prs/:owner/:name/:number/comments", () => {
+      const data = overview();
+      return HttpResponse.json({ ...data, counts: { ...data.counts, imported_unseen: 1 } });
+    }),
+    http.get("/api/v1/prs/:owner/:name/:number/comments/items", ({ request }) => {
+      if (new URL(request.url).searchParams.get("imported_unseen") === "true") {
+        const decision = listItems().flatMap((item) => item.decisions)[0]!;
+        return HttpResponse.json([
+          {
+            ...byNo(14),
+            no: 90,
+            id: "imported-item",
+            imported_decision: imported,
+            decisions: [
+              {
+                ...decision,
+                via: "imported_github",
+                imported: { ...imported, by_id: 42, relay: null, quote: "I am closing this point." },
+              },
+            ],
+          },
+        ]);
+      }
+      return HttpResponse.json(listItems());
+    }),
+  );
+  renderRoute(`${PR}/comments`);
+  await screen.findByRole("navigation", { name: "Queue" });
+  await user.click(screen.getByRole("link", { name: "1 new decision imported from GitHub" }));
+  const imports = await screen.findByRole("region", { name: "New decisions imported from GitHub" });
+  expect(await within(imports).findByRole("link", { name: /Evidence for C90 on GitHub/ })).toHaveAttribute(
+    "href",
+    imported.evidence_url,
+  );
+  expect(imports).toHaveTextContent("@octo-owner");
+  expect(imports).toHaveTextContent("I am closing this point.");
 });

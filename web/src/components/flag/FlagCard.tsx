@@ -1,5 +1,6 @@
 import { useId, useLayoutEffect, useRef, useState } from "react";
 import type { Annotation, Evidence, FlagLevel } from "../../api/generated/types";
+import { AskRemarkButton } from "../ask/AskRemarkButton";
 import { CodeText } from "../section/CodeText";
 import { EvidenceLinks } from "../section/EvidenceLinks";
 import { ProvenanceTag } from "../section/ProvenanceTag";
@@ -59,6 +60,7 @@ interface FlagCardProps {
   onOpen?: () => void;
   /** Opens the comment composer on the flagged lines with this flag as a draft; no button without it. */
   onUseAsComment?: () => void;
+  onAskRemark?: () => void;
   /** The flag's step where flags of several steps are listed together ("step 5 of flow 1"). */
   owner?: string;
 }
@@ -73,6 +75,7 @@ export function FlagCard({
   onEvidence,
   onOpen,
   onUseAsComment,
+  onAskRemark,
   owner,
 }: FlagCardProps) {
   const level = flagLevel(annotation) ?? "unknown";
@@ -82,7 +85,7 @@ export function FlagCard({
   const listId = useId();
   const [expanded, setExpanded] = useState(false);
   const [list, overflow] = useOverflow<HTMLOListElement>(!expanded);
-  const title = <CodeText text={annotation.text ?? ""} />;
+  const title = <CodeText text={annotation.text ?? ""} linkPaths={!onOpen} />;
   return (
     <li
       data-annotation-id={annotation.id}
@@ -152,7 +155,12 @@ export function FlagCard({
         onEvidence={onEvidence}
         currentFile={currentFile}
       />
-      {onUseAsComment && <UseAsCommentButton onClick={onUseAsComment} what="this flag" />}
+      {(onUseAsComment || onAskRemark) && (
+        <div className="flex flex-wrap items-baseline gap-x-3">
+          {onUseAsComment && <UseAsCommentButton onClick={onUseAsComment} what="this flag" />}
+          {onAskRemark && <AskRemarkButton onAsk={onAskRemark} />}
+        </div>
+      )}
     </li>
   );
 }

@@ -4,7 +4,9 @@ Status: Design approved 2026-11-16. Implementation follows `docs/implementation-
 
 This file is the single source of truth for the design. Requirements, ADRs, architecture and mockups derive
 from it. Approved mockups: `docs/mockups/` (open `index.html`). The mockups are illustrations with example
-data; where a mockup and this brief differ on behaviour, the brief wins.
+data; where a mockup and this brief differ on behaviour, the brief wins. Accepted ADRs (`docs/decisions/`)
+take precedence over brief text they amend or supersede; the runtime of §5 and §6 is amended this way
+(Background material, amendment 2026-11-26).
 
 ## 1. Product
 
@@ -104,8 +106,8 @@ can judge the PR at project scale, not only line by line.
 | Language | UI English. LLM texts in the user's configured language (default English). |
 | Languages of code | Any, LLM-only. Built-in `generic` tech plugin (path globs and line regexes). |
 | PR size | No limit. Huge PRs (10k+ lines) are split into many agent runs; long runtime is acceptable. |
-| LLM | Codex CLI on a ChatGPT Pro subscription (no 5-hour window). Installation-wide model and reasoning effort in Settings, default Sol/high (§5 Model selection). Provider trait designed for a second provider. Usage-limit pause and resume must work but are not a first-stage priority. |
-| Agent access | Read-only checkout, no code execution. MemCan MCP (read and write), the `claudius` plugin, GitHub's `github-mcp-server` in read-only mode with a short-lived read-only installation token, related repos as extra context. |
+| LLM | Codex CLI on a ChatGPT Pro subscription (no 5-hour window). Installation-wide model and reasoning effort in Settings, default Sol/high (§5 Model selection). Provider trait designed for a second provider. Usage-limit pause and resume must work but are not a first-stage priority. Superseded by ADR-025: each user links their own ChatGPT plan through the Codex gateway (amendment 2026-11-26). |
+| Agent access | Read-only checkout, no code execution. MemCan MCP (read and write), the `claudius` plugin, GitHub's `github-mcp-server` in read-only mode with a short-lived read-only installation token, related repos as extra context. Superseded by ADR-025 and the ADR-005 amendment: a read-only `gh` with the token in a per-job file (amendment 2026-11-26). |
 | Deployment | docker compose, Portainer-compatible. Public base URL is configuration (`SR_PUBLIC_URL`; the owner's instance: `https://review.klimek.ws`). TLS is terminated by an existing reverse proxy; the server speaks HTTP behind it. |
 
 ### Later
@@ -117,7 +119,8 @@ can judge the PR at project scale, not only line by line.
   test/comment ranges, LSP call hierarchy, deterministic rename / syntax-level confirmation of refactors);
   PR-description-vs-code check.
 - v3+: LLM-curated dashboard of PRs to review; per-job containers (tenant tokens, private repositories,
-  later build/test).
+  later build/test). Per-(PR, payer) containers exist since ADR-025; private repositories and build/test stay
+  later.
 - Later, unscheduled: static-analysis actions (find callers, test coverage, verify suspicion); custom "not
   analysed" rules. (Per-file GitHub "Viewed" sync is in v1.2; ticks stay local and are not synced.)
 - v5+: real tenants (tenant = organisation, own LLM keys, users ↔ tenants many-to-many), billing.
@@ -395,7 +398,7 @@ returning to an interrupted review.
 - LLM status: the outcome of the most recent LLM call — "working" if it succeeded, otherwise "not working"
   with the plain error message — and the time of that call. No on-demand check. Credentials never reach the
   browser. The first Codex login is a one-time manual command in the runner container (runbook); there is no
-  login UI.
+  login UI. Superseded by ADR-025: each user links their own ChatGPT plan in Settings (gateway device linking).
 - Language of LLM texts.
 - GitHub App installation status.
 - Per repository, read-only: built-in "not analysed" rules (path globs and line regexes), related
@@ -418,6 +421,9 @@ server, from the same coverage as Unexplained (`GET …/files`, http-api.md).
 
 ## 5. Architecture
 
+The diagram and the runner, claudius delivery and Portainer items below describe the v1.0 runtime; ADR-025
+and ADR-026 replace them (amendment 2026-11-26).
+
 ```
 browser ── HTTPS ──> reverse proxy (TLS) ── HTTP ──> server (axum: JSON API + SSE, embedded SPA, orchestrator, SQLite)
                         │  job queue (DB); JobSpec carries a read-only installation token   │ GitHub API (user token; App key)
@@ -438,6 +444,7 @@ browser ── HTTPS ──> reverse proxy (TLS) ── HTTP ──> server (axu
   back and deletes the work dir. `CODEX_HOME` on a volume, isolated from repo config. The container is the
   sandbox: non-root, on an internal network whose only egress is the proxy service. It has no database
   access; the agent holds only the job's short-lived read-only installation token, never a user token.
+  Superseded by ADR-025: launcher, per-(PR, payer) worker containers running Codex `app-server`.
 - **egress proxy** — Squid, used by the runner as an explicit proxy (environment variables). v1 policy: allow
   all public destinations, deny the private LAN except MemCan, and log every destination host (CONNECT
   host:port, bytes) to learn which hosts are needed. No TLS interception and no cache in v1. Squid is chosen
@@ -447,18 +454,21 @@ browser ── HTTPS ──> reverse proxy (TLS) ── HTTP ──> server (axu
   job, if the last refresh is older than a configured interval, it runs `git pull --ff-only`. It exposes the
   checkout's skills directory to Codex. The ref is configurable. Codex CLI 0.167 accepts `lklimek/agents` as
   a marketplace but finds no plugins in it (Claude-format manifest only), so a marketplace install is not
-  used.
+  used. Superseded by the ADR-002 amendment: the worker image carries a pinned, read-only claudius tree.
 - **Portainer** — the stack is plain compose services and named volumes; nothing creates containers at
-  runtime in v1.
+  runtime in v1. Superseded by ADR-025: the launcher creates worker and fetch containers, labelled `dp.*`.
 
 **v1 limit: public repositories only.** The shared runner has one cache and one credential store, so it
 gives no isolation between tenants or users. Private repositories arrive together with per-job containers.
+The public-only limit stays; per-(PR, payer) containers exist since ADR-025.
 
 **GitHub access for the agent.** For each job the server mints a GitHub App installation access token with
 read-only permissions (pull requests, issues, contents, metadata), restricted to the PR's repository and its
 related repositories, with a fixed lifetime of one hour, and puts it in the `JobSpec`. The runner starts
 GitHub's official `github-mcp-server` in read-only mode for the agent with that token. Related work is found
-entirely by the LLM through this server. The GitHub App is installed on the target repositories.
+entirely by the LLM through this server. The GitHub App is installed on the target repositories. Superseded by
+the ADR-005 amendment and ADR-025: the token covers the PR repository only and reaches the worker as a per-job
+tmpfs file for a read-only `gh`; there is no `github-mcp-server`.
 
 **Related repositories** are detected by the server from `Cargo.toml` / `Cargo.lock` on the base ref (git
 and path dependencies) and limited to repositories of the same GitHub organisation. v1 recognises Cargo
@@ -483,7 +493,8 @@ only; there is no manual configuration.
 
 Target model (later version): the server reads the tenant's config, starts one container per job with the
 tenant's tokens, the container checks out the repository (or unpacks its cache), runs the agent and exits.
-v1 must reach that model by adding one new implementation, without changing the pipeline or the runner logic:
+v1 must reach that model by adding one new implementation, without changing the pipeline or the runner logic.
+Items 2, 3, 5 and 6 are superseded by ADR-025 (amendment 2026-11-26); items 1 and 4 hold.
 
 1. `JobSpec` is self-contained: job id, kind, repo clone URL, base and head SHA, prompt, output JSON schema,
    limits, LLM provider, model and reasoning effort, MCP endpoints, credentials (the read-only installation
@@ -509,7 +520,7 @@ v1 must reach that model by adding one new implementation, without changing the 
    containers to stacks by it). Docker socket access goes through a restricting proxy. Both are later work.
 
 **Job kinds**: `plan`, `pr_context`, `analyse_flow`, `ask`. Batch kinds form the analysis pipeline; `ask` is
-interactive.
+interactive. Also `judge_work` (ADR-017) and `verify_comments` (ADR-023).
 
 **Agent sessions.** Each analysis has one agent session. Its batch jobs (`plan`, `pr_context`, each
 `analyse_flow`) and later `ask` jobs resume that session instead of starting cold, one job at a time per
@@ -518,7 +529,8 @@ sub-agents at its own discretion (the prompt permits it; the server does not orc
 is missing or unusable, the job starts a new session seeded with a context pack built from stored results
 (PR context, plan, analysed flows; for Ask also the step, its flow analysis and earlier questions and answers
 of that step). A re-analysis on a moved head starts a new session. If resume or compaction is not available
-in non-interactive mode, every job is a new session with a context pack.
+in non-interactive mode, every job is a new session with a context pack. Superseded by the ADR-004 amendments
+and ADR-025: one analytic thread per (PR, payer) in its worker volume; Ask forks only its payer's thread.
 
 **Ask requires on-demand interactive jobs.** Ask is not part of the batch pipeline. A question about a step
 becomes an `ask` job on the same `JobSpec` / `JobExecutor` interface; it resumes the analysis's agent session
@@ -536,7 +548,7 @@ finishes)
    whitespace-only changes, counters (lines removed from tests, changed dependencies), related-repository
    detection.
 3. Plan: the agent partitions hunks into flows. Huge PRs: per-directory summaries first, then grouping.
-4. PR context (own job): problem and why, related work through `github-mcp-server`, fit questions with
+4. PR context (own job): problem and why, related work through `gh` (ADR-025), fit questions with
    evidence, project profile lookup. Independent of step 5; queued like any job.
 5. Analyse: one agent run per flow — flow graph (structured), flow introduction, steps with called by /
    decides / next / why, annotations, assessment, out-of-diff impact, pattern repetitions, LLM status of the
@@ -562,7 +574,8 @@ LLM-classified (§3).
 session_id, usage}`, `resume(session_id, …)` with the same result, `cancel`; `run` and `resume` end by
 compacting the session. Credential types: `codex_chatgpt` (subscription; owner's tenant only) and
 `api_key` (required for other tenants: Anthropic forbids subscription tokens in multi-user services, OpenAI
-is unclear). See `llm-runtime.md` (Background material).
+is unclear). See `llm-runtime.md` (Background material). Superseded by ADR-025: ChatGPT-plan linking only, no
+API keys; compaction follows the ADR-004 amendments.
 
 **Model selection** — a single plain Rust function in the server: job kind and context in,
 model and reasoning effort out. It reads the installation-wide Settings choice, defaulting to Sol/high.
@@ -581,8 +594,9 @@ exist from v1 with one seeded tenant `default` (allowed sign-in logins: `lklimek
 
 **Security** — PR content is untrusted (prompt injection): read-only agent, no repo-provided agent config,
 explicit egress proxy that logs every destination host, only the LLM credential and the job's read-only installation
-token in the runner. Sign-in is limited to the logins the tenant allows. Agent-session files are agent-writable and persist across the jobs of one analysis only; they are
-stored per analysis and never shared with another analysis.
+token in the runner (superseded by ADR-025: workers hold only expiring virtual model keys and the token file; real
+credentials stay in the gateway). Sign-in is limited to the logins the tenant allows. Agent-session files are agent-writable and persist across the jobs of one analysis only; they are
+stored per analysis and never shared with another analysis (superseded by ADR-025: per (PR, payer) worker volume).
 Accepted risks in v1: the agent has full MemCan MCP access (read and write) with the shared MemCan token, so
 an injected PR could write misleading memories (until MemCan can distinguish agent-written memories); and
 agent commands have open network access through the proxy (allow-all policy), so an injected PR could
@@ -615,11 +629,11 @@ Chosen to match the owner's active projects (penny, gamiscreen, memcan). sqlx (p
 | GitHub | GitHub App: user access tokens for the user's actions, installation access tokens (from the App private key) for the agent; `octocrab` or `reqwest`; GraphQL for the pending review |
 | Secrets | `aes-gcm` |
 | MemCan | `rmcp` client (feedback writes); the agent uses MemCan MCP directly (read and write) |
-| Agent tools | `github-mcp-server` (official, read-only mode) started by the runner with the job's installation token |
+| Agent tools | Read-only `gh` wrapper in the worker image, the job's installation token in a per-job file (ADR-025; replaces `github-mcp-server`) |
 | Diff / moves | `git` subprocess, `similar` |
 | Frontend | React 19, TypeScript, Vite, TanStack Query, react-router, Tailwind 4; code shown by an own line renderer (plain HTML rows) with Shiki for syntax colouring, no editor component; flow diagram rendered by the UI from the graph data; vitest, Playwright; embedded with `rust-embed` |
-| LLM | Codex CLI (`codex exec`) as a subprocess; no SDK, no third-party crates |
-| Packaging | docker compose: `server`, `runner`, `egress-proxy` (Squid); named volumes |
+| LLM | Codex `app-server` in the worker container, driven over the launcher's attach relay (ADR-025; replaces `codex exec`); no SDK |
+| Packaging | docker compose: `server`, `runner`, `launcher`, `codex-gateway`, `egress-proxy` (Squid); named volumes; worker and fetch containers created by the launcher (ADR-025) |
 
 Exact versions are pinned at implementation time from the registries.
 
@@ -648,10 +662,10 @@ Only what is not decided:
   (instruction files, hooks, MCP and plugin config in the checkout).
 - Portainer handling of containers created outside the stack (the later per-job model).
 - Codex in non-interactive mode: session resume from a fresh work dir, the equivalent of `/compact`, and
-  sub-agents — verify.
+  sub-agents — verify. Closed: `app-server` replaces `codex exec` (ADR-025); sub-agents are disabled.
 - Pending comments that are file-level (lines outside the diff): verify the mechanism.
 - `github-mcp-server` with an installation token: accepted, and able to read public repositories where the App
-  is not installed — verify.
+  is not installed — verify. Closed: `gh` replaces it (ADR-025).
 
 ## Background material
 
@@ -904,3 +918,43 @@ corresponding parts of the 2026-11-17 and 2026-11-18 amendments:
   format 3, ADR-014 addendum 2026-11-20). They cover their lines, carry no flag, rating or assessment (a change
   with a risk to flag or rate is a step) and follow the wording rules. Files lists them under their flow as
   "Incidental change (LLM)"; the Flows view does not show them.
+
+### Amendment — 2026-11-26: container runtime, PR comments and GitHub webhooks
+
+Records three accepted ADRs that change §2, §4.4, §5, §6 and §8; the replaced statements are marked in place.
+Detail: [ADR-023](decisions/ADR-023-review-loop.md), [ADR-025](decisions/ADR-025-container-runtime.md) with the
+[container contracts](contracts/containers.md) and the [threat model](contracts/threat-model.md),
+[ADR-026](decisions/ADR-026-github-webhooks.md), and the 2026-11-24 container amendments of ADR-002, ADR-004 and
+ADR-005. Deployment: `deploy/compose.yaml`.
+
+- **Services and images.** Compose runs `server`, `runner`, `launcher`, `codex-gateway` and `egress-proxy`
+  (Squid). Five images: server (also the gateway binary), runner (also the launcher), worker, fetch and Squid.
+  Worker and fetch containers are created at runtime from digest-pinned images.
+- **Server listeners.** UI and API (port 3000, published to the reverse proxy), runner API (3001, internal runner
+  network) and the GitHub webhook listener (3002, unpublished by default, serving only `POST /webhooks/github`).
+- **Runner and launcher.** The runner claims jobs over the runner HTTP protocol (`QueueExecutor` stays the only
+  `JobExecutor`), keeps bare mirrors fetched through Squid and mounts them read-only into workers; it has no
+  database and no GitHub API client. The launcher (`runner --launcher`, no network) alone holds the Docker socket
+  and serves the runner a unix-socket API (ensure, stop, remove, fetch, attach, list). Its containers carry
+  `dp.*` labels, never the compose project label.
+- **Workers.** One persistent container per (PR, payer) runs Codex `app-server` (replacing `codex exec`), one turn
+  at a time. Its volume is the thread archive: one analytic thread per (PR, payer); Ask forks only its payer's
+  thread, otherwise it uses a private context pack. Dashboard judgement (`judge_work`) runs in a separate
+  answer-only container per payer. A fetch container runs `cargo fetch` for a Cargo checkout; repository code is
+  never built, tested or run. The claudius tree is part of the worker image at a pinned commit.
+- **LLM credentials.** Each user links their own ChatGPT plan in Settings through gateway-run device linking;
+  API keys are rejected. Real provider credentials stay in the Codex gateway's own store. Workers hold only
+  expiring virtual model keys and reach the model through the gateway's listener on their internal network.
+- **GitHub access for the agent.** The server mints a read-only installation token per job for the PR repository
+  only, valid for one hour. The worker receives it as a per-job tmpfs file used by the image's read-only `gh`
+  wrapper; `github-mcp-server` is not used. User tokens and the App private key stay in the server.
+- **Egress.** Worker and fetch containers reach the internet only through Squid (allow all public destinations,
+  private LAN denied except MemCan, host-name log, no TLS interception). Judge containers reach only the
+  gateway; the gateway reaches its fixed upstreams directly. Hosted web search stays disabled.
+- **Processing PR comments (ADR-023).** A PR page, a Comments view beside Flows, Files and Dependencies,
+  `verify_comments` assessment jobs, Watch for chosen pull requests and a decision feed for the user's agents.
+- **GitHub webhooks (ADR-026).** Signed webhook deliveries for tracked repositories trigger a targeted re-read of
+  the affected items; events never re-judge (a judgement whose inputs changed is outdated). Manual Refresh and
+  the nightly scan stay; periodic dashboard scans are removed.
+- **Unchanged.** Self-contained `JobSpec`, `execute(JobSpec, EventSink) → JobResult`, the installation-wide
+  model choice from `select_model`, and public repositories only.

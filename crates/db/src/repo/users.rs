@@ -56,6 +56,20 @@ impl Users<'_> {
         tx.commit().await?;
         Ok(logins)
     }
+    /// Profiles of the users who currently belong to this tenant.
+    pub async fn members(&self, tenant: &str) -> Result<Vec<UserRecord>, DbError> {
+        sqlx::query(
+            "SELECT u.id, u.github_id, u.login, u.name, u.avatar_url, u.language
+                     FROM users u JOIN memberships m ON m.user_id = u.id WHERE m.tenant_id = ?",
+        )
+        .bind(tenant)
+        .fetch_all(self.pool)
+        .await?
+        .iter()
+        .map(user_from_row)
+        .collect()
+    }
+
     /// Creates the user with id `new_id`, or updates the profile of the user with the same GitHub id, and makes
     /// it a member of `tenant_id`; returns the stored user.
     pub async fn upsert_member(

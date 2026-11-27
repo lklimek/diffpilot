@@ -1,4 +1,5 @@
 import { resetAssessmentSettings } from "../mocks/handlers/assessment-settings";
+import { resetPrHistory } from "../mocks/handlers/pr-history";
 import { RouterProvider } from "react-router/dom";
 // Renders the app's routes in memory against the msw handlers of src/mocks (screen tests).
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -10,6 +11,8 @@ import { reviewStates } from "../api/review-state";
 import { appRoutes } from "../app/routes";
 import { setFixtureState } from "../mocks/fixtures";
 import { handlers } from "../mocks/handlers";
+import { resetSettingsV14 } from "../mocks/handlers/settings-v14";
+import { resetSelection } from "../mocks/handlers/set-llm";
 import { resetSignOut } from "../mocks/handlers/get-me";
 import { setMockLanguage } from "../mocks/handlers/get-settings";
 import { resetLazyFlows } from "../mocks/lazy-flows";
@@ -25,10 +28,13 @@ export function startMockServer() {
   afterEach(() => {
     server.resetHandlers();
     resetAssessmentSettings();
+    resetSettingsV14();
+    resetSelection();
     setFixtureState("default");
     setScenario(null);
     setMockLanguage(null);
     resetLive();
+    resetPrHistory();
     resetLazyFlows();
     resetSignOut();
     resetStore();
@@ -46,10 +52,10 @@ export function startMockServer() {
 }
 
 /** Renders the app at `entry`; returns the router (its `state.location` is where the app went). */
-export function renderRoute(entry: InitialEntry) {
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-  });
+export function renderRoute(
+  entry: InitialEntry,
+  client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } }),
+) {
   const router = createMemoryRouter(appRoutes, { initialEntries: [entry] });
   render(
     <QueryClientProvider client={client}>

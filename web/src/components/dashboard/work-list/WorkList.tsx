@@ -1,12 +1,23 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import type { SizeMark, Tier, TodosState, WorkItem } from "../../../api/generated/types";
+import type { Exclusions, Tier, TodosState, WorkItem, StatusCounts } from "../../../api/generated/types";
 import { AlarmRow } from "../alarm-row/AlarmRow";
 import { TIER_RULE, tierName } from "../common/format";
 import type { Navigate } from "../common/navigate";
 import { httpUrl } from "../common/OpenExternal";
-import { ALL_SIZES, SIZE_CLASSES, sizeRange, sizeShown } from "../common/size";
 import { ToggleGroup } from "../common/ToggleGroup";
 import { WorkItemRow } from "../work-item/WorkItemRow";
+import { ExcludedItems, exclusionDescription } from "../excluded-items/ExcludedItems";
+import { FilterChips } from "../filter-chips/FilterChips";
+import {
+  addFilter,
+  itemFilters,
+  matchesFilters,
+  tagFilter,
+  type Filter,
+  type FilterValue,
+} from "../filter-chips/filters";
+import { workTags } from "../work-item/WorkFacts";
+import { matchesStatus, StatusFilter, type WorkStatus } from "./StatusFilter";
 import { dashboardShortcut, isTyping } from "./shortcuts";
 
 /** A kind of listed item: pull request, issue or MemCan TODO. */
@@ -21,19 +32,26 @@ interface WorkListProps {
   /** Kinds shown (independent toggles; all on by default). */
   kinds: ItemKind[];
   onKindsChange: (kinds: ItemKind[]) => void;
-  /** Size classes shown (pull requests only; all on by default); without `onSizesChange` no size toggles. */
-  sizes?: SizeMark[];
-  onSizesChange?: (sizes: SizeMark[]) => void;
+  filters?: Filter[];
+  onFiltersChange?: (filters: Filter[]) => void;
+  statusCounts: StatusCounts;
+  statusDescriptions?: Partial<Record<WorkStatus, string>>;
+  exclusions?: Exclusions | null;
+  guideOrigin?: string;
+  onWake?: (key: string) => void;
+  wakingKeys?: string[];
+  onRejudge?: (key: string) => void;
+  rejudgingKeys?: string[];
+  rankingNotice?: string | null;
+  usageHref?: string;
+  snapshotAt?: string | null;
   /** In-app href of a pull request's review (plan §F.1); built by the screen. */
   reviewHref: (item: WorkItem) => string;
   /** In-app href of a pull request's Comments (owner 2026-11-23); built by the screen. */
   commentsHref?: (item: WorkItem) => string;
-  /** Watch chosen on a pull request row without comment counts (RW1); without it rows offer no Watch. */
-  onWatch?: (item: WorkItem) => void;
+  onWatch?: (item: WorkItem, watching: boolean) => void;
   /** Keys of the pull requests whose Watch is being saved. */
   watchingKeys?: string[];
-  /** Keys of the pull requests watched in this visit. */
-  watchedKeys?: string[];
   /** In-app navigation (links and `v`); without it links load the page. */
   onNavigate?: Navigate;
   /** `?` pressed. */
@@ -44,9 +62,8 @@ interface WorkListProps {
   stale?: { at: string; note: string } | null;
   /** State of the MemCan TODOs in the snapshot (marks TODO rows MemCan could not refresh). */
   todos?: TodosState;
-  /** A quiet note under the heading (the screen's excluded-items block). */
-  notice?: ReactNode;
-  /** Snooze chosen in a row's menu (owner SN1); without it rows have no menu. P0 alarms are never snoozed. */
+  empty?: ReactNode;
+  /** P0 alarms are never snoozed. */
   onSnooze?: (item: WorkItem, days: number) => void;
   /** Keys of the items whose snooze is being saved. */
   snoozingKeys?: string[];
@@ -75,11 +92,12 @@ const todosPossible = (items: WorkItem[], todos?: TodosState) =>
 export function groupItems(items: WorkItem[]) {
   const alarms = items.filter((item) => item.score.tier === "p0");
   const ranked = items.filter((item) => item.score.tier !== "p0");
+  const notJudged = (item: WorkItem) => matchesStatus(item, "not_judged");
   const tiers = (["p1", "p2", "p3"] as Exclude<Tier, "p0">[]).map((tier) => ({
     tier,
-    items: ranked.filter((item) => item.score.state !== "unjudged" && item.score.tier === tier),
+    items: ranked.filter((item) => !notJudged(item) && item.score.tier === tier),
   }));
-  return { alarms, tiers, notJudged: ranked.filter((item) => item.score.state === "unjudged") };
+  return { alarms, tiers, notJudged: ranked.filter(notJudged) };
 }
 
 /**
@@ -91,25 +109,37 @@ export function WorkList({
   items,
   kinds,
   onKindsChange,
-  sizes = ALL_SIZES,
-  onSizesChange,
+  filters = [],
+  onFiltersChange,
+  statusCounts,
+  statusDescriptions,
+  exclusions,
+  guideOrigin,
+  onWake,
+  wakingKeys,
+  onRejudge,
+  rejudgingKeys = [],
+  rankingNotice,
+  usageHref,
+  snapshotAt,
   reviewHref,
   commentsHref,
   onWatch,
   watchingKeys = [],
-  watchedKeys = [],
   onNavigate,
   onHelp,
   keysEnabled = true,
   stale,
   todos,
-  notice,
+  empty,
   onSnooze,
   snoozingKeys = [],
   now,
 }: WorkListProps) {
+  const [status, setStatus] = useState<WorkStatus>("all");
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [cursor, setCursor] = useState<string | null>(null);
+  const [lastRejudge, setLastRejudge] = useState<{ key: string; judgedAt: string | null }>();
   /** Focus targets of the rows for `j`/`k`: a row's expander, an alarm's frame. */
   const targets = useRef(new Map<string, HTMLElement>());
   const titleId = useId();
@@ -119,19 +149,31 @@ export function WorkList({
   // Kinds on among those offered; none (TODOs only, now hidden) shows every offered kind.
   const chosen = offered.filter((kind) => kinds.includes(kind));
   const active = chosen.length > 0 ? chosen : offered;
-  // Unknown stored sizes or none on show every size, as for kinds.
-  const chosenSizes = ALL_SIZES.filter((size) => sizes.includes(size));
-  const activeSizes = chosenSizes.length > 0 ? chosenSizes : ALL_SIZES;
-  const shows = (item: WorkItem) => active.includes(item.kind) && sizeShown(item, activeSizes);
-  const shown = items.filter(shows);
-  // P0 alarms stay visible whatever the kind toggles say.
+  const tags = (item: WorkItem) => workTags(item).map(tagFilter);
+  const shown = items.filter(
+    (item) =>
+      active.includes(item.kind) &&
+      matchesStatus(item, status) &&
+      (filters.length === 0 || matchesFilters(item, filters, tags(item))),
+  );
   const alarms = groupItems(items).alarms;
   const { tiers, notJudged } = groupItems(shown);
   const rows = [...alarms, ...tiers.flatMap((group) => group.items), ...notJudged];
-  const listed = shown.length + alarms.filter((alarm) => !shows(alarm)).length;
+  const rejudging = items.filter(
+    ({ key, judgement }) => rejudgingKeys.includes(key) || judgement?.state === "judging",
+  ).length;
+  const lastItem = lastRejudge && items.find(({ key }) => key === lastRejudge.key);
+  const updated =
+    lastItem?.judgement?.state === "current" && lastItem.judgement.judged_at !== lastRejudge?.judgedAt;
+  const judgementAnnouncement = rejudging
+    ? `Re-judging ${rejudging} ${rejudging === 1 ? "item" : "items"}.`
+    : updated
+      ? `Re-judged ${lastItem.title}.`
+      : null;
   const count = (kind: ItemKind) => items.filter((item) => item.kind === kind).length;
-  const sized = (size: SizeMark) =>
-    items.filter((item) => item.kind === "pr" && item.change_size?.size === size).length;
+  const filterBy =
+    onFiltersChange &&
+    ((value: FilterValue, excluded: boolean) => onFiltersChange(addFilter(filters, value, excluded)));
 
   const toggle = (key: string) =>
     setExpanded((open) => {
@@ -143,7 +185,12 @@ export function WorkList({
   useEffect(() => {
     if (!keysEnabled) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || isTyping(event)) return;
+      if (
+        event.defaultPrevented ||
+        isTyping(event) ||
+        (event.target instanceof Element && event.target.closest('[role="menu"]'))
+      )
+        return;
       const action = dashboardShortcut(event.key);
       if (action === "help" && onHelp) {
         event.preventDefault();
@@ -187,15 +234,21 @@ export function WorkList({
     if (element) targets.current.set(key, element);
     else targets.current.delete(key);
   };
-  // The comments line of a pull request row, ranked or a P0 alarm.
-  const comments = (item: WorkItem) => ({
+  const rowProps = (item: WorkItem) => ({
     commentsHref: item.kind === "pr" ? commentsHref?.(item) : undefined,
-    onWatch: onWatch && (() => onWatch(item)),
-    watch: watchingKeys.includes(item.key)
-      ? ("saving" as const)
-      : watchedKeys.includes(item.key)
-        ? ("watching" as const)
-        : undefined,
+    onWatch: onWatch && ((watching: boolean) => onWatch(item, watching)),
+    watched: Boolean(item.watched),
+    watching: watchingKeys.includes(item.key),
+    snapshotAt,
+    onFilter: filterBy,
+    onRejudge:
+      onRejudge &&
+      (() => {
+        setLastRejudge({ key: item.key, judgedAt: item.judgement?.judged_at ?? null });
+        onRejudge(item.key);
+      }),
+    rejudging: rejudgingKeys.includes(item.key),
+    usageHref,
   });
   const row = (item: WorkItem) => (
     <WorkItemRow
@@ -205,7 +258,7 @@ export function WorkList({
       onToggle={() => toggle(item.key)}
       current={item.key === cursor}
       reviewHref={item.kind === "pr" ? reviewHref(item) : undefined}
-      {...comments(item)}
+      {...rowProps(item)}
       onNavigate={onNavigate}
       expanderRef={register(item.key)}
       todos={todos}
@@ -218,12 +271,10 @@ export function WorkList({
     <div key={title} className="mt-1.5">
       <h3 className="flex items-baseline gap-2.5 px-0.5 pt-1 pb-1.5 text-xs font-bold tracking-wide text-muted uppercase">
         <span className="text-sm tracking-normal text-text">{title}</span>
-        <span>{rule}</span>
+        {rule && <span>{rule}</span>}
         <span>· {list.length}</span>
       </h3>
-      <ul className="m-0 list-none overflow-hidden rounded-lg border border-border bg-surface p-0">
-        {list.map(row)}
-      </ul>
+      <ul className="m-0 list-none rounded-lg border border-border bg-surface p-0">{list.map(row)}</ul>
     </div>
   );
 
@@ -233,8 +284,19 @@ export function WorkList({
         <h2 id={titleId} className="text-[17px] font-semibold">
           Needs you
         </h2>
-        <span className="text-xs text-muted">
-          {listed} of {items.length} items, ranked
+        <span role="status" className="text-xs text-muted">
+          {status === "excluded"
+            ? `${statusCounts.excluded} excluded or snoozed`
+            : `${rows.length} of ${items.length} items, ranked`}
+          <span
+            className={
+              rankingNotice
+                ? "fixed right-4 bottom-4 z-40 rounded-md border border-border bg-surface px-3 py-2 text-sm text-text shadow"
+                : "sr-only"
+            }
+          >
+            {rankingNotice ?? judgementAnnouncement}
+          </span>
         </span>
         <span className="flex-1" />
         <ToggleGroup
@@ -251,25 +313,22 @@ export function WorkList({
             tip: `Show or hide ${kind === "todo" ? "your MemCan TODOs" : KIND_TEXT[kind]}`,
           }))}
         />
-        {onSizesChange && (
-          <ToggleGroup
-            label="Sizes shown"
-            values={activeSizes}
-            onChange={onSizesChange}
-            lastOnTip="At least one size stays shown; turn another on first."
-            options={SIZE_CLASSES.map(({ size }, i) => ({
-              value: size,
-              label: (
-                <>
-                  {size} <b>{sized(size)}</b>
-                </>
-              ),
-              tip: `Show or hide ${size} pull requests (${sizeRange(i)} changed lines); issues and TODOs have no size and follow the kind toggles`,
-            }))}
-          />
-        )}
+        <StatusFilter
+          status={status}
+          counts={statusCounts}
+          total={items.length}
+          onChange={setStatus}
+          descriptions={statusDescriptions}
+          excludedDescription={exclusionDescription(exclusions)}
+        />
       </div>
-      {notice}
+      {onFiltersChange && (
+        <FilterChips
+          filters={filters}
+          labels={filters.length ? items.flatMap((item) => itemFilters(item, tags(item))) : []}
+          onChange={onFiltersChange}
+        />
+      )}
       {/* A stale list keeps full text contrast: a tinted dashed frame and its chip mark it. */}
       <div
         data-stale={stale ? true : undefined}
@@ -295,7 +354,7 @@ export function WorkList({
                 current={item.key === cursor}
                 focusRef={register(item.key)}
                 reviewHref={item.kind === "pr" ? reviewHref(item) : undefined}
-                {...comments(item)}
+                {...rowProps(item)}
                 onNavigate={onNavigate}
                 expanded={expanded.has(item.key)}
                 onToggle={() => toggle(item.key)}
@@ -307,9 +366,26 @@ export function WorkList({
         {tiers.map(
           ({ tier, items: list }) => list.length > 0 && group(tierName(tier), TIER_RULE[tier], list),
         )}
-        {notJudged.length > 0 && group("Not judged yet", "new since the last ranking", notJudged)}
-        {shown.length === 0 && (
-          <p className="px-0.5 py-2 text-[12.5px] text-muted">No {kindsText(active)} need you.</p>
+        {notJudged.length > 0 && group("Not judged yet", "", notJudged)}
+        {status === "excluded" ? (
+          <ExcludedItems
+            exclusions={exclusions}
+            guideOrigin={guideOrigin}
+            onWake={onWake}
+            wakingKeys={wakingKeys}
+            onNavigate={onNavigate}
+          />
+        ) : (
+          shown.length === 0 &&
+          (items.length === 0 && status === "all" && filters.length === 0 && empty ? (
+            empty
+          ) : (
+            <p className="px-0.5 py-2 text-[12.5px] text-muted">
+              {status !== "all" || filters.length
+                ? "No ranked items match these filters."
+                : `No ${kindsText(active)} need you.`}
+            </p>
+          ))
         )}
       </div>
     </section>

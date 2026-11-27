@@ -11,40 +11,24 @@ interface Props {
   busy: boolean;
   /** Why the last sign-out failed. */
   error?: string;
-  onSignOut: () => void;
   /** Called once the user confirmed Sign out everywhere. */
   onSignOutEverywhere: () => void;
 }
 
 const EVERYWHERE_TEXT =
-  "This ends every session of yours in every browser, revokes all your personal access tokens and deletes the GitHub sign-in this server keeps for the automatic refresh; the automatic refresh then waits until you sign in again. Nothing changes on GitHub.";
+  "This ends every session of yours in every browser, revokes all your personal access tokens and deletes the GitHub sign-in this server keeps for the nightly scan; the nightly scan then waits until you sign in again. Nothing changes on GitHub.";
 
-/** The signed-in account, Sign out and Sign out everywhere (asked first). */
-export function AccountCard({ login, busy, error, onSignOut, onSignOutEverywhere }: Props) {
+/** The signed-in account, Sign out everywhere (asked first). */
+export function AccountCard({ login, busy, error, onSignOutEverywhere }: Props) {
   const [asking, setAsking] = useState(false);
   const everywhere = useRef<HTMLButtonElement>(null);
   return (
-    <SettingsCard title="Account" help={<HelpTip topic="sign_out" />}>
+    <SettingsCard title="GitHub sign-in" help={<HelpTip topic="sign_out" />}>
       <p>Signed in as {login}</p>
       <div className="flex flex-wrap items-center gap-2">
         <Tooltip
           tip={busyTip(
-            "Ends this session in this browser (other browsers stay signed in) and removes your unsent comment drafts in this tab. Your GitHub pending review stays on GitHub.",
-            busy,
-          )}
-        >
-          <button
-            type="button"
-            aria-disabled={busy || undefined}
-            onClick={() => !busy && onSignOut()}
-            className={buttonClass("plain")}
-          >
-            {busy ? "Signing out…" : "Sign out"}
-          </button>
-        </Tooltip>
-        <Tooltip
-          tip={busyTip(
-            "Asks first, then ends every session of yours, revokes all your personal access tokens and deletes the GitHub sign-in kept for the automatic refresh.",
+            "Asks first, then ends every session of yours, revokes all your personal access tokens and deletes the GitHub sign-in kept for the nightly scan.",
             busy,
           )}
         >

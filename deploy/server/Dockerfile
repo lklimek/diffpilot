@@ -23,6 +23,8 @@ COPY web/ ./
 COPY fixtures/dashboard/api /src/fixtures/dashboard/api
 # The type check also reads the API schemas the settings help test imports.
 COPY schemas/api /src/schemas/api
+# And the needs-you cases the server and web share (queue status test).
+COPY docs/contracts/fixtures/needs-you-cases.json /src/docs/contracts/fixtures/needs-you-cases.json
 RUN npm run build
 
 FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db AS cargo-about
@@ -83,14 +85,15 @@ COPY --from=build /out/diffpilot-server /out/diffpilot-gateway /usr/local/bin/
 COPY --from=web /out/notices/ /usr/share/doc/diffpilot/
 COPY --from=build /out/notices/ /usr/share/doc/diffpilot/
 # After the notices: --chmod on a COPY that creates the directory would apply to the directory too.
-COPY --chmod=0644 LICENSE.md /usr/share/doc/diffpilot/LICENSE.md
+COPY --chmod=0644 LICENSE NOTICE /usr/share/doc/diffpilot/
 COPY --chmod=0755 deploy/server/healthcheck.sh /usr/local/bin/diffpilot-healthcheck
 COPY --chmod=0755 deploy/server/entrypoint.sh /usr/local/bin/diffpilot-server-entrypoint
 ENV SR_DATA_DIR=/var/lib/diffpilot \
     SR_LISTEN_ADDR=0.0.0.0:3000 \
     SR_RUNNER_LISTEN_ADDR=0.0.0.0:3001 \
+    SR_WEBHOOK_LISTEN_ADDR=0.0.0.0:3002 \
     HOME=/nonexistent
 USER 10010:10010
-EXPOSE 3000 3001
+EXPOSE 3000 3001 3002
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --start-interval=1s CMD ["/usr/local/bin/diffpilot-healthcheck"]
 ENTRYPOINT ["/usr/local/bin/diffpilot-server-entrypoint"]

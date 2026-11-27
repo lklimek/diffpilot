@@ -233,6 +233,17 @@
               "type": "null"
             }
           ]
+        },
+        "this_month": {
+          "description": "From local midnight on the first of the month through now; omitted without reports.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UsageTotals"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },

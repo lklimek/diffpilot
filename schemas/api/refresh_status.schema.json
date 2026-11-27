@@ -34,6 +34,17 @@
       "format": "uint32",
       "minimum": 0
     },
+    "left_provisional_by": {
+      "description": "The cap that left items provisional, when a cap was reached.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RankingLimit"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "steps": {
       "description": "Scan steps in order.",
       "type": "array",
@@ -122,7 +133,7 @@
           "const": "scheduled"
         },
         {
-          "description": "My work was open and the newest refresh was old (plan §M).",
+          "description": "Legacy trigger recorded by v1.3 while My work was open.",
           "type": "string",
           "const": "automatic"
         }
@@ -155,6 +166,21 @@
           "description": "The scan was cancelled before its snapshot was complete; the previous snapshot stays.",
           "type": "string",
           "const": "cancelled"
+        }
+      ]
+    },
+    "RankingLimit": {
+      "description": "A limit on how many items can be sent for ranking.",
+      "oneOf": [
+        {
+          "description": "The current refresh's allowance.",
+          "type": "string",
+          "const": "per_refresh"
+        },
+        {
+          "description": "The reader's daily allowance.",
+          "type": "string",
+          "const": "daily"
         }
       ]
     },

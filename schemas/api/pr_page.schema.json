@@ -1381,6 +1381,11 @@
           "const": "not_rendered"
         },
         {
+          "description": "The route is reserved for a feature that is not available yet.",
+          "type": "string",
+          "const": "not_implemented"
+        },
+        {
           "description": "GitHub did not answer as expected.",
           "type": "string",
           "const": "github_unavailable"
@@ -1534,6 +1539,33 @@
       "description": "Item counts of a PR.",
       "type": "object",
       "properties": {
+        "not_a_review_point": {
+          "description": "Items classified as not a review point.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "needs_you": {
+          "description": "Items in the Needs you queue.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "needs_you_gates": {
+          "description": "Gated items in the Needs you queue.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "imported_unseen": {
+          "description": "Items with a decision imported since this reader last visited Comments.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
         "unresolved_threads": {
           "description": "Unresolved threads on GitHub (fact).",
           "type": "integer",
@@ -1578,6 +1610,9 @@
         }
       },
       "required": [
+        "not_a_review_point",
+        "needs_you",
+        "needs_you_gates",
         "unresolved_threads",
         "undecided",
         "asked_again",
@@ -1591,6 +1626,32 @@
       "description": "Assessment progress of a PR (\"LLM assessment running: 4 of 9 comments\").",
       "type": "object",
       "properties": {
+        "in_pass": {
+          "description": "Items in the live pass input.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "waiting": {
+          "description": "Items waiting for the next pass.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "since": {
+          "description": "When the live pass started.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
         "running": {
           "description": "A pass is queued or running.",
           "type": "boolean"

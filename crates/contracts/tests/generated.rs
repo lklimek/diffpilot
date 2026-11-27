@@ -114,3 +114,43 @@ fn every_token_readable_route_has_a_response_schema() {
     let stems: BTreeSet<&str> = API_SCHEMAS.iter().map(|api| api.stem).collect();
     assert_eq!(stems.len(), API_SCHEMAS.len(), "duplicate file stem");
 }
+
+#[test]
+fn imported_github_decision_schema_excludes_internal_marks() {
+    let files = generated_files().expect("contracts generate");
+    let file = files
+        .iter()
+        .find(|file| file.path == "schemas/api/comment_item_list.schema.json")
+        .expect("comment items schema");
+    let schema: serde_json::Value = serde_json::from_str(&file.contents).unwrap();
+    assert_eq!(
+        schema["$defs"]["ImportedGithubDecision"]["properties"]["kind"]["$ref"],
+        "#/$defs/ReviewDecisionKind"
+    );
+}
+
+#[test]
+fn external_schema_does_not_offer_internal_marks() {
+    let files = generated_files().expect("contracts generate");
+    for path in [
+        "schemas/api/feed_decision.schema.json",
+        "schemas/api/decision_feed.schema.json",
+        "schemas/api/decide_rest.schema.json",
+        "schemas/api/assessment_comparison.schema.json",
+        "schemas/api/carry_over_page.schema.json",
+        "schemas/runtime/verify_comments_input.schema.json",
+    ] {
+        let file = files.iter().find(|file| file.path == path).expect("schema");
+        let schema: serde_json::Value = serde_json::from_str(&file.contents).unwrap();
+        for (name, definition) in schema["$defs"].as_object().unwrap() {
+            let enums = definition["enum"].as_array().into_iter().flatten();
+            let variants = definition["oneOf"].as_array().into_iter().flatten();
+            assert!(
+                !enums
+                    .chain(variants.map(|choice| &choice["const"]))
+                    .any(|choice| choice == "not_a_review_point"),
+                "{path}: {name}"
+            );
+        }
+    }
+}

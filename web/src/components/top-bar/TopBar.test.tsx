@@ -2,6 +2,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { Tour } from "../../api/generated/types";
+import { UserMenu } from "../app-shell/UserMenu";
 import { expectTrustWording } from "../../__tests__/wording";
 import { seedFor } from "../../mocks/fixtures";
 import { TopBar } from "./TopBar";
@@ -10,12 +11,25 @@ const tour = seedFor("default", "tour") as Tour;
 
 describe("TopBar", () => {
   it("shows repo, PR number (new tab), title, head SHA and CI with failing checks in the tooltip", () => {
-    render(<TopBar pr={tour.analysis.pr} ci={tour.pr_context.facts.ci} login="alice" />);
+    render(
+      <TopBar
+        pr={tour.analysis.pr}
+        ci={tour.pr_context.facts.ci}
+        userMenu={
+          <UserMenu
+            login="alice"
+            settingsHref="/settings"
+            usageHref="/settings#llm-usage"
+            now={new Date()}
+            activity={null}
+            onSignOut={vi.fn()}
+          />
+        }
+      />,
+    );
     const banner = screen.getByRole("banner");
-    const prLink = within(banner).getByRole("link", { name: "#482 (opens on GitHub in a new tab)" });
-    expect(
-      within(banner).getByRole("link", { name: "acme/node-client (opens on GitHub in a new tab)" }),
-    ).toHaveAttribute("href", "https://github.com/acme/node-client");
+    const prLink = within(banner).getByRole("link", { name: "Open acme/node-client#482 on GitHub, new tab" });
+    expect(within(banner).getByRole("link", { name: "Pull requests" })).toHaveAttribute("href", "/prs");
     expect(prLink).toHaveAttribute("href", "https://github.com/acme/node-client/pull/482");
     expect(prLink).toHaveAttribute("target", "_blank");
     expect(prLink).toHaveAttribute("rel", expect.stringContaining("noopener"));
@@ -25,19 +39,19 @@ describe("TopBar", () => {
       "Check runs: 3 passed, 1 failed, 1 skipped, 1 neutral. Statuses: 1 pending.",
     );
     expect(ci).toHaveAccessibleDescription(/test \(integration\)/);
-    expect(banner).toHaveTextContent("alice");
+    expect(within(banner).getByRole("button", { name: "alice: account and LLM activity" })).toBeVisible();
     expectTrustWording(banner.textContent ?? "");
   });
 
   it("tags the analysis with the language of its LLM texts", () => {
-    render(<TopBar pr={tour.analysis.pr} language="pl" login="alice" />);
+    render(<TopBar pr={tour.analysis.pr} language="pl" />);
     expect(within(screen.getByRole("banner")).getByText("PL")).toHaveAccessibleDescription(
       "LLM texts of this analysis are in Polish.",
     );
   });
 
   it("marks an incomplete pending-review count and says why in the tooltip", () => {
-    render(<TopBar login="alice" pendingCount="1+" onOpenPending={() => {}} />);
+    render(<TopBar pendingCount="1+" onOpenPending={() => {}} />);
     const button = screen.getByRole("button", { name: /Pending review/ });
     expect(button).toHaveTextContent("Pending review 1+");
     expect(button).toHaveAccessibleDescription(
@@ -46,13 +60,13 @@ describe("TopBar", () => {
   });
 
   it("works without a PR (home)", () => {
-    render(<TopBar login={null} />);
+    render(<TopBar />);
     expect(screen.getByRole("link", { name: "diffpilot" })).toHaveAttribute("href", "/");
   });
 
   it("links the CI summary to the checks page it is given, in a new tab, with its tooltip", () => {
     const href = "https://github.com/acme/node-client/pull/482/checks";
-    render(<TopBar pr={tour.analysis.pr} ci={tour.pr_context.facts.ci} checksHref={href} login="alice" />);
+    render(<TopBar pr={tour.analysis.pr} ci={tour.pr_context.facts.ci} checksHref={href} />);
     const link = screen.getByRole("link", { name: /^Check runs: .* \(opens on GitHub in a new tab\)$/ });
     expect(link.querySelector('svg[data-icon="github"]')).not.toBeNull();
     expect(link).toHaveAttribute("href", href);
@@ -68,34 +82,37 @@ describe("TopBar", () => {
       flowsHref: "/analyses/a",
       filesHref: "/analyses/a/files",
       depsHref: "/analyses/a/deps",
-      prContextHref: "/analyses/a#pr_context",
+      prPageHref: "/pr/acme/node-client/482",
       onNavigate,
     };
-    render(<TopBar pr={tour.analysis.pr} login="alice" view={view} progress={{ reviewed: 1, total: 5 }} />);
+    render(<TopBar pr={tour.analysis.pr} view={view} progress={{ reviewed: 1, total: 5 }} />);
     const crumbs = screen.getByRole("navigation", { name: "Breadcrumb" });
     expect(within(crumbs).getByRole("link", { name: "diffpilot" })).toHaveAttribute("href", "/");
     const repo = within(crumbs).getByRole("link", { name: "acme/node-client #482" });
-    expect(repo).toHaveAttribute("href", "/analyses/a#pr_context");
-    expect(repo).toHaveAccessibleDescription(/PR context/);
+    expect(repo).toHaveAttribute("href", "/pr/acme/node-client/482");
+    expect(repo).toHaveAccessibleDescription(/acme\/node-client #482/);
     const github = within(crumbs).getByRole("link", {
-      name: "Pull request #482 on GitHub (opens on GitHub in a new tab)",
+      name: "Open acme/node-client#482 on GitHub, new tab",
     });
     expect(github).toHaveAttribute("href", "https://github.com/acme/node-client/pull/482");
     expect(github).toHaveAttribute("target", "_blank");
     await userEvent.click(repo);
-    expect(onNavigate).toHaveBeenLastCalledWith("/analyses/a#pr_context");
+    expect(onNavigate).toHaveBeenLastCalledWith("/pr/acme/node-client/482");
     const menu = within(crumbs).getByRole("button", { name: "View: Files" });
     expect(menu).toHaveAttribute("aria-expanded", "false");
     await userEvent.click(menu);
     expect(menu).toHaveAttribute("aria-expanded", "true");
-    expect(within(crumbs).getByRole("link", { name: "Files" })).toHaveAttribute("aria-current", "page");
-    const flows = within(crumbs).getByRole("link", { name: "Flows" });
-    expect(flows).not.toHaveAttribute("aria-current");
+    expect(within(crumbs).getByRole("menuitemradio", { name: "Files" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    const flows = within(crumbs).getByRole("menuitemradio", { name: "Flows" });
+    expect(flows).toHaveAttribute("aria-checked", "false");
     await userEvent.click(flows);
     expect(onNavigate).toHaveBeenLastCalledWith("/analyses/a");
     expect(menu).toHaveAttribute("aria-expanded", "false");
     await userEvent.click(menu);
-    await userEvent.click(within(crumbs).getByRole("link", { name: "Dependencies" }));
+    await userEvent.click(within(crumbs).getByRole("menuitemradio", { name: "Dependencies" }));
     expect(onNavigate).toHaveBeenLastCalledWith("/analyses/a/deps");
     await userEvent.click(menu);
     await userEvent.keyboard("{Escape}");
@@ -110,19 +127,21 @@ describe("TopBar", () => {
       flowsHref: "/analyses/a",
       filesHref: "/analyses/a/files",
       depsHref: "/analyses/a/deps",
-      prContextHref: "/analyses/a#pr_context",
+      prPageHref: "/pr/acme/node-client/482",
       onNavigate: vi.fn(),
     };
-    render(<TopBar pr={tour.analysis.pr} login="alice" view={view} />);
+    render(<TopBar pr={tour.analysis.pr} view={view} />);
     const menu = screen.getByRole("button", { name: "View: Dependencies" });
     expect(menu).toHaveAccessibleDescription(/Dependencies \(crates this pull request changes/);
     await userEvent.click(menu);
-    const links = within(screen.getByRole("navigation", { name: "Breadcrumb" })).getAllByRole("link");
+    const links = within(screen.getByRole("navigation", { name: "Breadcrumb" })).getAllByRole(
+      "menuitemradio",
+    );
     expect(links.slice(-3).map((l) => l.textContent)).toEqual(["Flows", "Files", "✓Dependencies"]);
     expect(
-      within(screen.getByRole("navigation", { name: "Breadcrumb" })).getByRole("link", {
+      within(screen.getByRole("navigation", { name: "Breadcrumb" })).getByRole("menuitemradio", {
         name: "Dependencies",
       }),
-    ).toHaveAttribute("aria-current", "page");
+    ).toHaveAttribute("aria-checked", "true");
   });
 });

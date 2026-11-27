@@ -1,3 +1,4 @@
+import { scenario } from "../scenarios";
 import { HttpResponse, type HttpResponseResolver, type PathParams } from "msw";
 import type {
   AnchoredAskRequest,
@@ -9,6 +10,7 @@ import type {
   ItemActionRequest,
   NotificationChannel,
   PutChannelRequest,
+  UserStreamEvent,
 } from "../../api/generated/types";
 import {
   PR,
@@ -21,6 +23,7 @@ import {
   listItems,
   log,
   markGate,
+  markedItems,
   notificationSettings,
   overview,
   prPage,
@@ -34,6 +37,7 @@ import {
   type Refusal,
 } from "../review-loop";
 import { readStore } from "../review-store";
+import { recordPrOpened } from "./pr-history";
 import { answerLater } from "./ask-question";
 import { apiError, route } from "./common";
 
@@ -68,21 +72,47 @@ const isRefusal = (value: unknown): value is Refusal => Array.isArray(value) && 
 
 /** RC1–RC17, RW1–RW2, RN1–RN3 of the review loop (plan §6) over the store of review-loop.ts. */
 export const reviewLoopHandlers = [
-  route(
-    "getPrPage",
-    forPr(() => HttpResponse.json(prPage())),
-  ),
+  route("listMarkedItems", ({ request }) => {
+    const result = markedItems(new URL(request.url).searchParams.get("cursor"));
+    return isRefusal(result) ? refused(result) : HttpResponse.json(result);
+  }),
+  route("getPrPage", (info) => {
+    if (info.params.owner === "acme" && info.params.name === "private-repo") {
+      return apiError(
+        422,
+        "private_repository",
+        "This repository is private. Only public repositories can be analysed.",
+      );
+    }
+    return forPr(() => {
+      const page = prPage();
+      recordPrOpened(page.pr, page.title);
+      return HttpResponse.json(page);
+    })(info);
+  }),
   route(
     "getComments",
     forPr(() => HttpResponse.json(overview())),
+  ),
+  route(
+    "visitComments",
+    forPr(() => new HttpResponse(null, { status: 204 })),
   ),
   route(
     "readComments",
     forPr(() => new HttpResponse(null, { status: 202 })),
   ),
   route(
+    "startCommentAssessment",
+    forPr(() => new HttpResponse(null, { status: 202 })),
+  ),
+  route(
     "listCommentItems",
-    forPr(() => HttpResponse.json(itemsWithAsks())),
+    forPr(({ request }) => {
+      const all = itemsWithAsks();
+      const unseen = new URL(request.url).searchParams.get("imported_unseen") === "true";
+      return HttpResponse.json(unseen ? all.filter((item) => item.imported_decision) : all);
+    }),
   ),
   route(
     "getCommentContext",
@@ -198,13 +228,35 @@ export const reviewLoopHandlers = [
     }),
   ),
   route("listWatches", () => HttpResponse.json(watches())),
-  // RW3: the stream stays open; the mocks create no user events.
+  // RW3: keep the stream open as it is for a signed-in user.
   route(
     "userEvents",
     () =>
-      new HttpResponse(new ReadableStream({ start() {} }), {
-        headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-store" },
-      }),
+      new HttpResponse(
+        new ReadableStream({
+          start(controller) {
+            if (!scenario().reviewLoopNotification) return;
+            const event = {
+              event: "user_event",
+              user_event: {
+                kind: "questions_ready",
+                id: "0f7c1d1e-0000-4000-8000-000000000001",
+                pr: PR,
+                text: "acme/node-client #482: 3 questions ready",
+                count: 3,
+                url: "/pr/acme/node-client/482/comments",
+                at: "2026-11-18T09:27:00Z",
+              },
+            } satisfies UserStreamEvent;
+            controller.enqueue(
+              new TextEncoder().encode(`event: user_event\ndata: ${JSON.stringify(event)}\n\n`),
+            );
+          },
+        }),
+        {
+          headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-store" },
+        },
+      ),
   ),
   route("getNotificationSettings", () => HttpResponse.json(notificationSettings())),
   route("putNotificationChannel", async ({ params, request }) => {

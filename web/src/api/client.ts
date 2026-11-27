@@ -1,9 +1,17 @@
 // The only fetch layer of the web app: typed calls to the routes of crates/contracts.
 import { routes, type RouteName } from "./generated/routes";
 import type {
+  GithubWebhook,
+  LlmActivity,
+  PrHistory,
+  PrHistoryQuery,
+  RankingUsage,
+  RepositoryInstallations,
+  StartRefreshRequest,
   AssessmentSettings,
   AssessmentSettingsUpdate,
   AssessmentComparison,
+  AssessmentAdmissionFailure,
   CredentialStatus,
   DeviceLink,
   AccessToken,
@@ -15,6 +23,7 @@ import type {
   CodeContext,
   CommentItem,
   CommentLog,
+  MarkedItems,
   CommentsOverview,
   ContextQuery,
   DecideRequest,
@@ -96,6 +105,29 @@ export class ApiError extends Error {
   }
 }
 
+/** User-facing API error text with a plain fallback for transport and unexpected failures. */
+export function errorText(error: unknown, fallback = "Something went wrong. Try again."): string {
+  return error instanceof ApiError || error instanceof AssessmentAdmissionError ? error.message : fallback;
+}
+
+/** Assessment admission uses a tagged response instead of ApiError's message envelope. */
+export type AssessmentAdmissionIssue =
+  AssessmentAdmissionFailure | { code: "assessment_daily_limit"; resets_at?: undefined };
+
+export class AssessmentAdmissionError extends Error {
+  constructor(readonly issue: AssessmentAdmissionIssue) {
+    super(
+      issue.code === "credential_missing"
+        ? "Link a Codex account in Settings to assess comments."
+        : "Daily comment assessment limit reached.",
+    );
+  }
+
+  get code() {
+    return this.issue.code;
+  }
+}
+
 const CSRF_HEADER = "X-CSRF-Token";
 /** Methods retried once when the server answers `unavailable`; a POST is never repeated. */
 const IDEMPOTENT_METHODS: ReadonlySet<string> = new Set(["GET", "PUT", "DELETE"]);
@@ -119,6 +151,7 @@ export function routePath(name: RouteName, params: Record<string, string> = {}):
 
 interface CallOptions {
   params?: Record<string, string>;
+  signal?: AbortSignal;
   query?: Record<string, string | number>;
   body?: unknown;
   headers?: Record<string, string>;
@@ -144,6 +177,7 @@ function openEventStream<E>(
   names: readonly string[],
   onEvent: (event: E) => void,
   onError: (closed: boolean) => void,
+  onReconnect?: () => void,
 ): () => void {
   const source = new EventSource(path);
   const onMessage = (message: MessageEvent<string>) => {
@@ -164,7 +198,15 @@ function openEventStream<E>(
   };
   // Named events only reach listeners of their name: any other type is ignored by the browser.
   for (const name of names) source.addEventListener(name, onMessage);
-  source.onerror = () => onError(source.readyState === EventSource.CLOSED);
+  let disconnected = false;
+  source.onerror = () => {
+    disconnected = true;
+    onError(source.readyState === EventSource.CLOSED);
+  };
+  source.onopen = () => {
+    if (disconnected) onReconnect?.();
+    disconnected = false;
+  };
   return () => source.close();
 }
 
@@ -188,11 +230,13 @@ function isErrorBody(value: unknown): value is { code: ApiErrorCode; message: st
 /** Callbacks of the per-user event stream (RW3). */
 export interface UserEventHandlers {
   onEvent: (event: UserEvent) => void;
-  onError: (closed: boolean) => void;
+  onActivity?: (activity: LlmActivity) => void;
+  onReconnect?: () => void;
+  onError?: (closed: boolean) => void;
 }
 
 /** SSE names of RW3 (`sse-events.md` "Review-loop events"): the `event` tag of `UserStreamEvent`. */
-const USER_STREAM_NAMES = ["user_event", "heartbeat"] satisfies UserStreamEvent["event"][];
+const USER_STREAM_NAMES = ["user_event", "llm_activity", "heartbeat"] satisfies UserStreamEvent["event"][];
 
 /** Route parameters of a pull request (`{owner}/{name}/{number}`). */
 const prParams = (pr: PrRef) => ({ owner: pr.repo.owner, name: pr.repo.name, number: String(pr.number) });
@@ -222,7 +266,8 @@ export function createApiClient(baseUrl = "") {
 
   async function send(name: RouteName, options: CallOptions, csrf: string | null): Promise<Response> {
     const route = routes[name];
-    const url = new URL(baseUrl + routePath(name, options.params), globalThis.location?.origin);
+    const path = routePath(name, options.params);
+    const url = new URL(baseUrl + path, globalThis.location?.origin);
     for (const [key, value] of Object.entries(options.query ?? {})) url.searchParams.set(key, String(value));
     const headers = new Headers({ Accept: "application/json", ...options.headers });
     if (options.body !== undefined) headers.set("Content-Type", "application/json");
@@ -232,21 +277,36 @@ export function createApiClient(baseUrl = "") {
         method: route.method,
         headers,
         credentials: "same-origin",
+        signal: options.signal,
         body: options.body === undefined ? undefined : JSON.stringify(options.body),
       });
-    } catch {
+    } catch (error) {
+      if (options.signal?.aborted) throw error;
       throw new ApiError(0, "internal", "Cannot reach the diffpilot server. Check the connection and retry.");
     }
   }
 
-  async function errorOf(response: Response): Promise<ApiError> {
+  async function errorOf(response: Response): Promise<ApiError | AssessmentAdmissionError> {
     const body: unknown = await response.json().catch(() => null);
+    if (body && typeof body === "object" && "code" in body) {
+      if (response.status === 409 && body.code === "credential_missing")
+        return new AssessmentAdmissionError({ code: body.code });
+      if (response.status === 429 && body.code === "assessment_daily_limit") {
+        const resetsAt = "resets_at" in body ? body.resets_at : undefined;
+        const resets_at =
+          typeof resetsAt === "string" && Number.isFinite(Date.parse(resetsAt)) ? resetsAt : undefined;
+        return new AssessmentAdmissionError({ code: body.code, resets_at });
+      }
+    }
     if (isErrorBody(body)) return new ApiError(response.status, body.code, body.message);
     return new ApiError(response.status, "internal", "The server gave an unexpected answer. Retry later.");
   }
 
-  async function call<T>(name: RouteName, options: CallOptions = {}): Promise<T> {
-    const needsCsrf = routes[name].auth === "session_csrf";
+  function call<T>(name: RouteName, options?: CallOptions): Promise<T>;
+  function call<T>(name: RouteName, options: CallOptions, allowAbsent: true): Promise<T | null>;
+  async function call<T>(name: RouteName, options: CallOptions = {}, allowAbsent = false): Promise<T | null> {
+    const route = routes[name];
+    const needsCsrf = route.auth === "session_csrf";
     if (needsCsrf && csrfToken === undefined) await getMe();
     let response = await send(name, options, needsCsrf ? (csrfToken ?? null) : null);
     if (needsCsrf && response.status === 403) {
@@ -255,17 +315,20 @@ export function createApiClient(baseUrl = "") {
       await getMe();
       response = await send(name, options, csrfToken ?? null);
     }
-    if (response.status === 503 && IDEMPOTENT_METHODS.has(routes[name].method)) {
+    if (response.status === 503 && IDEMPOTENT_METHODS.has(route.method)) {
       const error = await errorOf(response.clone());
       if (error.code !== "unavailable") throw error;
       await new Promise((resolve) => setTimeout(resolve, retryAfterMs(response)));
       response = await send(name, options, needsCsrf ? (csrfToken ?? null) : null);
     }
+    if (allowAbsent && response.status === 501) return null;
     if (!response.ok) throw await errorOf(response);
     // 204, and the 202 of RC3 and RC6, carry no body.
     const body = await response.text();
     return (body ? JSON.parse(body) : undefined) as T;
   }
+
+  const optional = <T>(name: RouteName, options: CallOptions = {}) => call<T>(name, options, true);
 
   /** A read with `If-None-Match: etag` (none when null): 304 is `unchanged`. */
   async function conditional<T>(
@@ -288,6 +351,8 @@ export function createApiClient(baseUrl = "") {
 
   return {
     getMe,
+    listMyPrs: (query: PrHistoryQuery, signal?: AbortSignal) =>
+      optional<PrHistory>("listMyPrs", { query: definedParams(query), signal }),
     /** Ends the session (`POST /auth/logout`); the CSRF token of the old session is dropped. */
     logout: async (body: LogoutRequest) => {
       await call<void>("authLogout", { body });
@@ -345,6 +410,12 @@ export function createApiClient(baseUrl = "") {
       }
     },
     getSettings: () => call<Settings>("getSettings"),
+    getGithubWebhook: (signal?: AbortSignal) => optional<GithubWebhook>("getGithubWebhook", { signal }),
+    getRepositoryInstallations: (signal?: AbortSignal) =>
+      optional<RepositoryInstallations>("getRepositoryInstallations", { signal }),
+    getLlmActivity: (signal?: AbortSignal) => optional<LlmActivity>("getLlmActivity", { signal }),
+    getRankingUsage: (signal?: AbortSignal) => optional<RankingUsage>("getRankingUsage", { signal }),
+    resetRankingUsage: () => call<RankingUsage>("resetRankingUsage"),
     setLlm: (body: import("./generated/types").ModelChoice) =>
       call<import("./generated/types").LlmSelection>("setLlm", { body }),
     requestFlow: (id: AnalysisId, flow: string) =>
@@ -389,7 +460,9 @@ export function createApiClient(baseUrl = "") {
       call<void>("snoozeDashboardItem", { params: { key }, body: { days } satisfies SnoozeRequest }),
     /** Ends an item's snooze now ("Wake now", R13). */
     wakeDashboardItem: (key: string) => call<void>("wakeDashboardItem", { params: { key } }),
-    startDashboardRefresh: () => call<RefreshStatus>("startDashboardRefresh"),
+    startDashboardRefresh: (body?: StartRefreshRequest) =>
+      call<RefreshStatus>("startDashboardRefresh", { body }),
+    rejudgeDashboardItem: (key: string) => call<void>("rejudgeDashboardItem", { params: { key } }),
     getDashboardRefresh: (id: RefreshId) => call<RefreshStatus>("getDashboardRefresh", { params: { id } }),
     cancelDashboardRefresh: (id: RefreshId) =>
       call<RefreshStatus>("cancelDashboardRefresh", { params: { id } }),
@@ -397,6 +470,9 @@ export function createApiClient(baseUrl = "") {
     setDashboardTimeZone: (body: SetTimeZoneRequest) => call<void>("setDashboardTimeZone", { body }),
     getPrPage: (pr: PrRef) => call<PrPage>("getPrPage", { params: prParams(pr) }),
     getComments: (pr: PrRef) => call<CommentsOverview>("getComments", { params: prParams(pr) }),
+    visitComments: (pr: PrRef) => optional<void>("visitComments", { params: prParams(pr) }),
+    startCommentAssessment: (pr: PrRef, signal?: AbortSignal) =>
+      optional<void>("startCommentAssessment", { params: prParams(pr), signal }),
     readComments: (pr: PrRef) => call<void>("readComments", { params: prParams(pr) }),
     listCommentItems: (pr: PrRef, query: ItemsQuery = { state: null, kind: null }) =>
       call<CommentItem[]>("listCommentItems", { params: prParams(pr), query: definedParams(query) }),
@@ -426,6 +502,8 @@ export function createApiClient(baseUrl = "") {
     /** The server's "Decide the rest per recommendation" list and the items it leaves out (RC17). */
     getDecideRest: (pr: PrRef) => call<DecideRest>("getDecideRest", { params: prParams(pr) }),
     getCommentLog: (pr: PrRef) => call<CommentLog>("getCommentLog", { params: prParams(pr) }),
+    listMarkedItems: (cursor: string | null) =>
+      call<MarkedItems>("listMarkedItems", { query: definedParams({ cursor }) }),
     listCarryOvers: (query: CarryOverQuery) =>
       call<CarryOverPage>("listCarryOvers", { query: definedParams(query) }),
     watchPr: (pr: PrRef) => call<void>("watchPr", { params: prParams(pr) }),
@@ -445,8 +523,10 @@ export function createApiClient(baseUrl = "") {
         USER_STREAM_NAMES,
         (event) => {
           if (event.event === "user_event") handlers.onEvent(event.user_event);
+          if (event.event === "llm_activity") handlers.onActivity?.(event.activity);
         },
-        handlers.onError,
+        handlers.onError ?? (() => {}),
+        handlers.onReconnect,
       );
     },
     /** Opens a refresh's event stream; returns a function that closes it. */

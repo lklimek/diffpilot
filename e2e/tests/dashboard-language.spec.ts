@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   JUDGE_DATA,
   ranked,
+  refreshButton,
   saveSettings,
   seedTodos,
   signInForDashboardSetup,
@@ -29,7 +30,7 @@ test("Polish chosen: every ranking job asks for Polish texts", async ({ page, st
     },
   ]);
   await signInForDashboardSetup(page);
-  await page.goto("/settings");
+  await page.goto("/settings/llm");
   const language = page.getByLabel(/written in/);
   await language.selectOption("pl");
   await expect(language).toBeEnabled();
@@ -39,8 +40,9 @@ test("Polish chosen: every ranking job asks for Polish texts", async ({ page, st
   await saveSettings(page, { ...worldSettings(), schedule_enabled: false });
   await seedTodos(page, stack);
   await page.goto("/");
+  await refreshButton(page).click();
   const done = await waitForRefresh(page, ranked);
-  expect(done.trigger).toBe("automatic");
+  expect(done.trigger).toBe("manual");
   expect(done.judged).toBe(18);
 
   const log = readFileSync(join(stack.stateDir ?? "", "logs", "runner.log"), "utf8");

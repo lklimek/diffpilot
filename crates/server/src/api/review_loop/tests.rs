@@ -31,6 +31,9 @@ use crate::state::AppState;
 use crate::test_support::session_cookie;
 
 mod assessment;
+mod marks;
+mod pr_history;
+mod propagation;
 mod watching;
 
 const PR: &str = "/api/v1/prs/acme/node-client/482";
@@ -82,6 +85,7 @@ async fn world_with(adjust: impl FnOnce(&mut AppState)) -> World {
     let mut config = crate::config::tests::test_config();
     config.github.api_url = Url::parse(&format!("{}/api", server.uri())).expect("url");
     let dir = std::env::temp_dir().join(format!("diffpilot-review-loop-{}", uuid::Uuid::new_v4()));
+    config.github.clone_url = Url::from_directory_path(&dir).expect("fixture URL");
     config.data_dir = dir;
     let mut state = AppState::with_queue(config, db::repo::Db::in_memory().await.expect("db"));
     adjust(&mut state);
@@ -122,6 +126,30 @@ async fn world_with(adjust: impl FnOnce(&mut AppState)) -> World {
 }
 
 impl World {
+    async fn link_llm(&self) {
+        use contracts::gateway::{CredentialMode, CredentialState, CredentialStatus};
+        self.state
+            .db
+            .llm_credentials()
+            .put_status(
+                DEFAULT_TENANT,
+                "u1",
+                &CredentialStatus {
+                    telemetry: Default::default(),
+                    challenge: None,
+                    mode: CredentialMode::ChatgptPlan,
+                    state: CredentialState::Linked,
+                    relink_reason: None,
+                    label: None,
+                    plan: None,
+                    paused_until: None,
+                    last_call: None,
+                },
+            )
+            .await
+            .unwrap();
+    }
+
     async fn call(&self, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
         let request = Request::builder()
             .method(method)
@@ -279,7 +307,7 @@ fn reject(reason: &str) -> Value {
 
 fn recommend(kind: DecisionKind, class: &str) -> Recommendation {
     Recommendation {
-        kind,
+        kind: kind.review_kind().expect("recommendable decision"),
         reason: "The lines are older than this change.".into(),
         target: None,
         reason_class: class.into(),
@@ -314,32 +342,17 @@ async fn comments_work_without_analysis() {
         15,
         "8 inline threads, legacy body findings, newly eligible prose sources and the merge question"
     );
-    // Opening Comments starts one `verify_comments` pass; its items show the assessment as running.
-    for item in items.iter().filter(|item| item["kind"] != "pr_question") {
+    for item in items
+        .iter()
+        .filter(|item| item["kind"] != "pr_question" && item["status_comment"] != true)
+    {
         assert_eq!(
             item["assessment_state"],
-            json!({"state": "running"}),
+            json!({"state": "not_assessed", "reason": "not_run"}),
             "{item}"
         );
         assert_eq!(item["assessment"], Value::Null);
     }
-    let passes = w
-        .state
-        .db
-        .review_loop()
-        .live_passes()
-        .await
-        .expect("passes");
-    assert_eq!(passes.len(), 1, "{passes:?}");
-    let job = w
-        .state
-        .db
-        .jobs()
-        .get(passes[0].job_id.expect("the pass's job"))
-        .await
-        .expect("job");
-    assert_eq!(job.spec.kind, contracts::agent::JobKind::VerifyComments);
-    assert_eq!(job.analysis_id, None, "no analysis is started");
     let numbers: Vec<u64> = items.iter().filter_map(|i| i["no"].as_u64()).collect();
     assert_eq!(
         numbers,
@@ -937,6 +950,18 @@ async fn effects_preview_and_github_failure_keeps_the_last_read() {
     assert_eq!(w.items().await.len(), 15);
 }
 
+#[tokio::test]
+async fn read_again_queues_no_llm_work() {
+    let w = world().await;
+    w.link_llm().await;
+    let (status, _) = w.post(&format!("{PR}/comments/read"), json!({})).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(w.items().await.len(), 15, "the refresh stored new items");
+    let review_loop = w.state.db.review_loop();
+    let passes = review_loop.live_passes().await.expect("passes");
+    assert!(passes.is_empty(), "refresh queued {passes:?}");
+}
+
 /// T22: decisions, gate marks, re-reads and item actions refuse access tokens.
 #[tokio::test]
 async fn no_token_reaches_decision_routes() {
@@ -1091,7 +1116,13 @@ async fn pr_page_without_any_github_read_degrades() {
 #[tokio::test]
 async fn assess_again_while_a_pass_runs_is_a_conflict() {
     let w = world().await;
-    w.get(&format!("{PR}/comments")).await;
+    w.link_llm().await;
+    assert_eq!(
+        w.call("POST", &format!("{PR}/comments/assess"), None)
+            .await
+            .0,
+        StatusCode::ACCEPTED
+    );
     let item = w.item(L2).await;
     let uri = format!("{PR}/comments/items/C{}/assess", item["no"]);
     let (status, body) = w.post(&uri, json!({})).await;
@@ -1234,3 +1265,140 @@ mod feed;
 mod loop_rules;
 mod notify;
 mod qa_core;
+
+#[tokio::test]
+async fn bot_status_comment_not_a_question() {
+    let w = world().await;
+    serve(&w.server, &[("comments.json", &|answer| {
+        let nodes = &mut answer["data"]["repository"]["pullRequest"]["comments"]["nodes"];
+        *nodes = json!([
+            {
+                "id": "IC_status", "databaseId": 801,
+                "author": {"login": "ci[bot]", "__typename": "User"},
+                "body": "All checks completed.", "createdAt": "2026-11-09T13:43:19Z",
+                "url": "https://github.com/acme/node-client/pull/482#issuecomment-801"
+            },
+            {
+                "id": "IC_finding", "databaseId": 802,
+                "author": {"login": "ci[bot]", "__typename": "User"},
+                "body": "<!-- thepastaclaw-review v1 finding=0123456789ab -->\n\nPlease handle the failed check.",
+                "createdAt": "2026-11-09T13:43:19Z",
+                "url": "https://github.com/acme/node-client/pull/482#issuecomment-802"
+            }
+        ]);
+    })]).await;
+    let overview = w.get(&format!("{PR}/comments")).await;
+    let status = w.item("comment:801:1").await;
+    let finding = w.item("comment:802:1").await;
+    assert_eq!(status["status_comment"], true);
+    assert!(finding.get("status_comment").is_none());
+    assert_eq!(status["assessment_state"]["state"], "not_assessed");
+    let entries = overview["queue"].as_array().unwrap();
+    let queued = |no: &Value| {
+        entries
+            .iter()
+            .any(|entry| entry["item_nos"].as_array().unwrap().contains(no))
+    };
+    assert!(!queued(&status["no"]));
+    assert!(queued(&finding["no"]));
+    w.link_llm().await;
+    assert_eq!(
+        w.call("POST", &format!("{PR}/comments/assess"), None)
+            .await
+            .0,
+        StatusCode::ACCEPTED
+    );
+    let pass = w
+        .state
+        .db
+        .review_loop()
+        .latest_pass(w.pr_id().await)
+        .await
+        .unwrap()
+        .unwrap();
+    let status_id = serde_json::from_value(status["id"].clone()).unwrap();
+    assert!(pass.sent.iter().all(|item| item.item != status_id));
+
+    w.reread(&[("comments.json", &|answer| {
+        answer["data"]["repository"]["pullRequest"]["comments"]["nodes"] = json!([{
+            "id": "IC_finding", "databaseId": 802,
+            "author": {"login": "ci[bot]", "__typename": "User"},
+            "body": "Please handle the failed check.",
+            "createdAt": "2026-11-09T13:43:19Z",
+            "url": "https://github.com/acme/node-client/pull/482#issuecomment-802"
+        }]);
+    })])
+    .await;
+    let updated = w.item("comment:802:1").await;
+    assert_eq!(updated["no"], finding["no"]);
+    assert_eq!(updated["body"], finding["body"]);
+    assert_eq!(updated["status_comment"], true);
+}
+
+#[tokio::test]
+async fn bot_typename_counts_as_bot_in_fallback() {
+    let w = world().await;
+    serve(&w.server, &[("comments.json", &|answer| {
+        answer["data"]["repository"]["pullRequest"]["comments"]["nodes"] = json!([{
+            "id": "IC_finding", "databaseId": 803,
+            "author": {"login": "type-only-reviewer", "__typename": "Bot"},
+            "body": "### 1 finding(s) not shown inline\n\n**🔴 Blocking: Missing validation**\n\nPlease validate the input.",
+            "createdAt": "2026-11-09T13:43:19Z",
+            "url": "https://github.com/acme/node-client/pull/482#issuecomment-803"
+        }]);
+    })]).await;
+    w.get(PR).await;
+    let item = w.item("comment:803:1").await;
+    assert_eq!(item["author_kind"], "bot");
+    assert!(item.get("status_comment").is_none());
+}
+
+#[tokio::test]
+async fn coderabbit_review_skipped_is_status_comment() {
+    let w = world().await;
+    let comment: Value = serde_json::from_str(include_str!(
+        "../../../../../fixtures/review-loop/regressions/tenderdash-1600-comment.json"
+    ))
+    .unwrap();
+    serve(
+        &w.server,
+        &[
+            ("reviews.json", &|answer| {
+                answer["data"]["repository"]["pullRequest"]["reviews"]["nodes"] = json!([]);
+            }),
+            ("review-threads.json", &|answer| {
+                answer["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"] = json!([]);
+            }),
+            ("comments.json", &|answer| {
+                answer["data"]["repository"]["pullRequest"]["comments"]["nodes"] = json!([comment]);
+            }),
+        ],
+    )
+    .await;
+    let overview = w.get(&format!("{PR}/comments")).await;
+    let item = w.item("comment:160001:1").await;
+    assert_eq!(item["author_kind"], "bot");
+    assert_eq!(item["status_comment"], true);
+    let (status, error) = w
+        .post(
+            &format!("{PR}/comments/items/C{}/assess", item["no"]),
+            json!(null),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{error}");
+    assert_eq!(error["code"], "conflict");
+    assert_eq!(error["message"], "Status comments cannot be assessed.");
+
+    assert_eq!(overview["queue"], json!([]));
+    assert_eq!(overview["counts"]["needs_you"], 0);
+    assert_ne!(overview["badge"]["badge"], "questions_waiting");
+    assert!(
+        w.state
+            .db
+            .review_loop()
+            .latest_pass(w.pr_id().await)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}

@@ -11,8 +11,17 @@ import { GithubMark } from "../github/GithubMark";
 import { Tooltip } from "../tooltip/Tooltip";
 import { CrateFacts } from "./CrateFacts";
 import { CrateNotes } from "./CrateNotes";
-import { inApp, LineLinkTo } from "./LineLinkTo";
-import { count, crateKey, crateOrigins, isOpen, repositoryKey, type DepsLinks } from "./model";
+import { inApp } from "../inApp";
+import { LineLinkTo } from "./LineLinkTo";
+import {
+  count,
+  crateKey,
+  crateOrigins,
+  isOpen,
+  repositoryKey,
+  unchangedCrate,
+  type DepsLinks,
+} from "./model";
 
 interface DependencyTreeProps {
   view: DependencyView;
@@ -20,12 +29,15 @@ interface DependencyTreeProps {
   open: Readonly<Record<string, boolean>>;
   onToggle: (key: string, open: boolean) => void;
   links: DepsLinks;
+  showUnchanged: boolean;
+  targetCrate: string | null;
 }
 
 /** A level's disclosure button and, when open, its content. */
 function Level({
   label,
   aside,
+  anchor,
   open,
   onToggle,
   children,
@@ -33,6 +45,7 @@ function Level({
   label: ReactNode;
   /** Chips and links beside the button (outside it: no control inside a control). */
   aside?: ReactNode;
+  anchor?: string;
   open: boolean;
   onToggle: (open: boolean) => void;
   children: ReactNode;
@@ -44,6 +57,7 @@ function Level({
         <button
           type="button"
           data-disclosure
+          data-crate={anchor}
           aria-expanded={open}
           aria-controls={open ? id : undefined}
           onClick={() => onToggle(!open)}
@@ -63,9 +77,9 @@ function Level({
 }
 
 const YOURS_TIP =
-  "Its owner is this pull request's owner or is listed under Controlled organisations in Settings.";
+  "Its owner is this pull request's owner or is listed under Controlled owners in GitHub sync.";
 
-function repositoryLabel(repo: DependencyRepository): ReactNode {
+function repositoryLabel(repo: DependencyRepository, visibleCrates: number): ReactNode {
   const name = repo.repo ? `${repo.repo.owner}/${repo.repo.name}` : (repo.location ?? "");
   const suffix = {
     this: " · this repository",
@@ -78,7 +92,7 @@ function repositoryLabel(repo: DependencyRepository): ReactNode {
   return (
     <>
       <span className="font-semibold [overflow-wrap:anywhere]">{name || "unknown source"}</span>
-      {suffix} · {count(repo.crates.length, "crate")}
+      {suffix} · {count(visibleCrates, "crate")}
     </>
   );
 }
@@ -117,7 +131,7 @@ function crateLabel(crate: DependencyCrate): ReactNode {
   const parts = [
     crate.changes &&
       `${count(crate.changes.changed_lines, "line")} changed in ${count(crate.changes.files, "file")}`,
-    crate.used_by.length > 0 && `used by ${crate.used_by.join(", ")}`,
+    unchangedCrate(crate) && "unchanged",
     crate.facts_about > 0 && `${count(crate.facts_about, "conversion")} added for its types`,
   ].filter(Boolean);
   return (
@@ -243,51 +257,111 @@ function CrateDetails({
   );
 }
 
+function UsedBy({
+  crate,
+  workspace,
+  links,
+}: {
+  crate: DependencyCrate;
+  workspace: ReadonlyMap<string, string>;
+  links: DepsLinks;
+}) {
+  if (crate.used_by.length === 0) return null;
+  return (
+    <span className="text-xs text-muted">
+      Used by{" "}
+      {crate.used_by.map((name, index) => {
+        const key = workspace.get(name);
+        const href = key && links.crate?.(key);
+        return (
+          <span key={name}>
+            {index > 0 && ", "}
+            {href ? (
+              <a href={href} onClick={(event) => inApp(event, () => links.onNavigate(href))}>
+                {name}
+              </a>
+            ) : (
+              name
+            )}
+          </span>
+        );
+      })}
+    </span>
+  );
+}
+
 /** Repositories → crates → per changed crate its facts and LLM notes; levels open on click. */
-export function DependencyTree({ view, open, onToggle, links }: DependencyTreeProps) {
+export function DependencyTree({
+  view,
+  open,
+  onToggle,
+  links,
+  showUnchanged,
+  targetCrate,
+}: DependencyTreeProps) {
   const id = useId();
+  const workspace = new Map(
+    view.repositories
+      .filter((repo) => repo.kind === "this")
+      .flatMap((repo, index) =>
+        repo.crates.map((crate) => [crate.name, crateKey(repositoryKey(repo, index), crate)] as const),
+      ),
+  );
+  const visible = view.repositories.flatMap((repo, index) => {
+    const key = repositoryKey(repo, index);
+    const crates = repo.crates.filter(
+      (crate) => showUnchanged || !unchangedCrate(crate) || crateKey(key, crate) === targetCrate,
+    );
+    return crates.length ? [{ key, repo, crates }] : [];
+  });
   return (
     <section aria-labelledby={id} className="grid gap-2">
       <h2 id={id} className="text-base font-semibold">
         Repositories
       </h2>
-      {view.repositories.length === 0 ? (
+      {view.repositories.every((repo) => repo.crates.length === 0) ? (
         <p className="m-0">
           No crate is listed: the map could not be read completely (see above); nothing here was checked.
         </p>
+      ) : visible.length === 0 ? (
+        <p className="m-0" role="status">
+          No dependency is changed and none has notes or facts.
+        </p>
       ) : (
         <ul aria-labelledby={id} className="m-0 grid list-none gap-2 p-0">
-          {view.repositories.map((repo, index) => {
-            const key = repositoryKey(repo, index);
-            return (
-              <Level
-                key={key}
-                label={repositoryLabel(repo)}
-                aside={<RepositoryAside repo={repo} />}
-                open={isOpen(open, key, repo.kind === "this")}
-                onToggle={(value) => onToggle(key, value)}
+          {visible.map(({ key, repo, crates }) => (
+            <Level
+              key={key}
+              label={repositoryLabel(repo, crates.length)}
+              aside={<RepositoryAside repo={repo} />}
+              open={
+                crates.some((crate) => crateKey(key, crate) === targetCrate) ||
+                isOpen(open, key, repo.kind === "this")
+              }
+              onToggle={(value) => onToggle(key, value)}
+            >
+              <ul
+                aria-label={`Crates of ${repo.repo ? `${repo.repo.owner}/${repo.repo.name}` : (repo.location ?? "")}`}
+                className="m-0 grid list-none gap-1.5 p-0"
               >
-                <ul
-                  aria-label={`Crates of ${repo.repo ? `${repo.repo.owner}/${repo.repo.name}` : (repo.location ?? "")}`}
-                  className="m-0 grid list-none gap-1.5 p-0"
-                >
-                  {repo.crates.map((crate) => {
-                    const ck = crateKey(key, crate);
-                    return (
-                      <Level
-                        key={ck}
-                        label={crateLabel(crate)}
-                        open={isOpen(open, ck, crate.changes !== null)}
-                        onToggle={(value) => onToggle(ck, value)}
-                      >
-                        <CrateDetails crate={crate} view={view} links={links} />
-                      </Level>
-                    );
-                  })}
-                </ul>
-              </Level>
-            );
-          })}
+                {crates.map((crate) => {
+                  const ck = crateKey(key, crate);
+                  return (
+                    <Level
+                      key={ck}
+                      anchor={ck}
+                      label={crateLabel(crate)}
+                      aside={<UsedBy crate={crate} workspace={workspace} links={links} />}
+                      open={isOpen(open, ck, crate.changes !== null || ck === targetCrate)}
+                      onToggle={(value) => onToggle(ck, value)}
+                    >
+                      <CrateDetails crate={crate} view={view} links={links} />
+                    </Level>
+                  );
+                })}
+              </ul>
+            </Level>
+          ))}
         </ul>
       )}
     </section>

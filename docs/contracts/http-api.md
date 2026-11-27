@@ -18,15 +18,20 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
 
 ## Listeners and authentication
 - Public listener `SR_LISTEN_ADDR` (behind the reverse proxy): `/healthz`, `/auth/*`, `/api/v1/*`, the web UI.
-- Runner listener `SR_RUNNER_LISTEN_ADDR`: `/runner/v1/*` only (`runner-protocol.md`). Neither router serves the
-  other's routes (server test).
+- Runner listener `SR_RUNNER_LISTEN_ADDR` serves `/runner/v1/*` ([runner protocol](runner-protocol.md)).
+- Webhook listener `SR_WEBHOOK_LISTEN_ADDR` defaults to `127.0.0.1:3002` and serves only `POST /webhooks/github`.
+  The public listener drains requests to `/webhooks/*` before returning 404, up to 4 MiB and 8 seconds.
+  A declared body over 4 MiB gets a 413 with `Connection: close` immediately. A drain that exceeds either limit
+  returns 404 with `Connection: close`. The dedicated route authenticates the delivery by GitHub signature
+  and App target, then checks whether a tenant tracks the repository. With no webhook secret configured, it
+  returns 503 `webhook_not_configured`. [ADR-026](../decisions/ADR-026-github-webhooks.md)
 - `session`: session cookie (`__Host-sr_session`, Secure, HttpOnly, SameSite=Lax, Path=/; `sr_session` without
   Secure only when `SR_PUBLIC_URL` is http and no trusted proxy forwards https), opaque token stored hashed. A
   session lasts 7 days, ends after 24 h unused, and only while its user stays on the tenant's allowlist (ADR-007
   addendum). `POST /auth/logout` ends this session (`everywhere`: all of the user's); the stored GitHub tokens end
   with the user's last session.
 - `session_csrf`: session plus header `X-CSRF-Token` equal to `MeResponse.csrf_token`. Every non-GET public
-  route is `session_csrf` (contract test). CSRF applies to cookie-authenticated routes only; runner routes use
+  route with a cookie is `session_csrf` (contract test). CSRF applies to cookie-authenticated routes only; runner routes use
   bearer tokens.
 - `GET /api/v1/me` is public: signed out it answers `200 {"user": null, "csrf_token": null}`, not 401.
 - `read` (v1.1, ADR-019): session, or a personal access token with scope `read` (`Authorization: Bearer
@@ -341,6 +346,7 @@ Body `ApiError {code, message}`; `message` is plain text for the user, never int
 | `github_refused` | 422 | GitHub refused a change made as the user (the Viewed mark, R13: refused before executing it, a rate limit, or `FORBIDDEN`); nothing was changed |
 | `not_rendered` | 422 | file classified as not rendered; diff of a binary file |
 | `internal` | 500 | anything else (no detail) |
+| `not_implemented` | 501 | operation unavailable because the server does not implement it |
 | `github_unavailable` | 502 | GitHub error or unexpected answer |
 | `unavailable` | 503 | the database was busy or locked past its wait; carries `Retry-After: 1`. The web client retries a GET, PUT or DELETE once after that delay, never a POST |
 | `insufficient_scope` | 403 | a valid access token without the route's scope |
@@ -484,12 +490,13 @@ Existing job-completion broadcasts refresh progress and the Tour's usage after A
 Settings exposes tenant totals in `llm_usage`:
 
 ```json
-{"llm_usage":{"today":{"input_tokens":1200000,"cached_input_tokens":900000,"output_tokens":45000,"reasoning_output_tokens":null,"jobs":7},"last_7_days":{"input_tokens":3400000,"cached_input_tokens":2900000,"output_tokens":120000,"reasoning_output_tokens":null,"jobs":23}}}
+{"llm_usage":{"today":{"input_tokens":1200000,"cached_input_tokens":900000,"output_tokens":45000,"reasoning_output_tokens":null,"jobs":7},"last_7_days":{"input_tokens":3400000,"cached_input_tokens":2900000,"output_tokens":120000,"reasoning_output_tokens":null,"jobs":23},"this_month":{"input_tokens":6000000,"cached_input_tokens":5000000,"output_tokens":200000,"reasoning_output_tokens":null,"jobs":41}}}
 ```
 
-Windows use job completion time, from the server's local midnight through now; `last_7_days` includes
-today and the previous six calendar days. Each window is null without reports. One aggregate SQL query
-reads both windows; no counters or tables are added. Old responses may omit `llm_usage` and `usage`.
+Windows use job completion time and the server's local calendar. `today` starts at local midnight,
+`last_7_days` includes today and the previous six calendar days, and `this_month` starts at midnight on
+the first day of the month. All three end at the current time. Without reports, `today` and `last_7_days`
+are null and `this_month` is omitted. One aggregate query reads all three windows.
 
 ### Large pull requests before starting
 
@@ -636,7 +643,7 @@ HTTP type (the drift test covers them). Fixtures: `fixtures/dashboard/` (README 
 |---|---|---|---|---|---|
 | R1 | GET | `/api/v1/dashboard` | read | `SummaryQuery` | `DashboardSummary` |
 | R1b | GET | `/api/v1/dashboard/items` | read | `ItemQuery` | `ItemPage`; weak `ETag`, `If-None-Match` → 304; 409 `cursor_expired` |
-| R2 | POST | `/api/v1/dashboard/refreshes` | session_csrf | – | 201 `RefreshStatus` (supersedes a ranking, Refresh states); 409 `refresh_running` while one scans; 429 `github_rate_limited` |
+| R2 | POST | `/api/v1/dashboard/refreshes` | session_csrf | optional `StartRefreshRequest` | 201 `RefreshStatus` (supersedes a ranking, Refresh states); 409 `refresh_running` while one scans; 429 `github_rate_limited` |
 | R2b | GET | `/api/v1/dashboard/refreshes/{id}` | read | – | `RefreshStatus` |
 | R3 | POST | `/api/v1/dashboard/refreshes/{id}/cancel` | session_csrf | – | `RefreshStatus`; 409 `conflict` once the refresh ended |
 | R4 | POST | `/api/v1/dashboard/refreshes/{id}/rank` | session_csrf | – | 202 `RefreshStatus` (Retry ranking of that snapshot); 409 `conflict` or `refresh_running` (Refresh states) |
@@ -682,11 +689,9 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
   or a release branch, every check passed except ignored ones, nothing left to answer, no ready label, not held by a
   current plug-in); they are ranked. `merge_state_pending` counts those of the user's pull requests Ready to merge
   could list whose merge state GitHub had not computed by the scan (the next refresh reads them again); null when the snapshot did not record merge states.
-  `facts_checked_at` (absent when none since the scan) is when the listed pull requests' facts were last checked
-  against GitHub after the scan, by the fact check while My work is open (plan §M, every 5 minutes; a re-read after
-  a plug-in signal reads only the signalled pull requests and does not count; a server restart forgets the time
-  until the next check). A summary read in a browser session (never with an access token) keeps My work open for
-  3 minutes.
+  Refreshes come from GitHub webhooks for tracked items, manual Refresh and the nightly scan. Reading the
+  summary does not schedule a refresh. A summary read in a browser session (not an access-token read) counts as
+  the user's presence for the plug-in poller (ADR-022 §3). See the v1.4 dashboard status additions below.
 - **Excluded items (R1, B4).** `SnapshotMeta.exclusions` tells what the rules left out of the ranking, computed
   with the ranking at read time from the stored scan facts (so every stored snapshot has it; the web shows "not
   recorded for this snapshot" only when the field is absent): `total` (= `excluded`) and the non-zero `counts` per
@@ -708,13 +713,12 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
   built by the server only: GitHub `https://github.com/<owner>/<name>/pull|issues/<number>`, a TODO
   `<SR_MEMCAN_UI_URL>/tasks/<uuid>`, null without `SR_MEMCAN_UI_URL`. `review` is read from `analyses` at request
   time (newest analysis of the PR, head moved, the reader's saved state), never stored in the snapshot. `comments`
-  (pull requests only) is read from the review-loop tables at request time, in one statement per page:
-  `CommentTally { total, needs_you }` counts the comment items of the tenant's last successful read of the PR
-  (PR-level questions and items the read no longer produces left out) and those waiting for a decision (Comments'
-  Needs you: an open state, not handed to a standing "merge now" decision's follow-up PR); absent before the first
-  successful read, when the web offers Watch (RW1) instead, except on a private PR (RW1 reads public repositories
-  only). `watched` (pull requests only, omitted when false) says the user watches the PR (RW1), read in the same
-  statement; with `comments` absent the row reads "Watching, comments not read yet". Like `review` both are part of
+  (pull requests only) is read in a batch from the review-loop tables. `CommentTally.total` counts the current
+  comments from the tenant's last successful read, excluding PR-level questions and items the read no longer
+  produces. `CommentTally.needs_you` counts queue items whose status is Needs you, including qualifying
+  PR-level questions. Status comments and unassessed unlinked comments are excluded from Needs you. The tally
+  is absent before the first successful read or when a PR's saved review data cannot be read. `watched`
+  (pull requests only, omitted when false) reports the reader's active watch (RW1). Like `review` both are part of
   the page's `ETag`. `tags` and
   `facts` come from scan facts only; `llm` text is shown with the "LLM" tag.
 - **Plug-in notes (ADR-022).** `WorkItem.plugin_notes` and the PR page's `plugin_notes` carry external
@@ -738,7 +742,8 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
 - **Refreshes.** One per user is `scanning` or `ranking` at a time. R2 and a scheduled start supersede a refresh in
   `ranking` and are refused only by one in `scanning` (R2: 409 `refresh_running`; schedule: counts as done), so a
   `paused` or `waiting_for_analysis` ranking never blocks a new scan. `trigger` is `manual` (R2), `scheduled`
-  (ADR-020) or `automatic` (started while the user had My work open, plan §M; never while a refresh is live). Transitions: "Refresh states" below. `failure.retry_at` is GitHub's
+  (ADR-020). Historical v1.3 refreshes may have `automatic`, the trigger used while My work was open.
+  Transitions: "Refresh states" below. `failure.retry_at` is GitHub's
   rate-limit reset. `ranking` is null until the snapshot is stored; its `state` follows plan §B.3
   (`waiting_for_analysis` while a review analysis holds the LLM credential). `log` holds at most 200 plain lines
   without tokens or query strings. The newest 10 refreshes per user are kept, plus the one holding the current
@@ -849,6 +854,8 @@ Fixtures: `fixtures/review-loop/` (spike S13-1).
 | RC4 | GET | `…/comments/items` | read | `ItemsQuery` | `CommentItem[]`; `first_seen_head` is the head of diffpilot's first read, `written` (`Written { round?, commit?, at }`) where GitHub says the comment was written, from the latest read: for a comment of a round's own review that round with its head and end; for any other its review's commit (absent for a PR comment) and the review's submission or the comment's creation (absent when that read gives no time, or for a read stored before it was kept) |
 | RC5 | GET | `…/comments/items/{item}/context` | read | `ContextQuery` | `CodeContext` |
 | RC6 | POST | `…/comments/items/{item}/assess` | session_csrf | – | 202; 409 `conflict` while a pass is live; 429 `AssessmentAdmissionFailure::AssessmentDailyLimit { resets_at }` at 80 admitted UTC daily passes; 409 `credential_missing` without a usable linked plan |
+| C20 | POST | `…/comments/assess` | session_csrf | – | 202; requests a pass for the PR's comments under the same admission rules as RC6 |
+| C11 | POST | `…/comments/visit` | session_csrf | – | 204; advances the visit cursor once on Comments entry |
 | CA1 | GET | `/api/v1/settings/comment-assessment` | read | – | `AssessmentSettings`: primary/A-B configuration and remaining/reset quota |
 | CA2 | PUT | `/api/v1/settings/comment-assessment` | session_csrf | `AssessmentSettingsUpdate` | `AssessmentSettings`; stale revision → 409; never schedules assessment; at most 100 distinct `owner/repo#number` selections |
 | CA3 | GET | `…/comments/assessment-comparison` | read | optional `cutoff` (UTC timestamp) | Latest `AssessmentComparison` for this PR and payer, including exact-count summary, nullable verdict/proposal, owner revisions and method usage; 404 without a payer-owned pass; no GitHub fetch |
@@ -857,15 +864,16 @@ Fixtures: `fixtures/review-loop/` (spike S13-1).
 | RC9 | POST | `…/comments/decision-batches` | session_csrf | `DecisionBatchRequest` | 201 `Decision[]`; 400 `invalid_request` for a gate row under `bulk`/`group`, an item asked again or no longer read (`gone_at`) under `bulk`, or, under `table`, a batch that leaves out a waiting gate item; 409 `item_changed` naming the changed items; 409 `conflict` naming the rows whose `plan_digest` no longer matches the plan |
 | RC10 | GET | `…/comments/log` | read | – | `CommentLog`; subscribers of the tenant's live tokens; a push target of another user's token shows only its kind and delivery state (`url`, `topic`, `secret_last4`, `last_error` null) |
 | RC11 | GET | `/api/v1/comments/carry-overs` | read | `CarryOverQuery` | `CarryOverPage` |
-| RC12 | POST | `…/comments/items/{item}/undo` | session_csrf | `ItemActionRequest` | `CommentItem` (asked again; the undone decision keeps `undone_at`); 409 `conflict` without a standing decision or once an effect is claimed; 409 `item_changed` |
+| RC12 | POST | `…/comments/items/{item}/undo` | session_csrf | `ItemActionRequest` | `CommentItem`. An active mark ends first, along with its follow-marks. Otherwise undo the standing decision and record `undone_at`. 409 `conflict` without an active mark or a decision eligible for undo. 409 `item_changed`. |
 | RC13 | POST | `…/comments/items/{item}/reopen` | session_csrf | `ItemActionRequest` | `CommentItem` (state `reopened`; effects not yet claimed are cancelled); 409 `conflict` without a standing decision; 409 `item_changed` |
 | RC14 | POST | `…/comments/items/{item}/skip` | session_csrf | `ItemActionRequest` | 204; the item comes last in the caller's queue while it stays at that revision |
 | RC15 | POST | `…/comments/items/{item}/gates` | session_csrf | `GateMarkRequest` | `CommentItem`; marks or clears the owner's mark of one gate (assessment gates stay); 409 `item_changed` |
 | RC16 | POST | `…/comments/effects-preview` | session_csrf | `EffectsPreviewRequest` | `EffectsPreview[]` (the effects the rows would get, with a `plan_digest` for PR-level rows; nothing stored); 400 `invalid_request` as RC8/RC9 |
 | RC17 | GET | `…/comments/decide-rest` | read | – | `DecideRest` (the confirmation list of "Decide the rest per recommendation"; gate items and items without a complete recommendation are left out with their reason) |
+| C19 | GET | `/api/v1/review-loop/not-a-review-point` | read | `MarkedItemsQuery` | `MarkedItems` lists active marks for the caller’s tenant, newest first, up to 100 per page. Send `next_cursor` as `cursor` for the next page. 400 `invalid_request` for an invalid cursor. |
 | RW1 | PUT / DELETE | `…/watch` | session_csrf | – | 204; 409 `watch_limit_reached` |
 | RW2 | GET | `/api/v1/watches` | read | – | `WatchList` (with the reader's assessment passes of the last 24 h and the daily limit) |
-| RW3 | GET | `/api/v1/events` | read | – | SSE `UserStreamEvent`: `user_event`, `heartbeat` (`sse-events.md`) |
+| RW3 | GET | `/api/v1/events` | read | – | SSE `UserStreamEvent`: `user_event`, `heartbeat`, `llm_activity` (`sse-events.md`) |
 | RN1 | GET | `/api/v1/settings/notifications` | session | – | `NotificationSettings` (secrets as `secret_last4` only) |
 | RN2 | PUT / DELETE | `/api/v1/settings/notifications/channels/{kind}` | session_csrf | `PutChannelRequest` / – | `NotificationChannel` / 204; 422 `scheme_not_allowed`; 400 `invalid_request` for a URL with credentials, a loopback, link-local or reserved address or a denied private address, a bad ntfy topic or secret; 422 `secret_required` when a kept secret would follow a changed URL scheme, host or port; 409 `conflict` when the stored target changed while the request was checked; `secret` is a `SecretChange` (absent or `keep`, `replace`, `remove`) |
 | RN3 | POST | `…/channels/{kind}/test` | session_csrf | – | `ChannelTestResult` (one attempt); 429 `rate_limited` with `Retry-After` when 30 messages went to the channel within the hour (nothing sent, health unchanged) |
@@ -877,6 +885,12 @@ Fixtures: `fixtures/review-loop/` (spike S13-1).
 | RF5 | PUT / DELETE | `/api/v1/decision-feed/push-target` | token: review_loop_execute | `PutPushTargetRequest` / – | `PushTarget` / 204; the calling token's own target only; as RN2 for the URL, and 422 `secret_required` when a kept secret would follow a changed kind or URL origin, 409 `conflict` when the target changed meanwhile |
 
 ### Rules
+- **Assessment:** RC1, RC2, RC3 and RC4 can refresh the stored GitHub read. They never start LLM work. Browser
+  clients call `startCommentAssessment` (C20) on entry to Comments and after a manual GitHub refresh that found new
+  items. Items in the live pass input show `running`; other eligible items waiting for a subsequent pass show
+  `queued`. An item title uses the first sentence of the host report's description, or the validated recommendation
+  reason from PromptV4 (its necessity reason when the recommendation has no public text). It uses at most
+  90 characters including an ellipsis when shortened.
 - **Who decides (T22).** Decisions, batches, re-reads, re-assessments, watches and channel settings need a session
   with CSRF; a token gets 403 `token_not_accepted`. `RouteAuth::TokenOnly(TokenScope::ReviewLoopExecute)` (named
   `token_review_loop_execute` in `routes.ts`) marks RF3–RF5: a personal access token with the scope
@@ -886,6 +900,10 @@ Fixtures: `fixtures/review-loop/` (spike S13-1).
 - **Revisions.** Every `CommentItem` carries `revision`; a decision names `item_revision` and gets 409
   `item_changed` when the item changed meanwhile (a read, an assessment, another user's decision). Decisions are
   append-only: a new decision supersedes the current one and cancels its effects not yet claimed.
+- **Not a review point (C19).** RC8 and RC9 accept `not_a_review_point` for comment items awaiting a decision.
+  RC9 accepts it in group and table requests. Mark a gate item individually and include a reason. The mark is
+  internal and has no effects. RC4 exposes the active mark on `CommentItem.not_a_review_point`. RC10 lists the
+  mark and any undo in `CommentLog.marks`.
 - **D8** is `reject` with `override: {type: "blocker_gate", gate}`; gate ids are `G-FUNDS`, `G-SECRET`,
   `G-CRYPTO`, `G-DATA`. The owner's `comment` is stored and sent to the executor, never posted; `reply_text` is
   what gets posted.
@@ -953,3 +971,68 @@ missing usable credentials. W5/W6 implement route access checks and orchestratio
 alone never schedules work. Conditional writes compare the opaque config revision inside `write_tx`; a stale
 request returns 409 without replacing another tab's selections. Clients refresh and require an explicit retry.
 Cards show only the frozen primary; secondary results are comparison-only.
+
+
+## v1.4 dashboard, Comments and activity
+
+| Method | Path | Auth | Request | Response |
+|---|---|---|---|---|
+| POST | `/webhooks/github` | github_signature | GitHub delivery | 202 when accepted, including deliveries dropped for untracked repositories, and 200 for ping or a duplicate |
+| POST | `/api/v1/dashboard/items/{key}/rejudge` | session_csrf | – | 202 for an accepted click or an item already judging, 404 outside the current snapshot, 409 `conflict` for an item that is not outdated or when the daily cap is reached |
+| GET | `/api/v1/settings/repository-installations` | read | – | `RepositoryInstallations` |
+| GET | `/api/v1/settings/github-webhook` | read | – | `GithubWebhook` |
+| GET | `/api/v1/llm/activity` | read | – | `LlmActivity` |
+| GET | `/api/v1/settings/ranking-usage` | read | – | `RankingUsage` |
+| POST | `/api/v1/settings/ranking-usage/reset` | session_csrf | – | `RankingUsage` |
+| GET | `/api/v1/me/prs` | read | `PrHistoryQuery` | `PrHistory` |
+
+- `WorkItem.judgement` describes current, outdated, queued, judging, not judged and capped items. An outdated
+  judgement can name changed facts or a changed prompt. `DashboardSummary.status_counts` counts outdated
+  (including judging), never judged (including queued and capped), not live and excluded items. The legacy
+  `ItemText.inherited` and `older_prompt_judgements` fields remain readable. The optional R2 request defaults
+  `rejudge_outdated` to false. With it enabled, the scan reserves room for pending single-item requests and
+  never-judged items under both caps, then requests replacements for outdated items in the remaining room.
+  C2 requests one item. When idle it restarts ranking on the current snapshot for that request under the daily
+  cap. An active scan can take the request within both scan ranking caps.
+- `WorkItem.live` and the summary's repository counts and `last_event_at` describe live webhook coverage.
+  The counts deduplicate repositories of visible ranked items. `SnapshotMeta` omits `facts_checked_at`.
+  Repository installations come from the database and cover repositories
+  tracked by the reader's tenant through owners to list, repository rules, watches, analyses or current snapshots.
+  Webhook settings show secret configuration, the optional public URL, the last verified delivery and the
+  installation-wide count of verified deliveries dropped for untracked repositories since the last restart, at most
+  14 days. They also show the number of TCP connections refused at the webhook listener's capacity limit since the
+  last restart.
+- Each fact tag includes a stable filter key and label. Work items may include stack position, size and dependent
+  PR numbers. `WorkItem.release_base` is the PR's base branch when it matches the repository's release patterns.
+  These are the configured patterns when present and the built-in patterns otherwise, including `main` and `master`.
+  `Settings.llm_usage.this_month` uses the server-local month. The ranking usage reset starts counting from the
+  reset time. `RankingUsage.resets_at` gives the next midnight in the reader's configured zone.
+  `RefreshStatus.left_provisional_by` identifies the cap as `per_refresh` or `daily` when one was reached.
+- The activity response shows the reader's own jobs with optional subject, times and typed wait reason, plus
+  other running or queued jobs in the same tenant with kind and a response-local opaque id. The pause and last
+  call are the reader's own.
+- `AssessmentState::Queued` waits for the next pass. `Running` identifies items in the live pass. Progress has
+  `in_pass`, `waiting` and optional `since`. Comments can carry a reader's watch and items can carry a short
+  LLM title, status-comment flag, imported-decision evidence, an import proposal or a primary-following flag.
+  Imported evidence and proposals use `ReviewDecisionKind`.
+  `Decision` carries imported evidence or a primary item number with its corresponding `via`. A proposal still
+  needs the owner to decide it. See [the Phase B rules](../v1.4-phase-b-plan.md#6-needs-you-c10-and-duplicates-c15).
+- `CommentCounts` always includes `not_a_review_point`, `needs_you` and `needs_you_gates`.
+  `needs_you` counts queue items whose status is Needs you. `needs_you_gates` counts the gated subset. Running
+  assessments and unassessed unlinked comments are excluded, with the exceptions in the [N1 rules](../v1.4-phase-b-plan.md#6-needs-you-c10-and-duplicates-c15).
+  The PR badge and dashboard use this calculation. An open non-bot review item in the decision queue vetoes
+  Ready to merge while awaiting assessment or included in a running pass. Status comments are listed and excluded
+  from the queue, including `undecided`, and from `assessment.total`. Assess again on a status comment returns
+  409 `conflict`. Ask can still use it as context. The browser's Comments overview and `/comments/items?imported_unseen=true` use
+  the entry preceding the current visit as their baseline. The notice survives refetches and decisions during
+  the visit. The items filter lists standing imports only. My work reports `WorkItem.imported_unseen` per PR
+  for standing imports since the reader's latest Comments entry.
+- The Tour's optional `StepFacts.leading_context` is the deterministic line range of doc comments and attributes
+  immediately above the step's first item. The generic technology plugin leaves it absent.
+- PR history merges the reader's requested analyses, watches including ended ones, and PR page visits. It returns
+  one item per PR in the reader's tenant, newest activity first. Activity is the latest analysis request, watch start
+  or end, or page visit. `analysis.requested_at` is the latest analysis request time. Pass `limit` (1–100, default 50) and the previous page's opaque `next_cursor`. An invalid
+  cursor returns 400 `invalid_request`. A null `next_cursor` ends the list.
+- A successful PR page read in a browser session attempts to update the reader's `last_opened_at`. The page
+  remains available if the update fails. The PR page, Comments overview, item list and GitHub refresh handlers
+  read without scheduling assessment. C20 requests a pass with a browser session and CSRF.

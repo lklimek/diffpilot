@@ -15,6 +15,14 @@ use tokio::io::AsyncWriteExt;
 #[derive(Serialize, Deserialize)]
 pub(super) struct Frozen {
     pub data: PrData,
+    #[serde(default)]
+    pub authorities: super::imports::Authorities,
+    #[serde(default)]
+    pub own_reply_urls: std::collections::BTreeSet<String>,
+    #[serde(default)]
+    pub own_reply_texts: std::collections::BTreeSet<String>,
+    #[serde(default)]
+    pub written: std::collections::BTreeMap<String, contracts::api::review_loop::Written>,
     pub items: Vec<ItemRecord>,
     pub sent: Vec<SentItem>,
     pub native: VerifyCommentsInput,
@@ -22,6 +30,8 @@ pub(super) struct Frozen {
     pub standing: std::collections::BTreeMap<String, FrozenDecision>,
     #[serde(default)]
     pub fingerprints: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub purpose_fingerprint: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -63,6 +73,16 @@ impl Frozen {
         Ok(serde_json::from_slice(&bytes)?)
     }
 
+    pub fn own_reply(&self, url: &str) -> bool {
+        let confirmed = crate::github::threads::github_web_url(url)
+            .is_some_and(|url| self.own_reply_urls.contains(&url));
+        confirmed
+            || host::all_comments(&self.data).any(|comment| {
+                host::url(comment) == url
+                    && self.own_reply_texts.contains(host::body(comment).trim())
+            })
+    }
+
     pub async fn ids(
         &mut self,
         state: &AppState,
@@ -78,14 +98,45 @@ impl Frozen {
             .unwrap_or(0)
             .saturating_add(1);
         let decisions = state.db.review_loop().pr_decisions(pr).await?;
+        for row in &decisions {
+            for effect in &row.decision.effects {
+                use contracts::api::review_loop::{EffectKind, ReportOutcome};
+                if matches!(effect.kind, EffectKind::Reply | EffectKind::PrComment) {
+                    self.own_reply_texts
+                        .extend(effect.params.text.iter().cloned());
+                    self.own_reply_urls.extend(
+                        effect
+                            .reports
+                            .iter()
+                            .filter(|report| report.outcome == ReportOutcome::Done)
+                            .filter_map(|report| report.reference.as_deref())
+                            .filter_map(crate::github::threads::github_web_url),
+                    );
+                }
+            }
+        }
         let standing = crate::review_loop::standing(&decisions);
         let mut code = super::CodeReader::new(state, summary);
-        let purpose = super::purpose_hash(&self.native.title, self.native.description.as_deref());
+        let description = snapshot
+            .and_then(|s| s.description.as_deref())
+            .and_then(super::clean::description);
+        let purpose = super::purpose_hash(
+            &self.native.title,
+            description
+                .as_deref()
+                .or(self.native.description.as_deref()),
+        );
         for item in &self.items {
-            if item.kind == CommentItemKind::PrQuestion || item.gone_at.is_some() {
+            if item.status_comment
+                || item.kind == CommentItemKind::PrQuestion
+                || item.gone_at.is_some()
+            {
                 continue;
             }
-            let decision = standing.get(&item.id.to_string()).and_then(|d| {
+            let marked = item.active_mark.is_some();
+            let item_id = item.id.to_string();
+            let stored = standing.get(&item_id).filter(|_| !marked);
+            let decision = stored.and_then(|d| {
                 let kind =
                     serde_json::from_value(serde_json::to_value(d.decision.kind).ok()?).ok()?;
                 let (target_pr, target_url, title) = match &d.decision.target {
@@ -117,26 +168,27 @@ impl Frozen {
                     title,
                 })
             });
-            let current = super::fingerprint(
-                item,
-                &summary.head_sha,
-                code.lines(item).await.as_deref(),
-                &purpose,
-                snapshot.and_then(|s| s.item_context.get(&item.stable_key)),
-            );
-            self.fingerprints
-                .insert(item.id.to_string(), current.clone());
-            if let Some(stored) = standing.get(&item.id.to_string()) {
-                let previous = state.db.review_loop().latest_assessment(item.id).await?;
-                self.standing.insert(
-                    item.id.to_string(),
-                    FrozenDecision {
-                        id: stored.decision.id,
-                        kind: stored.decision.kind,
-                        target: stored.decision.target.clone(),
-                        changed: previous.is_none_or(|p| p.fingerprint != current),
-                    },
+            if !marked {
+                let current = super::fingerprint(
+                    item,
+                    &summary.head_sha,
+                    code.lines(item).await.as_deref(),
+                    &purpose,
+                    snapshot.and_then(|s| s.item_context.get(&item.stable_key)),
                 );
+                self.fingerprints.insert(item_id.clone(), current.clone());
+                if let Some(stored) = stored {
+                    let previous = state.db.review_loop().latest_assessment(item.id).await?;
+                    self.standing.insert(
+                        item_id,
+                        FrozenDecision {
+                            id: stored.decision.id,
+                            kind: stored.decision.kind,
+                            target: stored.decision.target.clone(),
+                            changed: previous.is_none_or(|p| p.fingerprint != current),
+                        },
+                    );
+                }
             }
             let key = if item.kind == CommentItemKind::Thread {
                 host::threads(&self.data)
@@ -165,11 +217,13 @@ impl Frozen {
                     }
                     _ => contracts::agent::comment_report::SourceKind::PrComment,
                 }),
-                quote: (super::assessable(item) || standing.contains_key(&item.id.to_string()))
+                // Shared sources can be sent for a sibling. Keep the marked point's identity for reuse.
+                quote: (marked || super::assessable(item) || stored.is_some())
                     .then(|| item.quote.clone().unwrap_or_else(|| item.body.clone())),
                 decision,
             });
         }
+        self.purpose_fingerprint = Some(purpose);
         Ok(())
     }
 }

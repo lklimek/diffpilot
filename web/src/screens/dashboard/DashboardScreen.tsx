@@ -1,15 +1,16 @@
+import { useQuery } from "@tanstack/react-query";
+import { rankingUsageQuery } from "../../api/queries";
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router";
+import { useLocation, useNavigate, useSearchParams } from "react-router";
 import { useDashboardTabStatus } from "../../app/tabStatus";
-import { ApiError } from "../../api/client";
+import { ApiError, errorText } from "../../api/client";
 import { Banner } from "../../components/banner/Banner";
 import { RefreshControl } from "../../components/dashboard/refresh-control/RefreshControl";
 import { ScanProgress } from "../../components/dashboard/scan-progress/ScanProgress";
-import { RankingBanner } from "../../components/dashboard/ranking-banner/RankingBanner";
 import { RefreshError } from "../../components/dashboard/refresh-error/RefreshError";
 import { Headline, type ChartUnit } from "../../components/dashboard/headline/Headline";
 import { WorkList } from "../../components/dashboard/work-list/WorkList";
-import { ExcludedItems } from "../../components/dashboard/excluded-items/ExcludedItems";
+import { decodeFilters, encodeFilters, type Filter } from "../../components/dashboard/filter-chips/filters";
 import { Mentions } from "../../components/dashboard/mentions/Mentions";
 import { EmptyWork } from "../../components/dashboard/work-list/EmptyWork";
 import { SidePanel } from "../../components/dashboard/side-panel/SidePanel";
@@ -28,19 +29,21 @@ import {
   barPullRequests,
   chartPoints,
   dailySeries,
-  fullDayLabel,
   headline,
   throughputWeeks,
   weeklySeries,
-  yesterday,
 } from "./history";
-import { REVIEW_START_PATH, SETTINGS_PATH } from "../shell/paths";
+import { GITHUB_SYNC_SETTINGS_PATH, LLM_USAGE_PATH, PRS_PATH } from "../shell/paths";
 import { ShellActions, useShellSlots } from "../shell/ShellRoute";
-import { commentsHref, railText, reviewHref, watchErrorText } from "./state";
+import {
+  commentsHref,
+  railText,
+  rankingFeedback,
+  refreshHoldingSnapshot,
+  reviewHref,
+  watchErrorText,
+} from "./state";
 import { useDashboardPage } from "./useDashboardPage";
-
-const errorText = (error: unknown) =>
-  error instanceof ApiError ? error.message : "Something went wrong. Try again.";
 
 /** Why a snooze failed: the item left the list (404), the server's reason, or a retry hint. */
 const snoozeErrorText = (error: unknown) =>
@@ -52,6 +55,15 @@ const snoozeErrorText = (error: unknown) =>
 export function DashboardScreen() {
   const page = useDashboardPage();
   const navigate = useNavigate();
+  const { pathname, search, hash } = useLocation();
+  const [params, setParams] = useSearchParams();
+  const filters = decodeFilters(params.get("f"));
+  const setFilters = (filters: Filter[]) => {
+    const next = new URLSearchParams(params);
+    if (filters.length) next.set("f", encodeFilters(filters));
+    else next.delete("f");
+    void setParams(next, { preventScrollReset: true });
+  };
   const go = (href: string) => void navigate(href);
   const [helpOpen, setHelpOpen] = useState(false);
   const [unit, setUnit] = useState<ChartUnit>("day");
@@ -71,18 +83,17 @@ export function DashboardScreen() {
     return () => setHelp(null);
   }, [signedIn, setHelp]);
 
-  // Charts are bucketed by the browser's local day and week (plan §C.1).
+  const zone = summary?.schedule.time_zone;
   const charts = useMemo(() => {
     if (!snapshot) return null;
     const events = snapshot.history;
     return {
-      figures: headline(events, now),
+      figures: headline(events, now, zone),
       days: chartPoints(dailySeries(events, now), "day"),
       weeks: chartPoints(weeklySeries(events, now), "week"),
       throughput: throughputWeeks(events, now),
-      yesterday: yesterday(events, now),
     };
-  }, [snapshot, now]);
+  }, [snapshot, now, zone]);
 
   const points = charts && (unit === "day" ? charts.days : charts.weeks);
   const selectedIndex = bar?.unit === unit ? (points?.findIndex((p) => p.day === bar.day) ?? -1) : -1;
@@ -100,18 +111,22 @@ export function DashboardScreen() {
   }, [snapshot, bar, page.allItems]);
 
   const snapshotAt = snapshot?.scanned_at ?? null;
-  const excluded = snapshot && (
-    <ExcludedItems
-      exclusions={snapshot.exclusions}
-      onNavigate={go}
-      onWake={(key) => page.wake.mutate({ key })}
-      wakingKeys={page.wake.pendingKeys}
-    />
-  );
   const stale = view?.stale && snapshotAt ? clockText(snapshotAt, now) : null;
-  const actionErrors = [page.refresh.error, page.cancel.error, page.rankAgain.error].filter(
-    (e): e is string => e !== null,
+  const actionErrors = [page.refresh.error, page.cancel.error, page.retryRanking.error].filter(
+    (error): error is string => error !== null,
   );
+  const holder = summary && refreshHoldingSnapshot(summary, page.snapshotRefresh);
+  const rankingUsage = useQuery({
+    ...rankingUsageQuery,
+    enabled: holder?.left_provisional_by === "daily",
+    refetchInterval: 60_000,
+  });
+  const ranking = summary && rankingFeedback(summary, page.snapshotRefresh, rankingUsage.data?.resets_at);
+  const allItems = page.allItems;
+  const retryId = ranking?.retryId;
+  const retryRanking = retryId ? () => page.retryRanking.run(retryId) : undefined;
+  const scan = view?.scanning;
+  const cancelScan = scan ? () => page.cancel.run(scan.id) : undefined;
 
   const main = view && summary && (
     <div className="grid content-start gap-3.5">
@@ -124,30 +139,12 @@ export function DashboardScreen() {
       {actionErrors.map((text) => (
         <Banner key={text} tone="error" title={text} />
       ))}
-      {view.scanning && (
-        <ScanProgress
-          status={view.scanning}
-          snapshotAt={snapshotAt}
-          onCancel={() => page.cancel.run(view.scanning!.id)}
-          cancelling={page.cancel.pending}
-          now={now}
-        />
-      )}
       {view.failure && (
         <RefreshError
           status={view.failure}
           snapshotAt={snapshotAt}
           onRetry={page.refresh.start}
           retrying={page.refresh.starting}
-          now={now}
-        />
-      )}
-      {view.ranking && (
-        <RankingBanner
-          ranking={view.ranking.status}
-          scannedAt={view.ranking.scannedAt}
-          onRetry={() => page.rankAgain.run(view.ranking!.refreshId)}
-          retrying={page.rankAgain.pending}
           now={now}
         />
       )}
@@ -159,12 +156,14 @@ export function DashboardScreen() {
       {!snapshot && !view.scanning && (
         <Banner tone="info" title="Nothing scanned yet.">
           Refresh reads the pull requests, issues and TODOs that need you from GitHub and MemCan (about 1–2
-          minutes), then the LLM ranks them.
+          minutes), then the LLM judges new items.
         </Banner>
       )}
       {snapshot && charts && (
         <Headline
           figures={charts.figures}
+          zoneLabel={charts.figures.zoneLabel}
+          unsupportedZone={charts.figures.unsupportedZone}
           days={charts.days}
           weeks={charts.weeks}
           unit={unit}
@@ -206,9 +205,9 @@ export function DashboardScreen() {
           </Tooltip>
         </StatusMessage>
       )}
-      {page.watch.isError && (
+      {page.watch.failure && (
         <StatusMessage kind="error">
-          {watchErrorText(page.watch.error)}{" "}
+          {watchErrorText(page.watch.failure.error, page.watch.failure.watching)}{" "}
           <Tooltip tip="Dismiss this error message">
             <button type="button" className="underline" onClick={page.watch.dismissError}>
               Dismiss
@@ -226,15 +225,22 @@ export function DashboardScreen() {
           </Tooltip>
         </StatusMessage>
       )}
-      {snapshot && view.empty && (
-        <EmptyWork
-          checkedAt={snapshot.scanned_at}
-          checked={snapshot.checked}
-          excluded={excluded}
-          awaiting={snapshot.awaiting.length}
-          hasMentions={(summary.mentions ?? []).length > 0}
-          reviewStartHref={REVIEW_START_PATH}
-          onNavigate={go}
+      {page.rejudge.error && (
+        <StatusMessage kind="error">
+          Could not re-judge this item. {errorText(page.rejudge.error)}{" "}
+          <Tooltip tip="Dismiss this error message">
+            <button type="button" className="min-h-6 underline" onClick={page.rejudge.dismissError}>
+              Dismiss
+            </button>
+          </Tooltip>
+        </StatusMessage>
+      )}
+      {scan && cancelScan && (
+        <ScanProgress
+          status={scan}
+          snapshotAt={snapshotAt}
+          onCancel={cancelScan}
+          cancelling={page.cancel.pending}
           now={now}
         />
       )}
@@ -244,28 +250,50 @@ export function DashboardScreen() {
       {snapshot && !view.empty && page.items.isError && (
         <StatusMessage kind="error">{errorText(page.items.error)}</StatusMessage>
       )}
-      {snapshot && !view.empty && page.allItems && (
+      {snapshot && (view.empty || allItems) && (
         <WorkList
-          items={page.allItems}
+          guideOrigin={pathname + search + hash}
+          items={view.empty ? [] : (allItems ?? [])}
           kinds={page.filter}
           onKindsChange={page.setFilter}
-          sizes={page.sizes}
-          onSizesChange={page.setSizes}
+          filters={filters}
+          onFiltersChange={setFilters}
+          statusCounts={summary.status_counts}
+          statusDescriptions={ranking?.statusDescriptions}
+          exclusions={snapshot.exclusions}
+          onWake={(key) => page.wake.mutate({ key })}
+          wakingKeys={page.wake.pendingKeys}
+          onRejudge={(key) => page.rejudge.mutate({ key })}
+          rejudgingKeys={page.rejudge.pendingKeys}
+          rankingNotice={page.notice}
+          usageHref={LLM_USAGE_PATH}
+          snapshotAt={snapshotAt}
           reviewHref={reviewHref}
           commentsHref={commentsHref}
-          onWatch={(item) =>
+          onWatch={(item, watching) =>
             item.repo &&
             item.number !== null &&
-            page.watch.mutate({ key: item.key, pr: { repo: item.repo, number: item.number } })
+            page.watch.mutate({ key: item.key, watching, pr: { repo: item.repo, number: item.number } })
           }
           watchingKeys={page.watch.pendingKeys}
-          watchedKeys={page.watch.watchedKeys}
           onNavigate={go}
           onHelp={() => setHelpOpen(true)}
           keysEnabled={!helpOpen}
           stale={stale ? { at: stale, note: "It is replaced when a scan finishes." } : null}
           todos={snapshot.todos}
-          notice={excluded}
+          empty={
+            view.empty && (
+              <EmptyWork
+                checkedAt={snapshot.scanned_at}
+                checked={snapshot.checked}
+                awaiting={snapshot.awaiting.length}
+                hasMentions={(summary.mentions ?? []).length > 0}
+                reviewStartHref={PRS_PATH}
+                onNavigate={go}
+                now={now}
+              />
+            )
+          }
           onSnooze={(item, days) => page.snooze.mutate({ key: item.key, days })}
           snoozingKeys={page.snooze.pendingKeys}
           now={now}
@@ -282,6 +310,15 @@ export function DashboardScreen() {
             latest={summary.latest_refresh}
             snapshot={snapshot}
             schedule={summary.schedule}
+            snapshotRefresh={page.snapshotRefresh}
+            live={summary}
+            outdated={summary.status_counts.outdated}
+            onRejudgeOutdated={page.refresh.rejudgeOutdated}
+            onCancel={cancelScan}
+            cancelling={page.cancel.pending}
+            rankingNotices={ranking?.notices}
+            onRetryRanking={retryRanking}
+            retryingRanking={page.retryRanking.pending}
             onRefresh={page.refresh.start}
             starting={page.refresh.starting}
             now={now}
@@ -309,9 +346,10 @@ export function DashboardScreen() {
               plugins={summary?.plugins}
             />
             <Yesterday
-              label={fullDayLabel(charts.yesterday.day)}
-              prs={charts.yesterday.prs}
-              reviews={charts.yesterday.reviews}
+              label={charts.figures.yesterday.label}
+              zoneLabel={charts.figures.zoneLabel}
+              prs={charts.figures.yesterdayDetails.prs}
+              reviews={charts.figures.yesterdayDetails.reviews}
             />
             <ThroughputMinis weeks={charts.throughput} />
             <QueueAge
@@ -326,7 +364,7 @@ export function DashboardScreen() {
               notes={snapshot.notes}
               unreachable={snapshot.unreachable}
               todos={snapshot.todos}
-              settingsHref={SETTINGS_PATH}
+              settingsHref={GITHUB_SYNC_SETTINGS_PATH}
               onNavigate={go}
               now={now}
             />
@@ -334,16 +372,6 @@ export function DashboardScreen() {
         ) : (
           main
         ))}
-      <p
-        role="status"
-        className={
-          page.notice
-            ? "fixed right-4 bottom-4 z-40 rounded-md border border-border bg-surface px-3 py-2 shadow"
-            : "sr-only"
-        }
-      >
-        {page.notice}
-      </p>
       <KeyboardHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
     </>
   );

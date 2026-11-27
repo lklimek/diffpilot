@@ -1,0 +1,259 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PrHistory",
+  "description": "Page of pull requests the reader analysed, watched, or opened.",
+  "type": "object",
+  "properties": {
+    "prs": {
+      "description": "One entry per pull request, newest activity first.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/PrHistoryItem"
+      }
+    },
+    "next_cursor": {
+      "description": "Cursor of the next page, or null at the end.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "prs"
+  ],
+  "$defs": {
+    "PrHistoryItem": {
+      "description": "The reader's activity on one pull request.",
+      "type": "object",
+      "properties": {
+        "pr": {
+          "description": "Pull request.",
+          "$ref": "#/$defs/PrRef"
+        },
+        "title": {
+          "description": "Latest stored pull request title.",
+          "type": "string"
+        },
+        "last_activity_at": {
+          "description": "Latest activity across all included sources.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "opened_at": {
+          "description": "When the reader last opened the pull request page.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "analysis": {
+          "description": "Latest analysis requested by the reader.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PrHistoryAnalysis"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "watch": {
+          "description": "The reader's watch, including an ended watch.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PrHistoryWatch"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "pr",
+        "title",
+        "last_activity_at"
+      ]
+    },
+    "PrRef": {
+      "description": "A pull request of a repository.",
+      "type": "object",
+      "properties": {
+        "repo": {
+          "description": "The repository.",
+          "$ref": "#/$defs/RepoRef"
+        },
+        "number": {
+          "description": "The pull request number.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "repo",
+        "number"
+      ]
+    },
+    "RepoRef": {
+      "description": "A GitHub repository.",
+      "type": "object",
+      "properties": {
+        "owner": {
+          "description": "Owner (user or organisation) login.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Repository name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "name"
+      ]
+    },
+    "PrHistoryAnalysis": {
+      "description": "The reader's most recent analysis of a pull request.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Analysis id.",
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "status": {
+          "description": "Stored analysis status.",
+          "$ref": "#/$defs/AnalysisStatus"
+        },
+        "head_sha": {
+          "description": "Head the analysis was requested for.",
+          "$ref": "#/$defs/CommitSha"
+        },
+        "requested_at": {
+          "description": "When the reader requested the analysis.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "head_moved": {
+          "description": "Whether the pull request has moved to a different head.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "status",
+        "head_sha",
+        "requested_at",
+        "head_moved"
+      ]
+    },
+    "AnalysisId": {
+      "description": "Identifier of an analysis (one per pull request, head commit and LLM language).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "AnalysisStatus": {
+      "description": "The stored status of an analysis (the `state` of [`AnalysisState`] without its details).",
+      "oneOf": [
+        {
+          "description": "Planning flows.",
+          "type": "string",
+          "const": "planning"
+        },
+        {
+          "description": "Analysing flows.",
+          "type": "string",
+          "const": "running"
+        },
+        {
+          "description": "Waiting for a resume or a usage limit.",
+          "type": "string",
+          "const": "paused"
+        },
+        {
+          "description": "Failed; can be retried.",
+          "type": "string",
+          "const": "failed"
+        },
+        {
+          "description": "All flows analysed.",
+          "type": "string",
+          "const": "finished"
+        },
+        {
+          "description": "Cancelled; partial results discarded.",
+          "type": "string",
+          "const": "cancelled"
+        }
+      ]
+    },
+    "CommitSha": {
+      "description": "A full 40-character hexadecimal git commit id.",
+      "type": "string"
+    },
+    "PrHistoryWatch": {
+      "description": "The reader's watch of a pull request.",
+      "type": "object",
+      "properties": {
+        "state": {
+          "description": "Current or ended watch state.",
+          "$ref": "#/$defs/WatchState"
+        },
+        "since": {
+          "description": "When the watch began.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "ended_at": {
+          "description": "When the watch ended, if it did.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "state",
+        "since"
+      ]
+    },
+    "WatchState": {
+      "description": "State of a watch. Open enum.",
+      "oneOf": [
+        {
+          "description": "Probed on schedule.",
+          "type": "string",
+          "const": "active"
+        },
+        {
+          "description": "A pass waits for the bot's round to end.",
+          "type": "string",
+          "const": "waiting_for_bot_round"
+        },
+        {
+          "description": "An assessment job is queued or running.",
+          "type": "string",
+          "const": "job_running"
+        },
+        {
+          "description": "Today's automatic assessment limit is reached.",
+          "type": "string",
+          "const": "limit_reached"
+        },
+        {
+          "description": "No GitHub token pair: \"sign in again\".",
+          "type": "string",
+          "const": "paused"
+        },
+        {
+          "description": "The PR was merged or closed; watching ended.",
+          "type": "string",
+          "const": "ended"
+        }
+      ]
+    }
+  }
+}

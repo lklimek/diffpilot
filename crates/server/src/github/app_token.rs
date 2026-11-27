@@ -144,11 +144,49 @@ struct JwtClaims {
     iss: String,
 }
 
+/// GitHub App installation details for one repository.
 #[derive(Deserialize)]
-struct InstallationResponse {
-    id: u64,
+pub(crate) struct InstallationResponse {
+    /// Installation ID from GitHub.
+    pub id: u64,
     #[serde(default)]
     suspended_at: Option<String>,
+}
+
+impl InstallationResponse {
+    /// Whether GitHub suspended the installation.
+    pub(crate) fn suspended(&self) -> bool {
+        self.suspended_at.is_some()
+    }
+}
+
+/// Reuses the App JWT and HTTP client across a batch of repository lookups.
+pub(crate) struct InstallationLookup<'a> {
+    config: &'a GithubConfig,
+    client: Client,
+    jwt: Secret,
+}
+
+impl<'a> InstallationLookup<'a> {
+    /// Signs the App JWT used for the batch.
+    pub(crate) async fn new(
+        config: &'a GithubConfig,
+        now: Timestamp,
+    ) -> Result<Self, AppTokenError> {
+        Ok(Self {
+            config,
+            client: client()?,
+            jwt: app_jwt(config, now).await?,
+        })
+    }
+
+    /// Looks up the installation even when it is suspended.
+    pub(crate) async fn get(
+        &self,
+        repo: &RepoRef,
+    ) -> Result<Option<InstallationResponse>, AppTokenError> {
+        lookup_details(&self.client, self.config, repo, &self.jwt).await
+    }
 }
 
 #[derive(Serialize)]
@@ -238,6 +276,18 @@ async fn lookup(
     repo: &RepoRef,
     jwt: &Secret,
 ) -> Result<Installation, AppTokenError> {
+    Ok(match lookup_details(client, config, repo, jwt).await? {
+        Some(found) if !found.suspended() => Installation::Installed { id: found.id },
+        _ => Installation::NotInstalled,
+    })
+}
+
+async fn lookup_details(
+    client: &Client,
+    config: &GithubConfig,
+    repo: &RepoRef,
+    jwt: &Secret,
+) -> Result<Option<InstallationResponse>, AppTokenError> {
     if !is_valid_repo(repo) {
         return Err(AppTokenError::InvalidRepository);
     }
@@ -248,17 +298,14 @@ async fn lookup(
         .map_err(AppTokenError::Http)?;
     match response.status() {
         StatusCode::OK => {}
-        StatusCode::NOT_FOUND => return Ok(Installation::NotInstalled),
+        StatusCode::NOT_FOUND => return Ok(None),
         StatusCode::UNAUTHORIZED => return Err(AppTokenError::Unauthorized),
         status => return Err(AppTokenError::Status(status)),
     }
     let bytes = response.bytes().await.map_err(AppTokenError::Http)?;
-    let found: InstallationResponse =
-        serde_json::from_slice(&bytes).map_err(|_| AppTokenError::Malformed)?;
-    Ok(match found.suspended_at {
-        Some(_) => Installation::NotInstalled,
-        None => Installation::Installed { id: found.id },
-    })
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|_| AppTokenError::Malformed)
 }
 
 /// Mints the read-only token for one job: `repositories` = `repo` only, [`READ_ONLY_PERMISSIONS`], valid at

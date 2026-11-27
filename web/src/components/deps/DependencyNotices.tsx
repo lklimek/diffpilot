@@ -1,7 +1,7 @@
 import { useId } from "react";
 import type { DependencyLimit, DependencyView } from "../../api/generated/types";
 import { Tooltip } from "../tooltip/Tooltip";
-import { inApp } from "./LineLinkTo";
+import { inApp } from "../inApp";
 import { count, hasChangedCrate, type DepsLinks } from "./model";
 
 /** The sentence of a repository without Cargo (brief 2026-11-20: Not available). */
@@ -53,7 +53,7 @@ export function DependencyNotices({
   // Absence is claimed only for a complete map: with any limit or no crate listed it was not established.
   const cut = view.limits.length > 0 || view.repositories.length === 0;
   const settings = (
-    <Tooltip tip="Opens Settings, where the installation's controlled organisations are listed.">
+    <Tooltip tip="Opens Settings › GitHub sync, where controlled owners are listed.">
       <a href={links.settings} onClick={(event) => inApp(event, () => links.onNavigate(links.settings))}>
         Controlled organisations
       </a>
@@ -101,7 +101,7 @@ export function DependencyNotices({
         Yours: {prOwner} (this pull request&apos;s owner)
         {others.length > 0
           ? `, ${others.join(", ")}.`
-          : ". No other organisation is listed in Settings."}{" "}
+          : ". No other organisation is listed in GitHub sync."}{" "}
         {settings}
       </p>
       {view.notes === "pending" && (

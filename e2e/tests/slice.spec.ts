@@ -5,6 +5,7 @@ import {
   checkScreen,
   heading,
   signIn,
+  userMenuButton,
   waitForState,
 } from "../support/app";
 import { logLeaks, stackSecrets } from "../support/secrets";
@@ -37,12 +38,31 @@ test("sign in, analyse the fixture PR, open flow 1 step 1", async ({ page, conte
   await analyseAllRemainingFlows(page);
   await waitForState(page, id, "finished");
   await checkScreen(page);
-  const openReview = page.getByRole("link", { name: "Open", exact: true });
+  const openReview = page.getByRole("link", { name: "Open review", exact: true });
   await expect(openReview).toBeVisible();
   await openReview.click();
   await expect(page).toHaveURL(new RegExp(`/analyses/${id}$`));
   await expect(heading(page)).toHaveText("PR context: acme/node-client #482");
   await checkScreen(page);
+  const userMenu = userMenuButton(page);
+  await userMenu.press("Enter");
+  const account = page.getByRole("dialog", { name: "alice: account and LLM activity" });
+  await expect(account).toBeVisible();
+  await checkScreen(page);
+  await expect(account).toBeVisible();
+  const shortcuts = account.getByRole("button", { name: "Keyboard shortcuts" });
+  const tip = page.getByRole("tooltip", { name: "Show keyboard shortcuts for this page." });
+  await shortcuts.hover();
+  await expect(tip).toBeVisible();
+  await page.mouse.move(0, 0);
+  await expect(tip).toBeHidden();
+  await shortcuts.focus();
+  await expect(tip).toBeVisible();
+  await shortcuts.press("Enter");
+  const help = page.getByRole("dialog", { name: "Keyboard shortcuts" });
+  await expect(help).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(help).toHaveCount(0);
   await screens(page, "pr-context");
 
   await page.keyboard.press("j");

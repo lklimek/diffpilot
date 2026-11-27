@@ -1,14 +1,12 @@
 import type { ReactNode } from "react";
 import { useNavigate } from "react-router";
-import { AppNav, type AppSection } from "../../components/app-shell/AppNav";
+import { AppNav, type AppSection, type AppNavChild } from "../../components/app-shell/AppNav";
 import { ShellTopBar } from "../../components/app-shell/ShellTopBar";
-import { MY_WORK_PATH, REVIEW_START_PATH, SETTINGS_PATH } from "./paths";
-import { WATCHING_PATH } from "../pr/paths";
+import { MY_WORK_PATH, PRS_PATH, SETTINGS_PATH } from "./paths";
 
 const HREFS: Record<AppSection, string> = {
   "my-work": MY_WORK_PATH,
-  review: REVIEW_START_PATH,
-  watching: WATCHING_PATH,
+  prs: PRS_PATH,
   settings: SETTINGS_PATH,
 };
 
@@ -17,48 +15,45 @@ interface ShellLayoutProps {
   current: AppSection;
   /** Page name after the brand. */
   crumb: string;
-  /** Signed-in GitHub login; null when signed out. */
-  login: string | null;
+  /** Account menu of the signed-in reader. */
+  userMenu?: ReactNode;
   /** Unhidden human mentions; no count when null. */
   myWorkCount: number | null;
-  /** Opens the page's keyboard help. */
-  onHelp?: () => void;
   /** Page actions in the top bar (the refresh control). */
   actions?: ReactNode;
+  settingsPages?: readonly AppNavChild[];
   children: ReactNode;
 }
 
 /**
- * The navigation shell (plan §F.2): slim top bar, left navigation and the main region of `/`, `/review` and
+ * The navigation shell (plan §F.2): slim top bar, left navigation and the main region of `/`, `/prs` and
  * `/settings` (`ShellRoute`).
  */
 export function ShellLayout({
   current,
   crumb,
-  login,
+  userMenu,
   myWorkCount,
-  onHelp,
   actions,
+  settingsPages,
   children,
 }: ShellLayoutProps) {
   const navigate = useNavigate();
   const go = (href: string) => void navigate(href);
   return (
     <div className="flex min-h-screen flex-col">
-      <ShellTopBar
-        crumb={crumb}
-        homeHref={MY_WORK_PATH}
-        settingsHref={SETTINGS_PATH}
-        login={login}
-        onHelp={onHelp}
-        onNavigate={go}
-        mainId="main"
-      >
+      <ShellTopBar crumb={crumb} homeHref={MY_WORK_PATH} userMenu={userMenu} onNavigate={go} mainId="main">
         {actions}
       </ShellTopBar>
       <div className="flex flex-1">
-        <AppNav current={current} hrefs={HREFS} myWorkCount={myWorkCount} onNavigate={go} />
-        <main id="main" tabIndex={-1} className="min-w-0 flex-1 px-6 py-5">
+        <AppNav
+          current={current}
+          hrefs={HREFS}
+          myWorkCount={myWorkCount}
+          settingsPages={settingsPages}
+          onNavigate={go}
+        />
+        <main id="main" tabIndex={-1} className="min-w-0 flex-1 px-3 py-5 sm:px-6">
           {children}
         </main>
       </div>

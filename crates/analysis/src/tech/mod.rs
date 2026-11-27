@@ -8,8 +8,11 @@ use contracts::common::{LineRange, LineSide, NotAnalysedCategory, ProvenanceBadg
 use crate::diff::Hunk;
 use crate::lines::ranges;
 
+#[cfg(test)]
+mod leading_context_tests;
 mod rust;
 
+pub use rust::Rust;
 pub use rust::conversions::{
     CONVERSION_PREFIXES, Candidate, CandidateKind, MAX_CANDIDATES, TypeOrigin,
     conversion_candidates, conversion_candidates_bounded, definition_line, definition_lines,
@@ -26,6 +29,15 @@ pub trait TechPlugin: Send + Sync {
     fn classify(&self, file: &FileSource<'_>) -> Result<Vec<Classified>, TechError>;
     /// Callers and callees of a symbol; `None` when the plugin cannot tell.
     fn call_hierarchy(&self, symbol: &SymbolAt) -> Option<CallHierarchy>;
+    /// Lines immediately above the item starting at the 1-based `first_line`.
+    fn leading_context(&self, _file: &FileSource<'_>, _first_line: u32) -> Option<LineRange> {
+        None
+    }
+}
+
+/// The language plugin for a repository-relative path.
+pub fn plugin_for(path: &str) -> &'static dyn TechPlugin {
+    if Rust.detect(path) { &Rust } else { &Generic }
 }
 
 /// One side of a changed file as a plugin sees it.
@@ -136,7 +148,7 @@ impl TechPlugin for Generic {
                 changed_ranges(file),
             )]);
         }
-        if !file.path.ends_with(".rs") {
+        if !Rust.detect(file.path) {
             return Ok(Vec::new());
         }
         let covered = rust::covered(file, text);
@@ -409,7 +421,7 @@ pub fn is_line_rule_name(rule: &str) -> bool {
 /// Pairs (base line, head line) of changed lines of `hunks` whose only change is whitespace, in a Rust file whose head
 /// path is `path`; `base` and `head` are its texts. They read as unchanged code; empty for other files.
 pub fn whitespace_pairs(path: &str, base: &str, head: &str, hunks: &[Hunk]) -> Vec<(u32, u32)> {
-    if !path.ends_with(".rs") {
+    if !Rust.detect(path) {
         return Vec::new();
     }
     rust::whitespace_pairs(base, head, hunks)

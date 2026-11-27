@@ -14,9 +14,8 @@ const rec = (kind: "fix_here" | "reject") => ({
   assessment: { recommendation: { kind, reason: "why", reason_class: "c", target: null } },
 });
 const gate = { gates: [{ gate: "G-FUNDS" as const, source: "assessment" as const }] };
-type Item = Pick<CommentItem, "gates" | "assessment" | "revision">;
 const item = (fields: Partial<Record<string, unknown>>) =>
-  ({ gates: [], revision: 3, ...fields }) as unknown as Item;
+  ({ gates: [], revision: 3, ...fields }) as unknown as CommentItem;
 
 describe("decisions (plan §2.3)", () => {
   it("lists the recommended option first (RQ7) and D8 only on gate items, last", () => {

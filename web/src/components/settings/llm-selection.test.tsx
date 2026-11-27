@@ -15,31 +15,22 @@ const selection = {
 };
 it("saves the selected installation model and effort and names the editor", async () => {
   const save = vi.fn();
-  render(
-    <LlmSelectionCard
-      selection={{ ...selection, efforts: [...selection.efforts] }}
-      busy={false}
-      onSave={save}
-    />,
-  );
+  render(<LlmSelectionCard selection={{ ...selection, efforts: [...selection.efforts] }} onSave={save} />);
   await userEvent.selectOptions(screen.getByLabelText("Model"), "gpt-6-astra");
   await userEvent.selectOptions(screen.getByLabelText("Reasoning effort"), "low");
   await userEvent.click(screen.getByRole("button", { name: "Save" }));
-  expect(save).toHaveBeenCalledWith({ model: "gpt-6-astra", reasoning_effort: "low" });
+  expect(save).toHaveBeenCalledWith({ model: { model: "gpt-6-astra", reasoning_effort: "low" } });
   expect(screen.getByText(/changed by alice/)).toBeVisible();
-  expect(screen.getByText(/including the remaining jobs of running analyses/)).toBeVisible();
 });
-it("keeps a pending save read-only with an explained reachable button", async () => {
-  const save = vi.fn();
-  render(
-    <LlmSelectionCard selection={{ ...selection, efforts: [...selection.efforts] }} busy onSave={save} />,
-  );
-  expect(screen.getByLabelText("Model")).toHaveAttribute("aria-disabled", "true");
-  const button = screen.getByRole("button", { name: "Save" });
-  expect(button).toHaveAttribute("aria-disabled", "true");
-  expect(button).toHaveAccessibleDescription(/Saving/);
-  await userEvent.selectOptions(screen.getByLabelText("Model"), "gpt-6-astra");
-  expect(screen.getByLabelText("Model")).toHaveValue("gpt-6.1-sol");
-  await userEvent.click(button);
+it("keeps a pending save read-only and sends only the changed effort", async () => {
+  const save = vi.fn(() => new Promise<void>(() => {}));
+  render(<LlmSelectionCard selection={{ ...selection, efforts: [...selection.efforts] }} onSave={save} />);
+  expect(screen.getByLabelText("Ask effort")).toHaveValue("medium");
+  expect(screen.getByLabelText("Dashboard ranking effort")).toHaveValue("low");
+  await userEvent.selectOptions(screen.getByLabelText("Ask effort"), "low");
   expect(save).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect(save).toHaveBeenCalledExactlyOnceWith({ ask: "low" });
+  expect(screen.getByLabelText("Model")).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Saving…" })).toHaveAttribute("aria-disabled", "true");
 });

@@ -1680,6 +1680,10 @@
               "start_line": 7,
               "end_line": 16
             },
+            "leading_context": {
+              "start_line": 5,
+              "end_line": 6
+            },
             "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/rpc/error.rs#L7-L16",
             "changed_lines": [
               {

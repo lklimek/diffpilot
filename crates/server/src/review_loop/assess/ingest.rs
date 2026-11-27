@@ -72,7 +72,7 @@ pub(super) enum Unfit {
 }
 
 /// Ingests a pass's job result: stores the fit assessments and the PR purpose, answers or fails the pass's question,
-/// and ends the pass. `true` when every sent item got an assessment.
+/// and ends the pass. `true` when the pass stored at least one assessment.
 pub(super) async fn result(
     state: &AppState,
     pass: &PassRecord,
@@ -86,12 +86,12 @@ pub(super) async fn result(
                     job: result.job_id,
                     skills_commit: result.skills_commit,
                 };
-                let complete = store(state, pass, &made, &output).await?;
+                let assessed = store(state, pass, &made, &output).await?;
                 db.review_loop()
                     .finish_pass(pass.id, true, Timestamp::now())
                     .await?;
-                tracing::info!(pass = %pass.id, complete, "comment assessment pass ingested");
-                return Ok(complete);
+                tracing::info!(pass = %pass.id, assessed, "comment assessment pass ingested");
+                return Ok(assessed > 0);
             }
             None => {
                 tracing::warn!(pass = %pass.id, "the verify_comments output does not fit its schema; nothing is stored");
@@ -145,7 +145,7 @@ async fn store(
     pass: &PassRecord,
     made: &Made,
     output: &VerifyCommentsOutput,
-) -> Result<bool, AssessError> {
+) -> Result<usize, AssessError> {
     let db = &state.db;
     let tenant = db
         .pull_requests()
@@ -154,7 +154,7 @@ async fn store(
         .tenant_id;
     let now = Timestamp::now();
     let mut seen = HashSet::new();
-    let mut stored = HashSet::new();
+    let mut stored = 0;
     let mut ignored = 0_usize;
     for entry in &output.items {
         let Some(sent) = pass
@@ -171,10 +171,13 @@ async fn store(
         }
         match assessment(entry, made, &pass.head, now) {
             Ok(assessment) => {
-                db.review_loop()
+                if db
+                    .review_loop()
                     .add_assessment(&tenant, sent.item, &assessment, &sent.fingerprint)
-                    .await?;
-                stored.insert(sent.item);
+                    .await?
+                {
+                    stored += 1;
+                }
             }
             Err(unfit) => {
                 tracing::warn!(pass = %pass.id, item = %sent.item, ?unfit,
@@ -209,7 +212,7 @@ async fn store(
             .await;
         }
     }
-    Ok(pass.sent.iter().all(|sent| stored.contains(&sent.item)))
+    Ok(stored)
 }
 
 /// A question pass's answer as an Ask answer, if it is plain text within the Ask limits and the wording rules.

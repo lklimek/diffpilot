@@ -13,6 +13,7 @@ import {
 import { ProvenanceTag, type ProvenanceSource } from "../section/ProvenanceTag";
 import { keyboardModality } from "../tooltip/modality";
 import { Tooltip, useTipPrecedence } from "../tooltip/Tooltip";
+import { useOutsidePress } from "./useOutsidePress";
 
 interface PopoverProps {
   /** Accessible name of the popover, e.g. "LLM remarks at line 91". */
@@ -142,12 +143,12 @@ export function Popover({ label, tag, content, hint, onActivate, children, class
     };
   }, [open, pinned]);
 
+  useOutsidePress(pinned, wrapper, () => {
+    if (pinnedId === id) setPinned(null);
+  });
   const onEscape = useEffectEvent(close);
   useEffect(() => {
     if (!pinned) return;
-    const outside = (event: PointerEvent) => {
-      if (!wrapper.current?.contains(event.target as Node) && pinnedId === id) setPinned(null);
-    };
     // Capture phase: Escape in the popover (or with no focus) closes only the popover; no other handler sees
     // it. With the focus elsewhere (a comment being written) the key belongs to that element.
     const escape = (event: KeyboardEvent) => {
@@ -158,10 +159,8 @@ export function Popover({ label, tag, content, hint, onActivate, children, class
       event.stopPropagation();
       onEscape();
     };
-    document.addEventListener("pointerdown", outside, true);
     document.addEventListener("keydown", escape, true);
     return () => {
-      document.removeEventListener("pointerdown", outside, true);
       document.removeEventListener("keydown", escape, true);
       if (pinnedId === id) setPinned(null);
     };

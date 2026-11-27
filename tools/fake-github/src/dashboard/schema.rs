@@ -158,6 +158,7 @@ impl Schema {
         add("Query", "repositoryOwner", object("User"));
         add("Query", "rateLimit", object("RateLimit"));
         add("Repository", "pullRequest", object("PullRequest"));
+        add("PullRequest", "headRepository", object("Repository"));
         add("Repository", "issue", object("Issue"));
         add(
             "Repository",
@@ -176,6 +177,23 @@ impl Schema {
         for field in ["hasNextPage", "hasPreviousPage", "startCursor", "endCursor"] {
             add("PageInfo", field, scalar());
         }
+        // Stack membership is nullable even in worlds that contain no native stacks.
+        let entry = "PullRequest.stackEntry";
+        let stack = "PullRequest.stackEntry.stack";
+        let entries = "PullRequest.stackEntry.stack.entries";
+        let member = "PullRequest.stackEntry.stack.entries.nodes";
+        add("PullRequest", "stackEntry", object(entry));
+        add(entry, "position", scalar());
+        add(entry, "stack", object(stack));
+        add(stack, "id", scalar());
+        add(stack, "baseRefName", scalar());
+        add(stack, "size", scalar());
+        add(stack, "entries", object(entries));
+        add(member, "position", scalar());
+        add(member, "pullRequest", object("PullRequest"));
+        add("PullRequest", "number", scalar());
+        add("PullRequest", "state", scalar());
+        schema.connection(entries, BTreeSet::from([member.to_owned()]));
         schema
     }
 

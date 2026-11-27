@@ -1,0 +1,50 @@
+{
+  "defaults": {
+    "kind": "thread",
+    "state": "undecided",
+    "assessment_state": {"state": "assessed"},
+    "gates": []
+  },
+  "items": [
+    {"no": 1, "status_comment": true},
+    {"no": 2, "imported_decision": {"kind": "reject", "by": "owner", "at": "2026-11-24T09:00:00Z", "evidence_url": "https://github.com/acme/repo/pull/1#issuecomment-1"}},
+    {"no": 3, "state": "outside"},
+    {"no": 4, "duplicate_of": 13, "decision_follows_primary": true, "state": "done"},
+    {"no": 5, "state": "decided"},
+    {"no": 6, "state": "executing"},
+    {"no": 7, "state": "done"},
+    {"no": 8, "state": "repeat"},
+    {"no": 9, "gone_at": "2026-11-24T09:00:00Z", "duplicate_of": 13},
+    {"no": 10, "duplicate_of": 13, "assessment_state": {"state": "not_assessed", "reason": "not_run"}},
+    {"no": 11, "duplicate_of": 13, "decision_follows_primary": true, "state": "assessing", "gates": [{"gate": "G-FUNDS", "source": "assessment"}], "assessment_state": {"state": "running"}},
+    {"no": 12, "duplicate_of": 12, "decision_follows_primary": true, "assessment_state": {"state": "queued"}},
+    {"no": 13},
+    {"no": 14, "assessment_state": {"state": "running"}},
+    {"no": 15, "assessment_state": {"state": "not_assessed", "reason": "daily_limit"}},
+    {"no": 16, "kind": "pr_question", "assessment_state": {"state": "not_assessed", "reason": "not_run"}},
+    {"no": 17, "state": "reopened"},
+    {"no": 18, "state": "asked_back"},
+    {"no": 19, "state": "assessing"},
+    {"no": 20, "duplicate_of": 13, "state": "assessing", "assessment_state": {"state": "queued"}},
+    {"no": 21, "duplicate_of": 13, "state": "outside", "decision_follows_primary": true, "status_comment": true},
+    {"no": 22, "duplicate_of": 13, "state": "outside", "decision_follows_primary": true},
+    {"no": 23, "not_a_review_point": {"by": "owner", "at": "2026-11-24T09:00:00Z"}},
+    {"no": 24, "duplicate_of": 23, "decision_follows_primary": true, "not_a_review_point": {"by": "owner", "at": "2026-11-24T09:00:00Z", "follows": 23}},
+    {"no": 25, "status_comment": true, "not_a_review_point": {"by": "owner", "at": "2026-11-24T09:00:00Z"}},
+    {"no": 26, "state": "outside", "not_a_review_point": {"by": "owner", "at": "2026-11-24T09:00:00Z"}}
+  ],
+  "queue": [
+    {"item_nos": [16], "reason": "pr_question", "skipped": false},
+    {"item_nos": [11], "reason": "gate", "skipped": false},
+    {"item_nos": [10, 12, 14, 15, 17, 18, 19, 20, 99], "reason": "group", "skipped": false},
+    {"item_nos": [1, 2, 3, 4, 5, 6, 7, 8, 9, 21, 22, 23, 24, 25, 26], "reason": "group", "skipped": true}
+  ],
+  "expected_statuses": [
+    "status_comments", "decided", "decided", "duplicates", "decided", "decided", "decided", "decided",
+    "all", "needs_you", "needs_you", "waiting", "needs_you", "assessing", "not_assessed", "needs_you",
+    "needs_you", "needs_you", "all", "waiting", "status_comments", "decided",
+    "not_a_review_point", "not_a_review_point", "status_comments", "decided"
+  ],
+  "expected_needs_you": 5,
+  "expected_needs_you_gates": 1
+}

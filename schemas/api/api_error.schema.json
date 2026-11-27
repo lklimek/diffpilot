@@ -102,6 +102,11 @@
           "const": "not_rendered"
         },
         {
+          "description": "The route is reserved for a feature that is not available yet.",
+          "type": "string",
+          "const": "not_implemented"
+        },
+        {
           "description": "GitHub did not answer as expected.",
           "type": "string",
           "const": "github_unavailable"

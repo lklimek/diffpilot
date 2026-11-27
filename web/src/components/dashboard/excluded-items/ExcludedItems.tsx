@@ -1,7 +1,5 @@
-import { useId, useRef, useState } from "react";
 import type { ExcludedItem, ExclusionCount, ExclusionReason, Exclusions } from "../../../api/generated/types";
 import { navigateOnClick, type Navigate } from "../common/navigate";
-import { HideButton } from "../../button/HideButton";
 import { Tooltip } from "../../tooltip/Tooltip";
 import { helpHref, type HelpTopic } from "../../settings/settingsHelp";
 import { OpenExternal, openLabel } from "../common/OpenExternal";
@@ -11,6 +9,7 @@ import { dateTimeText } from "../../format/time";
 interface ExcludedItemsProps {
   /** The snapshot's exclusions; absent when the snapshot did not record them. */
   exclusions: Exclusions | null | undefined;
+  guideOrigin?: string;
   onNavigate?: Navigate;
   /** "Wake now" of a snoozed item (its key); without it no button. */
   onWake?: (key: string) => void;
@@ -78,71 +77,46 @@ const textOf = (reason: string): ReasonText =>
 /** Largest count first; equal counts keep the server's order. */
 const byCount = (counts: ExclusionCount[]) => [...counts].sort((a, b) => b.count - a.count);
 
-/**
- * What the ranking rules left out of Needs you (B4): one quiet line with the counts per reason, and a disclosure
- * listing the items by reason with links out. No LLM text; titles are plain text. Two reasons
- * (judged not eligible, merged into another item) are LLM decisions and say so. Snoozed items show their end and
- * "Wake now" (owner SN1).
- */
-export function ExcludedItems({ exclusions, onNavigate, onWake, wakingKeys = [] }: ExcludedItemsProps) {
-  const [open, setOpen] = useState(false);
-  const toggle = useRef<HTMLButtonElement>(null);
-  const panelId = useId();
-  const quiet = "text-xs text-muted";
-  if (!exclusions) {
-    return <p className={quiet}>Excluded: not recorded for this snapshot — refresh to see it.</p>;
-  }
-  if (exclusions.total === 0) return <p className={quiet}>Excluded: none</p>;
-  const counts = byCount(exclusions.counts);
-  const line = `Excluded: ${exclusions.total} — ${counts.map((c) => textOf(c.reason).count(c.count)).join(" · ")}`;
+export function exclusionDescription(exclusions: Exclusions | null | undefined): string {
+  if (!exclusions) return "Exclusions were not recorded in this snapshot.";
+  return byCount(exclusions.counts)
+    .map(({ reason, count }) => textOf(reason).count(count))
+    .join(" · ");
+}
+
+/** The excluded snapshot items by reason, with links to evidence and Wake now for snoozes. */
+export function ExcludedItems({
+  exclusions,
+  guideOrigin,
+  onNavigate,
+  onWake,
+  wakingKeys = [],
+}: ExcludedItemsProps) {
+  if (!exclusions?.total)
+    return (
+      <p className="py-2 text-xs text-muted">
+        {exclusions ? "No items are excluded or snoozed." : exclusionDescription(exclusions)}
+      </p>
+    );
   const items = exclusions.items ?? [];
   return (
-    <div className="mt-1">
-      <Tooltip
-        tip={open ? "Hide the excluded items" : "List the excluded items by reason, with links to GitHub"}
-      >
-        <button
-          ref={toggle}
-          type="button"
-          aria-expanded={open}
-          aria-controls={panelId}
-          onClick={() => setOpen((was) => !was)}
-          className={`${quiet} inline-flex min-h-6 items-center gap-1 rounded text-left hover:text-text focus-visible:outline-2 focus-visible:outline-accent`}
-        >
-          <span aria-hidden="true">{open ? "▾" : "▸"}</span>
-          <span>{line}</span>
-        </button>
-      </Tooltip>
-      {open && (
-        <div
-          id={panelId}
-          className="mt-1.5 flex items-start gap-2 rounded-lg border border-border bg-surface p-3"
-        >
-          <div className="flex min-w-0 flex-1 flex-col gap-3">
-            {counts.map(({ reason, count }) => (
-              <Group
-                key={reason}
-                text={textOf(reason)}
-                count={count}
-                items={items.filter((item) => item.reason === reason)}
-                onNavigate={onNavigate}
-                onWake={onWake}
-                wakingKeys={wakingKeys}
-              />
-            ))}
-            {items.length < exclusions.total && (
-              <p className={quiet}>
-                Listed: the first {items.length} of {exclusions.total}.
-              </p>
-            )}
-          </div>
-          <HideButton
-            name="Hide excluded items"
-            tip="Hides the list of excluded items; the line above shows it again."
-            onHide={() => setOpen(false)}
-            focusAfter={() => toggle.current}
-          />
-        </div>
+    <div className="mt-2 grid gap-3 rounded-lg border border-border bg-surface p-3">
+      {byCount(exclusions.counts).map(({ reason, count }) => (
+        <Group
+          key={reason}
+          text={textOf(reason)}
+          count={count}
+          items={items.filter((item) => item.reason === reason)}
+          guideOrigin={guideOrigin}
+          onNavigate={onNavigate}
+          onWake={onWake}
+          wakingKeys={wakingKeys}
+        />
+      ))}
+      {items.length < exclusions.total && (
+        <p className="text-xs text-muted">
+          Listed: the first {items.length} of {exclusions.total}.
+        </p>
       )}
     </div>
   );
@@ -152,6 +126,7 @@ function Group({
   text,
   count,
   items,
+  guideOrigin,
   onNavigate,
   onWake,
   wakingKeys,
@@ -159,22 +134,24 @@ function Group({
   text: ReasonText;
   count: number;
   items: ExcludedItem[];
+  guideOrigin?: string;
   onNavigate?: Navigate;
   onWake?: (key: string) => void;
   wakingKeys: string[];
 }) {
   const label = `${text.title}: ${count}`;
+  const guideHref = text.setting && helpHref(text.setting.topic, guideOrigin);
   return (
     <div role="group" aria-label={label} className="text-xs">
       <p className="font-semibold text-text">{label}</p>
       <p className="text-muted">
         {text.rule}
-        {text.setting && (
+        {text.setting && guideHref && (
           <>
             {" "}
             <a
-              href={helpHref(text.setting.topic)}
-              onClick={navigateOnClick(helpHref(text.setting.topic), onNavigate)}
+              href={guideHref}
+              onClick={navigateOnClick(guideHref, onNavigate)}
               className="text-accent underline"
             >
               {text.setting.name} in the settings guide
@@ -185,7 +162,7 @@ function Group({
       {items.length > 0 && (
         <ul className="m-0 mt-1 flex list-none flex-col gap-1 p-0">
           {items.map((item) => (
-            <li key={item.key} className="flex min-w-0 items-center gap-2">
+            <li key={item.key} className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
               <OpenExternal href={item.url} label={openLabel(item)} />
               <span className="shrink-0 font-mono">{item.id}</span>
               <span className="min-w-0 truncate">{item.title}</span>

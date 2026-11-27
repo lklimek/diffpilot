@@ -1,4 +1,5 @@
 import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 import { expectTrustWording } from "../../__tests__/wording";
 import type { QueueEntry } from "../../api/generated/types";
@@ -12,6 +13,7 @@ const showQueue = () => {
   render(
     <QueueList
       queue={inListOrder(overview().queue)}
+      counts={overview().counts}
       items={items}
       current={null}
       onOpen={() => {}}
@@ -36,18 +38,21 @@ const marksOf = (queue: HTMLElement, id: RegExp) =>
   within(queue).getByRole("button", { name: id }).querySelector<HTMLElement>("[data-marks]");
 
 describe("QueueList order (owner 2026-11-23)", () => {
-  it("lists Needs you first and the PR-level questions last", () => {
+  it("opens the neutral Status menu and includes PR-level questions in Needs you", async () => {
     const queue = showQueue();
-    expect(
-      within(queue)
-        .getAllByRole("heading")
-        .map((h) => h.textContent),
-    ).toEqual([
-      "Needs you (10)",
-      expect.stringMatching(/^Previously decided \(\d+\)$/),
-      "Outside diffpilot (1)",
-      "PR-level (1)",
-    ]);
+    const status = within(queue).getByRole("button", { name: /^Status: Needs you/ });
+    expect(status).toHaveTextContent(/Needs you · 11.*2 gates/);
+    const list = within(queue).getByRole("list");
+    expect(within(list).getAllByRole("listitem").at(-1)).toHaveTextContent("P24");
+    await userEvent.click(status);
+    const menu = screen.getByRole("menu");
+    expect(within(menu).getAllByRole("menuitemradio")).toHaveLength(9);
+    expect(within(menu).getByRole("menuitemradio", { name: "Not a review point (0)" })).toBeInTheDocument();
+    await userEvent.click(within(menu).getByRole("menuitemradio", { name: /^Decided/ }));
+    expect(status).toHaveFocus();
+    expect(status).toHaveTextContent("Decided");
+    expect(queue).toHaveTextContent(/resolved on GitHub.*no reason given/i);
+    expect(within(queue).queryByRole("button", { name: /^C14/ })).toBeNull();
   });
 
   it("inListOrder puts PR-level entries after the others and keeps each section's order", () => {
@@ -142,6 +147,7 @@ describe("QueueList state marks in Needs you (owner 2026-11-23, plan §3.9)", ()
     render(
       <QueueList
         queue={inListOrder(overview().queue)}
+        counts={overview().counts}
         items={new Map(items.map((i) => [i.no, i]))}
         current={null}
         onOpen={() => {}}

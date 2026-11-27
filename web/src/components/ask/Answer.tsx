@@ -1,9 +1,6 @@
 import { CodeText } from "../section/CodeText";
 import type { AskQuestion, Evidence } from "../../api/generated/types";
 import { busyTip } from "../button/button";
-import { clockText } from "../format/time";
-import { useEffect, useState } from "react";
-import { agoText } from "../dashboard/common/format";
 import { useAction } from "../inspector/action";
 import { EvidenceLinks } from "../section/EvidenceLinks";
 import { UseAsCommentButton } from "../comment/UseAsCommentButton";
@@ -19,10 +16,6 @@ export interface AnswerProps {
   onAskAgain?: () => Promise<unknown> | void;
   /** "Use as review comment"; no button without it. */
   onUseAsComment?: () => void;
-  /** A fixed current time (ms) for the time since asking; it ticks by itself without one. */
-  now?: number;
-  /** An earlier question of the reader still waits: this one is queued behind it. */
-  queued?: boolean;
 }
 
 function AskAgain({ onAskAgain }: Required<Pick<AnswerProps, "onAskAgain">>) {
@@ -39,7 +32,7 @@ function AskAgain({ onAskAgain }: Required<Pick<AnswerProps, "onAskAgain">>) {
           type="button"
           aria-disabled={action.busy || undefined}
           onClick={() => !action.busy && void action.run(() => onAskAgain())}
-          className="cursor-pointer rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-text aria-disabled:cursor-wait aria-disabled:opacity-60"
+          className="min-h-6 cursor-pointer rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-text aria-disabled:cursor-wait aria-disabled:opacity-60"
         >
           {action.busy ? "Asking…" : "Ask again"}
         </button>
@@ -50,50 +43,6 @@ function AskAgain({ onAskAgain }: Required<Pick<AnswerProps, "onAskAgain">>) {
         </span>
       )}
     </>
-  );
-}
-
-// While a question waits, the time since it was asked moves on (10 s steps); nothing ticks otherwise.
-function useTick(fixed: number | undefined): number {
-  const [now, setNow] = useState(() => fixed ?? Date.now());
-  useEffect(() => {
-    if (fixed !== undefined) return;
-    const timer = setInterval(() => setNow(Date.now()), 10_000);
-    return () => clearInterval(timer);
-  }, [fixed]);
-  return fixed ?? now;
-}
-
-const WRITING =
-  "The LLM writes the answer; it appears whole when it is ready. A first question, or the first after the analysis changed, takes longer: the conversation is prepared first. The time is since you asked; it is no estimate.";
-
-/**
- * A question still waiting: one line with a spinner, its state and the time since it was asked (AC10); when the
- * writing started is not known, so the time is said as "asked … ago".
- */
-function Waiting({
-  text,
-  tip,
-  question,
-  now,
-}: {
-  text: string;
-  tip: string;
-  question: AskQuestion;
-  now?: number;
-}) {
-  const at = useTick(now);
-  return (
-    <Tooltip tip={tip}>
-      <p tabIndex={0} className="m-0 inline-flex items-center gap-1.5 text-muted">
-        <span
-          aria-hidden="true"
-          className="inline-block size-3 flex-none animate-spin rounded-full border-2 border-muted border-t-transparent motion-reduce:animate-none"
-        />
-        <span role="status">{text}</span>
-        <span> · asked {agoText(question.created_at, new Date(at))}</span>
-      </p>
-    </Tooltip>
   );
 }
 
@@ -141,41 +90,14 @@ export function AnswerText({ text }: { text: string }) {
   );
 }
 
-/** The state of a question, or its whole LLM answer with evidence. */
-export function Answer({
-  question,
-  onAskAgain,
-  onEvidence,
-  currentFile,
-  onUseAsComment,
-  now,
-  queued,
-}: AnswerProps) {
+/** A failed question or its whole LLM answer with evidence. */
+export function Answer({ question, onAskAgain, onEvidence, currentFile, onUseAsComment }: AnswerProps) {
   switch (question.state) {
-    case "pending":
-      if (question.resumes_at)
-        return (
-          <p role="status" className="m-0 text-muted">
-            Waiting for the LLM usage limit to reset; resumes at {clockText(question.resumes_at)}.
-          </p>
-        );
-      return queued ? (
-        <Waiting
-          text="Queued behind your earlier question"
-          tip="Your questions are answered one at a time; this one starts when the earlier one is answered."
-          question={question}
-          now={now}
-        />
-      ) : (
-        <Waiting text="Waiting to start" tip={WRITING} question={question} now={now} />
-      );
-    case "answering":
-      return <Waiting text="Being written" tip={WRITING} question={question} now={now} />;
     case "failed":
       return (
         <p className="flex flex-wrap items-baseline gap-2 text-high">
           No answer: {question.failure ?? "the job failed."}
-          {question.mine === true && onAskAgain && <AskAgain onAskAgain={onAskAgain} />}
+          {question.mine !== false && onAskAgain && <AskAgain onAskAgain={onAskAgain} />}
         </p>
       );
     case "answered": {

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeEventSource } from "../../__tests__/fake-event-source";
 import { renderRoute, startMockServer } from "../../__tests__/screen";
 import { expectTrustWording } from "../../__tests__/wording";
-import { listItems, overview } from "../../mocks/review-loop";
+import { listItems, overview, prPage } from "../../mocks/review-loop";
 import { setScenario } from "../../mocks/scenarios";
 
 const server = startMockServer();
@@ -27,11 +27,11 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("V0 PR page (US1, US19)", () => {
-  it("shows Review a PR and Process PR comments; Watch toggles", async () => {
+  it("shows Review the code and Process PR comments; Watch toggles", async () => {
     renderRoute(PR);
     expect(await screen.findByRole("heading", { level: 1, name: /acme\/node-client #482/ })).toBeVisible();
     expect(screen.getByText(/^by octo-dev · base/)).toBeVisible();
-    expect(screen.getByRole("button", { name: "Review a PR" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "Review the code" })).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("button", { name: "Process PR comments" })).toHaveAttribute(
       "aria-expanded",
       "true",
@@ -43,33 +43,149 @@ describe("V0 PR page (US1, US19)", () => {
     ).toHaveAttribute("target", "_blank");
     await userEvent.click(screen.getByRole("button", { name: "Watch" }));
     expect(await screen.findByRole("button", { name: "Watching" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByText(/new comments are assessed automatically and use LLM tokens/)).toBeVisible();
+    expect(screen.getByText(/Watching since/)).toBeVisible();
     expectTrustWording(text());
   });
 
-  it("without an analysis: No analysis yet · Check and start", async () => {
+  it("without an analysis: No analysis yet · Start analysis", async () => {
     setScenario("comments-no-analysis");
     renderRoute(PR);
     expect(await screen.findByText("No analysis yet.")).toBeVisible();
-    expect(screen.getByRole("link", { name: "Check and start" })).toHaveAttribute(
-      "href",
-      `/review?pr=${encodeURIComponent("https://github.com/acme/node-client/pull/482")}`,
-    );
+    expect(screen.getByRole("button", { name: "Start analysis" })).toBeEnabled();
   });
 });
 
 describe("V1 Questions (US3, US4, US11)", () => {
+  it("records one Comments entry before reading the overview and keeps it across tabs", async () => {
+    let finishVisit!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finishVisit = resolve;
+    });
+    const visited = vi.fn();
+    const readOverview = vi.fn();
+    server.use(
+      http.post("/api/v1/prs/acme/node-client/482/comments/visit", async ({ request }) => {
+        visited(request.headers.get("X-CSRF-Token"));
+        await pending;
+        return new HttpResponse(null, { status: 204 });
+      }),
+      http.get("/api/v1/prs/acme/node-client/482/comments", () => {
+        readOverview();
+        return HttpResponse.json(overview());
+      }),
+    );
+    renderRoute(PR);
+    expect(visited).not.toHaveBeenCalled();
+    await userEvent.click(await screen.findByRole("link", { name: "Open Comments →" }));
+    try {
+      await waitFor(() => expect(visited).toHaveBeenCalledOnce());
+      expect(visited.mock.calls[0]?.[0]).toBeTruthy();
+      expect(readOverview).not.toHaveBeenCalled();
+    } finally {
+      finishVisit();
+    }
+    await waitFor(() => expect(readOverview).toHaveBeenCalledOnce());
+    await userEvent.click(await screen.findByRole("link", { name: "Table" }));
+    expect(visited).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows new imports after a lost visit response without advancing the cutoff twice", async () => {
+    let cutoff = 0;
+    server.use(
+      http.post("/api/v1/prs/acme/node-client/482/comments/visit", () => {
+        cutoff += 1;
+        // The write committed but the browser lost its response.
+        return cutoff === 1 ? HttpResponse.error() : new HttpResponse(null, { status: 204 });
+      }),
+      http.get("/api/v1/prs/acme/node-client/482/comments", () => {
+        const data = overview();
+        return HttpResponse.json({
+          ...data,
+          counts: { ...data.counts, imported_unseen: cutoff === 1 ? 1 : 0 },
+        });
+      }),
+    );
+    renderRoute(`${PR}/comments`);
+    expect(await screen.findByRole("link", { name: "1 new decision imported from GitHub" })).toBeVisible();
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not confirm this Comments visit.");
+    expect(cutoff).toBe(1);
+  });
+
+  it("surfaces a missing PR when recording the Comments visit", async () => {
+    server.use(
+      http.post("/api/v1/prs/acme/node-client/482/comments/visit", () =>
+        HttpResponse.json(
+          { code: "not_found", message: "This pull request was not found." },
+          { status: 404 },
+        ),
+      ),
+    );
+    renderRoute(`${PR}/comments`);
+    expect(await screen.findByRole("alert")).toHaveTextContent("This pull request was not found.");
+  });
+
+  it("keeps the queue usable after a server error and repeats the visit only on Retry", async () => {
+    let visits = 0;
+    server.use(
+      http.post(
+        "/api/v1/prs/acme/node-client/482/comments/visit",
+        () => new HttpResponse(null, { status: ++visits === 1 ? 503 : 204 }),
+      ),
+      http.get("/api/v1/prs/acme/node-client/482/comments", () => {
+        const data = overview();
+        return HttpResponse.json({
+          ...data,
+          counts: { ...data.counts, imported_unseen: visits === 2 ? 1 : 0 },
+        });
+      }),
+    );
+    renderRoute(`${PR}/comments`);
+    expect(await screen.findByRole("navigation", { name: "Queue" })).toBeVisible();
+    expect(visits).toBe(1);
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByRole("link", { name: "1 new decision imported from GitHub" })).toBeVisible();
+    expect(visits).toBe(2);
+  });
+
+  it.each([200, 502])("reads items after the overview settles with HTTP %i", async (status) => {
+    let finishOverview!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finishOverview = resolve;
+    });
+    const readOverview = vi.fn();
+    const readItems = vi.fn();
+    server.use(
+      http.get("/api/v1/prs/acme/node-client/482/comments", async () => {
+        readOverview();
+        await pending;
+        return status === 200
+          ? HttpResponse.json(overview())
+          : HttpResponse.json({ code: "github_unavailable", message: "Overview unavailable." }, { status });
+      }),
+      http.get("/api/v1/prs/acme/node-client/482/comments/items", () => {
+        readItems();
+        return HttpResponse.json(listItems());
+      }),
+    );
+    renderRoute(`${PR}/comments`);
+    try {
+      await waitFor(() => expect(readOverview).toHaveBeenCalledOnce());
+      expect(readItems).not.toHaveBeenCalled();
+    } finally {
+      finishOverview();
+    }
+    await waitFor(() => expect(readItems).toHaveBeenCalledOnce());
+    if (status === 200) expect(await screen.findByRole("navigation", { name: "Queue" })).toBeVisible();
+    else expect(await screen.findByRole("alert")).toHaveTextContent("Overview unavailable.");
+  });
+
   it("opens the first question of Needs you; PR-level questions come last; j moves to the next", async () => {
     const router = renderRoute(`${PR}/comments`);
     expect(await screen.findByRole("heading", { name: /C21 · Retry cap is checked/ })).toHaveFocus();
     expect(await screen.findByText("Why you are asked again")).toBeVisible();
-    const headings = within(screen.getByRole("navigation", { name: "Queue" })).getAllByRole("heading");
-    expect(headings.map((h) => h.textContent)).toEqual([
-      "Needs you (10)",
-      expect.stringMatching(/^Previously decided \(\d+\)$/),
-      "Outside diffpilot (1)",
-      "PR-level (1)",
-    ]);
+    const queue = within(screen.getByRole("navigation", { name: "Queue" }));
+    expect(queue.getByRole("button", { name: /^Status: Needs you · 11/ })).toBeVisible();
+    expect(queue.getAllByRole("listitem").at(-1)).toHaveTextContent("P24");
     fireEvent.keyDown(document.body, { key: "j" });
     await waitFor(() => expect(router.state.location.search).toBe("?item=C12"));
   });
@@ -141,10 +257,8 @@ describe("V1 Questions (US3, US4, US11)", () => {
   it("a group can be split; Decide the rest leaves gate items out", async () => {
     renderRoute(`${PR}/comments?item=C18`);
     expect(await screen.findByRole("heading", { name: /Same recommendation: Reject/ })).toBeVisible();
-    await userEvent.click(await screen.findByRole("button", { name: /Decide the rest per recommendation/ }));
-    expect(
-      await screen.findByRole("heading", { name: /Decide the rest per recommendation — confirm/ }),
-    ).toBeVisible();
+    await userEvent.click(await screen.findByRole("button", { name: /^Decide the rest \(/ }));
+    expect(await screen.findByRole("heading", { name: /Decide the rest — confirm/ })).toBeVisible();
     expect(screen.getByRole("alert")).toHaveTextContent(
       /C14 \(gate item G-FUNDS\), C15 \(gate item G-SECRET\)/,
     );
@@ -165,7 +279,7 @@ describe("V1 Questions (US3, US4, US11)", () => {
     );
     expect(await within(chat).findByText("Why out of scope?")).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "View: Comments" }));
-    expect(screen.getByRole("link", { name: /Flows/ })).toHaveTextContent("Needs an analysis");
+    expect(screen.getByRole("menuitemradio", { name: /Flows/ })).toHaveTextContent("Needs an analysis");
   });
 
   it("GitHub read failure: the last read and the failure in plain words", async () => {
@@ -221,13 +335,16 @@ describe("V4–V6 and Settings → Notifications", () => {
     expect(await screen.findByRole("heading", { name: "Carry-overs on all pull requests" })).toBeVisible();
   });
 
-  it("watched list unwatches", async () => {
+  it("the watched filter opens in Pull requests and can stop a watch", async () => {
     renderRoute("/watching");
-    expect(await screen.findByRole("heading", { name: "Watched pull requests" })).toBeVisible();
-    expect(screen.getByRole("link", { name: /Watched PRs/ })).toHaveAttribute("aria-current", "page");
-    await userEvent.click(await screen.findByRole("button", { name: "Unwatch acme/node-client #482" }));
+    expect(await screen.findByRole("heading", { name: "Pull requests" })).toBeVisible();
+    expect(await screen.findByRole("button", { name: "Watched" })).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "More actions for acme/node-client #482" }),
+    );
+    await userEvent.click(screen.getByRole("menuitem", { name: "Stop watching" }));
     await waitFor(() =>
-      expect(screen.queryByRole("button", { name: "Unwatch acme/node-client #482" })).toBeNull(),
+      expect(screen.queryByRole("button", { name: "More actions for acme/node-client #482" })).toBeNull(),
     );
   });
 
@@ -243,12 +360,15 @@ describe("V4–V6 and Settings → Notifications", () => {
         ),
       ),
     );
+    await userEvent.click(screen.getByRole("button", { name: "Questions waiting" }));
     await userEvent.click(screen.getByRole("button", { name: "Read GitHub again" }));
     expect(await screen.findByText(/GitHub is not reachable\./)).toBeVisible();
     expect(screen.getByLabelText("Your comment on C22")).toHaveValue("keep the test small");
+    await screen.findByRole("button", { name: "Read GitHub again" });
     server.resetHandlers();
     await userEvent.click(screen.getByRole("button", { name: "Read GitHub again" }));
-    await waitFor(() => expect(screen.queryByText(/GitHub is not reachable\./)).toBeNull());
+    await screen.findByRole("button", { name: "Read GitHub again" });
+    expect(screen.queryByText(/GitHub is not reachable\./)).toBeNull();
     expect(screen.getByLabelText("Your comment on C22")).toHaveValue("keep the test small");
   });
 
@@ -298,5 +418,184 @@ describe("V4–V6 and Settings → Notifications", () => {
     await userEvent.click(within(webhook).getByRole("button", { name: "Send test" }));
     expect(await within(webhook).findByText(/Test failed: connection refused/)).toBeVisible();
     await act(async () => {});
+  });
+});
+
+describe("v1.4 review status", () => {
+  it("reports the same Needs you count in the PR card, Questions tab and queue", async () => {
+    setScenario("comments-v14");
+    server.use(
+      http.get("/api/v1/prs/acme/node-client/482", () => {
+        const page = prPage();
+        return HttpResponse.json({
+          ...page,
+          comments: { ...page.comments, counts: { ...page.comments.counts, undecided: 99 } },
+        });
+      }),
+      http.get("/api/v1/prs/acme/node-client/482/comments", () => {
+        const data = overview();
+        return HttpResponse.json({ ...data, counts: { ...data.counts, undecided: 98, needs_you_gates: 4 } });
+      }),
+    );
+    renderRoute(PR);
+    const panel = await screen.findByRole("region", { name: "Process PR comments" });
+    await waitFor(() =>
+      expect(within(panel).getByText("Needs you").nextElementSibling).toHaveTextContent(/^11/),
+    );
+    await userEvent.click(within(panel).getByRole("link", { name: "Open Comments →" }));
+    const queue = within(await screen.findByRole("navigation", { name: "Queue" }));
+    expect(queue.getByRole("button", { name: "Status: Needs you · 11, 4 gates" })).toBeVisible();
+    expect(screen.getByRole("link", { name: "Questions, 11 need you" })).toBeVisible();
+    expect(
+      within(screen.getByRole("complementary", { name: "PR panel" })).getByText("Needs you")
+        .nextElementSibling,
+    ).toHaveTextContent(/^11$/);
+  });
+
+  it.each([PR, `${PR}/comments`])(
+    "shows U22 status details on %s and restores focus on Escape",
+    async (path) => {
+      renderRoute(path);
+      const trigger = await screen.findByRole("button", { name: "Questions waiting" });
+      expect(screen.queryByText("PR Hygiene")).toBeNull();
+      await userEvent.click(trigger);
+      const panel = within(screen.getByRole("dialog", { name: "Pull request status" }));
+      expect(await panel.findByRole("heading", { name: /^PR Hygiene/ })).toBeVisible();
+      expect(await panel.findByRole("heading", { name: /^thepastaclaw status/ })).toBeVisible();
+      expect(panel.getByText(/CI: 2 passed, 1 pending/)).toBeVisible();
+      expect(panel.getAllByText(/data of/)).toHaveLength(2);
+      expect(panel.getByText(/Bot rounds: 4/)).toBeVisible();
+      await userEvent.tab();
+      expect(panel.getAllByRole("link")[0]).toHaveFocus();
+      await userEvent.keyboard("{Escape}");
+      expect(trigger).toHaveFocus();
+      expect(trigger).toHaveAttribute("aria-expanded", "false");
+    },
+  );
+
+  it("decides linked duplicate items with their primary and undoes the same decision together", async () => {
+    setScenario("comments-v14");
+    renderRoute(`${PR}/comments?item=C14`);
+    const question = await screen.findByRole("article", { name: /C14 · Retry may resend/ });
+    expect(within(question).getByText("Bot heading: Medium severity finding")).toBeVisible();
+    expect(screen.getByRole("link", { name: /C30 \(coderabbit/ })).toBeVisible();
+    await decideWhenPlanned();
+    expect(await screen.findByText(/C14: decision recorded/)).toBeInTheDocument();
+    for (const no of [30, 31])
+      expect(
+        listItems()
+          .find((item) => item.no === no)
+          ?.decisions.at(-1)?.kind,
+      ).toBe("fix_here");
+    await userEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(await screen.findByText(/C14: decision undone/)).toBeInTheDocument();
+    for (const no of [30, 31])
+      expect(
+        listItems()
+          .find((item) => item.no === no)
+          ?.decisions.at(-1)?.undone_at,
+      ).toBeTruthy();
+  });
+});
+
+describe("reviewing duplicates and deferred questions", () => {
+  it("shows a neutral assessment group when the server omits the current pass count", async () => {
+    setScenario("comments-v14");
+    server.use(
+      http.get("/api/v1/prs/acme/node-client/482/comments", () => {
+        const current = overview();
+        return HttpResponse.json({
+          ...current,
+          assessment: { ...current.assessment, in_pass: undefined, waiting: undefined, since: undefined },
+          counts: { ...current.counts, needs_you: 0, needs_you_gates: 0 },
+          queue: [],
+        });
+      }),
+      http.get("/api/v1/prs/acme/node-client/482/comments/items", () =>
+        HttpResponse.json(listItems().filter((item) => item.no === 34)),
+      ),
+    );
+    renderRoute(`${PR}/comments`);
+    const summary = await screen.findByRole("region", { name: "No questions need you now" });
+    expect(within(summary).getByRole("button", { name: "Pending or assessing · 1" })).toBeVisible();
+
+    const queue = within(screen.getByRole("navigation", { name: "Queue" }));
+    await userEvent.click(queue.getByRole("button", { name: "Status: Needs you · 0" }));
+    const pending = queue.getByRole("menuitemradio", { name: "Pending or assessing · 1" });
+    expect(pending).toHaveAccessibleDescription("Waiting for assessment or in an assessment pass.");
+    await userEvent.click(pending);
+    expect(queue.getByRole("button", { name: "Status: Pending or assessing · 1" })).toBeVisible();
+    await userEvent.click(queue.getByRole("button", { name: /^C34 .*pending or assessing$/ }));
+    expect(
+      within(screen.getByRole("article", { name: "C34" })).getByText("◌ pending or assessing"),
+    ).toBeVisible();
+  });
+
+  it("keeps legacy and gated duplicates individually decidable in Questions and Table", async () => {
+    setScenario("comments-v14");
+    const c30 = listItems().find((item) => item.no === 30)!;
+    const c31 = listItems().find((item) => item.no === 31)!;
+    Object.assign(c30, { decision_follows_primary: undefined });
+    Object.assign(c31, {
+      decision_follows_primary: true,
+      gates: [{ gate: "G-FUNDS", source: "owner" }],
+      state: "assessing",
+      assessment_state: { state: "running" },
+    });
+    renderRoute(`${PR}/comments?item=C14`);
+    const queue = within(await screen.findByRole("navigation", { name: "Queue" }));
+    expect(queue.getByRole("button", { name: "Status: Needs you · 13, 3 gates" })).toBeVisible();
+    expect(screen.queryByText(/Deciding C14 decides them too/)).toBeNull();
+    await userEvent.click(queue.getByRole("button", { name: /^C30/ }));
+    const question = await screen.findByRole("article", { name: /^C30 ·/ });
+    expect(within(question).getByRole("button", { name: "Decide" })).toBeVisible();
+    await userEvent.click(within(question).getByRole("link", { name: "Same point as C14" }));
+    expect(await screen.findByRole("heading", { name: /^C14 ·/ })).toHaveFocus();
+    await userEvent.click(screen.getByRole("link", { name: "Table" }));
+    expect(await screen.findByRole("combobox", { name: /^Decision for C30/ })).toBeVisible();
+    expect(screen.getByRole("combobox", { name: /^Decision for C31.*gate item/ })).toBeVisible();
+  });
+
+  it("shows counts and routes to pending views when nothing needs you now", async () => {
+    setScenario("comments-v14");
+    listItems().find((item) => item.no === 30)!.state = "assessing";
+    listItems().find((item) => item.no === 37)!.assessment_state = {
+      state: "not_assessed",
+      reason: "missing",
+    };
+    server.use(
+      http.get("/api/v1/prs/acme/node-client/482/comments", () =>
+        HttpResponse.json({ ...overview(), queue: [] }),
+      ),
+      http.get("/api/v1/prs/acme/node-client/482/comments/items", () =>
+        HttpResponse.json(listItems().filter((item) => [30, 31, 34, 35, 36, 37].includes(item.no))),
+      ),
+    );
+    renderRoute(`${PR}/comments`);
+    const summary = await screen.findByRole("region", { name: "No questions need you now" });
+    expect(within(summary).getByRole("button", { name: "Assessing now · 1" })).toBeVisible();
+    expect(within(summary).getByRole("button", { name: "Waiting for assessment · 1" })).toBeVisible();
+    expect(within(summary).getByRole("button", { name: "Duplicates · 2" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "No undecided questions" })).toBeNull();
+    await userEvent.click(within(summary).getByRole("button", { name: "Not assessed · 2" }));
+    const queue = within(screen.getByRole("navigation", { name: "Queue" }));
+    expect(queue.getByRole("button", { name: /^C37/ })).toHaveTextContent(
+      "Not assessed: left out of the pass",
+    );
+  });
+
+  it.each([
+    ["table", "Table"],
+    ["log", "Decision log and agents"],
+    ["carry-overs", "Carry-overs"],
+  ])("hides assessment without leaving the %s tab", async (path, tab) => {
+    setScenario("comments-v14");
+    const router = renderRoute(`${PR}/comments/${path}`);
+    const note = path === "table" ? await screen.findByLabelText("Your comment on C22") : null;
+    if (note) await userEvent.type(note, "Keep this draft");
+    await userEvent.click(await screen.findByRole("button", { name: "Hide" }));
+    expect(router.state.location.pathname).toBe(`${PR}/comments/${path}`);
+    expect(screen.getByRole("link", { name: tab })).toHaveFocus();
+    if (note) expect(screen.getByLabelText("Your comment on C22")).toHaveValue("Keep this draft");
   });
 });

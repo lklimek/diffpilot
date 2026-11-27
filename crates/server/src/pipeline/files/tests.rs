@@ -79,6 +79,7 @@ fn step(id: &str, path: &str, side: LineSide, range: LineRange) -> Step {
         id: StepId(id.to_owned()),
         number: 1,
         facts: StepFacts {
+            leading_context: None,
             file: path.to_owned(),
             side,
             range,

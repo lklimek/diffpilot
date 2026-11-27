@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Navigate, useLocation, useNavigate, useParams } from "react-router";
-import { ApiError } from "../../api/client";
+import { ApiError, errorText } from "../../api/client";
 import { routes } from "../../api/generated/routes";
 import type {
   AnalysisId,
@@ -65,19 +65,26 @@ import { HelpDialog } from "../../components/help/HelpDialog";
 import { FILES_SHORTCUTS, shortcutAction } from "../../components/help/shortcuts";
 import { useSectionState } from "../../components/inspector/sectionState";
 import { StatusMessage } from "../../components/status/StatusMessage";
-import { TopBar } from "../../components/top-bar/TopBar";
-import { DiffCode, errorText, MAX_RANGE_LINES, useHideContextChanges, type CodeContext } from "../tour/code";
+import { ReviewTopBar } from "../shell/ReviewTopBar";
+import { DiffCode, MAX_RANGE_LINES, useHideContextChanges, type CodeContext } from "../tour/code";
 import { flagComment } from "../../components/comment/prefill";
 import { useCommentDrafts, useUnresolvedPosts } from "../tour/drafts";
 import { InspectorPane, type CommentLineState, type FilesInspector } from "../tour/InspectorPane";
 import { loadLayout, saveLayout, showColumn, type TourLayout } from "../tour/layout";
-import { checksHref, isTyping, pendingCountOf, transient, useNoPageScroll } from "../tour/review";
+import {
+  checksHref,
+  isTyping,
+  openGithubLine,
+  pendingCountOf,
+  transient,
+  useNoPageScroll,
+} from "../tour/review";
 import { FlowsMenu } from "../tour/FlowsMenu";
 import { Workspace } from "../tour/Workspace";
 import { useAskChat, useAskPlace, type AnswerDraft } from "../review/askChat";
 import { rangeText } from "../../components/section/format";
 import { FileCode } from "./FileCode";
-import { commentsPath } from "../pr/paths";
+import { commentsPath, prPath } from "../pr/paths";
 
 const short = (sha: string) => sha.slice(0, 7);
 const lastKey = (id: AnalysisId) => `diffpilot.files.last.${id}`;
@@ -137,7 +144,7 @@ export function FilesScreen() {
 function Shell({ login, children }: { login: string | null; children: ReactNode }) {
   return (
     <div className="flex min-h-screen flex-col">
-      <TopBar login={login} />
+      <ReviewTopBar login={login} />
       <main id="main" className="grid gap-3 px-8 py-5">
         {children}
       </main>
@@ -558,6 +565,17 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
         case "toggle_old_code":
           if (!file.not_rendered) setOldCode((s) => !s);
           return;
+        case "github_line":
+          event.preventDefault();
+          return openGithubLine(
+            mainRef.current,
+            lines
+              ? {
+                  side: lines.side,
+                  line: subject.kind === "lines" ? lines.to : lines.from,
+                }
+              : undefined,
+          );
         case "comment":
           event.preventDefault();
           return commentOnCurrentLine();
@@ -589,9 +607,19 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
     return () => document.removeEventListener("keydown", onKey);
   });
 
+  const askRemark = (remark: Annotation) => {
+    const facts = ownerOf.get(remark.id)?.step.facts;
+    if (facts)
+      chat.open({
+        anchor: { kind: "lines", path: facts.file, side: facts.side, range: remark.range },
+        remark,
+      });
+  };
   const ctx: CodeContext = {
     hideContextChanges,
     analysisId,
+    pr: tour.analysis.pr,
+    files: files.files,
     threads: tour.threads,
     comments: pending.data?.comments ?? [],
     activeLine: commentLine?.target ?? null,
@@ -609,6 +637,7 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
     onEditComment: comments.edit,
     onDeleteComment: comments.remove,
     onShowInInspector: showInInspector,
+    onAskRemark: askRemark,
   };
 
   // Ask: the subject's lines, with their step when every changed line lies in one step (A4).
@@ -660,6 +689,8 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
       query={{ path: pathOn(file, lines.side), side: lines.side, from: lines.from, to: lines.to }}
       comments={{
         comments: pending.data?.comments ?? [],
+        pr: tour.analysis.pr,
+        files: files.files,
         onEditComment: comments.edit,
         onDeleteComment: comments.remove,
       }}
@@ -777,6 +808,7 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
     diff,
     onEvidence,
     onFlagAsComment,
+    onAskRemark: askRemark,
     onFlag: (flag) => showInInspector({ kind: "annotation", id: flag.id }),
   };
   const panel =
@@ -934,8 +966,9 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
       >
         Skip to content
       </a>
-      <TopBar
+      <ReviewTopBar
         pr={tour.analysis.pr}
+        currentPath={file.path}
         ci={tour.pr_context.facts.ci}
         checksHref={checksHref(tour.analysis.pr)}
         language={tour.analysis.language}
@@ -963,7 +996,7 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
           filesHref: `${location.pathname}${location.hash}`,
           depsHref: `/analyses/${analysisId}/deps`,
           commentsHref: commentsPath(tour.analysis.pr),
-          prContextHref: `${flowsHref}#pr_context`,
+          prPageHref: prPath(tour.analysis.pr),
           onNavigate: (href) => void navigate(href),
         }}
       />
@@ -1006,7 +1039,7 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
             unresolved={unresolved}
             onUnresolvedChange={setUnresolved}
             drafts={drafts}
-            reanalyseHref={`/review?pr=${encodeURIComponent(tour.analysis.pr.html_url)}`}
+            reanalyseHref={prPath(tour.analysis.pr)}
             sections={sections}
             commentRef={commentRef}
             commentPrefill={commentPrefill}

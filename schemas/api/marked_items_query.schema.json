@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MarkedItemsQuery",
+  "description": "Pagination query for the tenant's marked items.",
+  "type": "object",
+  "properties": {
+    "cursor": {
+      "description": "Cursor from the previous page.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    }
+  }
+}

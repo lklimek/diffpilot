@@ -5,10 +5,11 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use contracts::api::dashboard::RefreshStatus;
+use contracts::api::dashboard::{ItemKey, RefreshStatus};
 use contracts::ids::RefreshId;
 use contracts::time::Timestamp;
 use jiff::SignedDuration;
@@ -16,8 +17,8 @@ use jiff::civil::Date;
 use tokio::sync::broadcast;
 use tokio::task::AbortHandle;
 
-use super::fresh::Readers;
 use super::judge::JudgeRanker;
+use super::refresh::Scope;
 #[cfg(test)]
 use super::refresh::rank::NoopRanker;
 use super::refresh::rank::Ranker;
@@ -27,6 +28,8 @@ use crate::github::work::SEARCH_INTERVAL;
 pub const SCAN_LIMIT: Duration = Duration::from_secs(5 * 60);
 /// Status events buffered per subscriber; a slower reader re-reads the status.
 const EVENTS_CAPACITY: usize = 256;
+/// Minimum gap between warnings for the same dashboard tally failure.
+const TALLY_WARNING_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Where the dashboard reads the time.
 #[derive(Clone, Copy, Debug)]
@@ -78,8 +81,169 @@ struct Inner {
     stopped: broadcast::Sender<RefreshId>,
     /// Scheduled runs given up for a user's local date after a failure the run record could not hold.
     given_up: Mutex<HashSet<(String, Date)>>,
-    /// Who has My work open, and their fact checks (plan §M).
+    scheduler_started: AtomicBool,
+    // None is the batch itself. Pull-request ids share one database across users.
+    tally_warnings: Mutex<HashMap<Option<i64>, tokio::time::Instant>>,
     readers: Readers,
+}
+
+type UserKey = (String, String);
+
+fn key(scope: &Scope) -> UserKey {
+    (scope.tenant_id.clone(), scope.user_id.clone())
+}
+
+#[derive(Debug, Default)]
+struct ReaderState {
+    limited_until: HashMap<UserKey, Timestamp>,
+    writers: HashMap<UserKey, Arc<tokio::sync::Mutex<()>>>,
+    rejudges: HashMap<UserKey, Rejudges>,
+}
+
+#[derive(Debug, Default)]
+struct Rejudges {
+    waiting: HashSet<ItemKey>,
+    dedicated: Option<DedicatedRejudges>,
+}
+
+#[derive(Debug)]
+struct DedicatedRejudges {
+    refresh: RefreshId,
+    attempt: u32,
+    targets: HashSet<ItemKey>,
+}
+
+/// Serializes snapshot reads that write facts and ranking transitions, and remembers GitHub rate limits.
+#[derive(Debug, Default)]
+pub(crate) struct Readers {
+    state: Mutex<ReaderState>,
+}
+
+impl Readers {
+    fn state(&self) -> MutexGuard<'_, ReaderState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Coordinates snapshot writers with re-judge requests and the ranking drain.
+    pub(crate) async fn writer(&self, scope: &Scope) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = self.state().writers.entry(key(scope)).or_default().clone();
+        lock.lock_owned().await
+    }
+
+    /// Tracks accepted clicks until a ranking takes responsibility for them. Writers hold the user's guard.
+    pub(super) fn queue_rejudge(&self, scope: &Scope, item: ItemKey) {
+        self.state()
+            .rejudges
+            .entry(key(scope))
+            .or_default()
+            .waiting
+            .insert(item);
+    }
+
+    pub(super) fn has_waiting_rejudges(&self, scope: &Scope) -> bool {
+        self.state()
+            .rejudges
+            .get(&key(scope))
+            .is_some_and(|work| !work.waiting.is_empty())
+    }
+
+    pub(super) fn start_rejudge_attempt(&self, scope: &Scope, refresh: RefreshId, attempt: u32) {
+        let mut state = self.state();
+        let work = state.rejudges.entry(key(scope)).or_default();
+        work.dedicated = Some(DedicatedRejudges {
+            refresh,
+            attempt,
+            targets: std::mem::take(&mut work.waiting),
+        });
+    }
+
+    pub(crate) fn rejudge_targets(
+        &self,
+        scope: &Scope,
+        refresh: RefreshId,
+        attempt: u32,
+    ) -> Option<HashSet<ItemKey>> {
+        let state = self.state();
+        let work = state.rejudges.get(&key(scope))?;
+        let dedicated = work.dedicated.as_ref()?;
+        (dedicated.refresh == refresh && dedicated.attempt == attempt)
+            .then(|| dedicated.targets.union(&work.waiting).cloned().collect())
+    }
+
+    pub(super) fn rejudges_dispatched<'a>(
+        &self,
+        scope: &Scope,
+        refresh: RefreshId,
+        attempt: u32,
+        items: impl Iterator<Item = &'a ItemKey>,
+    ) {
+        let mut state = self.state();
+        let Some(work) = state.rejudges.get_mut(&key(scope)) else {
+            return;
+        };
+        for item in items {
+            if let Some(item) = work.waiting.take(item)
+                && let Some(dedicated) = work.dedicated.as_mut()
+                && dedicated.refresh == refresh
+                && dedicated.attempt == attempt
+            {
+                dedicated.targets.insert(item);
+            }
+        }
+        if work.dedicated.is_none() && work.waiting.is_empty() {
+            state.rejudges.remove(&key(scope));
+        }
+    }
+
+    pub(super) fn end_rejudge_attempt(&self, scope: &Scope, refresh: RefreshId, attempt: u32) {
+        let mut state = self.state();
+        let Some(work) = state.rejudges.get_mut(&key(scope)) else {
+            return;
+        };
+        if work
+            .dedicated
+            .as_ref()
+            .is_some_and(|dedicated| dedicated.refresh == refresh && dedicated.attempt == attempt)
+        {
+            work.dedicated = None;
+        }
+        if work.dedicated.is_none() && work.waiting.is_empty() {
+            state.rejudges.remove(&key(scope));
+        }
+    }
+
+    /// The user's GitHub backoff, shared by scans and targeted re-reads.
+    pub(crate) fn limited_until(&self, scope: &Scope, now: Timestamp) -> Option<Timestamp> {
+        self.state()
+            .limited_until
+            .get(&key(scope))
+            .copied()
+            .filter(|at| *at > now)
+    }
+
+    /// Remembers a rate limit found outside a full scan; unknown retry times wait five minutes.
+    pub(crate) fn remember_limit(
+        &self,
+        scope: &Scope,
+        error: &crate::github::work::WorkError,
+        now: Timestamp,
+    ) {
+        use crate::github::work::WorkError;
+        let retry = match error {
+            WorkError::PrimaryRateLimit { reset } => *reset,
+            WorkError::SecondaryRateLimit { retry_after } => retry_after
+                .and_then(|wait| SignedDuration::try_from(wait).ok())
+                .and_then(|wait| now.checked_add(wait)),
+            _ => return,
+        };
+        let retry = retry.unwrap_or(now + SignedDuration::from_mins(5));
+        let mut state = self.state();
+        state
+            .limited_until
+            .entry(key(scope))
+            .and_modify(|at| *at = (*at).max(retry))
+            .or_insert(retry);
+    }
 }
 
 /// Announces the end of a refresh's task, also when it is aborted (dropped at an await).
@@ -150,9 +314,15 @@ impl DashboardHub {
                 events: broadcast::channel(EVENTS_CAPACITY).0,
                 stopped: broadcast::channel(EVENTS_CAPACITY).0,
                 given_up: Mutex::default(),
+                scheduler_started: AtomicBool::default(),
+                tally_warnings: Mutex::default(),
                 readers: Readers::default(),
             }),
         }
+    }
+
+    pub(super) fn claim_scheduler(&self) -> bool {
+        !self.inner.scheduler_started.swap(true, Ordering::SeqCst)
     }
 
     /// The current time.
@@ -170,14 +340,30 @@ impl DashboardHub {
         self.inner.search_interval
     }
 
-    /// Who has My work open (plan §M).
-    pub fn readers(&self) -> &Readers {
+    /// Coordinates targeted re-reads of the same snapshot.
+    pub(crate) fn readers(&self) -> &Readers {
         &self.inner.readers
     }
 
     /// The ranking step.
     pub fn ranker(&self) -> Arc<dyn Ranker> {
         Arc::clone(&self.inner.ranker)
+    }
+
+    /// Reserves one warning per batch or PR across dashboard polls during the warning interval.
+    pub(crate) fn tally_warning_due(&self, pr: Option<i64>) -> bool {
+        let now = tokio::time::Instant::now();
+        let mut warnings = self
+            .inner
+            .tally_warnings
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        warnings.retain(|_, deadline| *deadline > now);
+        let std::collections::hash_map::Entry::Vacant(entry) = warnings.entry(pr) else {
+            return false;
+        };
+        entry.insert(now + TALLY_WARNING_INTERVAL);
+        true
     }
 
     /// Status events of every refresh; readers keep their own refresh's.
@@ -270,6 +456,21 @@ impl DashboardHub {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn tally_warnings_are_throttled_independently_per_pull_request_and_batch() {
+        let hub = DashboardHub::default();
+        assert!(hub.tally_warning_due(None));
+        assert!(hub.tally_warning_due(Some(1)));
+        assert!(hub.tally_warning_due(Some(2)));
+        assert!(!hub.tally_warning_due(Some(1)));
+        assert!(!hub.tally_warning_due(None));
+        tokio::time::advance(std::time::Duration::from_secs(59)).await;
+        assert!(!hub.tally_warning_due(Some(1)));
+        tokio::time::advance(std::time::Duration::from_secs(1)).await;
+        assert!(hub.tally_warning_due(Some(1)));
+        assert!(hub.tally_warning_due(None));
+    }
 
     #[test]
     fn production_hubs_pace_searches_three_seconds_apart() {

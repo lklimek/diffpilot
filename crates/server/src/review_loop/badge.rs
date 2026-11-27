@@ -169,7 +169,11 @@ pub struct BadgeInputs {
     /// Failed effects.
     pub failed_effects: u32,
     /// Undecided questions.
-    pub undecided: u32,
+    pub needs_you: u32,
+    /// Open non-bot review points without a stored assessment.
+    pub pending_human_review: u32,
+    /// Open non-bot review points with a stored assessment that a running pass includes.
+    pub reassessing_human_review: u32,
     /// Decisions with open or claimed effects.
     pub executing: u32,
     /// thepastaclaw reviews or queues this PR (plug-in, or its gate comment).
@@ -227,9 +231,9 @@ pub fn badge(inputs: &BadgeInputs) -> PrBadgeView {
         view.badge = Some(PrBadge::BlockedFailing);
         return view;
     }
-    if inputs.undecided > 0 {
+    if inputs.needs_you > 0 {
         view.facts.push(plural(
-            inputs.undecided,
+            inputs.needs_you,
             "undecided question",
             "undecided questions",
         ));
@@ -252,6 +256,22 @@ pub fn badge(inputs: &BadgeInputs) -> PrBadgeView {
         return view;
     }
     let mut ready = view.missing.is_empty();
+    if inputs.pending_human_review > 0 {
+        view.facts.push(plural(
+            inputs.pending_human_review,
+            "review item not assessed yet",
+            "review items not assessed yet",
+        ));
+        ready = false;
+    }
+    if inputs.reassessing_human_review > 0 {
+        view.facts.push(plural(
+            inputs.reassessing_human_review,
+            "review item being assessed again",
+            "review items being assessed again",
+        ));
+        ready = false;
+    }
     match inputs.ci {
         Some(CiState::Passing | CiState::NoFailures) => view.facts.push("CI passed".to_owned()),
         Some(CiState::None) => view.facts.push("No CI checks reported".to_owned()),
@@ -313,6 +333,17 @@ mod tests {
         Relation,
     };
 
+    use contracts::api::pr::PrSummary;
+    use contracts::api::review_loop::{
+        AuthorKind, CommentItemKind, ItemGithubFacts, ItemState, WatchState,
+    };
+    use contracts::common::PrRef;
+    use contracts::ids::CommitSha;
+    use db::repo::DEFAULT_TENANT;
+    use db::repo::review_loop::{ObservedItem, ReadResult};
+    use db::repo::users::GithubProfile;
+    use serde_json::json;
+
     fn platform() -> RepoRef {
         RepoRef {
             owner: "dashpay".into(),
@@ -325,6 +356,7 @@ mod tests {
     fn mergeable_pr() -> StoredPr {
         let at: Timestamp = "2026-11-22T09:00:00Z".parse().expect("time");
         StoredPr {
+            stack: None,
             facts: PrFacts {
                 repo: platform(),
                 number: 5949,
@@ -369,13 +401,13 @@ mod tests {
             },
             private: false,
             head_sha: "abc123".into(),
+            head_repository: None,
             base_sha: Some("b45e00".into()),
             created_at: at,
             ci_red: vec![],
             ci_pending: vec![],
             ci_ignored: vec!["PR Hygiene (FAILURE)".into()],
             linked_issues: vec![],
-            mark: None,
         }
     }
 
@@ -596,7 +628,7 @@ mod tests {
         assert_eq!(
             badge(&BadgeInputs {
                 draft: true,
-                undecided: 1,
+                needs_you: 1,
                 ..ready()
             })
             .badge,
@@ -621,6 +653,375 @@ mod tests {
         );
     }
 
+    async fn ready_pr_fixture() -> (AppState, super::super::PrHandle, MyWork) {
+        let scanned = mergeable_pr();
+        let work = MyWork::new(
+            "alice",
+            &DashboardSettings::default(),
+            std::slice::from_ref(&scanned),
+        );
+        let state = AppState::with_queue(
+            crate::config::tests::test_config(),
+            db::repo::Db::in_memory().await.unwrap(),
+        );
+        let now = Timestamp::now();
+        state
+            .db
+            .users()
+            .upsert_member(
+                DEFAULT_TENANT,
+                "u1",
+                &GithubProfile {
+                    github_id: 1,
+                    login: "alice".into(),
+                    name: None,
+                    avatar_url: None,
+                },
+                now,
+            )
+            .await
+            .unwrap();
+        let repo = state
+            .db
+            .repos()
+            .upsert(DEFAULT_TENANT, &scanned.facts.repo, None)
+            .await
+            .unwrap();
+        let head = CommitSha(scanned.head_sha.clone());
+        let base = scanned.base_sha.unwrap();
+        let number = scanned.facts.number;
+        let pr = state
+            .db
+            .pull_requests()
+            .upsert(
+                DEFAULT_TENANT,
+                repo.id,
+                &PrSummary {
+                    repo: repo.repo.clone(),
+                    number,
+                    title: "Fixture".into(),
+                    author: "alice".into(),
+                    html_url: "https://github.com/dashpay/platform/pull/5949".into(),
+                    base_sha: CommitSha(base.clone()),
+                    head_sha: head.clone(),
+                },
+                now,
+            )
+            .await
+            .unwrap();
+        let rl = state.db.review_loop();
+        rl.ensure_pr(DEFAULT_TENANT, pr, now).await.unwrap();
+        rl.record_read(pr, &ReadResult::Read {
+            snapshot: json!({
+                "title": "Fixture", "url": "", "state": "OPEN", "draft": false,
+                "base": "v3.1-dev", "head": head.0, "base_sha": base,
+                "rounds": [], "bot_change_requests": [], "changes_requested_by": [],
+                "ci": {"state": "passing", "total": 0, "check_runs": null, "statuses": null, "failing": []},
+                "counts": [0, 0, 1], "complete": true, "unresolved_threads": 0,
+                "thread_ids": {}, "review_ids": {}
+            }),
+            round_count: 0,
+        }, now).await.unwrap();
+        let handle = super::super::PrHandle {
+            id: pr,
+            pr: PrRef {
+                repo: repo.repo,
+                number,
+            },
+        };
+        (state, handle, work)
+    }
+
+    fn observed_comment() -> ObservedItem {
+        ObservedItem {
+            kind: CommentItemKind::PrComment,
+            stable_key: "comment:1:1".into(),
+            author: "reviewer".into(),
+            author_kind: AuthorKind::Human,
+            status_comment: false,
+            url: None,
+            location: None,
+            title: "Check the edge case".into(),
+            body: "Please check the empty input.".into(),
+            body_hash: "body".into(),
+            head: CommitSha("abc123".into()),
+            round: None,
+            bot_severity: None,
+            github: ItemGithubFacts {
+                resolved: None,
+                resolved_by: None,
+                outdated: None,
+                bot_status: None,
+                edited_after_decision: false,
+                replies: 0,
+                marker: None,
+            },
+            outside: None,
+        }
+    }
+
+    fn merge_question(round: u32) -> ObservedItem {
+        ObservedItem {
+            kind: CommentItemKind::PrQuestion,
+            stable_key: format!("pr:{round}:merge"),
+            author: "diffpilot".into(),
+            author_kind: AuthorKind::Diffpilot,
+            round: Some(round),
+            ..observed_comment()
+        }
+    }
+
+    #[tokio::test]
+    async fn watched_pr_at_daily_limit_with_unassessed_human_comment_is_not_ready() {
+        let (state, handle, work) = ready_pr_fixture().await;
+        let now = Timestamp::now();
+        let rl = state.db.review_loop();
+        rl.watch(DEFAULT_TENANT, "u1", handle.id, 20, now)
+            .await
+            .unwrap();
+        rl.set_watch_state("u1", handle.id, WatchState::LimitReached, now)
+            .await
+            .unwrap();
+        let view = || super::super::views::badge(&state, handle.clone(), &work);
+        assert_eq!(view().await.unwrap().badge, Some(PrBadge::ReadyToMerge));
+        rl.upsert_item(
+            DEFAULT_TENANT,
+            handle.id,
+            &observed_comment(),
+            ItemState::Undecided,
+            now,
+        )
+        .await
+        .unwrap();
+        assert_eq!(view().await.unwrap().badge, None);
+    }
+
+    #[tokio::test]
+    async fn old_round_pr_questions_do_not_veto_ready_to_merge() {
+        let (state, handle, work) = ready_pr_fixture().await;
+        let rl = state.db.review_loop();
+        for (round, status) in [(3, ItemState::Undecided), (4, ItemState::Assessing)] {
+            rl.upsert_item(
+                DEFAULT_TENANT,
+                handle.id,
+                &merge_question(round),
+                status,
+                Timestamp::now(),
+            )
+            .await
+            .unwrap();
+        }
+        let view = super::super::views::badge(&state, handle, &work)
+            .await
+            .unwrap();
+        assert_eq!(view.badge, Some(PrBadge::ReadyToMerge), "{view:?}");
+    }
+
+    #[tokio::test]
+    async fn already_assessed_comment_in_running_pass_vetoes_ready_to_merge() {
+        use contracts::api::review_loop::CommentAssessment;
+        use contracts::ids::JobId;
+        use db::repo::review_loop::{NewPass, PassCause, PassStart, SentItem, UpsertOutcome};
+
+        let (state, handle, work) = ready_pr_fixture().await;
+        let rl = state.db.review_loop();
+        let now = Timestamp::now();
+        let observed = observed_comment();
+        let UpsertOutcome::New(item) = rl
+            .upsert_item(
+                DEFAULT_TENANT,
+                handle.id,
+                &observed,
+                ItemState::Assessing,
+                now,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("new review item")
+        };
+        let job = JobId::new_random();
+        let assessment: CommentAssessment = serde_json::from_value(json!({
+            "job": job, "head": observed.head, "assessed_at": now, "validity": "valid",
+            "evidence": [], "category": "correctness", "necessity": {"verdict": "in", "reason": "Check input"},
+            "gates": [], "elsewhere": [], "reply_drafts": [],
+            "recommendation": {"kind": "fix_here", "reason": "Check input", "reason_class": "correctness"},
+            "prompt_version": 1
+        })).unwrap();
+        rl.add_assessment(DEFAULT_TENANT, item.id, &assessment, "old")
+            .await
+            .unwrap();
+        let PassStart::Started(pass) = rl
+            .start_pass(
+                DEFAULT_TENANT,
+                &NewPass {
+                    pull_request_id: handle.id,
+                    user_id: Some("u1".into()),
+                    cause: PassCause::AssessAgain,
+                    head: observed.head,
+                    sent: vec![SentItem {
+                        item: item.id,
+                        no: item.no,
+                        fingerprint: "new".into(),
+                    }],
+                    question: None,
+                },
+                now,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("new pass")
+        };
+        let view = || super::super::views::badge(&state, handle.clone(), &work);
+        let reassessing = "1 review item being assessed again".to_owned();
+        let queued = view().await.unwrap();
+        assert_eq!(queued.badge, Some(PrBadge::ReadyToMerge));
+        assert!(!queued.facts.contains(&reassessing));
+        assert!(
+            !queued
+                .facts
+                .contains(&"1 review item not assessed yet".to_owned())
+        );
+        rl.pass_running(pass, job).await.unwrap();
+        let during = view().await.unwrap();
+        assert_eq!(during.badge, None);
+        assert!(during.facts.contains(&reassessing), "{during:?}");
+        assert!(
+            !during
+                .facts
+                .contains(&"1 review item not assessed yet".to_owned())
+        );
+        rl.finish_pass(pass, true, Timestamp::now()).await.unwrap();
+        let finished = view().await.unwrap();
+        assert_eq!(finished.badge, Some(PrBadge::ReadyToMerge));
+        assert!(!finished.facts.contains(&reassessing));
+    }
+
+    #[tokio::test]
+    async fn comment_handed_to_follow_up_does_not_veto_ready_to_merge() {
+        use contracts::api::access_tokens::TokenScope;
+        use contracts::api::review_loop::{
+            DecisionKind, DecisionVia, EffectKind, EffectParams, Executor, ReportOutcome,
+        };
+        use db::repo::review_loop::{
+            ClaimOutcome, DecideOutcome, NewDecision, NewEffect, ReportOutcomeRecord,
+            ReportRequest, UpsertOutcome,
+        };
+        use jiff::SignedDuration;
+
+        let (state, handle, work) = ready_pr_fixture().await;
+        let rl = state.db.review_loop();
+        let now = Timestamp::now();
+        let observed = observed_comment();
+        let UpsertOutcome::New(comment) = rl
+            .upsert_item(
+                DEFAULT_TENANT,
+                handle.id,
+                &observed,
+                ItemState::Undecided,
+                now,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("new review item")
+        };
+        let UpsertOutcome::New(question) = rl
+            .upsert_item(
+                DEFAULT_TENANT,
+                handle.id,
+                &merge_question(3),
+                ItemState::Undecided,
+                now,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("new merge question")
+        };
+        let DecideOutcome::Stored(decisions) = rl
+            .decide(
+                DEFAULT_TENANT,
+                &[NewDecision {
+                    origin: None,
+                    item: question.id,
+                    item_revision: question.revision,
+                    user_id: "u1".into(),
+                    kind: DecisionKind::MergeWithFollowUps,
+                    reason: None,
+                    target: None,
+                    r#override: None,
+                    resolve_ticked: false,
+                    reply_text: None,
+                    comment: None,
+                    recommendation: None,
+                    via: DecisionVia::Question,
+                    carried_from: None,
+                    head: observed.head,
+                    effects: vec![NewEffect {
+                        seq: 1,
+                        after: None,
+                        kind: EffectKind::FollowUpPr,
+                        executor: Executor::Agent,
+                        params: EffectParams {
+                            item_nos: vec![comment.no],
+                            ..EffectParams::default()
+                        },
+                    }],
+                }],
+                now,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("new merge decision")
+        };
+        let decision = &decisions[0];
+        let (_, agent) = crate::auth::access_tokens::stored_token(
+            &state.db,
+            "u1",
+            vec![TokenScope::ReviewLoopExecute],
+            now + SignedDuration::from_hours(1),
+        )
+        .await;
+        let lease = SignedDuration::from_mins(5);
+        assert!(matches!(
+            rl.claim(
+                decision.id,
+                &agent.token_id,
+                &[EffectKind::FollowUpPr],
+                lease,
+                now
+            )
+            .await
+            .unwrap(),
+            ClaimOutcome::Claimed(_)
+        ));
+        assert_eq!(
+            rl.report(
+                DEFAULT_TENANT,
+                decision.effects[0].id,
+                &agent.token_id,
+                &ReportRequest {
+                    outcome: ReportOutcome::Done,
+                    reference: Some("https://github.com/dashpay/platform/pull/5950".into()),
+                    message: None,
+                    idempotency_key: "follow-up".into(),
+                },
+                lease,
+                now
+            )
+            .await
+            .unwrap(),
+            ReportOutcomeRecord::Recorded
+        );
+        let view = super::super::views::badge(&state, handle, &work)
+            .await
+            .unwrap();
+        assert_eq!(view.badge, Some(PrBadge::ReadyToMerge), "{view:?}");
+    }
+
     fn ready() -> BadgeInputs {
         BadgeInputs {
             open: true,
@@ -631,11 +1032,31 @@ mod tests {
     }
 
     #[test]
+    fn badge_counts_first_assessments_and_reassessments_separately() {
+        let view = badge(&BadgeInputs {
+            pending_human_review: 1,
+            reassessing_human_review: 2,
+            ..ready()
+        });
+        assert_eq!(view.badge, None);
+        assert!(
+            view.facts
+                .iter()
+                .any(|fact| fact == "1 review item not assessed yet")
+        );
+        assert!(
+            view.facts
+                .iter()
+                .any(|fact| fact == "2 review items being assessed again")
+        );
+    }
+
+    #[test]
     fn state_badge_precedence_and_unknown_inputs() {
         assert_eq!(badge(&ready()).badge, Some(PrBadge::ReadyToMerge));
         let all = BadgeInputs {
             failed_effects: 1,
-            undecided: 2,
+            needs_you: 2,
             executing: 3,
             bot_round: true,
             ..ready()
@@ -648,7 +1069,7 @@ mod tests {
         assert_eq!(badge(&b2).badge, Some(PrBadge::QuestionsWaiting));
         assert_eq!(badge(&b2).facts, ["2 undecided questions"]);
         let b3 = BadgeInputs {
-            undecided: 0,
+            needs_you: 0,
             ..b2.clone()
         };
         assert_eq!(badge(&b3).badge, Some(PrBadge::Executing));
@@ -712,7 +1133,7 @@ mod tests {
         }
         let unknown_but_blocked = BadgeInputs {
             ci: None,
-            undecided: 1,
+            needs_you: 1,
             ..ready()
         };
         assert_eq!(

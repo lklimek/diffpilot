@@ -7,7 +7,6 @@ import type {
   CommentItem,
   DecideRequest,
   DecideRest,
-  DecisionBatchRow,
   DecisionKind,
   EffectKind,
   EffectParams,
@@ -147,6 +146,16 @@ class Builder {
 
 /** Validates `request` against `item` and plans its effects (effects.rs `plan`); a string is the refusal. */
 export function plan(item: CommentItem, request: DecideRequest, scope: PlanScope): Planned | DecisionError {
+  const marking = request.kind === "not_a_review_point";
+  if (
+    marking &&
+    (item.kind === "pr_question" ||
+      item.status_comment ||
+      item.not_a_review_point ||
+      item.gone_at ||
+      !["undecided", "reopened", "asked_back"].includes(item.state))
+  )
+    return ERROR.kindNotOffered;
   if (!offered(item, request.kind)) return ERROR.kindNotOffered;
   if (tooLong(request.reason) || tooLong(request.reply_text) || tooLong(request.comment))
     return ERROR.tooLong;
@@ -172,7 +181,9 @@ export function plan(item: CommentItem, request: DecideRequest, scope: PlanScope
     if (tooLong(target.title)) return ERROR.tooLong;
   } else return ERROR.targetInvalid;
   const reason = nonEmpty(request.reason);
-  if (request.kind === "reject" && !reason) return ERROR.reasonRequired;
+  if ((request.kind === "reject" || (marking && item.gates.length > 0)) && !reason)
+    return ERROR.reasonRequired;
+  if (marking) return { effects: [], reply_text: null };
   const alwaysResolves = request.kind === "resolve" || gate !== null;
   if (alwaysResolves && threadId(item) && !request.resolve_ticked) return ERROR.resolveLocked;
   const resolve = request.resolve_ticked;
@@ -297,7 +308,7 @@ export function followedUp(items: CommentItem[]): Set<number> {
  * standing P1 decision covers; the fixture has one PR-level question of each kind at most. */
 export function waiting(items: CommentItem[]): CommentItem[] {
   const covered = followedUp(items);
-  return items.filter((i) => OPEN.has(i.state) && !i.gone_at && !covered.has(i.no));
+  return items.filter((i) => OPEN.has(i.state) && !i.gone_at && !i.not_a_review_point && !covered.has(i.no));
 }
 
 /** observe.rs `BotChangeRequest`: a bot whose latest review requests changes. */
@@ -343,7 +354,9 @@ export function dismissal(question: CommentItem, stale: BotChangeRequest[]): str
 }
 
 /** queue.rs `proposed`: a recommendation as the decision it proposes, or why it cannot be one. */
-function proposed(item: CommentItem): DecideRequest | LeftOutReason {
+type BulkRow = DecideRest["rows"][number]["row"];
+
+function proposed(item: CommentItem): Omit<BulkRow, "item_no"> | LeftOutReason {
   const rec = item.assessment!.recommendation;
   const reason = rec.kind === "reject" ? rec.reason.trim() || null : null;
   const incomplete =
@@ -372,7 +385,7 @@ export function decideRest(items: CommentItem[], scopeOf: (deciding: number[]) =
   for (const item of waiting(items)
     .filter((i) => i.kind !== "pr_question")
     .sort((a, b) => a.no - b.no)) {
-    const outcome: DecideRequest | LeftOutReason =
+    const outcome =
       item.gates.length > 0
         ? "gate"
         : item.state === "reopened"
@@ -384,7 +397,7 @@ export function decideRest(items: CommentItem[], scopeOf: (deciding: number[]) =
       leftOut.push({ item_no: item.no, reason: outcome });
       continue;
     }
-    const row: DecisionBatchRow = { item_no: item.no, ...outcome };
+    const row: BulkRow = { item_no: item.no, ...outcome };
     const planned = plan(item, outcome, scopeOf([item.no]));
     if (typeof planned === "string") leftOut.push({ item_no: item.no, reason: "incomplete" });
     else rows.push({ row, recommendation: item.assessment!.recommendation, effects: planned.effects });

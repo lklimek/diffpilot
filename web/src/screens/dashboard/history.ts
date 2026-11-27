@@ -34,19 +34,7 @@ export interface NetCount {
 /** A period of the headline with its name in the tile (`Mon–Wed`, `Tue 17 Nov`, `9–13 Nov`). */
 export type Period = NetCount & { label: string };
 
-/** Values of the headline card (the headline component's figures). */
-export interface Headline {
-  /** This week from Monday to now. */
-  week: Period;
-  /** The previous working day (with the weekend after it). */
-  yesterday: Period;
-  /** Last week, Monday to Friday (its weekend included). */
-  lastWeek: Period;
-  /** The last twenty working days, and the twenty before them. */
-  fourWeeks: { net: number; before: number };
-}
-
-/** The "Yesterday" side section: pull requests and reviews of the previous working day. */
+/** The "Yesterday" side section: pull requests and reviews of the previous calendar day. */
 export interface YesterdaySummary {
   day: string;
   prs: NetCount & { merged: number };
@@ -55,7 +43,7 @@ export interface YesterdaySummary {
   mergedIds: string[];
 }
 
-/** Working days of the day chart and of each half of the four-weeks tile. */
+/** Working days of the day chart. */
 export const CHART_DAYS = 20;
 /** Weeks of the week chart (the snapshot's history window, plan §C.1). */
 export const CHART_WEEKS = 12;
@@ -63,7 +51,6 @@ export const CHART_WEEKS = 12;
 export const THROUGHPUT_WEEKS = 8;
 
 const DAY = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short" });
-const WEEKDAY = new Intl.DateTimeFormat("en-GB", { weekday: "short" });
 const WEEKDAY_DAY = new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", month: "short" });
 
 /** Local midnight of a `YYYY-MM-DD` date. */
@@ -74,6 +61,7 @@ function parseDay(day: string): Date {
 
 /** `9–13 Nov`, or `30 Nov – 4 Dec` across months. */
 function rangeLabel(from: Date, to: Date): string {
+  if (from.getTime() === to.getTime()) return WEEKDAY_DAY.format(to);
   return from.getMonth() === to.getMonth()
     ? `${from.getDate()}–${DAY.format(to)}`
     : `${DAY.format(from)} – ${DAY.format(to)}`;
@@ -183,55 +171,69 @@ export function weeklyCounts(
   });
 }
 
-/** Headline values: this week, yesterday, last week and the last four weeks against the four before. */
-export function headline(events: readonly HistoryEvent[], now: Date): Headline {
-  const weekStart = monday(now);
-  const today = workingDay(now);
-  const tomorrow = addDays(today, 1);
-  const yesterdayStart = previousWorkingDay(today);
-  const lastWeekStart = addDays(weekStart, -7);
-  const window = workingDays(now, 2 * CHART_DAYS);
-  const recentStart = window[CHART_DAYS]!;
-  const weekdays = [weekStart, today].map((d) => WEEKDAY.format(d));
-  return {
-    week: {
-      label: weekdays[0] === weekdays[1] ? weekdays[0]! : weekdays.join("–"),
-      ...netBetween(events, weekStart, tomorrow),
-    },
-    yesterday: {
-      label: WEEKDAY_DAY.format(yesterdayStart),
-      ...netBetween(events, yesterdayStart, addDays(yesterdayStart, 1)),
-    },
-    lastWeek: {
-      label: rangeLabel(lastWeekStart, addDays(lastWeekStart, 4)),
-      ...netBetween(events, lastWeekStart, weekStart),
-    },
-    fourWeeks: {
-      net: netBetween(events, recentStart, tomorrow).net,
-      before: netBetween(events, window[0]!, recentStart).net,
-    },
-  };
+function dayFormatter(timeZone?: string | null) {
+  const options = { year: "numeric", month: "2-digit", day: "2-digit" } as const;
+  try {
+    return {
+      calendar: new Intl.DateTimeFormat("en-GB", { ...options, timeZone: timeZone ?? undefined }),
+      unsupportedZone: null,
+    };
+  } catch (error) {
+    if (!(error instanceof RangeError)) throw error;
+    return { calendar: new Intl.DateTimeFormat("en-GB", options), unsupportedZone: timeZone ?? null };
+  }
 }
 
-/** Pull requests and reviews of the previous working day. */
-export function yesterday(events: readonly HistoryEvent[], now: Date): YesterdaySummary {
-  const from = previousWorkingDay(workingDay(now));
-  const to = addDays(from, 1);
-  const inDay = (e: HistoryEvent) => {
-    const t = workingDay(new Date(e.at)).getTime();
-    return t >= from.getTime() && t < to.getTime();
+/** Calendar-day figures for the headline and side panel; chart buckets keep their working-day rules. */
+export function headline(events: readonly HistoryEvent[], now: Date, timeZone?: string | null) {
+  const { calendar, unsupportedZone } = dayFormatter(timeZone);
+  const usingBrowserZone = !timeZone || unsupportedZone !== null;
+  const inZone = (date: Date) => {
+    const parts = calendar.formatToParts(date);
+    const part = (name: Intl.DateTimeFormatPartTypes) =>
+      Number(parts.find(({ type }) => type === name)?.value);
+    return new Date(part("year"), part("month") - 1, part("day")).getTime();
   };
-  const merged = events.filter((e) => e.kind === "pr_merged" && inDay(e));
+  const today = new Date(inZone(now));
+  const yesterday = addDays(today, -1);
+  const weekStart = monday(today);
+  const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+  const dated = events.flatMap((event) => {
+    const at = Date.parse(event.at);
+    return Number.isFinite(at) && at <= now.getTime() ? [{ ...event, day: inZone(new Date(at)) }] : [];
+  });
+  const inPeriod = (from: Date, to: Date) =>
+    dated.filter(({ day }) => day >= from.getTime() && day <= to.getTime());
+  const net = (items: readonly HistoryEvent[]): NetCount => {
+    const closed = items.filter(({ kind }) => CLOSED.includes(kind)).length;
+    const opened = items.filter(({ kind }) => OPENED.includes(kind)).length;
+    return { closed, opened, net: closed - opened };
+  };
+  const period = (from: Date, to: Date): Period => ({
+    ...net(inPeriod(from, to)),
+    label: rangeLabel(from, to),
+  });
+  const previous = inPeriod(yesterday, yesterday);
+  const previousNet = net(previous);
+  const merged = previous.filter(({ kind }) => kind === "pr_merged");
+  const yesterdayDetails: YesterdaySummary = {
+    day: localDay(yesterday),
+    prs: { ...previousNet, merged: merged.length },
+    reviews: previous.filter(({ kind }) => kind === "review_given").length,
+    mergedIds: merged.map(({ item_id }) => item_id),
+  };
   return {
-    day: localDay(from),
-    prs: { ...netBetween(events, from, to), merged: merged.length },
-    reviews: countBetween(events, ["review_given"], from, to),
-    mergedIds: merged.map((e) => e.item_id),
+    today: period(today, today),
+    yesterday: { ...previousNet, label: WEEKDAY_DAY.format(yesterday) },
+    week: period(weekStart, today),
+    month: period(monthStart, today),
+    yesterdayDetails,
+    unsupportedZone,
+    zoneLabel: usingBrowserZone
+      ? `your browser’s time zone (${calendar.resolvedOptions().timeZone})`
+      : timeZone,
   };
 }
-
-/** The day of `yesterday()` as the section names it (`Tue 17 Nov`). */
-export const fullDayLabel = (day: string): string => WEEKDAY_DAY.format(parseDay(day));
 
 /** A bucket of the net chart with its axis label, full name and whether the axis labels it. */
 export type ChartPoint = NetBucket & { label: string; full: string; tick: boolean };

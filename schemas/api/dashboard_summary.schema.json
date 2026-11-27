@@ -4,6 +4,30 @@
   "description": "Response of `GET /api/v1/dashboard`: the user's dashboard without its items.",
   "type": "object",
   "properties": {
+    "status_counts": {
+      "description": "Counts of distinct judgement and sync states.",
+      "$ref": "#/$defs/StatusCounts"
+    },
+    "live_repositories": {
+      "description": "Repositories updated by GitHub App webhooks.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "not_live_repositories": {
+      "description": "Repositories refreshed by manual and scheduled scans.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "last_event_at": {
+      "description": "Latest GitHub event applied to this dashboard.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
     "mentions": {
       "description": "Unanswered, unhidden mentions, oldest first; independent of the ranking.",
       "type": "array",
@@ -52,7 +76,7 @@
       "$ref": "#/$defs/ScheduleStatus"
     },
     "older_prompt_judgements": {
-      "description": "Items of the snapshot whose judgement came from an older ranking prompt (re-judged within the caps).",
+      "description": "Items judged against an older prompt. Superseded by `status_counts`.",
       "type": "integer",
       "format": "uint32",
       "minimum": 0
@@ -66,11 +90,50 @@
     }
   },
   "required": [
+    "status_counts",
+    "live_repositories",
+    "not_live_repositories",
     "revision",
     "schedule",
     "older_prompt_judgements"
   ],
   "$defs": {
+    "StatusCounts": {
+      "description": "Dashboard item counts for the judgement and repository filters.",
+      "type": "object",
+      "properties": {
+        "outdated": {
+          "description": "Items judged against older facts or an older prompt, including those being re-judged.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "not_judged": {
+          "description": "Items never judged, including queued and capped items.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "not_live": {
+          "description": "Items in repositories without live webhook updates.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "excluded": {
+          "description": "Items excluded by the reader's rules.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "outdated",
+        "not_judged",
+        "not_live",
+        "excluded"
+      ]
+    },
     "Mention": {
       "description": "A request addressed to a scanned login, outside the ranked list.",
       "type": "object",
@@ -244,6 +307,17 @@
           "format": "uint32",
           "minimum": 0
         },
+        "left_provisional_by": {
+          "description": "The cap that left items provisional, when a cap was reached.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RankingLimit"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "steps": {
           "description": "Scan steps in order.",
           "type": "array",
@@ -332,7 +406,7 @@
           "const": "scheduled"
         },
         {
-          "description": "My work was open and the newest refresh was old (plan §M).",
+          "description": "Legacy trigger recorded by v1.3 while My work was open.",
           "type": "string",
           "const": "automatic"
         }
@@ -365,6 +439,21 @@
           "description": "The scan was cancelled before its snapshot was complete; the previous snapshot stays.",
           "type": "string",
           "const": "cancelled"
+        }
+      ]
+    },
+    "RankingLimit": {
+      "description": "A limit on how many items can be sent for ranking.",
+      "oneOf": [
+        {
+          "description": "The current refresh's allowance.",
+          "type": "string",
+          "const": "per_refresh"
+        },
+        {
+          "description": "The reader's daily allowance.",
+          "type": "string",
+          "const": "daily"
         }
       ]
     },
@@ -717,14 +806,6 @@
               "type": "null"
             }
           ]
-        },
-        "facts_checked_at": {
-          "description": "When the listed pull requests' facts (CI, reviews, merge state) were last checked against GitHub after the scan,\nwhile My work was open (plan §M); absent when none was since the scan or the server restarted since.",
-          "type": [
-            "string",
-            "null"
-          ],
-          "format": "date-time"
         }
       },
       "required": [
@@ -966,6 +1047,10 @@
       "description": "A deterministic tag from scan facts.",
       "type": "object",
       "properties": {
+        "filter": {
+          "description": "Filter for items with this fact.",
+          "$ref": "#/$defs/FactFilter"
+        },
         "text": {
           "description": "Short text.",
           "type": "string"
@@ -976,8 +1061,27 @@
         }
       },
       "required": [
+        "filter",
         "text",
         "tip"
+      ]
+    },
+    "FactFilter": {
+      "description": "Selects items with a deterministic fact.",
+      "type": "object",
+      "properties": {
+        "key": {
+          "description": "Stable key for the fact kind and its value where applicable.",
+          "type": "string"
+        },
+        "label": {
+          "description": "Label shown on the filter chip.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "label"
       ]
     },
     "ChangeSizeMark": {

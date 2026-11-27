@@ -12,14 +12,19 @@ use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, put};
 use axum::{Json, Router};
+use contracts::api::llm::LlmActivity;
 use contracts::api::review_loop::{UserStreamEvent, WatchList};
 use contracts::routes::{LIST_WATCHES, USER_EVENTS, WATCH_PR};
 use contracts::time::Timestamp;
+use db::error::DbError;
 use futures::stream::{self, Stream, StreamExt};
-use tokio::time::{Interval, MissedTickBehavior};
+use tokio::sync::watch::Receiver;
+use tokio::time::{Instant, Interval, MissedTickBehavior};
 
 use super::{ApiResult, PrPath, handle_of};
+use crate::api::error::ApiFailure;
 use crate::api::events::{HEARTBEAT, StreamSlot, holding, session_live};
+use crate::api::llm_activity;
 use crate::auth::{Session, SessionCsrf};
 use crate::review_loop::watch;
 use crate::state::AppState;
@@ -28,6 +33,7 @@ use crate::state::AppState;
 const POLL: Duration = Duration::from_secs(5);
 /// Most stored events one look sends.
 const POLL_BATCH: u32 = 50;
+const ACTIVITY_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Routes of this module.
 pub(super) fn routes() -> Router<AppState> {
@@ -68,14 +74,18 @@ async fn list(State(state): State<AppState>, session: Session) -> ApiResult<Json
     Ok(Json(watch::list(&state, &session).await?))
 }
 
-/// RW3: the reader's events written after the connection, then a heartbeat every 15 s.
+/// RW3: the reader's events, activity updates, and a heartbeat every 15 s.
 async fn user_events(State(state): State<AppState>, session: Session) -> Response {
     let slot = match StreamSlot::open(&session) {
         Ok(slot) => slot,
         Err(full) => return full.into_response(),
     };
+    let events = match user_stream(state, session, POLL, HEARTBEAT).await {
+        Ok(events) => events,
+        Err(error) => return ApiFailure(error).into_response(),
+    };
     Sse::new(
-        holding(slot, user_stream(state, session, POLL, HEARTBEAT))
+        holding(slot, events)
             .filter_map(|event| async move { sse_event(&event) })
             .map(Ok::<_, Infallible>),
     )
@@ -101,48 +111,70 @@ struct Cursor {
     pending: VecDeque<UserStreamEvent>,
     poll: Interval,
     heartbeat: Interval,
-    stopping: tokio::sync::watch::Receiver<bool>,
+    stopping: Receiver<bool>,
+    activity_ticks: Receiver<()>,
+    last_activity: LlmActivity,
+    next_activity: Instant,
 }
 
 enum Wake {
     Stop,
     Heartbeat,
     Poll,
+    Activity,
 }
 
 fn interval(period: Duration) -> Interval {
-    let mut ticks = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+    let mut ticks = tokio::time::interval_at(Instant::now() + period, period);
     ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
     ticks
 }
 
-/// The user's stored events written after the connection, looked up every `poll` (the database is the only
-/// channel: the scheduler task and request handlers write events), and a heartbeat every `heartbeat` that checks
-/// the session again. Ends when the session is gone, a look fails or the server stops.
-fn user_stream(
+/// The user's stored events, rate-limited activity updates, and heartbeats that recheck the session.
+async fn user_stream(
     state: AppState,
     session: Session,
     poll: Duration,
     heartbeat: Duration,
-) -> impl Stream<Item = UserStreamEvent> {
+) -> Result<impl Stream<Item = UserStreamEvent>, DbError> {
+    let after = Timestamp::now();
+    let activity_ticks = state.db.jobs().subscribe_activity(&session.tenant_id);
+    let last_activity = llm_activity::snapshot(&state, &session).await?;
     let cursor = Cursor {
         stopping: state.stopping.subscribe(),
         state,
         session,
-        after: Timestamp::now(),
-        pending: VecDeque::new(),
+        after,
+        pending: VecDeque::from([UserStreamEvent::LlmActivity {
+            activity: last_activity.clone(),
+        }]),
         poll: interval(poll),
         heartbeat: interval(heartbeat),
+        activity_ticks,
+        last_activity,
+        next_activity: Instant::now(),
     };
-    stream::unfold(cursor, |mut c| async move {
+    Ok(stream::unfold(cursor, |mut c| async move {
         loop {
+            if *c.stopping.borrow() {
+                return None;
+            }
             if let Some(event) = c.pending.pop_front() {
+                if matches!(&event, UserStreamEvent::LlmActivity { .. }) {
+                    if !session_live(&c.state, &c.session).await {
+                        return None;
+                    }
+                    c.next_activity = Instant::now() + ACTIVITY_INTERVAL;
+                }
                 return Some((event, c));
             }
             let wake = tokio::select! {
                 _ = c.stopping.wait_for(|stop| *stop) => Wake::Stop,
                 _ = c.heartbeat.tick() => Wake::Heartbeat,
                 _ = c.poll.tick() => Wake::Poll,
+                changed = activity_tick(&mut c.activity_ticks, c.next_activity) => {
+                    if changed.is_ok() { Wake::Activity } else { Wake::Stop }
+                },
             };
             match wake {
                 Wake::Stop => return None,
@@ -152,6 +184,21 @@ fn user_stream(
                     }
                     let at = Timestamp::now();
                     return Some((UserStreamEvent::Heartbeat { at }, c));
+                }
+                Wake::Activity => {
+                    let activity = match llm_activity::snapshot(&c.state, &c.session).await {
+                        Ok(activity) => activity,
+                        Err(error) => {
+                            tracing::warn!(%error, "LLM activity could not be read; closing the user event stream");
+                            return None;
+                        }
+                    };
+                    // Only visible changes trigger an event or advance the stream's cooldown.
+                    if activity != c.last_activity {
+                        c.last_activity = activity.clone();
+                        c.pending
+                            .push_back(UserStreamEvent::LlmActivity { activity });
+                    }
                 }
                 Wake::Poll => {
                     let events = c
@@ -179,7 +226,15 @@ fn user_stream(
                 }
             }
         }
-    })
+    }))
+}
+
+async fn activity_tick(
+    changes: &mut Receiver<()>,
+    next_activity: Instant,
+) -> Result<(), tokio::sync::watch::error::RecvError> {
+    tokio::time::sleep_until(next_activity).await;
+    changes.changed().await
 }
 
 #[cfg(test)]
@@ -255,12 +310,16 @@ mod tests {
         )
         .await
         .expect("old event");
-        let mut events = Box::pin(user_stream(
-            state.clone(),
-            session,
-            Duration::from_millis(20),
-            Duration::from_millis(400),
-        ));
+        let mut events = Box::pin(
+            user_stream(
+                state.clone(),
+                session,
+                Duration::from_millis(20),
+                Duration::from_millis(400),
+            )
+            .await
+            .expect("stream"),
+        );
         rl.add_user_event(DEFAULT_TENANT, &event("u2", "other"), Timestamp::now())
             .await
             .expect("other user's event");
@@ -271,19 +330,24 @@ mod tests {
             .await
             .expect("in time")
             .expect("an event");
-        let UserStreamEvent::UserEvent { user_event } = &first else {
-            panic!("expected a user event first: {first:?}");
-        };
-        assert_eq!(user_event.text, "new");
-        assert_eq!(first.name(), "user_event");
-        let wire = serde_json::to_value(&first).expect("json");
-        assert_eq!(wire["event"], "user_event");
-        assert_eq!(wire["user_event"]["kind"], "test");
+        assert_eq!(first.name(), "llm_activity");
         let second = tokio::time::timeout(WAIT, events.next())
             .await
             .expect("in time")
+            .expect("a user event");
+        let UserStreamEvent::UserEvent { user_event } = &second else {
+            panic!("expected a user event after the initial snapshot: {second:?}");
+        };
+        assert_eq!(user_event.text, "new");
+        assert_eq!(second.name(), "user_event");
+        let wire = serde_json::to_value(&second).expect("json");
+        assert_eq!(wire["event"], "user_event");
+        assert_eq!(wire["user_event"]["kind"], "test");
+        let third = tokio::time::timeout(WAIT, events.next())
+            .await
+            .expect("in time")
             .expect("a heartbeat");
-        assert_eq!(second.name(), "heartbeat", "{second:?}");
+        assert_eq!(third.name(), "heartbeat", "{third:?}");
     }
 
     /// RW3 ends when the server stops.
@@ -296,7 +360,9 @@ mod tests {
             session,
             Duration::from_millis(20),
             Duration::from_secs(60),
-        );
+        )
+        .await
+        .expect("stream");
         state.stopping.send_replace(true);
         let rest: Vec<_> = tokio::time::timeout(WAIT, events.collect())
             .await

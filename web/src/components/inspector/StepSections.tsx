@@ -1,3 +1,4 @@
+import { AskRemarkButton } from "../ask/AskRemarkButton";
 import { GithubCommentText } from "../comments/GithubCommentText";
 import { CodeText } from "../section/CodeText";
 import type { ReactNode } from "react";
@@ -23,6 +24,7 @@ import type { SectionControl } from "./sectionState";
 import { BasisNote, Empty, GithubLink } from "./text";
 
 type Sections = { currentFile?: string; sections: SectionControl; onEvidence?: (e: Evidence) => void };
+type AskRemark = { onAskRemark?: (annotation: Annotation) => void };
 
 /** Section 1: classic diff of the step or of the selected range (the screen supplies the diff view). */
 export function DiffSection({
@@ -48,9 +50,10 @@ export function DiffSection({
 export function BehaviourSection({
   annotations,
   sections,
+  onAskRemark,
   onEvidence,
   currentFile,
-}: { annotations: readonly Annotation[] } & Sections) {
+}: { annotations: readonly Annotation[] } & Sections & AskRemark) {
   const behaviour = annotations.filter((a) => a.type === "behaviour" && (a.was?.trim() || a.is?.trim()));
   if (behaviour.length === 0) return null;
   return (
@@ -74,6 +77,7 @@ export function BehaviourSection({
               evidence={a.evidence}
               onEvidence={onEvidence}
             />
+            {onAskRemark && <AskRemarkButton onAsk={() => onAskRemark(a)} />}
           </li>
         ))}
       </ul>
@@ -84,12 +88,13 @@ export function BehaviourSection({
 function TextList({
   annotations,
   onEvidence,
+  onAskRemark,
   currentFile,
 }: {
   annotations: readonly Annotation[];
   onEvidence?: (e: Evidence) => void;
   currentFile?: string;
-}) {
+} & AskRemark) {
   return (
     <ul className="m-0 list-disc pl-5">
       {annotations.map((a) => (
@@ -100,7 +105,8 @@ function TextList({
             basis={a.basis}
             evidence={a.evidence}
             onEvidence={onEvidence}
-          />
+          />{" "}
+          {onAskRemark && <AskRemarkButton onAsk={() => onAskRemark(a)} />}
         </li>
       ))}
     </ul>
@@ -112,9 +118,10 @@ export function WhySection({
   why,
   notes,
   sections,
+  onAskRemark,
   onEvidence,
   currentFile,
-}: { why: string; notes: readonly Annotation[] } & Sections) {
+}: { why: string; notes: readonly Annotation[] } & Sections & AskRemark) {
   notes = notes.filter((a) => a.text?.trim());
   if (!why.trim() && notes.length === 0) return null;
   return (
@@ -122,7 +129,14 @@ export function WhySection({
       <div className="font-semibold">
         <CodeText text={why} />
       </div>
-      {notes.length > 0 && <TextList currentFile={currentFile} annotations={notes} onEvidence={onEvidence} />}
+      {notes.length > 0 && (
+        <TextList
+          onAskRemark={onAskRemark}
+          currentFile={currentFile}
+          annotations={notes}
+          onEvidence={onEvidence}
+        />
+      )}
     </Collapsible>
   );
 }
@@ -131,14 +145,20 @@ export function WhySection({
 export function ConsequencesSection({
   annotations,
   sections,
+  onAskRemark,
   onEvidence,
   currentFile,
-}: { annotations: readonly Annotation[] } & Sections) {
+}: { annotations: readonly Annotation[] } & Sections & AskRemark) {
   annotations = annotations.filter((a) => a.text?.trim());
   if (annotations.length === 0) return null;
   return (
     <Collapsible sectionKey="consequences" title="Consequences" tone="llm" sections={sections}>
-      <TextList currentFile={currentFile} annotations={annotations} onEvidence={onEvidence} />
+      <TextList
+        onAskRemark={onAskRemark}
+        currentFile={currentFile}
+        annotations={annotations}
+        onEvidence={onEvidence}
+      />
     </Collapsible>
   );
 }
@@ -192,6 +212,7 @@ export function CallHierarchySection({
 export function FlagsSection({
   annotations,
   sections,
+  onAskRemark,
   onEvidence,
   step,
   currentFile,
@@ -201,7 +222,8 @@ export function FlagsSection({
   step: Step;
   /** "Use as review comment" on a flag; no button without it. */
   onUseAsComment?: (flag: Annotation) => void;
-} & Sections) {
+} & Sections &
+  AskRemark) {
   const flags = sortedFlags(annotations).filter((a) => a.text?.trim());
   if (flags.length === 0) return null;
   return (
@@ -218,6 +240,7 @@ export function FlagsSection({
               (() => onEvidence({ file: step.facts.file, side: step.facts.side, line: a.range.start_line }))
             }
             onUseAsComment={onUseAsComment && (() => onUseAsComment(a))}
+            onAskRemark={onAskRemark && (() => onAskRemark(a))}
           />
         ))}
       </ul>

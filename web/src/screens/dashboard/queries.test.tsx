@@ -3,7 +3,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import type { ReactNode } from "react";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { FakeEventSource } from "../../__tests__/fake-event-source";
 import type { DashboardSummary, ItemPage, RefreshStatus, WorkItem } from "../../api/generated/types";
 import { handlers } from "../../mocks/handlers";
@@ -222,7 +222,7 @@ describe("useStartRefresh (R2)", () => {
       wrapper: w,
     });
     await waitFor(() => expect(result.current.summary.data).toBeDefined());
-    act(() => result.current.start.mutate());
+    act(() => result.current.start.mutate(false));
     await waitFor(() => expect(result.current.start.isSuccess).toBe(true));
     expect(client.getQueryData<DashboardSummary>(SUMMARY_KEY)?.latest_refresh?.state).toBe("scanning");
   });
@@ -237,14 +237,14 @@ describe("useStartRefresh (R2)", () => {
     const { result } = renderHook(() => ({ summary: useDashboardSummary(true), start: useStartRefresh() }), {
       wrapper: w,
     });
-    act(() => result.current.start.mutate());
+    act(() => result.current.start.mutate(false));
     await waitFor(() => expect(result.current.start.isError).toBe(true));
     expect(result.current.start.error).toMatchObject({ status: 409, code: "refresh_running" });
     await waitFor(() => expect(result.current.summary.data?.latest_refresh?.state).toBe("scanning"));
   });
 });
 
-describe("summaryRefetchInterval (ADR-022, plan §M)", () => {
+describe("summaryRefetchInterval (ADR-022)", () => {
   const summary = { revision: "r", latest_refresh: null } as unknown as DashboardSummary;
   const plugin = {
     plugin: "pr-hygiene",
@@ -278,19 +278,25 @@ describe("summaryRefetchInterval (ADR-022, plan §M)", () => {
       http.get("/api/v1/dashboard", () => {
         reads += 1;
         const state = reads < 3 ? "stale" : "current";
-        return HttpResponse.json({ ...SUMMARY_FIXTURE, plugins: [{ ...plugin, state }] });
+        return HttpResponse.json({
+          ...SUMMARY_FIXTURE,
+          revision: String(reads),
+          plugins: [{ ...plugin, state }],
+        });
       }),
     );
-    renderHook(() => useDashboardSummary(true), { wrapper: wrapper().wrapper });
-    await waitFor(() => expect(reads).toBe(1));
-    await vi.advanceTimersByTimeAsync(PLUGIN_RETRY_MS);
-    await waitFor(() => expect(reads).toBe(2));
-    await vi.advanceTimersByTimeAsync(PLUGIN_RETRY_MS);
-    await waitFor(() => expect(reads).toBe(3));
-    await vi.advanceTimersByTimeAsync(PLUGIN_RETRY_MS * 3);
+    const { result } = renderHook(() => useDashboardSummary(true), { wrapper: wrapper().wrapper });
+    const waitForSummary = (revision: number) =>
+      waitFor(() => expect(result.current.data?.revision).toBe(String(revision)));
+    await waitForSummary(1);
+    for (const revision of [2, 3]) {
+      await act(() => vi.advanceTimersByTimeAsync(PLUGIN_RETRY_MS));
+      await waitForSummary(revision);
+    }
+    await act(() => vi.advanceTimersByTimeAsync(PLUGIN_RETRY_MS * 3));
     expect(reads).toBe(3);
-    await vi.advanceTimersByTimeAsync(SUMMARY_REFETCH_MS);
-    await waitFor(() => expect(reads).toBe(4));
+    await act(() => vi.advanceTimersByTimeAsync(SUMMARY_REFETCH_MS - PLUGIN_RETRY_MS * 3));
+    await waitForSummary(4);
   });
 });
 
@@ -336,11 +342,13 @@ describe("useSaveBrowserTimeZone (R6b)", () => {
     const again = renderHook(
       () => {
         const summary = useDashboardSummary(true);
-        return useSaveBrowserTimeZone(summary.data);
+        const savedZone = useSaveBrowserTimeZone(summary.data);
+        return { summary: summary.data, savedZone };
       },
       { wrapper: wrapper().wrapper },
     );
-    expect(again.result.current).toEqual({ failed: true });
+    expect(again.result.current.savedZone).toEqual({ failed: true });
+    await waitFor(() => expect(again.result.current.summary?.schedule.time_zone).toBeNull());
   });
 
   it("sends nothing when a zone is stored", async () => {
@@ -379,56 +387,53 @@ describe("refresh statuses are applied in order (never an older one over a newer
   };
   const latest = (client: QueryClient) => client.getQueryData<DashboardSummary>(SUMMARY_KEY)?.latest_refresh;
 
-  /** R1 answers with `body` once `release` is called, counting the requests. */
-  function heldSummary() {
-    let answer: (() => void) | null = null;
-    let body: DashboardSummary = summaryWith(SCANNING);
-    const requests = { count: 0 };
+  /** Holds the response until the test applies the stream event. */
+  function heldSummary(body: DashboardSummary) {
+    let release!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    onTestFinished(release);
+    const requested = vi.fn();
     server.use(
       http.get("/api/v1/dashboard", async () => {
-        requests.count += 1;
-        const sent = body;
-        await new Promise<void>((resolve) => (answer = resolve));
-        return HttpResponse.json(sent);
+        requested();
+        await ready;
+        return HttpResponse.json(body);
       }),
     );
-    return {
-      requests,
-      answerWith: (next: DashboardSummary) => (body = next),
-      release: () => answer?.(),
-    };
+    return { requested, release };
   }
 
   it("a summary read before a stream event lands after it: the event's status stays", async () => {
     const { client, wrapper: w } = wrapper();
-    client.setQueryData(SUMMARY_KEY, summaryWith({ ...SCANNING, percent: 40 }));
-    const held = heldSummary();
-    held.answerWith(summaryWith({ ...SCANNING, percent: 40 }));
+    const scanning = summaryWith({ ...SCANNING, percent: 40 });
+    client.setQueryData(SUMMARY_KEY, scanning);
+    const held = heldSummary({ ...scanning, revision: "r2" });
     renderHook(() => useDashboardSummary(true), { wrapper: w });
-    await act(() => client.invalidateQueries({ queryKey: SUMMARY_KEY, refetchType: "none" }));
-    const reading = client.refetchQueries({ queryKey: SUMMARY_KEY });
-    await waitFor(() => expect(held.requests.count).toBeGreaterThan(0));
+    await waitFor(() => expect(held.requested).toHaveBeenCalledOnce());
     act(() => applyRefreshStatus(client, { ...SCANNING, percent: 60 }));
     held.release();
-    await act(() => reading);
-    expect(latest(client)?.percent).toBe(60);
+    await waitFor(() =>
+      expect(client.getQueryData(SUMMARY_KEY)).toMatchObject({
+        revision: "r2",
+        latest_refresh: { percent: 60 },
+      }),
+    );
   });
 
   it("the server still answering scanning after the first ranking event does not undo the ranking", async () => {
     const { client, wrapper: w } = wrapper();
-    client.setQueryData(SUMMARY_KEY, summaryWith(SCANNING));
-    const held = heldSummary();
+    server.use(http.get("/api/v1/dashboard", () => HttpResponse.json(summaryWith(SCANNING))));
     renderHook(() => useDashboardSummary(true), { wrapper: w });
-    await waitFor(() => expect(held.requests.count).toBe(1));
-    held.release();
-    await waitFor(() => expect(client.isFetching({ queryKey: SUMMARY_KEY })).toBe(0));
+    await waitFor(() => expect(latest(client)?.state).toBe("scanning"));
     // The event moves to ranking and re-reads the summary; that answer still has the scan.
-    held.answerWith(summaryWith({ ...SCANNING, percent: 100 }));
+    const held = heldSummary({ ...summaryWith({ ...SCANNING, percent: 100 }), revision: "r2" });
     act(() => applyRefreshStatus(client, RANKING_0));
     expect(latest(client)?.ranking?.judged).toBe(0);
-    await waitFor(() => expect(held.requests.count).toBe(2));
+    await waitFor(() => expect(held.requested).toHaveBeenCalledOnce());
     held.release();
-    await waitFor(() => expect(client.isFetching({ queryKey: SUMMARY_KEY })).toBe(0));
+    await waitFor(() => expect(client.getQueryData(SUMMARY_KEY)).toMatchObject({ revision: "r2" }));
     expect(latest(client)?.state).toBe("ranking");
     expect(latest(client)?.ranking?.judged).toBe(0);
     // A later event and a later answer move on.
@@ -499,7 +504,7 @@ describe("hidden My work presence", () => {
     server.use(
       http.get("/api/v1/dashboard", () => {
         reads += 1;
-        return HttpResponse.json({ ...SUMMARY_FIXTURE, latest_refresh: SCANNING });
+        return HttpResponse.json({ ...SUMMARY_FIXTURE, revision: String(reads), latest_refresh: SCANNING });
       }),
     );
     const tab = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
@@ -544,7 +549,8 @@ describe("hidden My work presence", () => {
       tab.mockReturnValue("visible");
       document.dispatchEvent(new Event("visibilitychange"));
     });
-    await waitFor(() => expect(reads).toBe(2));
+    await waitFor(() => expect(hook.result.current.data?.revision).toBe("2"));
+    expect(reads).toBe(2);
     hook.unmount();
     tab.mockRestore();
   });

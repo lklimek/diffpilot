@@ -530,6 +530,24 @@ async fn world() -> World {
     world_with(Arc::new(NoopRanker), Duration::from_secs(24 * 3600)).await
 }
 
+async fn world_with_pr_details(edit: impl FnOnce(&mut [Value])) -> World {
+    let dir = tempfile::tempdir().unwrap();
+    for entry in std::fs::read_dir(repo_root().join("fixtures/dashboard/github")).unwrap() {
+        let entry = entry.unwrap();
+        std::fs::copy(entry.path(), dir.path().join(entry.file_name())).unwrap();
+    }
+    let file = dir.path().join("pull-requests.json");
+    let mut prs: Vec<Value> = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    edit(&mut prs);
+    std::fs::write(&file, serde_json::to_vec(&prs).unwrap()).unwrap();
+    world_in(
+        Arc::new(NoopRanker),
+        Duration::from_secs(120),
+        dir.path().to_owned(),
+    )
+    .await
+}
+
 struct Answer {
     status: StatusCode,
     headers: HeaderMap,
@@ -1019,7 +1037,7 @@ async fn cancel_keeps_previous_snapshot() {
 async fn cancel_before_the_task_runs_stops_the_scan() {
     let w = world().await;
     let mut stopped = w.state.dashboard.stopped();
-    let started = start(&w.state, &alice(), RefreshTrigger::Manual)
+    let started = start(&w.state, &alice(), RefreshTrigger::Manual, false)
         .await
         .expect("start");
     // The spawned task has not run yet (current-thread runtime): end the scan as R3 does in that window.
@@ -1377,6 +1395,243 @@ async fn items_filters() {
 }
 
 #[tokio::test]
+async fn fact_tags_carry_stable_filter_keys() {
+    let w = world_with_pr_details(|prs| {
+        let pr = prs.iter_mut().find(|pr| pr["number"] == 1203).unwrap();
+        pr["labels"]["nodes"] = json!([{"name": "Bug"}, {"name": "Ready-for-human"}]);
+    })
+    .await;
+    assert_eq!(w.refreshed().await.state, RefreshState::Finished);
+    let page = w.items("").await;
+    for (id, text, key, label) in [
+        (
+            "WUI-311",
+            "2 unresolved threads",
+            "unresolved_threads",
+            "unresolved threads",
+        ),
+        (
+            "CON-1534",
+            "3 unresolved threads",
+            "unresolved_threads",
+            "unresolved threads",
+        ),
+        (
+            "PLAT-1203",
+            "review requested",
+            "review_requested",
+            "review requested",
+        ),
+        ("WUI-311", "CI failing", "ci_failing", "CI failing"),
+        ("PLAT-1203", "Bug", "label:bug", "Bug"),
+        (
+            "PLAT-1203",
+            "ready label",
+            "label:ready-for-human",
+            "Ready-for-human",
+        ),
+        (
+            "PLAT-1187",
+            "production report",
+            "label:production report",
+            "production report",
+        ),
+        ("PLAT-1187", "new", "new", "new"),
+        (
+            "PLAT-1187",
+            "assigned to you",
+            "assigned_to_you",
+            "assigned to you",
+        ),
+        (
+            "PLAT-1215",
+            "watched repository",
+            "watched_repository",
+            "watched repository",
+        ),
+        ("TODO-3fa91c2e", "platform", "project:platform", "platform"),
+        ("TODO-3fa91c2e", "in progress", "in_progress", "in progress"),
+        (
+            "TODO-91bd0a44",
+            "consensus",
+            "project:consensus",
+            "consensus",
+        ),
+        ("TODO-91bd0a44", "postponed", "postponed", "postponed"),
+    ] {
+        let item = page.items.iter().find(|item| item.id == id).unwrap();
+        let tag = item
+            .tags
+            .iter()
+            .find(|tag| tag.text == text)
+            .unwrap_or_else(|| panic!("missing {text:?} tag on {id}"));
+        let filter = &tag.filter;
+        assert_eq!(
+            (filter.key.as_str(), filter.label.as_str()),
+            (key, label),
+            "{id}: {text}"
+        );
+    }
+    assert!(
+        page.items
+            .iter()
+            .flat_map(|item| &item.tags)
+            .all(|tag| !tag.filter.key.is_empty() && !tag.filter.label.is_empty())
+    );
+}
+
+#[tokio::test]
+async fn bottom_of_stack_badge() {
+    let w = world_with_pr_details(|prs| {
+        let stack = json!({"id": "stack-wallet", "size": 3, "baseRefName": "main", "entries": {"nodes": [
+            {"position": 1, "pullRequest": {"number": 311, "state": "OPEN"}},
+            {"position": 2, "pullRequest": {"number": 298, "state": "OPEN"}},
+            {"position": 3, "pullRequest": {"number": 320, "state": "OPEN"}}
+        ]}});
+        for (number, position, base) in [
+            (311, 1, "main"),
+            (298, 2, "feat/pending-withdrawals"),
+            (320, 3, "feat/export-csv"),
+        ] {
+            let pr = prs.iter_mut().find(|pr| pr["number"] == number).unwrap();
+            pr["baseRefName"] = json!(base);
+            pr["stackEntry"] = json!({"position": position, "stack": stack});
+        }
+        let mut entries = vec![
+            json!({"position": 1, "pullRequest": {"number": 499, "state": "MERGED"}}),
+            json!({"position": 2, "pullRequest": {"number": 482, "state": "OPEN"}}),
+        ];
+        entries.extend((3..=102).map(|position| {
+            json!({"position": position, "pullRequest": {"number": 10_000 + position, "state": "OPEN"}})
+        }));
+        prs.iter_mut().find(|pr| pr["number"] == 482).unwrap()["stackEntry"] = json!({
+            "position": 2,
+            "stack": {"id": "stack-node", "size": 102, "baseRefName": "main", "entries": {"nodes": entries}}
+        });
+    })
+    .await;
+    assert_eq!(w.refreshed().await.state, RefreshState::Finished);
+    let page = w.items("").await;
+    let item = |id| page.items.iter().find(|item| item.id == id).unwrap();
+    for (id, position, dependents) in [
+        (
+            "WUI-311",
+            contracts::api::dashboard::StackPosition::Bottom,
+            &[298, 320][..],
+        ),
+        (
+            "WUI-298",
+            contracts::api::dashboard::StackPosition::Middle,
+            &[320][..],
+        ),
+        (
+            "WUI-320",
+            contracts::api::dashboard::StackPosition::Top,
+            &[][..],
+        ),
+    ] {
+        let stack = item(id).stack.as_ref().expect("native stack from the API");
+        assert_eq!(stack.position, position);
+        assert_eq!(stack.size, 3);
+        assert_eq!(stack.dependents, dependents);
+    }
+    assert!(
+        item("CON-1534").stack.is_none(),
+        "branch dependencies alone are not a native stack"
+    );
+    assert!(
+        item("WUI-311")
+            .facts
+            .iter()
+            .any(|fact| fact.label == "Base branch" && fact.value == "main")
+    );
+    let next = item("NC-482").stack.as_ref().expect("partly merged stack");
+    assert_eq!(
+        next.position,
+        contracts::api::dashboard::StackPosition::Bottom
+    );
+    assert_eq!(next.size, 102);
+    assert_eq!(next.dependents, (10_003..=10_102).collect::<Vec<_>>());
+}
+
+#[tokio::test]
+async fn null_stack_keeps_the_pull_request_in_the_dashboard() {
+    let w = world_with_pr_details(|prs| {
+        let pr = prs.iter_mut().find(|pr| pr["number"] == 1203).unwrap();
+        pr["stackEntry"] = json!({"position": 1, "stack": null});
+    })
+    .await;
+    assert_eq!(w.refreshed().await.state, RefreshState::Finished);
+    let page = w.items("").await;
+    let pr = page
+        .items
+        .iter()
+        .find(|item| item.id == "PLAT-1203")
+        .expect("pull request stays ranked");
+    assert!(pr.stack.is_none());
+}
+
+#[tokio::test]
+async fn closed_or_merged_upper_layers_leave_the_open_pr_at_top() {
+    use contracts::api::dashboard::StackPosition;
+
+    let w = world_with_pr_details(|prs| {
+        let platform = prs.iter_mut().find(|pr| pr["number"] == 1203).unwrap();
+        platform["stackEntry"] = json!({"position": 1, "stack": {
+            "id": "stack-platform", "size": 2, "baseRefName": "main", "entries": {"nodes": [
+                {"position": 1, "pullRequest": {"number": 1203, "state": "OPEN"}},
+                {"position": 2, "pullRequest": {"number": 1204, "state": "CLOSED"}}
+            ]}
+        }});
+        let wallet = prs.iter_mut().find(|pr| pr["number"] == 298).unwrap();
+        wallet["stackEntry"] = json!({"position": 2, "stack": {
+            "id": "stack-wallet", "size": 3, "baseRefName": "main", "entries": {"nodes": [
+                {"position": 1, "pullRequest": {"number": 311, "state": "OPEN"}},
+                {"position": 2, "pullRequest": {"number": 298, "state": "OPEN"}},
+                {"position": 3, "pullRequest": {"number": 297, "state": "MERGED"}}
+            ]}
+        }});
+    })
+    .await;
+    assert_eq!(w.refreshed().await.state, RefreshState::Finished);
+    let page = w.items("").await;
+    for id in ["PLAT-1203", "WUI-298"] {
+        let item = page.items.iter().find(|item| item.id == id).unwrap();
+        let stack = item.stack.as_ref().expect("native stack from the API");
+        assert_eq!(stack.position, StackPosition::Top, "{id}");
+        assert!(stack.dependents.is_empty(), "{id}");
+    }
+}
+
+#[tokio::test]
+async fn release_base_matches_patterns() {
+    let w = world().await;
+    let mut configured = settings();
+    configured
+        .repositories
+        .iter_mut()
+        .find(|row| row.repo.name == "wallet-ui")
+        .unwrap()
+        .branch_patterns = vec!["feat/*".to_owned()];
+    w.state
+        .db
+        .dashboard()
+        .save_settings(DEFAULT_TENANT, "u1", &configured, now())
+        .await
+        .unwrap();
+    assert_eq!(w.refreshed().await.state, RefreshState::Finished);
+    let page = w.items("").await;
+    for (id, base) in [
+        ("WUI-298", Some("feat/pending-withdrawals")),
+        ("WUI-311", None),
+        ("PLAT-1203", Some("main")),
+    ] {
+        let item = page.items.iter().find(|item| item.id == id).unwrap();
+        assert_eq!(item.release_base.as_deref(), base, "{id}");
+    }
+}
+
+#[tokio::test]
 async fn sse_sends_the_status_then_each_change_until_finished() {
     let w = world().await;
     let running = w.start_held().await;
@@ -1630,10 +1885,13 @@ async fn review_link_reports_head_moved() {
 /// R1b `comments`: the comments diffpilot read for a pull request, counted at request time; none before a read.
 /// `watched`: the user watches it, also while its comments were never read.
 #[tokio::test]
-async fn pull_request_items_count_the_comments_diffpilot_read_and_say_watched() {
+async fn dashboard_tally_equals_comments_count() {
+    use contracts::api::access_tokens::TokenScope;
     use contracts::api::dashboard::CommentTally;
-    use contracts::api::review_loop::{AuthorKind, CommentItemKind, ItemGithubFacts, ItemState};
-    use db::repo::review_loop::{ObservedItem, ReadResult};
+    use contracts::api::review_loop::{
+        AuthorKind, CommentItemKind, Gate, GateMark, GateSource, ItemGithubFacts, ItemState,
+    };
+    use db::repo::review_loop::{ObservedItem, ReadResult, UpsertOutcome};
     let w = world().await;
     db::repo::analyses::testing::seed_analysis(&w.state.db)
         .await
@@ -1649,15 +1907,22 @@ async fn pull_request_items_count_the_comments_diffpilot_read_and_say_watched() 
     let rl = w.state.db.review_loop();
     let now = Timestamp::now();
     rl.ensure_pr(DEFAULT_TENANT, 1, now).await.expect("row");
-    for (key, state) in [
-        ("dedupe-a", ItemState::Undecided),
-        ("dedupe-b", ItemState::Done),
+    for (key, kind, state) in [
+        ("dedupe-a", CommentItemKind::Thread, ItemState::Undecided),
+        ("dedupe-b", CommentItemKind::Thread, ItemState::Done),
+        ("dedupe-c", CommentItemKind::Thread, ItemState::Assessing),
+        (
+            "pr:1:merge",
+            CommentItemKind::PrQuestion,
+            ItemState::Undecided,
+        ),
     ] {
         let observed = ObservedItem {
-            kind: CommentItemKind::Thread,
+            kind,
             stable_key: key.to_owned(),
             author: "thepastaclaw".to_owned(),
             author_kind: AuthorKind::Bot,
+            status_comment: false,
             url: None,
             location: None,
             title: "Unbounded retry".to_owned(),
@@ -1677,9 +1942,27 @@ async fn pull_request_items_count_the_comments_diffpilot_read_and_say_watched() 
             },
             outside: None,
         };
-        rl.upsert_item(DEFAULT_TENANT, 1, &observed, state, now)
+        let UpsertOutcome::New(item) = rl
+            .upsert_item(DEFAULT_TENANT, 1, &observed, state, now)
             .await
-            .expect("item");
+            .expect("item")
+        else {
+            panic!("new item")
+        };
+        if kind == CommentItemKind::PrQuestion || key == "dedupe-c" {
+            rl.set_gates(
+                (DEFAULT_TENANT, "u1"),
+                item.id,
+                item.revision,
+                &[GateMark {
+                    gate: Gate::Funds,
+                    source: GateSource::Owner,
+                }],
+                now,
+            )
+            .await
+            .expect("gate");
+        }
     }
     assert_eq!(
         comments(&w.items("").await),
@@ -1706,7 +1989,12 @@ async fn pull_request_items_count_the_comments_diffpilot_read_and_say_watched() 
     rl.record_read(
         1,
         &ReadResult::Read {
-            snapshot: json!({}),
+            snapshot: json!({
+                "title": "Fixture pull request", "url": "", "state": "OPEN",
+                "draft": false, "base": "main", "head": "h", "rounds": [],
+                "bot_change_requests": [], "changes_requested_by": [], "counts": [3, 0, 0],
+                "complete": true, "unresolved_threads": 0, "thread_ids": {}, "review_ids": {}
+            }),
             round_count: 0,
         },
         now,
@@ -1718,11 +2006,89 @@ async fn pull_request_items_count_the_comments_diffpilot_read_and_say_watched() 
         [(
             "NC-482".to_owned(),
             CommentTally {
-                total: 2,
+                total: 3,
                 needs_you: 1
             }
         )]
     );
+    let tally = comments(&w.items("").await)[0].1;
+    let pr = "/api/v1/prs/acme/node-client/482";
+    let (token, _) = crate::auth::access_tokens::stored_token(
+        &w.state.db,
+        "u1",
+        vec![TokenScope::Read],
+        Timestamp::now() + SignedDuration::from_hours(1),
+    )
+    .await;
+    let bearer = format!("Bearer {token}");
+    let auth = [("authorization", bearer.as_str())];
+    let page = w.send("GET", pr, "", &auth).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    let overview = w.send("GET", &format!("{pr}/comments"), "", &auth).await;
+    assert_eq!(overview.status, StatusCode::OK, "{}", overview.body);
+    assert_eq!(page.body["comments"]["counts"]["undecided"], 3);
+    assert_eq!(
+        page.body["comments"]["counts"]["needs_you"],
+        tally.needs_you
+    );
+    assert_eq!(overview.body["counts"]["needs_you"], tally.needs_you);
+    assert_eq!(page.body["comments"]["counts"]["needs_you_gates"], 1);
+    assert_eq!(overview.body["counts"]["needs_you_gates"], 1);
+    assert_eq!(overview.body["badge"]["badge"], "questions_waiting");
+    assert!(
+        overview.body["badge"]["facts"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("1 undecided question"))
+    );
+
+    // Another listed PR has a malformed saved read. Its watch survives without a tally.
+    let other = w
+        .items("")
+        .await
+        .items
+        .into_iter()
+        .find(|item| item.kind == ItemKind::Pr && item.id != "NC-482")
+        .expect("second PR");
+    let repo = w
+        .state
+        .db
+        .repos()
+        .upsert(DEFAULT_TENANT, &other.repo.unwrap(), None)
+        .await
+        .unwrap();
+    let other_pr = w
+        .state
+        .db
+        .pull_requests()
+        .upsert(
+            DEFAULT_TENANT,
+            repo.id,
+            &contracts::api::pr::PrSummary {
+                repo: repo.repo,
+                number: other.number.unwrap(),
+                title: "Another PR".into(),
+                author: "alice".into(),
+                html_url: other.url.unwrap(),
+                head_sha: contracts::ids::CommitSha("h".into()),
+                base_sha: contracts::ids::CommitSha("b".into()),
+            },
+            now,
+        )
+        .await
+        .unwrap();
+    rl.ensure_pr(DEFAULT_TENANT, other_pr, now).await.unwrap();
+    rl.watch(DEFAULT_TENANT, "u1", other_pr, 20, now)
+        .await
+        .unwrap();
+    db::repo::testing::corrupt_comment_read_timestamp(&w.state.db, other_pr)
+        .await
+        .unwrap();
+    let page = w.items("").await;
+    assert_eq!(comments(&page), [("NC-482".into(), tally)]);
+    let other_row = page.items.iter().find(|item| item.id == other.id).unwrap();
+    assert!(other_row.watched);
+    assert!(other_row.comments.is_none());
 }
 
 #[tokio::test]
@@ -1859,7 +2225,6 @@ async fn scan_over_the_time_limit_fails_as_timed_out() {
     assert_eq!(w.summary(ALICE).await.snapshot, None);
 }
 
-mod fresh;
 mod judged;
 mod plugin;
 mod snooze;
@@ -2469,3 +2834,5 @@ async fn unsearchable_mentions_do_not_spend_the_budget_on_unrelated_open_prs() {
 }
 
 mod waiting_cases;
+
+mod live;

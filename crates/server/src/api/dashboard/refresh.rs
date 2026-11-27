@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use axum::Json;
 use axum::Router;
-use axum::extract::rejection::{PathRejection, QueryRejection};
+use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::header::{CONTENT_TYPE, ETAG, IF_NONE_MATCH, RETRY_AFTER};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
@@ -17,14 +17,17 @@ use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use contracts::api::dashboard::{
-    DashboardEvent, DashboardSummary, ItemKey, ItemKind, ItemPage, ItemQuery, RefreshStatus,
-    RefreshTrigger, ReviewLink, ScheduleStatus, ScheduledRun, SummaryQuery, WorkItem,
+    CommentTally, DashboardEvent, DashboardSummary, ItemKey, ItemKind, ItemPage, ItemQuery,
+    RefreshStatus, RefreshTrigger, ReviewLink, ScheduleStatus, ScheduledRun, StartRefreshRequest,
+    StatusCounts, SummaryQuery, WorkItem,
 };
 use contracts::api::error::ApiErrorCode;
+use contracts::common::PrRef;
 use contracts::ids::RefreshId;
 use contracts::routes::{
     CANCEL_DASHBOARD_REFRESH, DASHBOARD_REFRESH_EVENTS, GET_DASHBOARD, GET_DASHBOARD_REFRESH,
-    HIDE_DASHBOARD_MENTION, LIST_DASHBOARD_ITEMS, RANK_DASHBOARD_REFRESH, START_DASHBOARD_REFRESH,
+    HIDE_DASHBOARD_MENTION, LIST_DASHBOARD_ITEMS, RANK_DASHBOARD_REFRESH, REJUDGE_DASHBOARD_ITEM,
+    START_DASHBOARD_REFRESH,
 };
 use contracts::time::Timestamp;
 use db::error::DbError;
@@ -36,11 +39,12 @@ use tokio::time::MissedTickBehavior;
 use crate::api::error::{ApiErrorSource, ApiFailure};
 use crate::api::events::{StreamSlot, holding};
 use crate::auth::{Session, SessionCsrf};
-use crate::dashboard::judge;
 use crate::dashboard::refresh::rank::ItemJudgement;
 use crate::dashboard::refresh::{self, ControlError, Scope, StartError};
 use crate::dashboard::schedule::{Schedule, counted_run_date};
 use crate::dashboard::snapshot::{self, CursorError, Snapshot, View};
+use crate::dashboard::{installations, judge};
+use crate::review_loop::{PrHandle, views};
 use crate::state::AppState;
 
 /// Interval of the `heartbeat` event, which also re-checks the session.
@@ -55,6 +59,9 @@ pub enum DashboardError {
     /// The item query is not valid.
     #[error("the item query is not valid")]
     Query(#[from] QueryRejection),
+    /// The optional refresh body could not be read.
+    #[error("the refresh body is not valid")]
+    Json(#[from] JsonRejection),
     /// The database failed, or the refresh is unknown.
     #[error("the dashboard could not be read or changed")]
     Db(#[from] DbError),
@@ -70,6 +77,12 @@ pub enum DashboardError {
     /// Cancel of an ended refresh, or Retry ranking of one that cannot be retried.
     #[error("the refresh does not allow this now")]
     NotAllowed,
+    /// The item cannot be re-judged in its current state.
+    #[error("the item's judgement is not outdated")]
+    NotOutdated,
+    /// The user's daily ranking cap has been reached.
+    #[error("today's ranking limit has been reached")]
+    RankingCap,
     /// The cursor is not usable.
     #[error(transparent)]
     Cursor(#[from] CursorError),
@@ -98,13 +111,14 @@ impl From<ControlError> for DashboardError {
 impl ApiErrorSource for DashboardError {
     fn code(&self) -> ApiErrorCode {
         match self {
-            Self::Path(_) | Self::Query(_) | Self::Cursor(CursorError::Malformed) => {
-                ApiErrorCode::InvalidRequest
-            }
+            Self::Path(_)
+            | Self::Query(_)
+            | Self::Json(_)
+            | Self::Cursor(CursorError::Malformed) => ApiErrorCode::InvalidRequest,
             Self::Db(error) => error.code(),
             Self::Running => ApiErrorCode::RefreshRunning,
             Self::RateLimited { .. } => ApiErrorCode::GithubRateLimited,
-            Self::NotAllowed => ApiErrorCode::Conflict,
+            Self::NotAllowed | Self::NotOutdated | Self::RankingCap => ApiErrorCode::Conflict,
             Self::Cursor(CursorError::Expired) => ApiErrorCode::CursorExpired,
         }
     }
@@ -113,6 +127,7 @@ impl ApiErrorSource for DashboardError {
         match self {
             Self::Path(rejection) => rejection.public_message(),
             Self::Query(rejection) => rejection.public_message(),
+            Self::Json(rejection) => rejection.public_message(),
             Self::Cursor(CursorError::Malformed) => Cow::Borrowed("The cursor is not valid."),
             Self::Db(error) => error.public_message(),
             Self::Running => Cow::Borrowed("A refresh is already running. Wait for it to finish."),
@@ -123,6 +138,8 @@ impl ApiErrorSource for DashboardError {
             Self::NotAllowed => Cow::Borrowed(
                 "The refresh does not allow this in its current state. Reload and try again.",
             ),
+            Self::NotOutdated => Cow::Borrowed("The item's judgement is not outdated."),
+            Self::RankingCap => Cow::Borrowed("Today's ranking limit has been reached."),
             Self::Cursor(CursorError::Expired) => Cow::Borrowed(
                 "The list changed since this page was read. Read it again from the start.",
             ),
@@ -155,6 +172,7 @@ pub fn routes() -> Router<AppState> {
         .route(GET_DASHBOARD.path, get(summary))
         .route(HIDE_DASHBOARD_MENTION.path, post(hide_mention))
         .route(LIST_DASHBOARD_ITEMS.path, get(items))
+        .route(REJUDGE_DASHBOARD_ITEM.path, post(rejudge))
         .route(START_DASHBOARD_REFRESH.path, post(start))
         .route(GET_DASHBOARD_REFRESH.path, get(refresh_status))
         .route(CANCEL_DASHBOARD_REFRESH.path, post(cancel))
@@ -176,16 +194,6 @@ pub(crate) fn mark_present(state: &AppState, session: &Session) {
         state
             .plugins
             .mark_active(&session.tenant_id, &session.user_id);
-    }
-}
-
-/// Counts a summary read in a browser session as My work being open (plan §M); never an access token read.
-fn mark_open(state: &AppState, session: &Session) {
-    if !session.is_access_token() {
-        state
-            .dashboard
-            .readers()
-            .mark_open(&scope(session), state.dashboard.now());
     }
 }
 
@@ -214,12 +222,24 @@ async fn current_view(
         .judgements(state, scope, &snapshot)
         .await?;
     let older = judgements.values().filter(|j| j.older_prompt).count();
-    let view = snapshot::build(
+    let mut view = snapshot::build(
         &snapshot,
         &judgements,
         state.config.memcan_ui_url.as_deref(),
         &state.plugins.overlay(state.dashboard.now()),
+        Some(&record),
     );
+    if record.state == contracts::api::dashboard::RefreshState::Ranking
+        && let Some(targets) =
+            state
+                .dashboard
+                .readers()
+                .rejudge_targets(scope, record.id, record.ranking_attempt)
+    {
+        view.apply_rejudge_targets(&record, &targets);
+    }
+    let live = installations::live(state, &scope.tenant_id).await?;
+    view.apply_installations(&live);
     Ok(Some((
         snapshot::revision(&record, &snapshot, &view),
         snapshot,
@@ -238,7 +258,6 @@ async fn summary(
     let list_excluded = query.excluded.unwrap_or(false);
     let scope = scope(&session);
     mark_present(&state, &session);
-    mark_open(&state, &session);
     let dashboard = state.db.dashboard();
     let latest_refresh = match dashboard
         .latest_refresh(&scope.tenant_id, &scope.user_id)
@@ -247,32 +266,51 @@ async fn summary(
         Some(record) => Some(judge::status(&state, &record).await),
         None => None,
     };
-    let (revision, meta, older_prompt_judgements, scanned_at, mentions, mention_coverage) =
-        match current_view(&state, &scope).await? {
-            Some((revision, snapshot, view, record, older)) => (
-                revision,
-                Some(view.meta(
-                    &snapshot,
-                    &record,
-                    list_excluded,
-                    state.dashboard.readers().checked_at(&scope, record.id),
-                )),
-                older,
-                record.scanned_at,
-                snapshot.mentions,
-                snapshot.mention_coverage,
-            ),
-            None => (
-                snapshot::NO_SNAPSHOT.to_owned(),
-                None,
-                0,
-                None,
-                Vec::new(),
-                Default::default(),
-            ),
-        };
+    let (
+        revision,
+        meta,
+        older_prompt_judgements,
+        scanned_at,
+        mentions,
+        mention_coverage,
+        (live_repositories, not_live_repositories),
+        last_event_at,
+        status_counts,
+    ) = match current_view(&state, &scope).await? {
+        Some((revision, snapshot, view, record, older)) => (
+            revision,
+            Some(view.meta(&snapshot, &record, list_excluded)),
+            older,
+            record.scanned_at,
+            snapshot.mentions,
+            snapshot.mention_coverage,
+            view.repository_counts,
+            snapshot.last_event_at,
+            view.status_counts(),
+        ),
+        None => (
+            snapshot::NO_SNAPSHOT.to_owned(),
+            None,
+            0,
+            None,
+            Vec::new(),
+            Default::default(),
+            (0, 0),
+            None,
+            StatusCounts {
+                outdated: 0,
+                not_judged: 0,
+                not_live: 0,
+                excluded: 0,
+            },
+        ),
+    };
     let stored = dashboard.settings(&scope.tenant_id, &scope.user_id).await?;
     Ok(Json(DashboardSummary {
+        status_counts,
+        live_repositories,
+        not_live_repositories,
+        last_event_at,
         mentions,
         mention_coverage,
         revision,
@@ -428,7 +466,7 @@ async fn review_links(
 }
 
 /// Fills `comments` and `watched` of the pull requests on the page from the tenant's review-loop tables and the
-/// user's watches, read now in one statement; a pull request whose comments diffpilot never read keeps no counts.
+/// user's watches. The queue inputs for read PRs are loaded together.
 /// Part of the page's `ETag` like `review`.
 async fn comment_tallies(
     state: &AppState,
@@ -449,11 +487,69 @@ async fn comment_tallies(
         .review_loop()
         .comment_tallies(&session.tenant_id, &session.user_id, &wanted)
         .await?;
-    for tally in tallies {
-        if let Some(&row) = rows.get(tally.index) {
-            items[row].comments = tally.counts;
-            items[row].watched = tally.watched;
+    let read: Vec<_> = tallies
+        .iter()
+        .filter_map(|row| row.total.map(|_| row.pull_request_id))
+        .collect();
+    let mut batch = match state
+        .db
+        .review_loop()
+        .comment_tally_views(&session.tenant_id, &read)
+        .await
+    {
+        Ok(batch) => Some(batch),
+        Err(error) => {
+            if state.dashboard.tally_warning_due(None) {
+                tracing::warn!(?error, "dashboard comment tally batch could not be read");
+            }
+            None
         }
+    };
+    let mut needs_you = HashMap::new();
+    for tally in tallies {
+        let Some((&row, (repo, number))) = rows.get(tally.index).zip(wanted.get(tally.index))
+        else {
+            continue;
+        };
+        items[row].watched = tally.watched;
+        items[row].imported_unseen = tally.total.map(|_| tally.imported_unseen);
+        items[row].comments = if let Some(total) = tally.total {
+            needs_you
+                .entry(tally.pull_request_id)
+                .or_insert_with(|| {
+                    let batch = batch.as_mut()?;
+                    let handle = PrHandle {
+                        pr: PrRef {
+                            repo: repo.clone(),
+                            number: *number,
+                        },
+                        id: tally.pull_request_id,
+                    };
+                    match batch
+                        .remove(&handle.id)
+                        .unwrap_or(Err(DbError::NotFound))
+                        .and_then(|view| views::dashboard_needs_you(handle, view))
+                    {
+                        Ok(needs_you) => Some(needs_you),
+                        Err(error) => {
+                            if state
+                                .dashboard
+                                .tally_warning_due(Some(tally.pull_request_id))
+                            {
+                                tracing::warn!(
+                                    ?error,
+                                    pr = tally.pull_request_id,
+                                    "dashboard comment tally omitted"
+                                );
+                            }
+                            None
+                        }
+                    }
+                })
+                .map(|needs_you| CommentTally { total, needs_you })
+        } else {
+            None
+        };
     }
     Ok(())
 }
@@ -461,9 +557,33 @@ async fn comment_tallies(
 async fn start(
     State(state): State<AppState>,
     SessionCsrf(session): SessionCsrf,
+    body: Result<Option<Json<StartRefreshRequest>>, JsonRejection>,
 ) -> DashboardResult<(StatusCode, Json<RefreshStatus>)> {
-    let status = refresh::start(&state, &scope(&session), RefreshTrigger::Manual).await?;
+    let rejudge_outdated = body?.is_some_and(|Json(request)| request.rejudge_outdated);
+    let status = refresh::start(
+        &state,
+        &scope(&session),
+        RefreshTrigger::Manual,
+        rejudge_outdated,
+    )
+    .await?;
     Ok((StatusCode::CREATED, Json(status)))
+}
+
+async fn rejudge(
+    State(state): State<AppState>,
+    SessionCsrf(session): SessionCsrf,
+    path: Result<Path<ItemKey>, PathRejection>,
+) -> DashboardResult<StatusCode> {
+    let Path(key) = path?;
+    refresh::rejudge(&state, &scope(&session), &key)
+        .await
+        .map_err(|error| match error {
+            judge::RejudgeError::NotOutdated => DashboardError::NotOutdated,
+            judge::RejudgeError::DailyCap => DashboardError::RankingCap,
+            judge::RejudgeError::Db(error) => DashboardError::Db(error),
+        })?;
+    Ok(StatusCode::ACCEPTED)
 }
 
 async fn refresh_status(

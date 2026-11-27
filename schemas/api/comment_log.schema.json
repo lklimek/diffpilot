@@ -1,9 +1,16 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "CommentLog",
-  "description": "Response of RC10: decisions with effects, claims and reports; carry events; feed state.",
+  "description": "Response of RC10: decisions, marks, carry events and feed state.",
   "type": "object",
   "properties": {
+    "marks": {
+      "description": "Marks and their undo history, oldest first.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/MarkLogEntry"
+      }
+    },
     "subscribers": {
       "description": "Agents subscribed now.",
       "type": "array",
@@ -46,6 +53,73 @@
     "carry_events"
   ],
   "$defs": {
+    "MarkLogEntry": {
+      "description": "An internal mark and any subsequent undo, as shown in the decision log.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Mark ID.",
+          "$ref": "#/$defs/DecisionId"
+        },
+        "item_no": {
+          "description": "Item number within the pull request.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "by": {
+          "description": "GitHub login of the mark's author.",
+          "type": "string"
+        },
+        "at": {
+          "description": "When the mark was recorded.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "follows": {
+          "description": "Number of the primary item, if this mark follows it.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "reason": {
+          "description": "Reason given by the owner, if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "undone_at": {
+          "description": "When the mark ended, if it has ended.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "undone_by": {
+          "description": "GitHub login of the user who ended it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "item_no",
+        "by",
+        "at"
+      ]
+    },
+    "DecisionId": {
+      "description": "Identifier of a decision on a review-loop item (append-only).",
+      "type": "string",
+      "format": "uuid"
+    },
     "FeedSubscriber": {
       "description": "An agent subscribed to the feed (V3 header).",
       "type": "object",
@@ -289,6 +363,26 @@
       "description": "A stored decision (append-only) with its effects.",
       "type": "object",
       "properties": {
+        "imported": {
+          "description": "Evidence and authority for a decision imported from GitHub.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ImportedDecision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "follows": {
+          "description": "Item number of the primary whose decision this follows.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
         "id": {
           "description": "Id.",
           "$ref": "#/$defs/DecisionId"
@@ -428,13 +522,53 @@
         "effects"
       ]
     },
-    "DecisionId": {
-      "description": "Identifier of a decision on a review-loop item (append-only).",
-      "type": "string",
-      "format": "uuid"
+    "ImportedDecision": {
+      "description": "An imported decision's source and grounded evidence.",
+      "type": "object",
+      "properties": {
+        "by": {
+          "description": "GitHub login of the decision's author.",
+          "type": "string"
+        },
+        "by_id": {
+          "description": "Numeric GitHub user id when available.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "at": {
+          "description": "When the statement was made on GitHub.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "evidence_url": {
+          "description": "GitHub URL of the evidence.",
+          "type": "string"
+        },
+        "quote": {
+          "description": "Verbatim excerpt supporting the decision.",
+          "type": "string"
+        },
+        "relay": {
+          "description": "GitHub login of the linked account that relayed the member's decision.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "by",
+        "at",
+        "evidence_url",
+        "quote"
+      ]
     },
     "DecisionKind": {
-      "description": "A decision (D1–D7; D8 is `reject` with a `blocker_gate` override; P1–P4 for PR-level questions). Open enum.",
+      "description": "A review decision or an internal mark accepted by the decide routes.",
       "oneOf": [
         {
           "description": "D1: resolve, already fixed.",
@@ -490,6 +624,11 @@
           "description": "P4: keep the reviews.",
           "type": "string",
           "const": "keep_reviews"
+        },
+        {
+          "description": "Record an internal mark without effects.",
+          "type": "string",
+          "const": "not_a_review_point"
         }
       ]
     },
@@ -643,7 +782,7 @@
       "properties": {
         "kind": {
           "description": "Recommended decision.",
-          "$ref": "#/$defs/DecisionKind"
+          "$ref": "#/$defs/ReviewDecisionKind"
         },
         "reason": {
           "description": "Why.",
@@ -671,9 +810,79 @@
         "reason_class"
       ]
     },
+    "ReviewDecisionKind": {
+      "description": "A review decision (D1–D7 and P1–P4) eligible for external use.",
+      "oneOf": [
+        {
+          "description": "D1: resolve, already fixed.",
+          "type": "string",
+          "const": "resolve"
+        },
+        {
+          "description": "D2: fix in this pull request.",
+          "type": "string",
+          "const": "fix_here"
+        },
+        {
+          "description": "D3: reject (with a reason); D8 with a `blocker_gate` override.",
+          "type": "string",
+          "const": "reject"
+        },
+        {
+          "description": "D4: handled in an existing pull request.",
+          "type": "string",
+          "const": "handled_in_pr"
+        },
+        {
+          "description": "D5: create a follow-up pull request.",
+          "type": "string",
+          "const": "follow_up_pr"
+        },
+        {
+          "description": "D6: upstream issue (link or create).",
+          "type": "string",
+          "const": "upstream_issue"
+        },
+        {
+          "description": "D7: TODO, out of scope for this pull request.",
+          "type": "string",
+          "const": "todo"
+        },
+        {
+          "description": "P1: merge now, remaining items become follow-ups.",
+          "type": "string",
+          "const": "merge_with_follow_ups"
+        },
+        {
+          "description": "P2: another round.",
+          "type": "string",
+          "const": "another_round"
+        },
+        {
+          "description": "P3: dismiss the listed stale bot reviews.",
+          "type": "string",
+          "const": "dismiss_stale_reviews"
+        },
+        {
+          "description": "P4: keep the reviews.",
+          "type": "string",
+          "const": "keep_reviews"
+        }
+      ]
+    },
     "DecisionVia": {
       "description": "Where a decision was made. Open enum.",
       "oneOf": [
+        {
+          "description": "The recorded decision was verified and imported from GitHub.",
+          "type": "string",
+          "const": "imported_github"
+        },
+        {
+          "description": "The decision was propagated from the item's primary.",
+          "type": "string",
+          "const": "follows_primary"
+        },
         {
           "description": "One question.",
           "type": "string",
@@ -1002,7 +1211,7 @@
         },
         "source_kind": {
           "description": "Its kind.",
-          "$ref": "#/$defs/DecisionKind"
+          "$ref": "#/$defs/ReviewDecisionKind"
         },
         "kind": {
           "description": "Kind.",

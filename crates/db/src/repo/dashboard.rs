@@ -6,11 +6,11 @@
 //! is on `user_id`): a live refresh in another tenant makes a start or Retry ranking answer `Conflict`.
 //! `RankingStatus.message`, `total` and `resumes_at` are not stored here; the server derives them from the judge job.
 //! Ranking results carry the ranking attempt (`ranking_attempt`, server-internal): a late result of a superseded
-//! or restarted ranking is [`RankingUpdate::Stale`] and only records its LLM calls (`judged`, for the daily cap).
+//! or restarted ranking is [`RankingUpdate::Stale`]. The send ledger tracks ranking caps independently.
 
 use contracts::api::dashboard::{
-    DashboardSettings, ItemKey, RankingState, RefreshFailure, RefreshState, RefreshTrigger,
-    ScanStep, ScheduledOutcome,
+    DashboardSettings, ItemKey, RankingLimit, RankingState, RefreshFailure, RefreshState,
+    RefreshTrigger, ScanStep, ScheduledOutcome,
 };
 use contracts::ids::{JobId, RefreshId};
 use contracts::time::Timestamp;
@@ -20,7 +20,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::sqlite::SqliteRow;
-use sqlx::{Row, Sqlite, SqliteExecutor, SqlitePool, Transaction};
+use sqlx::{Row, Sqlite, SqliteConnection, SqliteExecutor, SqlitePool, Transaction};
 
 use super::jobs::{parse_ts, parse_wire, ts, wire_name};
 use super::{Db, write_tx};
@@ -28,13 +28,14 @@ use crate::error::DbError;
 
 /// Refreshes kept per user: the newest, plus the one holding the latest snapshot.
 pub const REFRESHES_KEPT: u32 = 10;
-/// Refreshes started this recently that judged or sent something are always kept: their `sent` counts feed the daily
-/// ranking cap (a local day spans up to 25 hours, and a ranking may end after the day it started).
+/// Refreshes started this recently that judged or sent something are always kept.
 const RECENT_REFRESHES_KEPT: SignedDuration = SignedDuration::from_hours(48);
 /// Log lines kept per refresh (the newest).
 pub const LOG_LINES_KEPT: usize = 200;
 /// Days a judgement is kept after its item was last seen.
 pub const JUDGEMENT_RETENTION_DAYS: i64 = 90;
+/// Keep send records for eight days.
+const SEND_RETENTION: SignedDuration = SignedDuration::from_hours(8 * 24);
 
 /// Failure message of a scan stopped by a server restart.
 const INTERRUPTED_MESSAGE: &str = "A server restart interrupted the scan.";
@@ -48,11 +49,26 @@ const JUDGEMENTS_SQL: &str = "SELECT * FROM dashboard_judgements
 /// LLM judgements a user's refreshes started since a time made (index `dashboard_refreshes_by_user`).
 const JUDGED_SINCE_SQL: &str = "SELECT COALESCE(SUM(judged), 0) FROM dashboard_refreshes
     WHERE tenant_id = ?1 AND user_id = ?2 AND started_at >= ?3";
-/// Items a user's refreshes sent to the judge that ranked on or after a time: started then, still live, or ended
-/// then (a ranking that spans midnight counts wholly on both days, erring towards the cap).
-const SENT_SINCE_SQL: &str = "SELECT COALESCE(SUM(sent), 0) FROM dashboard_refreshes
-    WHERE tenant_id = ?1 AND user_id = ?2 AND sent > 0
-      AND (started_at >= ?3 OR finished_at IS NULL OR finished_at >= ?3)";
+/// Daily sends after the later of local midnight and the user's last reset.
+const SENT_SINCE_SQL: &str = "SELECT COALESCE(SUM(items), 0) FROM dashboard_sends
+    WHERE tenant_id = ?1 AND user_id = ?2 AND released_at IS NULL
+      AND sent_at >= MAX(?3, COALESCE((SELECT reset_at FROM dashboard_ranking_resets
+                                      WHERE tenant_id = ?1 AND user_id = ?2), ?3))";
+/// Lifetime sends of a refresh, including those released from the daily cap.
+macro_rules! refresh_sends {
+    () => {
+        "SELECT (SELECT COALESCE(SUM(items), 0) FROM dashboard_sends WHERE refresh_id = r.id)
+         FROM dashboard_refreshes r WHERE id = ? AND tenant_id = ? AND user_id = ?"
+    };
+}
+
+macro_rules! refundable_job {
+    () => {
+        "j.state IN ('failed', 'cancelled')
+         AND COALESCE(json_extract(j.result, '$.usage.input_tokens'), 0) = 0
+         AND COALESCE(json_extract(j.result, '$.usage.output_tokens'), 0) = 0"
+    };
+}
 /// Judgements not seen since a time (index `dashboard_judgements_by_last_seen`).
 const DELETE_UNSEEN_SQL: &str = "DELETE FROM dashboard_judgements WHERE last_seen_at < ?1";
 
@@ -112,12 +128,16 @@ pub struct Snooze {
 #[derive(Debug)]
 pub struct Dashboard<'a> {
     pool: &'a SqlitePool,
+    job_changes: &'a super::jobs::JobChanges,
 }
 
 impl Db {
     /// Dashboard settings, refreshes with their snapshots, and stored judgements.
     pub fn dashboard(&self) -> Dashboard<'_> {
-        Dashboard { pool: &self.pool }
+        Dashboard {
+            pool: &self.pool,
+            job_changes: &self.job_changes,
+        }
     }
 }
 
@@ -172,6 +192,15 @@ pub struct RefreshProgress {
     pub steps: Vec<ScanStep>,
     /// Progress, 0–100.
     pub percent: u32,
+    /// Never-judged items left behind by a ranking cap.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub left_provisional_keys: Vec<ItemKey>,
+    /// Cap hit by the ranking, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_provisional_by: Option<RankingLimit>,
+    /// Outdated items selected for the current scan's ranking attempt.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bulk_rejudge_keys: Vec<ItemKey>,
 }
 
 /// Judgement counts of a refresh (plan §B.4).
@@ -281,10 +310,23 @@ pub struct InterruptedRefresh {
 /// The ranking caps a send is checked against (plan §B.4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SendCaps {
-    /// Items sent per refresh, across its ranking attempts.
-    pub per_refresh: u32,
+    /// Items sent across the refresh's attempts, when this is scan ranking.
+    pub per_refresh: Option<u32>,
     /// Items sent per user and local day.
     pub per_day: u32,
+}
+
+/// A batch about to be sent to the judge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JudgeSend {
+    /// Job id to reserve for.
+    pub job_id: JobId,
+    /// Number of items in the batch.
+    pub items: u32,
+    /// Time of this send.
+    pub sent_at: Timestamp,
+    /// Local midnight of the day containing this send.
+    pub day_start: Timestamp,
 }
 
 /// Result of [`Dashboard::reserve_sends`].
@@ -306,7 +348,7 @@ pub enum SendReservation {
 pub struct SentTotals {
     /// By this refresh, across its attempts.
     pub refresh: u32,
-    /// By the user's refreshes that ranked since the day's start.
+    /// The user's unreleased sends since local midnight or the last reset.
     pub day: u32,
 }
 
@@ -346,6 +388,8 @@ pub struct StoredJudgement {
     pub judged_at: Timestamp,
     /// Last refresh that saw the item.
     pub last_seen_at: Timestamp,
+    /// When the user requested a replacement, until a new judgement is saved.
+    pub rejudge_requested_at: Option<Timestamp>,
 }
 
 impl Dashboard<'_> {
@@ -499,6 +543,7 @@ impl Dashboard<'_> {
         settings: &DashboardSettings,
         now: Timestamp,
     ) -> Result<(), DbError> {
+        let mut tx = write_tx(self.pool).await?;
         let saved = sqlx::query(
             "INSERT INTO dashboard_settings (user_id, tenant_id, linked_logins, enumerate_owners, repositories,
                  lookback_days, ready_label, skip_authors, known_bots, include_todos, memcan_extra_projects,
@@ -531,10 +576,22 @@ impl Dashboard<'_> {
         .bind(&settings.time_zone)
         .bind(serde_json::to_string(&settings.slack_names)?)
         .bind(ts(now))
-        .execute(self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(missing_owner)?;
-        found(saved.rows_affected())
+        found(saved.rows_affected())?;
+        sqlx::query(
+            "DELETE FROM comment_linked_account_pins
+                     WHERE tenant_id = ? AND user_id = ? AND login NOT IN (
+                         SELECT lower(value) FROM json_each(?))",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(serde_json::to_string(&settings.linked_logins)?)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Stores the browser's time zone unless the user's row already holds one (R6b, first dashboard visit),
@@ -635,7 +692,7 @@ impl Dashboard<'_> {
 
     /// R2 and the schedule, in one write transaction: a refresh of the user in `ranking` is superseded
     /// ([`Dashboard::finish_ranking`] with `cancelled`), then a new one starts in `scanning`; a `scanning` one
-    /// blocks ([`StartOutcome::ScanRunning`]). An automatic start is also blocked by a ranking. Deletes the user's older refreshes beyond [`REFRESHES_KEPT`], never
+    /// blocks ([`StartOutcome::ScanRunning`]). Deletes the user's older refreshes beyond [`REFRESHES_KEPT`], never
     /// the one holding the current snapshot nor one started in the last 24 hours that judged something (the daily
     /// cap counts it).
     pub async fn start_refresh(
@@ -656,9 +713,8 @@ impl Dashboard<'_> {
         .await?;
         let mut superseded = None;
         if let Some((id, state)) = live {
-            if trigger == RefreshTrigger::Automatic
-                || parse_wire::<RefreshState>(&state, "dashboard_refreshes.state")?
-                    == RefreshState::Scanning
+            if parse_wire::<RefreshState>(&state, "dashboard_refreshes.state")?
+                == RefreshState::Scanning
             {
                 return Ok(StartOutcome::ScanRunning);
             }
@@ -685,11 +741,12 @@ impl Dashboard<'_> {
         .execute(&mut *tx)
         .await
         .map_err(missing_owner)?;
-        sqlx::query(concat!(
-            "DELETE FROM dashboard_refreshes WHERE tenant_id = ?1 AND user_id = ?2
+        let pruned = sqlx::query(concat!(
+            "DELETE FROM dashboard_refreshes AS r WHERE tenant_id = ?1 AND user_id = ?2
                AND id NOT IN (SELECT id FROM dashboard_refreshes WHERE tenant_id = ?1 AND user_id = ?2
                               ORDER BY started_at DESC, rowid DESC LIMIT ?3)
-               AND (started_at < ?4 OR (judged = 0 AND sent = 0)) AND id IS NOT (",
+               AND (started_at < ?4 OR (judged = 0 AND NOT EXISTS (
+                   SELECT 1 FROM dashboard_sends WHERE refresh_id = r.id))) AND id IS NOT (",
             current_snapshot_id!(),
             ")"
         ))
@@ -701,6 +758,10 @@ impl Dashboard<'_> {
         .await?;
         let refresh = read_record(&mut *tx, tenant_id, user_id, id).await?;
         tx.commit().await?;
+        // Pruning a refresh can cascade to its remaining ranking jobs.
+        if pruned.rows_affected() != 0 {
+            self.job_changes.publish(tenant_id);
+        }
         Ok(StartOutcome::Started {
             refresh: Box::new(refresh),
             superseded,
@@ -778,16 +839,22 @@ impl Dashboard<'_> {
     ) -> Result<(), DbError> {
         let document = serde_json::to_string(snapshot)?;
         let mut tx = write_tx(self.pool).await?;
-        let updated = sqlx::query(
-            "UPDATE dashboard_refreshes SET state = 'ranking', ranking_state = 'running', snapshot = ?,
-                 scanned_at = ?
-             WHERE id = ? AND tenant_id = ? AND user_id = ? AND state = 'scanning'",
-        )
+        let updated = sqlx::query(concat!(
+            "WITH previous AS MATERIALIZED (
+                SELECT snapshot -> '$.event_additions' AS additions FROM dashboard_refreshes WHERE id IS (",
+                current_snapshot_id!(),
+            "))
+             UPDATE dashboard_refreshes SET state = 'ranking', ranking_state = 'running',
+               snapshot = CASE WHEN (SELECT additions FROM previous) IS NULL THEN ?3
+                          ELSE json_set(?3, '$.event_additions', json((SELECT additions FROM previous))) END,
+               scanned_at = ?4
+             WHERE tenant_id = ?1 AND user_id = ?2 AND id = ?5 AND state = 'scanning'"
+        ))
+        .bind(tenant_id)
+        .bind(user_id)
         .bind(document)
         .bind(ts(scanned_at))
         .bind(id.to_string())
-        .bind(tenant_id)
-        .bind(user_id)
         .execute(&mut *tx)
         .await?;
         changed(&mut tx, tenant_id, user_id, id, updated.rows_affected()).await?;
@@ -819,6 +886,45 @@ impl Dashboard<'_> {
         .await?;
         changed(&mut tx, tenant_id, user_id, id, updated.rows_affected()).await?;
         tx.commit().await?;
+        Ok(())
+    }
+
+    /// Whether event additions still need a ranking on the current snapshot.
+    pub async fn event_ranking_pending(&self, tenant: &str, user: &str) -> Result<bool, DbError> {
+        Ok(sqlx::query_scalar(concat!(
+            "SELECT EXISTS (
+                 SELECT 1 FROM dashboard_refreshes r, json_each(r.snapshot, '$.pending_event_items') k
+                 WHERE r.id IS (",
+            current_snapshot_id!(),
+            ")
+                 AND NOT EXISTS (
+                     SELECT 1 FROM dashboard_judgements j
+                     WHERE j.tenant_id = ?1 AND j.user_id = ?2 AND j.item_key = k.value
+                 )
+             )"
+        ))
+        .bind(tenant)
+        .bind(user)
+        .fetch_one(self.pool)
+        .await?)
+    }
+
+    /// Marks event additions handed to a ranking of this snapshot.
+    pub async fn clear_event_ranking(
+        &self,
+        tenant: &str,
+        user: &str,
+        id: RefreshId,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE dashboard_refreshes SET snapshot = json_remove(snapshot, '$.pending_event_items')
+             WHERE id = ? AND tenant_id = ? AND user_id = ? AND json_array_length(snapshot, '$.pending_event_items') > 0",
+        )
+        .bind(id.to_string())
+        .bind(tenant)
+        .bind(user)
+        .execute(self.pool)
+        .await?;
         Ok(())
     }
 
@@ -1011,13 +1117,38 @@ impl Dashboard<'_> {
         user_id: &str,
         id: RefreshId,
     ) -> Result<RestartOutcome, DbError> {
+        self.restart_ranking_inner(tenant_id, user_id, id, false)
+            .await
+    }
+
+    /// Starts a new ranking attempt on the current snapshot, including after a successful ranking.
+    pub async fn restart_pending_ranking(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        id: RefreshId,
+    ) -> Result<RestartOutcome, DbError> {
+        self.restart_ranking_inner(tenant_id, user_id, id, true)
+            .await
+    }
+
+    async fn restart_ranking_inner(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        id: RefreshId,
+        allow_finished: bool,
+    ) -> Result<RestartOutcome, DbError> {
         let mut tx = write_tx(self.pool).await?;
         let refresh = read_record(&mut *tx, tenant_id, user_id, id).await?;
         let retryable = refresh.state == RefreshState::Finished
-            && matches!(
-                refresh.ranking_state,
-                Some(RankingState::Failed | RankingState::Interrupted | RankingState::Cancelled)
-            );
+            && (allow_finished
+                || matches!(
+                    refresh.ranking_state,
+                    Some(
+                        RankingState::Failed | RankingState::Interrupted | RankingState::Cancelled
+                    )
+                ));
         if !retryable {
             return Ok(RestartOutcome::NotRetryable);
         }
@@ -1042,7 +1173,7 @@ impl Dashboard<'_> {
         }
         sqlx::query(
             "UPDATE dashboard_refreshes SET state = 'ranking', ranking_state = 'running', finished_at = NULL,
-                 ranking_attempt = ranking_attempt + 1
+                 ranking_attempt = ranking_attempt + 1, progress = json_remove(progress, '$.bulk_rejudge_keys')
              WHERE id = ?",
         )
         .bind(id.to_string())
@@ -1092,61 +1223,59 @@ impl Dashboard<'_> {
             .collect()
     }
 
-    /// Counts `items` as sent to the judge by refresh `id` ranking in `attempt`, in one write transaction, when both
-    /// caps allow it: the refresh's sends across its attempts and the user's sends since `day_start` (see
-    /// [`Dashboard::sent_totals`]). Nothing is counted otherwise.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "scope, refresh and attempt plus the items, caps and day; a parameter struct would hide the fence"
-    )]
+    /// Reserves a send if the ranking attempt is live and there is room under its caps.
     pub async fn reserve_sends(
         &self,
         tenant_id: &str,
         user_id: &str,
         id: RefreshId,
         attempt: u32,
-        items: u32,
+        send: JudgeSend,
         caps: SendCaps,
-        day_start: Timestamp,
     ) -> Result<SendReservation, DbError> {
         let mut tx = write_tx(self.pool).await?;
-        let current: Option<i64> = sqlx::query_scalar(
-            "SELECT sent FROM dashboard_refreshes
-             WHERE id = ? AND tenant_id = ? AND user_id = ? AND state = 'ranking' AND ranking_attempt = ?",
-        )
+        let current: Option<i64> = sqlx::query_scalar(concat!(
+            refresh_sends!(),
+            " AND state = 'ranking' AND ranking_attempt = ?"
+        ))
         .bind(id.to_string())
         .bind(tenant_id)
         .bind(user_id)
-        .bind(i64::from(attempt))
+        .bind(attempt)
         .fetch_optional(&mut *tx)
         .await?;
         let Some(sent) = current else {
             return Ok(SendReservation::Stale);
         };
-        let day: i64 = sqlx::query_scalar(SENT_SINCE_SQL)
-            .bind(tenant_id)
-            .bind(user_id)
-            .bind(ts(day_start))
-            .fetch_one(&mut *tx)
-            .await?;
-        let items = i64::from(items);
-        if sent + items > i64::from(caps.per_refresh) {
+        let items = i64::from(send.items);
+        if caps
+            .per_refresh
+            .is_some_and(|cap| sent + items > i64::from(cap))
+        {
             return Ok(SendReservation::OverRefreshCap);
         }
-        if day + items > i64::from(caps.per_day) {
+        let day = day_total(&mut *tx, tenant_id, user_id, send.day_start).await?;
+        if i64::from(day) + items > i64::from(caps.per_day) {
             return Ok(SendReservation::OverDailyCap);
         }
-        sqlx::query("UPDATE dashboard_refreshes SET sent = sent + ? WHERE id = ?")
-            .bind(items)
-            .bind(id.to_string())
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "INSERT INTO dashboard_sends (tenant_id, user_id, refresh_id, attempt, items, job_id, sent_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(id.to_string())
+        .bind(attempt)
+        .bind(items)
+        .bind(send.job_id.to_string())
+        .bind(ts(send.sent_at))
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(SendReservation::Reserved)
     }
 
-    /// Items sent to the judge by refresh `id` and by the user's refreshes that ranked since `day_start` (started
-    /// then, still live, or ended then). `NotFound` for an unknown id or another user's refresh.
+    /// Lifetime sends of this refresh and the user's daily usage in one read transaction.
     pub async fn sent_totals(
         &self,
         tenant_id: &str,
@@ -1155,31 +1284,118 @@ impl Dashboard<'_> {
         day_start: Timestamp,
     ) -> Result<SentTotals, DbError> {
         let mut tx = super::read_tx(self.pool).await?;
-        let refresh: i64 = sqlx::query_scalar(
-            "SELECT sent FROM dashboard_refreshes WHERE id = ? AND tenant_id = ? AND user_id = ?",
-        )
-        .bind(id.to_string())
-        .bind(tenant_id)
-        .bind(user_id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or(DbError::NotFound)?;
-        let day: i64 = sqlx::query_scalar(SENT_SINCE_SQL)
+        let refresh: i64 = sqlx::query_scalar(refresh_sends!())
+            .bind(id.to_string())
             .bind(tenant_id)
             .bind(user_id)
-            .bind(ts(day_start))
-            .fetch_one(&mut *tx)
-            .await?;
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(DbError::NotFound)?;
+        let day = day_total(&mut *tx, tenant_id, user_id, day_start).await?;
         tx.commit().await?;
-        let total = |n: i64| {
-            u32::try_from(n).map_err(|_| DbError::Corrupt {
-                column: "dashboard_refreshes.sent",
-            })
-        };
         Ok(SentTotals {
-            refresh: total(refresh)?,
-            day: total(day)?,
+            refresh: send_count(refresh)?,
+            day,
         })
+    }
+
+    /// Releases a job's send from daily usage once, including after its refresh ends.
+    pub async fn release_send(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        job_id: JobId,
+        now: Timestamp,
+    ) -> Result<bool, DbError> {
+        let released = sqlx::query(
+            "UPDATE dashboard_sends SET released_at = ?
+             WHERE tenant_id = ? AND user_id = ? AND job_id = ? AND released_at IS NULL",
+        )
+        .bind(ts(now))
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(job_id.to_string())
+        .execute(self.pool)
+        .await?;
+        Ok(released.rows_affected() != 0)
+    }
+
+    /// Releases unsubmitted sends from an ended ranking attempt.
+    pub async fn release_unsubmitted_sends(
+        &self,
+        refresh: RefreshId,
+        attempt: Option<u32>,
+        now: Timestamp,
+    ) -> Result<u64, DbError> {
+        let released = sqlx::query(
+            "UPDATE dashboard_sends AS s SET released_at = ?1
+             WHERE s.refresh_id = ?2 AND (?3 IS NULL OR s.attempt = ?3)
+               AND s.released_at IS NULL AND s.job_id IS NOT NULL
+               AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = s.job_id)",
+        )
+        .bind(ts(now))
+        .bind(refresh.to_string())
+        .bind(attempt)
+        .execute(self.pool)
+        .await?;
+        Ok(released.rows_affected())
+    }
+
+    /// At startup, releases sends without jobs or with terminal, unsuccessful zero-token results.
+    pub async fn reconcile_sends(&self, now: Timestamp) -> Result<u64, DbError> {
+        let released = sqlx::query(concat!(
+            "UPDATE dashboard_sends AS s SET released_at = ?
+             WHERE s.released_at IS NULL AND s.job_id IS NOT NULL
+               AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = s.job_id AND NOT (",
+            refundable_job!(),
+            "))"
+        ))
+        .bind(ts(now))
+        .execute(self.pool)
+        .await?;
+        Ok(released.rows_affected())
+    }
+
+    /// Removes send records older than eight days.
+    pub async fn prune_sends(&self, now: Timestamp) -> Result<u64, DbError> {
+        let deleted = sqlx::query("DELETE FROM dashboard_sends WHERE sent_at < ?")
+            .bind(ts(now - SEND_RETENTION))
+            .execute(self.pool)
+            .await?;
+        Ok(deleted.rows_affected())
+    }
+
+    /// The user's daily usage, including when they have no current snapshot.
+    pub async fn sent_today(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        day_start: Timestamp,
+    ) -> Result<u32, DbError> {
+        day_total(self.pool, tenant_id, user_id, day_start).await
+    }
+
+    /// Resets daily usage and returns the usage immediately before the reset.
+    pub async fn reset_ranking_usage(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        day_start: Timestamp,
+        now: Timestamp,
+    ) -> Result<u32, DbError> {
+        let mut tx = write_tx(self.pool).await?;
+        let before = day_total(&mut *tx, tenant_id, user_id, day_start).await?;
+        sqlx::query(
+            "INSERT INTO dashboard_ranking_resets (tenant_id, user_id, reset_at) VALUES (?, ?, ?)
+             ON CONFLICT (tenant_id, user_id) DO UPDATE SET reset_at = MAX(reset_at, excluded.reset_at)",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(ts(now))
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(before)
     }
 
     /// Records a live ranking state and counts, stores judgements and optionally replaces progress and log, in one
@@ -1270,6 +1486,30 @@ impl Dashboard<'_> {
         Ok(())
     }
 
+    /// Persists re-judge requests on existing judgements for this user.
+    pub async fn request_rejudgements(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        keys: &[ItemKey],
+        now: Timestamp,
+    ) -> Result<(), DbError> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+        sqlx::query(
+            "UPDATE dashboard_judgements SET rejudge_requested_at = ?4, last_seen_at = MAX(last_seen_at, ?4)
+             WHERE tenant_id = ?1 AND user_id = ?2 AND item_key IN (SELECT value FROM json_each(?3))",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(serde_json::to_string(keys)?)
+        .bind(ts(now))
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// Marks the user's judgements of these items as seen at `now` (retention).
     pub async fn mark_seen(
         &self,
@@ -1338,7 +1578,8 @@ async fn upsert_judgement(
              ON CONFLICT (user_id, item_key) DO UPDATE SET input_fingerprint = excluded.input_fingerprint,
                  input_version = excluded.input_version, prompt_version = excluded.prompt_version,
                  body = excluded.body, refresh_id = excluded.refresh_id, job_id = excluded.job_id,
-                 model = excluded.model, judged_at = excluded.judged_at, last_seen_at = excluded.last_seen_at
+                 model = excluded.model, judged_at = excluded.judged_at, last_seen_at = excluded.last_seen_at,
+                 rejudge_requested_at = NULL
              WHERE dashboard_judgements.tenant_id = excluded.tenant_id",
         )
         .bind(tenant_id)
@@ -1504,6 +1745,49 @@ fn count(row: &SqliteRow, column: &'static str) -> Result<u32, DbError> {
     u32::try_from(row.try_get::<i64, _>(column)?).map_err(|_| DbError::Corrupt { column })
 }
 
+fn send_count(items: i64) -> Result<u32, DbError> {
+    u32::try_from(items).map_err(|_| DbError::Corrupt {
+        column: "dashboard_sends.items",
+    })
+}
+
+pub(super) async fn refund_finished_send(
+    tx: &mut SqliteConnection,
+    job: JobId,
+    now: Timestamp,
+) -> Result<Option<(String, String)>, DbError> {
+    Ok(sqlx::query_as(concat!(
+        "UPDATE dashboard_sends AS s SET released_at = ?
+         WHERE s.job_id = ? AND s.released_at IS NULL
+           AND EXISTS (SELECT 1 FROM jobs j WHERE j.id = s.job_id AND ",
+        refundable_job!(),
+        ") RETURNING user_id, refresh_id"
+    ))
+    .bind(ts(now))
+    .bind(job.to_string())
+    .fetch_optional(&mut *tx)
+    .await?)
+}
+
+pub(super) fn log_refund(job: JobId, (user_id, refresh): (String, String)) {
+    tracing::info!(%user_id, %refresh, %job, "dashboard judge send released from daily usage");
+}
+
+async fn day_total<'c>(
+    db: impl SqliteExecutor<'c>,
+    tenant_id: &str,
+    user_id: &str,
+    day_start: Timestamp,
+) -> Result<u32, DbError> {
+    let items = sqlx::query_scalar(SENT_SINCE_SQL)
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(ts(day_start))
+        .fetch_one(db)
+        .await?;
+    send_count(items)
+}
+
 fn record_of(row: &SqliteRow) -> Result<RefreshRecord, DbError> {
     let failure = match row.try_get::<Option<String>, _>("failure_code")? {
         None => None,
@@ -1601,6 +1885,7 @@ fn judgement_of(row: &SqliteRow) -> Result<StoredJudgement, DbError> {
         model: row.try_get("model")?,
         judged_at: parse_ts(&row.try_get::<String, _>("judged_at")?, "judged_at")?,
         last_seen_at: parse_ts(&row.try_get::<String, _>("last_seen_at")?, "last_seen_at")?,
+        rejudge_requested_at: optional_ts(row, "rejudge_requested_at")?,
     })
 }
 
@@ -1624,6 +1909,76 @@ mod tests {
             .parse::<Timestamp>()
             .unwrap_or_default()
             + SignedDuration::from_mins(minute)
+    }
+
+    #[tokio::test]
+    async fn saving_linked_logins_releases_only_removed_pins_in_the_same_transaction() {
+        let db = db().await;
+        sqlx::query("INSERT INTO memberships (tenant_id, user_id, created_at) VALUES (?, 'u1', ?)")
+            .bind(T)
+            .bind(ts(at(0)))
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let dash = db.dashboard();
+        let rl = db.review_loop();
+        let mut settings = DashboardSettings {
+            linked_logins: vec!["alice-ci".into(), "bob-ci".into()],
+            ..DashboardSettings::default()
+        };
+        dash.save_settings(T, "u1", &settings, at(0)).await.unwrap();
+        assert!(
+            rl.pin_linked_account(T, "u1", "alice-ci", 41)
+                .await
+                .unwrap()
+        );
+        assert!(rl.pin_linked_account(T, "u1", "bob-ci", 42).await.unwrap());
+
+        sqlx::query(
+            "CREATE TRIGGER reject_pin_removal BEFORE DELETE ON comment_linked_account_pins
+             BEGIN SELECT RAISE(ABORT, 'pin removal failed'); END",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let originally_linked = settings.linked_logins.clone();
+        settings.linked_logins = vec!["Bob-CI".into()];
+        assert!(dash.save_settings(T, "u1", &settings, at(1)).await.is_err());
+        assert_eq!(
+            dash.settings(T, "u1")
+                .await
+                .unwrap()
+                .unwrap()
+                .settings
+                .linked_logins,
+            originally_linked
+        );
+        sqlx::query("DROP TRIGGER reject_pin_removal")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+
+        dash.save_settings(T, "u1", &settings, at(2)).await.unwrap();
+        let pins: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT login, github_id FROM comment_linked_account_pins WHERE tenant_id = ? AND user_id = 'u1'",
+        )
+        .bind(T)
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(pins, [("bob-ci".into(), 42)]);
+        assert!(
+            !rl.pin_linked_account(T, "u1", "alice-ci", 41)
+                .await
+                .unwrap()
+        );
+        settings.linked_logins.push("ALICE-CI".into());
+        dash.save_settings(T, "u1", &settings, at(3)).await.unwrap();
+        assert!(
+            rl.pin_linked_account(T, "u1", "alice-ci", 43)
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
@@ -2313,30 +2668,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn automatic_start_cannot_supersede_a_ranking_restarted_after_its_precheck() {
-        let db = db().await;
-        let dash = db.dashboard();
-        let id = finished(&db, "u1", 0, RankingState::Cancelled).await;
-        let before = dash
-            .latest_refresh(T, "u1")
-            .await
-            .expect("precheck")
-            .expect("refresh");
-        assert_eq!(before.state, RefreshState::Finished);
-        dash.restart_ranking(T, "u1", id).await.expect("rank again");
-        let restarted = record(&db, "u1", id).await;
-        assert_eq!(restarted.state, RefreshState::Ranking);
-        assert_eq!(
-            dash.start_refresh(T, "u1", RefreshTrigger::Automatic, at(30))
-                .await
-                .expect("start"),
-            StartOutcome::ScanRunning
-        );
-        assert_eq!(record(&db, "u1", id).await, restarted);
-        assert_eq!(live(&db, "u1").await, [(id, RefreshState::Ranking)]);
-    }
-
-    #[tokio::test]
     async fn supersede_and_start_are_one_transaction() {
         let db = db().await;
         let old = ranking(&db, "u1", 0).await;
@@ -2797,6 +3128,9 @@ mod tests {
         let dash = db.dashboard();
         let id = start(&db, "u1", 0).await;
         let progress = RefreshProgress {
+            left_provisional_keys: Vec::new(),
+            left_provisional_by: None,
+            bulk_rejudge_keys: Vec::new(),
             steps: vec![ScanStep {
                 key: ScanStepKey::PrDetails,
                 state: StepState::Running,
@@ -3535,6 +3869,7 @@ mod tests {
             model: "gpt-6.1-sol".to_owned(),
             judged_at,
             last_seen_at: judged_at,
+            rejudge_requested_at: None,
         }
     }
 
@@ -3771,8 +4106,7 @@ mod tests {
         );
     }
 
-    /// Migrations 0003/0004 on an empty database: the dashboard tables and indexes exist and every read answers
-    /// "nothing yet".
+    /// The dashboard indexes exist and reads on a new database find no dashboard state.
     #[tokio::test]
     async fn dashboard_on_an_empty_database() {
         let db = Db::in_memory().await.expect("db");
@@ -3789,6 +4123,9 @@ mod tests {
                 "dashboard_judgements_by_last_seen",
                 "dashboard_refreshes_by_user",
                 "dashboard_refreshes_one_live_per_user",
+                "dashboard_sends_by_job",
+                "dashboard_sends_by_refresh",
+                "dashboard_sends_by_time",
                 "dashboard_snoozes_not_ended",
             ]
         );
@@ -3839,7 +4176,7 @@ mod tests {
             .await
             .expect("pool");
         super::super::migrate(&pool, 2).await.expect("v1 schema");
-        let db = Db { pool };
+        let db = Db::from_pool(pool);
         let analysis = seed_analysis(&db).await.expect("analysis");
         sqlx::raw_sql(
             "INSERT INTO memberships (tenant_id, user_id, created_at) VALUES ('default', 'u1', 't');
@@ -3878,7 +4215,7 @@ mod tests {
             .await
             .expect("before");
 
-        super::super::migrate(&db.pool, super::super::MIGRATIONS.len() - 1)
+        super::super::migrate(&db.pool, super::super::migration_count_through(29))
             .await
             .expect("upgrade in place");
 
@@ -3901,6 +4238,22 @@ mod tests {
             ),
             ("gpt-6-astra", ReasoningEffort::Low, "lklimek")
         );
+        let versions: Vec<i64> = sqlx::query_scalar(
+            "SELECT version FROM _sqlx_migrations WHERE success ORDER BY version",
+        )
+        .fetch_all(&db.pool)
+        .await
+        .expect("versions");
+        let all: Vec<i64> = super::super::MIGRATIONS
+            .iter()
+            .take(super::super::migration_count_through(29))
+            .map(|(version, ..)| *version)
+            .collect();
+        assert_eq!(versions, all);
+
+        super::super::migrate(&db.pool, super::super::MIGRATIONS.len())
+            .await
+            .expect("current schema");
         let dash = db.dashboard();
         dash.save_settings(T, "u1", &DashboardSettings::default(), at(0))
             .await
@@ -3917,18 +4270,6 @@ mod tests {
         .await
         .expect("judgement");
         assert_eq!(current(&db, "u1").await, Some((id, 1)));
-        let versions: Vec<i64> = sqlx::query_scalar(
-            "SELECT version FROM _sqlx_migrations WHERE success ORDER BY version",
-        )
-        .fetch_all(&db.pool)
-        .await
-        .expect("versions");
-        let all: Vec<i64> = super::super::MIGRATIONS
-            .iter()
-            .take(super::super::MIGRATIONS.len() - 1)
-            .map(|(version, ..)| *version)
-            .collect();
-        assert_eq!(versions, all);
     }
 
     /// Migration 0005 upgrades a database with dashboard rows in place: refreshes, settings and judgements are kept,
@@ -3947,7 +4288,7 @@ mod tests {
             .await
             .expect("pool");
         super::super::migrate(&pool, 4).await.expect("0001-0004");
-        let db = Db { pool };
+        let db = Db::from_pool(pool);
         seed_users(&db).await;
         sqlx::raw_sql(
             "INSERT INTO dashboard_settings (user_id, tenant_id, time_zone, updated_at)
@@ -3976,7 +4317,7 @@ mod tests {
             .await
             .expect("before");
 
-        super::super::migrate(&db.pool, super::super::MIGRATIONS.len() - 1)
+        super::super::migrate(&db.pool, super::super::migration_count_through(29))
             .await
             .expect("upgrade in place");
 
@@ -4017,16 +4358,176 @@ mod tests {
     }
 
     const CAPS: SendCaps = SendCaps {
-        per_refresh: 10,
+        per_refresh: Some(10),
         per_day: 15,
     };
+
+    fn send(items: u32, sent_at: Timestamp, day_start: Timestamp) -> JudgeSend {
+        JudgeSend {
+            job_id: JobId::new_random(),
+            items,
+            sent_at,
+            day_start,
+        }
+    }
+
+    #[tokio::test]
+    async fn send_release_is_scoped_and_idempotent() {
+        let db = db().await;
+        let dash = db.dashboard();
+        let id = ranking(&db, "u1", 1).await;
+        let batch = send(3, at(1), at(0));
+        assert_eq!(
+            dash.reserve_sends(T, "u1", id, 0, batch, CAPS)
+                .await
+                .expect("reserve"),
+            SendReservation::Reserved
+        );
+        for (tenant, user) in [(T, "u2"), ("other-tenant", "u1")] {
+            assert!(
+                !dash
+                    .release_send(tenant, user, batch.job_id, at(2))
+                    .await
+                    .expect("release")
+            );
+        }
+        assert_eq!(dash.sent_today(T, "u1", at(0)).await.expect("usage"), 3);
+        assert!(
+            dash.release_send(T, "u1", batch.job_id, at(2))
+                .await
+                .expect("release")
+        );
+        assert!(
+            !dash
+                .release_send(T, "u1", batch.job_id, at(3))
+                .await
+                .expect("release again")
+        );
+        assert_eq!(dash.sent_today(T, "u1", at(0)).await.expect("usage"), 0);
+    }
+
+    #[tokio::test]
+    async fn older_reset_does_not_move_the_cutoff_back() {
+        let db = db().await;
+        let dash = db.dashboard();
+        let id = ranking(&db, "u1", 1).await;
+        assert_eq!(
+            dash.reserve_sends(T, "u1", id, 0, send(3, at(2), at(0)), CAPS)
+                .await
+                .expect("reserve"),
+            SendReservation::Reserved
+        );
+        assert_eq!(
+            dash.reset_ranking_usage(T, "u1", at(0), at(3))
+                .await
+                .expect("reset"),
+            3
+        );
+        assert_eq!(
+            dash.reset_ranking_usage(T, "u1", at(0), at(1))
+                .await
+                .expect("older reset"),
+            0
+        );
+        assert_eq!(dash.sent_today(T, "u1", at(0)).await.expect("usage"), 0);
+    }
+
+    #[tokio::test]
+    async fn startup_reconciles_missing_and_terminal_zero_token_sends() {
+        use crate::repo::analyses::testing::judge_spec;
+        use crate::repo::jobs::{JobStage, NewJob};
+        use contracts::job::spec::JobPriority;
+
+        let db = db().await;
+        let dash = db.dashboard();
+        let id = ranking(&db, "u1", 1).await;
+        for (batch, state, result) in [
+            (1, None, None),
+            (2, Some("failed"), Some(r#"{"usage":null}"#)),
+            (
+                3,
+                Some("cancelled"),
+                Some(r#"{"usage":{"input_tokens":0,"output_tokens":0}}"#),
+            ),
+            (
+                4,
+                Some("failed"),
+                Some(r#"{"usage":{"input_tokens":0,"output_tokens":1}}"#),
+            ),
+            (5, Some("succeeded"), Some(r#"{"usage":null}"#)),
+            (6, Some("queued"), None),
+            (7, None, None),
+        ] {
+            let spec = judge_spec(id);
+            assert_eq!(
+                dash.reserve_sends(
+                    T,
+                    "u1",
+                    id,
+                    0,
+                    JudgeSend {
+                        job_id: spec.job_id,
+                        ..send(1, at(1), at(0))
+                    },
+                    CAPS
+                )
+                .await
+                .expect("reserve"),
+                SendReservation::Reserved
+            );
+            let job = spec.job_id.to_string();
+            if let Some(state) = state {
+                db.jobs()
+                    .enqueue(
+                        NewJob {
+                            spec,
+                            priority: JobPriority::Interactive,
+                            stage: JobStage::Judge { refresh: id, batch },
+                            generation: 0,
+                        },
+                        at(1),
+                    )
+                    .await
+                    .expect("enqueue");
+                if state != "queued" {
+                    sqlx::query(
+                        "UPDATE jobs SET state = ?, result = ?, finished_at = ? WHERE id = ?",
+                    )
+                    .bind(state)
+                    .bind(result)
+                    .bind(ts(at(2)))
+                    .bind(&job)
+                    .execute(&db.pool)
+                    .await
+                    .expect("terminal result before reconciliation");
+                }
+            } else if batch == 7 {
+                sqlx::query("UPDATE dashboard_sends SET job_id = NULL WHERE job_id = ?")
+                    .bind(&job)
+                    .execute(&db.pool)
+                    .await
+                    .expect("backfilled send");
+            }
+        }
+        assert_eq!(dash.reconcile_sends(at(3)).await.expect("reconcile"), 3);
+        assert_eq!(dash.reconcile_sends(at(4)).await.expect("again"), 0);
+        let released: Vec<bool> =
+            sqlx::query_scalar("SELECT released_at IS NOT NULL FROM dashboard_sends ORDER BY id")
+                .fetch_all(&db.pool)
+                .await
+                .expect("release timestamps");
+        assert_eq!(released, [true, true, true, false, false, false, false]);
+        assert_eq!(dash.sent_today(T, "u1", at(0)).await.expect("usage"), 4);
+    }
 
     #[tokio::test]
     async fn sends_are_reserved_within_both_caps_and_counted_across_attempts() {
         let db = db().await;
         let dash = db.dashboard();
         let id = ranking(&db, "u1", 1).await;
-        let reserve = |items, attempt| dash.reserve_sends(T, "u1", id, attempt, items, CAPS, at(0));
+        let reserve = |items, attempt| {
+            dash.reserve_sends(T, "u1", id, attempt, send(items, at(1), at(0)), CAPS)
+        };
         assert_eq!(
             reserve(8, 0).await.expect("reserve"),
             SendReservation::Reserved
@@ -4072,7 +4573,7 @@ mod tests {
             .expect("finish");
         assert_eq!(applied, RankingUpdate::Applied);
         let next = ranking(&db, "u1", 4).await;
-        let reserve = |items| dash.reserve_sends(T, "u1", next, 0, items, CAPS, at(0));
+        let reserve = |items| dash.reserve_sends(T, "u1", next, 0, send(items, at(4), at(0)), CAPS);
         assert_eq!(
             reserve(6).await.expect("reserve"),
             SendReservation::OverDailyCap
@@ -4093,7 +4594,7 @@ mod tests {
         // Another user's sends are theirs.
         let other = ranking(&db, "u2", 5).await;
         assert_eq!(
-            dash.reserve_sends(T, "u2", other, 0, 8, CAPS, at(0))
+            dash.reserve_sends(T, "u2", other, 0, send(8, at(5), at(0)), CAPS)
                 .await
                 .expect("reserve"),
             SendReservation::Reserved
@@ -4101,13 +4602,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sends_of_a_refresh_started_before_the_day_count_while_it_ranks_today() {
+    async fn day_total_counts_send_time_not_refresh_span() {
         let db = db().await;
         let dash = db.dashboard();
         let id = ranking(&db, "u1", 1).await;
-        let day = at(60);
+        let day = at(18 * 60);
         assert_eq!(
-            dash.reserve_sends(T, "u1", id, 0, 4, CAPS, day)
+            dash.reserve_sends(T, "u1", id, 0, send(4, at(2), at(0)), CAPS)
                 .await
                 .expect("reserve"),
             SendReservation::Reserved
@@ -4117,21 +4618,87 @@ mod tests {
                 .await
                 .expect("totals")
                 .day,
-            4,
-            "started before the day, still ranking"
+            0,
+            "yesterday's sends stay yesterday's even while the refresh ranks"
+        );
+        assert_eq!(
+            dash.reserve_sends(T, "u1", id, 0, send(2, day, day), CAPS)
+                .await
+                .expect("reserve today"),
+            SendReservation::Reserved
         );
         let applied = dash
-            .finish_ranking(T, "u1", id, 0, RankingState::Finished, COUNTS, at(30))
+            .finish_ranking(
+                T,
+                "u1",
+                id,
+                0,
+                RankingState::Finished,
+                COUNTS,
+                day + SignedDuration::from_mins(1),
+            )
             .await
             .expect("finish");
         assert_eq!(applied, RankingUpdate::Applied);
         assert_eq!(
-            dash.sent_totals(T, "u1", id, day)
-                .await
-                .expect("totals")
-                .day,
-            0
+            dash.sent_totals(T, "u1", id, day).await.expect("totals"),
+            SentTotals { refresh: 6, day: 2 }
         );
+    }
+
+    #[tokio::test]
+    async fn pruning_a_refresh_publishes_removal_of_its_queued_job() {
+        use crate::repo::analyses::testing::judge_spec;
+        use crate::repo::jobs::{JobStage, NewJob};
+        use contracts::job::spec::JobPriority;
+
+        let db = db().await;
+        let refresh = ranking(&db, "u1", 0).await;
+        let mut spec = judge_spec(refresh);
+        spec.payer.0 = "u1".into();
+        db.jobs()
+            .enqueue(
+                NewJob {
+                    spec,
+                    stage: JobStage::Judge { refresh, batch: 1 },
+                    priority: JobPriority::Batch,
+                    generation: 0,
+                },
+                at(0),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            db.dashboard()
+                .finish_ranking(
+                    T,
+                    "u1",
+                    refresh,
+                    0,
+                    RankingState::Failed,
+                    JudgeCounts::default(),
+                    at(0),
+                )
+                .await
+                .unwrap(),
+            RankingUpdate::Applied,
+        );
+        // A refresh can end before the executor finishes cancelling its queued jobs.
+        for minute in 1..i64::from(REFRESHES_KEPT) {
+            finished(&db, "u1", minute, RankingState::Finished).await;
+        }
+        let activity = db.jobs().subscribe_activity(T);
+        let other_tenant = db.jobs().subscribe_activity("other");
+        assert_eq!(db.jobs().activity(T, "u1").await.unwrap().jobs.len(), 1);
+
+        start(&db, "u1", i64::from(REFRESHES_KEPT)).await;
+
+        assert!(db.jobs().activity(T, "u1").await.unwrap().jobs.is_empty());
+        assert!(
+            activity.has_changed().unwrap(),
+            "cascading job deletion publishes"
+        );
+        assert!(!other_tenant.has_changed().unwrap());
     }
 
     #[tokio::test]
@@ -4140,7 +4707,7 @@ mod tests {
         let dash = db.dashboard();
         let first = ranking(&db, "u1", 0).await;
         let applied = dash
-            .reserve_sends(T, "u1", first, 0, 3, CAPS, at(0))
+            .reserve_sends(T, "u1", first, 0, send(3, at(0), at(0)), CAPS)
             .await
             .expect("reserve");
         assert_eq!(applied, SendReservation::Reserved);
@@ -4173,6 +4740,9 @@ mod tests {
         let dash = db.dashboard();
         let id = ranking(&db, "u1", 1).await;
         let progress = RefreshProgress {
+            left_provisional_keys: Vec::new(),
+            left_provisional_by: None,
+            bulk_rejudge_keys: Vec::new(),
             steps: Vec::new(),
             percent: 100,
         };

@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RepositoryInstallations",
+  "description": "Live webhook coverage of repositories tracked by the reader's tenant.",
+  "type": "object",
+  "properties": {
+    "repositories": {
+      "description": "Repositories tracked through owners to list, repository rules, watches, analyses or current snapshots.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/RepositoryInstallation"
+      }
+    }
+  },
+  "required": [
+    "repositories"
+  ],
+  "$defs": {
+    "RepositoryInstallation": {
+      "description": "Whether the GitHub App updates this tracked repository.",
+      "type": "object",
+      "properties": {
+        "repo": {
+          "description": "Repository.",
+          "$ref": "#/$defs/RepoRef"
+        },
+        "live": {
+          "description": "Whether it gets live webhook updates.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "repo",
+        "live"
+      ]
+    },
+    "RepoRef": {
+      "description": "A GitHub repository.",
+      "type": "object",
+      "properties": {
+        "owner": {
+          "description": "Owner (user or organisation) login.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Repository name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "name"
+      ]
+    }
+  }
+}

@@ -1,7 +1,7 @@
 //! Admission and method isolation for one frozen logical assessment pass.
 
 use super::{
-    AssessError,
+    AssessError, VERIFY_PROMPT_VERSION,
     frozen::{self, Frozen},
     prompt,
 };
@@ -24,7 +24,7 @@ use db::repo::review_loop::{ItemRecord, NewPass, PassRecord};
 use futures::StreamExt;
 use serde_json::json;
 
-const HOST_VERSION: &str = "13.7.0/71096d7/4.2/brief1";
+const HOST_VERSION: &str = "13.7.0/71096d7/4.2/brief2";
 
 pub(super) async fn admit(
     state: &AppState,
@@ -88,13 +88,20 @@ pub(super) async fn admit(
             }
         }
     }
+    let authorities =
+        super::imports::Authorities::read(state, &tenant, &user.0, &mut data.manifest).await?;
     let mut frozen = Frozen {
         data,
+        authorities,
+        own_reply_urls: Default::default(),
+        own_reply_texts: Default::default(),
+        written: snapshot.map(|s| s.written.clone()).unwrap_or_default(),
         items: items.to_vec(),
         sent: review.sent.clone(),
         native: native.clone(),
         standing: Default::default(),
         fingerprints: Default::default(),
+        purpose_fingerprint: None,
     };
     frozen
         .ids(state, review.pull_request_id, pr, snapshot)
@@ -124,7 +131,10 @@ pub(super) async fn admit(
     let mut jobs = Vec::new();
     for method in methods {
         jobs.push(MethodJob {
-            version: version(method).into(),
+            version: match method {
+                AssessmentMethod::ClaudiusHost => HOST_VERSION.into(),
+                AssessmentMethod::PromptV4 => VERIFY_PROMPT_VERSION.to_string(),
+            },
             spec: JobSpec {
                 job_id: JobId::new_random(),
                 attempt: 0,
@@ -195,19 +205,18 @@ pub(super) async fn admit(
                 AssessmentError::Admission(AssessmentAdmissionFailure::AssessmentDailyLimit {
                     ..
                 }) => Ok(super::PassQueued::DailyLimit),
+                AssessmentError::MarkedItem
+                    if review.cause == db::repo::review_loop::PassCause::AssessAgain =>
+                {
+                    Err(AssessError::MarkedItem)
+                }
+                AssessmentError::MarkedItem => Ok(super::PassQueued::Skipped),
                 AssessmentError::Database(db::error::DbError::Conflict) => {
                     Ok(super::PassQueued::AlreadyRunning)
                 }
                 error => Err(error.into()),
             }
         }
-    }
-}
-
-fn version(method: AssessmentMethod) -> &'static str {
-    match method {
-        AssessmentMethod::ClaudiusHost => HOST_VERSION,
-        AssessmentMethod::PromptV4 => "4",
     }
 }
 
@@ -264,11 +273,21 @@ pub(super) async fn run(
         .runs(&tenant, &pass.payer, pass.id)
         .await?;
     runs.sort_by_key(|r| r.reference.method != pass.config.primary_method);
-    let mut primary_complete = false;
     for run in runs {
         if run.status == AssessmentRunStatus::Succeeded {
-            if run.reference.method == pass.config.primary_method {
-                primary_complete = true;
+            if run.reference.method == pass.config.primary_method
+                && let Err(error) = crate::review_loop::propagation::propagate(
+                    state,
+                    &tenant,
+                    record.pull_request_id,
+                )
+                .await
+            {
+                tracing::warn!(
+                    ?error,
+                    pr = record.pull_request_id,
+                    "review decisions could not propagate after resuming assessment"
+                );
             }
             continue;
         }
@@ -352,8 +371,9 @@ pub(super) async fn run(
                 summary.head_sha = pass.input.head.clone();
                 summary.base_sha = pass.input.base.clone();
                 let mut code = super::CodeReader::new(state, &summary);
-                let purpose =
-                    super::purpose_hash(&frozen.native.title, frozen.native.description.as_deref());
+                let purpose = frozen.purpose_fingerprint.clone().unwrap_or_else(|| {
+                    super::purpose_hash(&frozen.native.title, frozen.native.description.as_deref())
+                });
                 for write in &mut writes {
                     if let Some(observed) = &write.observed {
                         write.fingerprint = super::fingerprint_fields(
@@ -384,25 +404,34 @@ pub(super) async fn run(
                     if primary { &writes } else { &[] },
                 )
                 .await?;
-            if primary && accepted {
-                primary_complete = normalized.status == AssessmentRunStatus::Succeeded
-                    && !normalized.items.iter().any(|r| {
-                        matches!(
-                            r.status,
-                            ComparisonItemStatus::MissingRow | ComparisonItemStatus::HeadMismatch
-                        )
-                    });
-                if run.reference.method == AssessmentMethod::PromptV4
-                    && let JobOutcome::Succeeded { output } = &result.outcome
-                    && let Some(purpose) = output["purpose"].as_str()
-                    && super::ingest::fit_text(purpose, 600).is_ok()
-                {
-                    state
-                        .db
-                        .review_loop()
-                        .set_purpose(record.pull_request_id, purpose)
-                        .await?;
-                }
+            if primary
+                && accepted
+                && normalized.status == AssessmentRunStatus::Succeeded
+                && let Err(error) = crate::review_loop::propagation::propagate(
+                    state,
+                    &tenant,
+                    record.pull_request_id,
+                )
+                .await
+            {
+                tracing::warn!(
+                    ?error,
+                    pr = record.pull_request_id,
+                    "review decisions could not propagate after assessment"
+                );
+            }
+            if primary
+                && accepted
+                && run.reference.method == AssessmentMethod::PromptV4
+                && let JobOutcome::Succeeded { output } = &result.outcome
+                && let Some(purpose) = output["purpose"].as_str()
+                && super::ingest::fit_text(purpose, 600).is_ok()
+            {
+                state
+                    .db
+                    .review_loop()
+                    .set_purpose(record.pull_request_id, purpose)
+                    .await?;
             }
             if normalized.status == AssessmentRunStatus::Failed
                 && normalized.failure.is_some_and(JobFailureKind::retryable)
@@ -428,17 +457,13 @@ pub(super) async fn run(
             r.reference.method == pass.config.primary_method
                 && r.status == AssessmentRunStatus::Succeeded
         });
+    let made_progress =
+        primary_succeeded && state.db.assessments().primary_made_progress(&pass).await?;
     state
         .db
         .review_loop()
         .finish_pass(pass.id, primary_succeeded, Timestamp::now())
         .await?;
-    super::next(
-        state,
-        record,
-        primary_complete,
-        frozen.data.scope.sources.len() >= 5,
-    )
-    .await;
+    super::next(state, record, made_progress).await;
     Ok(())
 }

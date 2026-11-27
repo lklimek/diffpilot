@@ -51,8 +51,9 @@ it("reports save failures, preserves selections and does not queue work", async 
       );
     }),
   );
-  renderRoute("/settings");
-  const card = await screen.findByRole("region", { name: "Comment assessment" });
+  renderRoute("/settings/review-loop");
+  await screen.findByLabelText("Primary assessment method");
+  const card = screen.getByRole("region", { name: "Comment assessment" });
   await userEvent.selectOptions(await within(card).findByLabelText("Primary assessment method"), "prompt_v4");
   await userEvent.click(within(card).getByRole("button", { name: "Save assessment settings" }));
   expect(await within(card).findByRole("alert")).toHaveTextContent("Settings could not be saved.");
@@ -127,8 +128,9 @@ it("conflicting settings refresh the revision without automatically replaying a 
       );
     }),
   );
-  renderRoute("/settings");
-  const card = await screen.findByRole("region", { name: "Comment assessment" });
+  renderRoute("/settings/review-loop");
+  await screen.findByLabelText("Primary assessment method");
+  const card = screen.getByRole("region", { name: "Comment assessment" });
   await userEvent.selectOptions(await within(card).findByLabelText("Primary assessment method"), "prompt_v4");
   await userEvent.click(within(card).getByRole("button", { name: "Save assessment settings" }));
   expect(await within(card).findByRole("alert")).toHaveTextContent("Your edits are kept.");
@@ -179,8 +181,9 @@ it("keeps edits through a conflicting primary and deadline change and reapplies 
       return HttpResponse.json(current);
     }),
   );
-  renderRoute("/settings");
-  const card = await screen.findByRole("region", { name: "Comment assessment" });
+  renderRoute("/settings/review-loop");
+  await screen.findByLabelText("Primary assessment method");
+  const card = screen.getByRole("region", { name: "Comment assessment" });
   const primary = await within(card).findByLabelText("Primary assessment method");
   const deadline = within(card).getByLabelText("Optional A/B deadline (UTC)");
   await userEvent.selectOptions(primary, "prompt_v4");

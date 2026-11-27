@@ -184,6 +184,26 @@
       "description": "A stored decision (append-only) with its effects.",
       "type": "object",
       "properties": {
+        "imported": {
+          "description": "Evidence and authority for a decision imported from GitHub.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ImportedDecision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "follows": {
+          "description": "Item number of the primary whose decision this follows.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
         "id": {
           "description": "Id.",
           "$ref": "#/$defs/DecisionId"
@@ -196,7 +216,7 @@
         },
         "kind": {
           "description": "Decision.",
-          "$ref": "#/$defs/DecisionKind"
+          "$ref": "#/$defs/ReviewDecisionKind"
         },
         "reason": {
           "description": "Reason (D3, D8; posted as the reply).",
@@ -323,13 +343,58 @@
         "effects"
       ]
     },
+    "ImportedDecision": {
+      "description": "An imported decision's source and grounded evidence.",
+      "type": "object",
+      "properties": {
+        "by": {
+          "description": "GitHub login of the decision's author.",
+          "type": "string"
+        },
+        "by_id": {
+          "description": "Numeric GitHub user id when available.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "at": {
+          "description": "When the statement was made on GitHub.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "evidence_url": {
+          "description": "GitHub URL of the evidence.",
+          "type": "string"
+        },
+        "quote": {
+          "description": "Verbatim excerpt supporting the decision.",
+          "type": "string"
+        },
+        "relay": {
+          "description": "GitHub login of the linked account that relayed the member's decision.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "by",
+        "at",
+        "evidence_url",
+        "quote"
+      ]
+    },
     "DecisionId": {
       "description": "Identifier of a decision on a review-loop item (append-only).",
       "type": "string",
       "format": "uuid"
     },
-    "DecisionKind": {
-      "description": "A decision (D1–D7; D8 is `reject` with a `blocker_gate` override; P1–P4 for PR-level questions). Open enum.",
+    "ReviewDecisionKind": {
+      "description": "A review decision (D1–D7 and P1–P4) eligible for external use.",
       "oneOf": [
         {
           "description": "D1: resolve, already fixed.",
@@ -538,7 +603,7 @@
       "properties": {
         "kind": {
           "description": "Recommended decision.",
-          "$ref": "#/$defs/DecisionKind"
+          "$ref": "#/$defs/ReviewDecisionKind"
         },
         "reason": {
           "description": "Why.",
@@ -569,6 +634,16 @@
     "DecisionVia": {
       "description": "Where a decision was made. Open enum.",
       "oneOf": [
+        {
+          "description": "The recorded decision was verified and imported from GitHub.",
+          "type": "string",
+          "const": "imported_github"
+        },
+        {
+          "description": "The decision was propagated from the item's primary.",
+          "type": "string",
+          "const": "follows_primary"
+        },
         {
           "description": "One question.",
           "type": "string",

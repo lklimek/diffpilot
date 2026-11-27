@@ -552,7 +552,11 @@ fn without_ban_line(text: &str) -> String {
 fn golden_prompts_of_fixture_pr_482() {
     let update = std::env::var_os("UPDATE_GOLDEN").is_some();
     let mut stale = Vec::new();
-    for (name, prompt) in all_prompts() {
+    let host_prompt = include_str!("../../../../prompts/check_pr_comments.md");
+    for (name, prompt) in all_prompts()
+        .into_iter()
+        .chain([("check_pr_comments".into(), host_prompt.into())])
+    {
         let path = golden_dir().join(format!("{name}.txt"));
         if update {
             std::fs::create_dir_all(golden_dir()).expect("golden dir");
@@ -966,6 +970,23 @@ fn instruction_files_get_the_t14_notice_in_every_prompt() {
         .expect("plan"),
     );
     assert!(!plain_instructions.contains("Notice: this pull request changes files"));
+}
+
+#[test]
+fn localized_prompts_explain_translated_technical_terms() {
+    let rule = "At the first use of each translated technical term in each text, put the original English term in parentheses immediately after it.";
+    for (name, prompt) in all_prompts() {
+        let (instructions, _) = split(&prompt);
+        let localized = name.ends_with(".pl") || name.ends_with(".ru");
+        assert_eq!(instructions.contains(rule), localized, "{name}");
+        assert_eq!(
+            instructions.contains(
+                "Never add English terms that dismiss risk, imply confirmation, quantify certainty, or otherwise violate the wording rules."
+            ),
+            localized,
+            "{name}"
+        );
+    }
 }
 
 #[test]

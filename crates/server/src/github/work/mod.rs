@@ -7,6 +7,7 @@
 //! failure of one item, repository or owner becomes a [`ScanNote`] and the scan goes on.
 
 mod batch;
+mod budget;
 mod client;
 mod details;
 mod enumerate;
@@ -31,13 +32,14 @@ use serde::Deserialize;
 use crate::github::rest::is_valid_repo;
 
 pub use batch::{MAX_PR_BATCH, PR_BATCH};
+pub(crate) use budget::EventBudget;
 pub(crate) use client::SEARCH_INTERVAL;
 pub use client::{TokenSource, UserTokens, WorkClient, WorkError};
+pub(crate) use details::IssueDetail;
 pub use details::{
     Actor, CheckContext, Comment, CommitNode, CommitRollup, Contexts, Count, HasNextPage,
-    HistoryPr, LinkedIssue, Login, Name, Nodes, Oid, PROBE_BATCH, ProbeCommit, ProbeRollup,
-    PullDetail, PullProbe, PullRepository, Reach, Resolved, ReviewNode, ReviewRequest,
-    ReviewThread, Reviewer, RollupState, StatusRollup, TimelineRequest,
+    HistoryPr, LinkedIssue, Login, Name, Nodes, Oid, PullDetail, PullRepository, Reach, ReviewNode,
+    ReviewRequest, ReviewThread, Reviewer, StatusRollup, TimelineRequest,
 };
 pub use enumerate::{AUTHORED_PAGES, AuthoredPulls, Enumeration};
 pub use reads::{PullFile, Release, RestMilestone, UserEvent, UserFeed};
@@ -137,7 +139,7 @@ impl<T> Default for Fetched<T> {
 }
 
 /// A login (optionally with GitHub's `[bot]` suffix) is safe in an API path and a search query.
-fn valid_login(login: &str) -> bool {
+pub(crate) fn valid_login(login: &str) -> bool {
     let bare = login.strip_suffix("[bot]").unwrap_or(login);
     (1..=39).contains(&bare.len())
         && bare

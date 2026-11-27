@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -41,7 +41,7 @@ describe("Dependencies view (brief 2026-11-20, plan U1–U3)", () => {
   it("the Files view's menu leads here", async () => {
     const router = renderRoute(`/analyses/${ID}/files`);
     await userEvent.click(await screen.findByRole("button", { name: "View: Files" }));
-    await userEvent.click(screen.getByRole("link", { name: "Dependencies" }));
+    await userEvent.click(screen.getByRole("menuitemradio", { name: "Dependencies" }));
     await waitFor(() => expect(router.state.location.pathname).toBe(`/analyses/${ID}/deps`));
     await heading();
   });
@@ -152,10 +152,10 @@ describe("Dependencies view (brief 2026-11-20, plan U1–U3)", () => {
 
   it("controlled organisations saved in Settings apply to the view at once", async () => {
     setScenario("deps-no-controlled");
-    renderRoute("/settings");
+    renderRoute("/settings/github-sync");
     const field = await screen.findByLabelText("Add a controlled organisation");
     await userEvent.type(field, "dashpay{Enter}");
-    const card = screen.getByRole("region", { name: "Controlled organisations" });
+    const card = screen.getByRole("region", { name: "Controlled owners" });
     await userEvent.click(within(card).getByRole("button", { name: "Save organisations" }));
     expect(await within(card).findByRole("status")).toHaveTextContent("Controlled organisations saved.");
     expect(card).toHaveTextContent(/changed by lklimek at/);
@@ -163,7 +163,25 @@ describe("Dependencies view (brief 2026-11-20, plan U1–U3)", () => {
     renderRoute(`/analyses/${ID}/deps`);
     await repositories();
     expect(document.body).toHaveTextContent("Yours: acme (this pull request's owner), dashpay.");
+    await userEvent.click(screen.getByRole("checkbox", { name: /Show unchanged dependencies/ }));
     const platform = screen.getByRole("button", { name: /^dashpay\/platform/ }).closest("li")!;
     expect(within(platform).getByText("yours")).toBeVisible();
   });
+});
+
+it("starts with unchanged crates hidden and remembers the checkbox", async () => {
+  setScenario("deps-multi");
+  const route = `/analyses/${ID}/deps`;
+  const first = renderRoute(route);
+  const checkbox = await screen.findByRole("checkbox", { name: /Show unchanged dependencies/ });
+  expect(checkbox).not.toBeChecked();
+  await userEvent.click(checkbox);
+  expect(checkbox).toBeChecked();
+  await act(async () => {
+    await first.navigate("/");
+  });
+  await act(async () => {
+    await first.navigate(route);
+  });
+  expect(await screen.findByRole("checkbox", { name: /Show unchanged dependencies/ })).toBeChecked();
 });

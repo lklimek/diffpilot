@@ -8,7 +8,7 @@ import { contrastRatio } from "../src/components/code-view/highlight";
 const open = (page: Page, scenario: string) =>
   page.goto(`/analyses/${ANALYSIS_ID}/progress?scenario=${scenario}`);
 const bar = (page: Page) => page.getByRole("progressbar", { name: "Analysis progress" });
-const openReview = (page: Page) => page.getByRole("link", { name: "Open", exact: true });
+const openReview = (page: Page) => page.getByRole("link", { name: "Open review", exact: true });
 
 test("planning: indeterminate bar, Planning flows…, Cancel analysis, no Open", async ({ page }) => {
   await open(page, "planning");

@@ -175,6 +175,7 @@ body.narrow .conn{display:block}
 <body>
 <header class="top">
  <h1><span>diffpilot</span> architecture <small style="font-weight:400;font-size:.8rem;color:var(--muted)">one page, v1 + marked seams</small></h1>
+ <p role="note" style="flex-basis:100%;margin:0;font-size:.85rem">This page shows the v1.0 runtime. The container runtime (launcher with the Docker socket, per-(PR, payer) worker containers running Codex <code>app-server</code>, Codex gateway, <code>gh</code> with a per-job token file instead of <code>github-mcp-server</code>) is <a href="decisions/ADR-025-container-runtime.md">ADR-025</a>; the webhook listener is <a href="decisions/ADR-026-github-webhooks.md">ADR-026</a>; summary: design brief, amendment 2026-11-26.</p>
  <div class="legend" aria-label="Legend">
   <span class="k"><i class="sw det"></i>deterministic (DET)</span>
   <span class="k"><i class="sw llm"></i>LLM step (LLM)</span>

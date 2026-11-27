@@ -11,15 +11,25 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use contracts::common::PrRef;
+use contracts::time::Timestamp;
+use tokio::time::Instant;
 
 use crate::config::GithubConfig;
 use crate::github::oauth::endpoint;
+use crate::github::work::EventBudget;
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
 const CLIENT_NAME: &str = "diffpilot";
 /// Largest answer read: a page of review bodies reaches about 1 MB (spike S13-2), so 8 MiB leaves room while a
 /// runaway answer is refused with a clear error.
 pub const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+
+/// A webhook read's shared per-user allowance and coalescing clock.
+#[derive(Clone, Copy)]
+pub(crate) struct ReadBudget<'a> {
+    pub(crate) budget: &'a EventBudget,
+    pub(crate) instant: Instant,
+}
 
 /// A GraphQL call failed.
 #[derive(Debug, thiserror::Error)]
@@ -36,6 +46,12 @@ pub enum GraphqlError {
     /// GitHub's rate limit is exhausted.
     #[error("the GitHub rate limit is exhausted")]
     RateLimited,
+    /// The user's webhook allowance has no room for the next request.
+    #[error("GitHub webhook read budget reached")]
+    EventBudget(Duration),
+    /// Budgeted GraphQL calls accept only read queries.
+    #[error("only GraphQL queries can use the webhook budget")]
+    NotAQuery,
     /// GitHub answered with another unexpected HTTP status.
     #[error("GitHub answered with HTTP status {0}")]
     Status(StatusCode),
@@ -84,6 +100,8 @@ impl GraphqlError {
             | Self::Client(_)
             | Self::Unauthorized
             | Self::RateLimited
+            | Self::EventBudget(_)
+            | Self::NotAQuery
             | Self::FieldFailed(GraphqlErrorType::Forbidden) => true,
             Self::Status(status) => status.is_client_error(),
             Self::Http(_)
@@ -166,7 +184,50 @@ pub async fn execute<V: Serialize, D: DeserializeOwned>(
     document: &str,
     variables: V,
 ) -> Result<D, GraphqlError> {
-    let response = client()?
+    execute_inner(config, token, document, variables, None).await
+}
+
+/// Executes a review read and requests cost metadata for webhook-driven reads.
+pub(crate) async fn execute_read<V: Serialize, D: DeserializeOwned>(
+    config: &GithubConfig,
+    token: &SecretString,
+    document: &str,
+    variables: V,
+    budget: Option<ReadBudget<'_>>,
+) -> Result<D, GraphqlError> {
+    let Some(budget) = budget else {
+        return execute(config, token, document, variables).await;
+    };
+    let body = document
+        .trim()
+        .strip_suffix('}')
+        .filter(|body| body.starts_with("query("))
+        .ok_or(GraphqlError::NotAQuery)?;
+    let query = format!("{body} rateLimit {{ cost remaining resetAt }} }}");
+    execute_inner(config, token, &query, variables, Some(budget)).await
+}
+
+async fn execute_inner<V: Serialize, D: DeserializeOwned>(
+    config: &GithubConfig,
+    token: &SecretString,
+    document: &str,
+    variables: V,
+    budget: Option<ReadBudget<'_>>,
+) -> Result<D, GraphqlError> {
+    let client = client()?;
+    let charge = if let Some(budget) = budget {
+        // The review queries select at most one point of GraphQL connections per page.
+        Some(
+            budget
+                .budget
+                .reserve(budget.instant, Timestamp::now(), 1)
+                .await
+                .map_err(GraphqlError::EventBudget)?,
+        )
+    } else {
+        None
+    };
+    let response = client
         .post(endpoint(&config.api_url, "graphql"))
         .bearer_auth(token.expose_secret())
         .header(ACCEPT, "application/json")
@@ -176,17 +237,53 @@ pub async fn execute<V: Serialize, D: DeserializeOwned>(
             variables,
         })
         .send()
-        .await
-        .map_err(GraphqlError::Http)?;
+        .await;
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            if let Some(charge) = charge {
+                charge.record(None, None, None);
+            }
+            return Err(GraphqlError::Http(error));
+        }
+    };
     let status = response.status();
     let exhausted = response
         .headers()
         .get("x-ratelimit-remaining")
         .is_some_and(|value| value.as_bytes() == b"0");
+    let header_number = |name| {
+        response
+            .headers()
+            .get(name)?
+            .to_str()
+            .ok()?
+            .parse::<u64>()
+            .ok()
+    };
+    let remaining = charge
+        .as_ref()
+        .and_then(|_| header_number("x-ratelimit-remaining"));
+    let reset = charge
+        .as_ref()
+        .and_then(|_| header_number("x-ratelimit-reset"))
+        .and_then(|second| i64::try_from(second).ok())
+        .and_then(Timestamp::from_second);
+    let mut envelope = bounded_body(response).await.and_then(|bytes| {
+        serde_json::from_slice::<Envelope>(&bytes).map_err(GraphqlError::Malformed)
+    });
+    if let Some(charge) = charge {
+        let rate = envelope
+            .as_mut()
+            .ok()
+            .and_then(|envelope| envelope.data.as_mut())
+            .and_then(serde_json::Value::as_object_mut)
+            .and_then(|data| data.remove("rateLimit"));
+        charge.record(rate.as_ref(), remaining, reset);
+    }
     if status != StatusCode::OK {
         // A non-200 answer that still carries resolved data was executed (e.g. a secondary rate limit).
-        let body = bounded_body(response).await.unwrap_or_default();
-        if let Ok(envelope) = serde_json::from_slice::<Envelope>(&body)
+        if let Ok(envelope) = envelope
             && phase(envelope.data.as_ref()) == Phase::Resolved
         {
             return Err(GraphqlError::Rejected(envelope.first_error_type()));
@@ -198,8 +295,7 @@ pub async fn execute<V: Serialize, D: DeserializeOwned>(
             status => GraphqlError::Status(status),
         });
     }
-    let bytes = bounded_body(response).await?;
-    let envelope: Envelope = serde_json::from_slice(&bytes).map_err(GraphqlError::Malformed)?;
+    let envelope = envelope?;
     if !envelope.errors.is_empty() {
         let kind = envelope.first_error_type();
         return Err(match phase(envelope.data.as_ref()) {
@@ -237,22 +333,24 @@ pub struct Page<T> {
 /// Every node of one connection of `pr`, read page by page with `document` (variables `o`, `n`, `pr`, `after`), at
 /// most `max_pages`; `page_of` takes the page out of an answer. `None` when an answer has no page (no pull request);
 /// the flag is `false` when more nodes remain unread.
-pub async fn pr_pages<D: DeserializeOwned, T>(
+pub(crate) async fn pr_pages<D: DeserializeOwned, T>(
     config: &GithubConfig,
     token: &SecretString,
     pr: &PrRef,
     document: &str,
     max_pages: usize,
+    budget: Option<ReadBudget<'_>>,
     page_of: impl Fn(D) -> Option<Page<T>>,
 ) -> Result<Option<(Vec<T>, bool)>, GraphqlError> {
     let mut nodes = Vec::new();
     let mut after: Option<String> = None;
     for _ in 0..max_pages {
-        let data: D = execute(
+        let data: D = execute_read(
             config,
             token,
             document,
             serde_json::json!({"o": pr.repo.owner, "n": pr.repo.name, "pr": pr.number, "after": after}),
+            budget,
         )
         .await?;
         let Some(page) = page_of(data) else {

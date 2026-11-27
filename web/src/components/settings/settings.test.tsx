@@ -5,39 +5,43 @@ import { expectTrustWording } from "../../__tests__/wording";
 import type { RepoSettings } from "../../api/generated/types";
 import { AppInstallationsCard } from "./AppInstallationsCard";
 import { LanguageCard } from "./LanguageCard";
-import { LlmStatusCard } from "./LlmStatusCard";
-import { RepoList } from "./RepoList";
+import { UsageLimitsSection } from "./UsageLimitsSection";
 import { RepoSettingsCard } from "./RepoSettingsCard";
 
 const at = new Date(2026, 10, 17, 8, 5).toISOString();
 
-describe("LlmStatusCard (brief §4.4: outcome of the most recent call, no on-demand check)", () => {
-  it("working: status with tooltip and the time of the call", () => {
-    render(<LlmStatusCard status={{ at, status: { state: "working" } }} />);
-    const status = screen.getByText("working");
-    expect(status).toHaveAccessibleDescription(/most recent LLM call succeeded/);
-    expect(screen.getByRole("region", { name: "LLM status" })).toHaveTextContent("17 Nov 2026, 08:05");
-    expect(screen.queryByRole("button")).toBeNull();
-    expect(document.body).toHaveTextContent("never reach the browser");
-  });
-
-  it("not working: the plain error message and the time", () => {
+describe("Last LLM call", () => {
+  it("shows the time and outcome of a successful call", () => {
     render(
-      <LlmStatusCard
-        status={{ at, status: { state: "not_working", message: "Codex usage limit reached." } }}
+      <UsageLimitsSection
+        now={new Date(at)}
+        onReset={vi.fn()}
+        lastCall={{ at, status: { state: "working" } }}
       />,
     );
-    expect(screen.getByText("not working")).toHaveAccessibleDescription(/most recent LLM call failed/);
-    expect(screen.getByText("Codex usage limit reached.")).toBeVisible();
-    expect(screen.getByRole("region", { name: "LLM status" })).toHaveTextContent("08:05");
+    expect(screen.getByRole("region", { name: "Last LLM call" })).toHaveTextContent(
+      "Succeeded · 17 Nov 2026, 08:05",
+    );
   });
 
-  it("no call yet: says the status is not known instead of a value", () => {
-    render(<LlmStatusCard status={null} />);
-    const region = screen.getByRole("region", { name: "LLM status" });
-    expect(region).toHaveTextContent("not known yet");
-    expect(within(region).queryByText("working")).toBeNull();
-    expectTrustWording(region.textContent ?? "");
+  it("shows the time and plain error message of a failed call", () => {
+    render(
+      <UsageLimitsSection
+        now={new Date(at)}
+        onReset={vi.fn()}
+        lastCall={{ at, status: { state: "not_working", message: "Codex usage limit reached." } }}
+      />,
+    );
+    const call = screen.getByRole("region", { name: "Last LLM call" });
+    expect(call).toHaveTextContent("Failed · 17 Nov 2026, 08:05");
+    expect(call).toHaveTextContent("Codex usage limit reached.");
+  });
+
+  it("says when no LLM call has been made", () => {
+    render(<UsageLimitsSection now={new Date(at)} onReset={vi.fn()} lastCall={null} />);
+    const call = screen.getByRole("region", { name: "Last LLM call" });
+    expect(call).toHaveTextContent("No LLM call yet.");
+    expectTrustWording(call.textContent ?? "");
   });
 });
 
@@ -188,21 +192,6 @@ describe("RepoSettingsCard profile with MemCan not checked", () => {
   });
 });
 
-describe("RepoList", () => {
-  it("marks the selected repository and reports a choice", async () => {
-    const onSelect = vi.fn();
-    const repos = [
-      { owner: "acme", name: "node-client" },
-      { owner: "acme", name: "wallet-ui" },
-    ];
-    render(<RepoList repos={repos} selected={repos[0]!} onSelect={onSelect} />);
-    expect(screen.getByRole("combobox", { name: "Repository" })).toHaveValue("acme/node-client");
-    await userEvent.click(screen.getByRole("combobox", { name: "Repository" }));
-    await userEvent.click(screen.getByRole("option", { name: "acme/wallet-ui" }));
-    expect(onSelect).toHaveBeenCalledWith(repos[1]);
-  });
-});
-
 it("names lexer, header and binary detectors with their actual checks", () => {
   render(
     <RepoSettingsCard
@@ -231,26 +220,21 @@ it("shows today's and seven-day provider totals separately", () => {
     reasoning_output_tokens: null,
     jobs: 23,
   };
-  render(<LlmStatusCard status={null} usage={{ today: usage, last_7_days: usage }} />);
+  render(
+    <UsageLimitsSection
+      now={new Date(at)}
+      onReset={vi.fn()}
+      lastCall={null}
+      tokens={{ today: usage, last_7_days: usage, this_month: usage }}
+    />,
+  );
   expect(screen.getByText("Today: 3.4 M input (2.9 M cached), 120 k output tokens in 23 jobs")).toBeVisible();
   expect(screen.getByText(/^Last 7 days:/)).toHaveAccessibleDescription(/Reported by the provider/);
 });
 
-it("rules are initially collapsed and cards use only their content height", async () => {
+it("rules are initially collapsed", async () => {
   render(<RepoSettingsCard settings={repoSettings} />);
   expect(screen.getByText("Show the 2 built-in rules").closest("details")).not.toHaveAttribute("open");
   await userEvent.click(screen.getByText(`Show the ${repoSettings.rules.length} built-in rules`));
   expect(screen.getByRole("table")).toBeVisible();
-  expect(screen.getByRole("region")).toHaveClass("self-start");
-});
-
-it("filters dozens of repositories and chooses one with the keyboard", async () => {
-  const repos = Array.from({ length: 30 }, (_, i) => ({ owner: "acme", name: `repo-${i}` }));
-  const onSelect = vi.fn();
-  render(<RepoList repos={repos} selected={repos[0]!} onSelect={onSelect} />);
-  const combo = screen.getByRole("combobox", { name: "Repository" });
-  await userEvent.clear(combo);
-  await userEvent.type(combo, "repo-29");
-  await userEvent.keyboard("{ArrowDown}{Enter}");
-  expect(onSelect).toHaveBeenCalledWith(repos[29]);
 });

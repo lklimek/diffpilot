@@ -1,6 +1,7 @@
 import { HttpResponse } from "msw";
 import type { ResolvePrRequest, ResolvePrResponse } from "../../api/generated/types";
 import { seedNow } from "../fixtures";
+import { hasLiveChanges, liveAnalysis } from "../live-analysis";
 import { scenario } from "../scenarios";
 import { apiError, route } from "./common";
 
@@ -33,5 +34,15 @@ export const resolvePr = route("resolvePr", async ({ request }) => {
   if (owner !== repo.owner || name !== repo.name || Number(number) !== seed.pr.number) {
     return apiError(404, "not_found", "This pull request does not exist or is not visible.");
   }
-  return HttpResponse.json(scenario().resolve?.(seed) ?? seed);
+  return HttpResponse.json(resolvedPr(seed));
 });
+
+export function resolvedPr(seed = seedNow("pr-resolve") as ResolvePrResponse): ResolvePrResponse {
+  const current = scenario();
+  const resolved = current.resolve?.(seed) ?? seed;
+  if (hasLiveChanges() || (!current.resolve && current.analysis)) {
+    const analysis = liveAnalysis();
+    return { ...resolved, analysis, head_moved: resolved.pr.head_sha !== analysis.pr.head_sha };
+  }
+  return resolved;
+}

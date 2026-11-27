@@ -15,6 +15,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
  && install -d -o 10002 -g 10002 -m 0700 /run/launcher /mirror /var/lib/diffpilot-runner \
  && find / -xdev -type f -perm /6000 -exec chmod a-s {} + 2>/dev/null
 COPY --from=build /out/diffpilot-runner /usr/local/bin/
-COPY LICENSE.md /usr/share/doc/diffpilot/LICENSE.md
+COPY LICENSE NOTICE /usr/share/doc/diffpilot/
 USER 10002:10002
 ENTRYPOINT ["/usr/local/bin/diffpilot-runner"]

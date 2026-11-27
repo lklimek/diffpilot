@@ -20,6 +20,18 @@ pub const ALLOWED_LOGINS: &str = "SR_ALLOWED_LOGINS";
 pub const LISTEN_ADDR: &str = "SR_LISTEN_ADDR";
 /// Address the runner-only listener (`/runner/v1/*`) listens on; never exposed through the reverse proxy.
 pub const RUNNER_LISTEN_ADDR: &str = "SR_RUNNER_LISTEN_ADDR";
+/// Address for GitHub App deliveries.
+pub const WEBHOOK_LISTEN_ADDR: &str = "SR_WEBHOOK_LISTEN_ADDR";
+/// Shared secret for authenticating GitHub App deliveries.
+pub const GITHUB_WEBHOOK_SECRET: &str = "SR_GITHUB_WEBHOOK_SECRET";
+/// Previous webhook secret, accepted while rotating the current secret.
+pub const GITHUB_WEBHOOK_SECRET_PREVIOUS: &str = "SR_GITHUB_WEBHOOK_SECRET_PREVIOUS";
+/// Path of the file holding the current webhook secret.
+pub const GITHUB_WEBHOOK_SECRET_FILE: &str = "SR_GITHUB_WEBHOOK_SECRET_FILE";
+/// Path of the file holding the previous webhook secret during rotation.
+pub const GITHUB_WEBHOOK_SECRET_PREVIOUS_FILE: &str = "SR_GITHUB_WEBHOOK_SECRET_PREVIOUS_FILE";
+/// Public webhook endpoint, displayed in Settings.
+pub const GITHUB_WEBHOOK_URL: &str = "SR_GITHUB_WEBHOOK_URL";
 /// Comma-separated IP addresses or networks of reverse proxies whose forwarding headers are trusted.
 pub const TRUSTED_PROXIES: &str = "SR_TRUSTED_PROXIES";
 /// Directory for the SQLite database and the bare mirrors.
@@ -42,8 +54,6 @@ pub const GITHUB_API_URL: &str = "SR_GITHUB_API_URL";
 pub const GITHUB_OAUTH_URL: &str = "SR_GITHUB_OAUTH_URL";
 /// Base URL repositories are cloned from (`<base>/<owner>/<name>.git`); `file://` allowed for development.
 pub const GITHUB_CLONE_URL: &str = "SR_GITHUB_CLONE_URL";
-/// Optional comma-separated trusted maintainer relay logins; empty by default.
-pub const MAINTAINER_DELEGATES: &str = "SR_MAINTAINER_DELEGATES";
 /// MemCan MCP endpoint URL.
 pub const MEMCAN_URL: &str = "SR_MEMCAN_URL";
 /// MemCan bearer token.
@@ -71,6 +81,8 @@ const DEFAULT_LISTEN_ADDR: SocketAddr =
     SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 3000);
 const DEFAULT_RUNNER_LISTEN_ADDR: SocketAddr =
     SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 3001);
+const DEFAULT_WEBHOOK_LISTEN_ADDR: SocketAddr =
+    SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 3002);
 const DEFAULT_DATA_DIR: &str = "data";
 const DEFAULT_GITHUB_API_URL: &str = "https://api.github.com";
 const DEFAULT_GITHUB_WEB_URL: &str = "https://github.com";
@@ -89,10 +101,16 @@ pub struct Config {
     pub listen_addr: SocketAddr,
     /// Runner-only listen address (default `0.0.0.0:3001`); serves only the runner protocol.
     pub runner_listen_addr: SocketAddr,
+    /// GitHub webhook-only listen address (default `127.0.0.1:3002`).
+    pub webhook_listen_addr: SocketAddr,
+    /// Current GitHub App webhook secret.
+    pub github_webhook_secret: Option<SecretString>,
+    /// Previous GitHub App webhook secret during rotation.
+    pub github_webhook_secret_previous: Option<SecretString>,
+    /// Public webhook endpoint shown in Settings.
+    pub github_webhook_url: Option<Url>,
     /// GitHub logins allowed to sign in to the default tenant; at least one, unique ignoring ASCII case.
     pub allowed_logins: Vec<String>,
-    /// Explicit trusted relays, independent of tenant membership or bot status.
-    pub maintainer_delegates: Vec<String>,
     /// Reverse proxies whose forwarding headers are trusted (default: none).
     pub trusted_proxies: Vec<IpNet>,
     /// Directory for the database and the bare mirrors (default `data`).
@@ -219,36 +237,29 @@ pub enum ConfigError {
         source: ipnet::AddrParseError,
     },
     /// The allowed-login list names no login.
-    #[error("environment variable {key} names no GitHub login, so nobody could sign in")]
-    NoAllowedLogins {
-        /// Variable name.
-        key: &'static str,
-    },
+    #[error("environment variable {ALLOWED_LOGINS} names no GitHub login, so nobody could sign in")]
+    NoAllowedLogins,
     /// One entry of the allowed-login list is not a GitHub login.
     #[error(
-        "environment variable {key} contains '{entry}', which is not a GitHub login (letters, digits, - or _, at most 39 characters)"
+        "environment variable {ALLOWED_LOGINS} contains '{entry}', which is not a GitHub login (letters, digits, - or _, at most 39 characters)"
     )]
     InvalidLogin {
-        /// Variable name.
-        key: &'static str,
         /// The rejected entry (not secret).
         entry: String,
     },
     /// An entry still holds the `.env.example` placeholder.
     #[error(
-        "environment variable {key} still holds the placeholder '{entry}'; list the GitHub logins allowed to sign in"
+        "environment variable {ALLOWED_LOGINS} still holds the placeholder '{entry}'; list the GitHub logins allowed to sign in"
     )]
     PlaceholderLogin {
-        /// Variable name.
-        key: &'static str,
         /// The placeholder entry.
         entry: String,
     },
     /// A login is listed twice (logins are case-insensitive).
-    #[error("environment variable {key} lists '{entry}' twice; GitHub logins are case-insensitive")]
+    #[error(
+        "environment variable {ALLOWED_LOGINS} lists '{entry}' twice; GitHub logins are case-insensitive"
+    )]
     DuplicateLogin {
-        /// Variable name.
-        key: &'static str,
         /// The repeated entry as written the second time.
         entry: String,
     },
@@ -298,6 +309,15 @@ pub enum ConfigError {
         /// What is wrong.
         problem: &'static str,
     },
+    /// A configured webhook secret is too short.
+    #[error("environment variable {key} must contain at least 32 characters")]
+    WebhookSecretLength {
+        /// Variable name.
+        key: &'static str,
+    },
+    /// The displayed webhook URL must use HTTPS.
+    #[error("environment variable SR_GITHUB_WEBHOOK_URL must be an HTTPS URL")]
+    WebhookUrlScheme,
     /// The secret key does not decode to 32 bytes.
     #[error("environment variable {key} must decode to exactly 32 bytes, got {len}")]
     SecretKeyLength {
@@ -318,7 +338,7 @@ impl Config {
         })
     }
 
-    /// Reads the configuration through `lookup`; values are trimmed and empty values count as unset.
+    /// Reads configuration through `lookup`. Environment values are trimmed, with empty values treated as unset.
     pub fn from_lookup<F>(lookup: F) -> Result<Self, ConfigError>
     where
         F: Fn(&'static str) -> Result<Option<String>, ConfigError>,
@@ -328,14 +348,27 @@ impl Config {
                 .map(|value| value.trim().to_owned())
                 .filter(|value| !value.is_empty()))
         };
-        let require = |key| get(key)?.ok_or(ConfigError::Missing { key });
-        let secret = |key, file_key| -> Result<String, ConfigError> {
+        let optional_secret = |key, file_key| -> Result<Option<String>, ConfigError> {
             match (get(key)?, get(file_key)?) {
                 (Some(_), Some(_)) => Err(ConfigError::BothSet { key, file_key }),
-                (Some(value), None) => Ok(value),
-                (None, Some(path)) => read_secret_file(file_key, Path::new(&path)),
-                (None, None) => Err(ConfigError::Missing { key }),
+                (Some(value), None) => Ok(Some(value)),
+                (None, Some(path)) => read_secret_file(file_key, Path::new(&path)).map(Some),
+                (None, None) => Ok(None),
             }
+        };
+        let require = |key| get(key)?.ok_or(ConfigError::Missing { key });
+        let secret =
+            |key, file_key| optional_secret(key, file_key)?.ok_or(ConfigError::Missing { key });
+        let webhook_secret = |key, file_key| {
+            optional_secret(key, file_key)?
+                .map(|value| {
+                    let value = value.trim();
+                    if value.chars().take(32).count() < 32 {
+                        return Err(ConfigError::WebhookSecretLength { key });
+                    }
+                    Ok(SecretString::from(value.to_owned()))
+                })
+                .transpose()
         };
         let or_default = |key, default: &'static str| -> Result<String, ConfigError> {
             Ok(get(key)?.unwrap_or_else(|| default.to_owned()))
@@ -351,15 +384,34 @@ impl Config {
         };
         let listen_addr = socket_addr(LISTEN_ADDR, DEFAULT_LISTEN_ADDR)?;
         let runner_listen_addr = socket_addr(RUNNER_LISTEN_ADDR, DEFAULT_RUNNER_LISTEN_ADDR)?;
-        if listen_addr.port() == runner_listen_addr.port()
-            && (listen_addr.ip() == runner_listen_addr.ip()
-                || listen_addr.ip().is_unspecified()
-                || runner_listen_addr.ip().is_unspecified())
-        {
-            return Err(ConfigError::ListenersCollide {
-                key: RUNNER_LISTEN_ADDR,
-                other: LISTEN_ADDR,
-            });
+        let webhook_listen_addr = socket_addr(WEBHOOK_LISTEN_ADDR, DEFAULT_WEBHOOK_LISTEN_ADDR)?;
+        for (key, addr, other, other_addr) in [
+            (
+                RUNNER_LISTEN_ADDR,
+                runner_listen_addr,
+                LISTEN_ADDR,
+                listen_addr,
+            ),
+            (
+                WEBHOOK_LISTEN_ADDR,
+                webhook_listen_addr,
+                LISTEN_ADDR,
+                listen_addr,
+            ),
+            (
+                WEBHOOK_LISTEN_ADDR,
+                webhook_listen_addr,
+                RUNNER_LISTEN_ADDR,
+                runner_listen_addr,
+            ),
+        ] {
+            if addr.port() == other_addr.port()
+                && (addr.ip() == other_addr.ip()
+                    || addr.ip().is_unspecified()
+                    || other_addr.ip().is_unspecified())
+            {
+                return Err(ConfigError::ListenersCollide { key, other });
+            }
         }
         let trusted_proxies = match get(TRUSTED_PROXIES)? {
             Some(value) => parse_trusted_proxies(&value)?,
@@ -369,12 +421,26 @@ impl Config {
         Ok(Self {
             public_url: parse_http_url(PUBLIC_URL, &require(PUBLIC_URL)?)?,
             allowed_logins: parse_allowed_logins(&require(ALLOWED_LOGINS)?)?,
-            maintainer_delegates: get(MAINTAINER_DELEGATES)?
-                .map(|value| parse_logins(MAINTAINER_DELEGATES, &value))
-                .transpose()?
-                .unwrap_or_default(),
             listen_addr,
             runner_listen_addr,
+            webhook_listen_addr,
+            github_webhook_secret: webhook_secret(
+                GITHUB_WEBHOOK_SECRET,
+                GITHUB_WEBHOOK_SECRET_FILE,
+            )?,
+            github_webhook_secret_previous: webhook_secret(
+                GITHUB_WEBHOOK_SECRET_PREVIOUS,
+                GITHUB_WEBHOOK_SECRET_PREVIOUS_FILE,
+            )?,
+            github_webhook_url: get(GITHUB_WEBHOOK_URL)?
+                .map(|value| {
+                    let url = parse_http_url(GITHUB_WEBHOOK_URL, &value)?;
+                    if url.scheme() != "https" {
+                        return Err(ConfigError::WebhookUrlScheme);
+                    }
+                    Ok(url)
+                })
+                .transpose()?,
             trusted_proxies,
             data_dir: PathBuf::from(or_default(DATA_DIR, DEFAULT_DATA_DIR)?),
             secret_key: parse_secret_key(&secret(SECRET_KEY, SECRET_KEY_FILE)?)?,
@@ -521,10 +587,6 @@ fn is_github_login(entry: &str) -> bool {
 }
 
 fn parse_allowed_logins(value: &str) -> Result<Vec<String>, ConfigError> {
-    parse_logins(ALLOWED_LOGINS, value)
-}
-
-fn parse_logins(key: &'static str, value: &str) -> Result<Vec<String>, ConfigError> {
     let mut logins: Vec<String> = Vec::new();
     for entry in value
         .split(',')
@@ -534,26 +596,23 @@ fn parse_logins(key: &'static str, value: &str) -> Result<Vec<String>, ConfigErr
         // Checked as check-production-config.sh does: a start with the example value would drop every bound entry.
         if entry.contains("REPLACE") {
             return Err(ConfigError::PlaceholderLogin {
-                key,
                 entry: entry.to_owned(),
             });
         }
         if !is_github_login(entry) {
             return Err(ConfigError::InvalidLogin {
-                key,
                 entry: entry.to_owned(),
             });
         }
         if logins.iter().any(|login| login.eq_ignore_ascii_case(entry)) {
             return Err(ConfigError::DuplicateLogin {
-                key,
                 entry: entry.to_owned(),
             });
         }
         logins.push(entry.to_owned());
     }
     if logins.is_empty() {
-        return Err(ConfigError::NoAllowedLogins { key });
+        return Err(ConfigError::NoAllowedLogins);
     }
     Ok(logins)
 }
@@ -633,22 +692,118 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn maintainer_relays_require_explicit_valid_configuration() {
+    fn optional_webhook_configuration_validates_length_and_https() {
         let mut env = required_env();
-        assert!(parse(&env).unwrap().maintainer_delegates.is_empty());
-        env.insert(MAINTAINER_DELEGATES, "Relay-Bot, relay_user".into());
+        let bare = parse(&env).unwrap();
+        assert!(bare.github_webhook_secret.is_none());
+        assert!(bare.github_webhook_url.is_none());
+        for key in [GITHUB_WEBHOOK_SECRET, GITHUB_WEBHOOK_SECRET_PREVIOUS] {
+            for empty in ["", " \t\r\n"] {
+                env.insert(key, empty.to_owned());
+                let config = parse(&env).unwrap();
+                assert!(if key == GITHUB_WEBHOOK_SECRET {
+                    config.github_webhook_secret.is_none()
+                } else {
+                    config.github_webhook_secret_previous.is_none()
+                });
+            }
+            env.insert(key, "x".repeat(31));
+            assert!(
+                matches!(parse(&env), Err(ConfigError::WebhookSecretLength { key: actual }) if key == actual)
+            );
+            env.insert(key, format!(" \t{}\r\n", "s".repeat(32)));
+        }
+        env.insert(GITHUB_WEBHOOK_URL, "http://example.test/hook".to_owned());
+        assert!(matches!(parse(&env), Err(ConfigError::WebhookUrlScheme)));
+        env.insert(GITHUB_WEBHOOK_URL, "https://example.test/hook".to_owned());
+        let config = parse(&env).unwrap();
         assert_eq!(
-            parse(&env).unwrap().maintainer_delegates,
-            vec!["Relay-Bot", "relay_user"]
+            config.github_webhook_secret.unwrap().expose_secret(),
+            "s".repeat(32)
         );
-        env.insert(MAINTAINER_DELEGATES, "bad/login".into());
+        assert_eq!(
+            config
+                .github_webhook_secret_previous
+                .unwrap()
+                .expose_secret(),
+            "s".repeat(32)
+        );
+        assert_eq!(config.github_webhook_url.unwrap().path(), "/hook");
+    }
+
+    #[test]
+    fn webhook_secret_files_support_rotation_and_reject_conflicting_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut env = required_env();
+        for (key, file, letter) in [
+            (GITHUB_WEBHOOK_SECRET, GITHUB_WEBHOOK_SECRET_FILE, "c"),
+            (
+                GITHUB_WEBHOOK_SECRET_PREVIOUS,
+                GITHUB_WEBHOOK_SECRET_PREVIOUS_FILE,
+                "p",
+            ),
+        ] {
+            env.insert(key, "  ".to_owned());
+            env.insert(
+                file,
+                secret_file(dir.path(), letter, &format!(" {}\r\n", letter.repeat(32))),
+            );
+        }
+        let config = parse(&env).unwrap();
+        assert_eq!(
+            config.github_webhook_secret.unwrap().expose_secret(),
+            "c".repeat(32)
+        );
+        assert_eq!(
+            config
+                .github_webhook_secret_previous
+                .unwrap()
+                .expose_secret(),
+            "p".repeat(32)
+        );
+        env.insert(GITHUB_WEBHOOK_SECRET_PREVIOUS, "x".repeat(32));
         assert!(matches!(
             parse(&env),
-            Err(ConfigError::InvalidLogin {
-                key: MAINTAINER_DELEGATES,
-                ..
+            Err(ConfigError::BothSet {
+                key: GITHUB_WEBHOOK_SECRET_PREVIOUS,
+                file_key: GITHUB_WEBHOOK_SECRET_PREVIOUS_FILE,
             })
         ));
+    }
+
+    #[test]
+    fn no_tenant_policy_env_vars() {
+        let env = required_env();
+        let webhook_keys = std::cell::RefCell::new(Vec::new());
+        Config::from_lookup(|key| {
+            if key.contains("WEBHOOK") {
+                webhook_keys.borrow_mut().push(key);
+            }
+            Ok(env.get(key).cloned())
+        })
+        .unwrap();
+        assert_eq!(
+            webhook_keys.into_inner(),
+            [
+                WEBHOOK_LISTEN_ADDR,
+                GITHUB_WEBHOOK_SECRET,
+                GITHUB_WEBHOOK_SECRET_FILE,
+                GITHUB_WEBHOOK_SECRET_PREVIOUS,
+                GITHUB_WEBHOOK_SECRET_PREVIOUS_FILE,
+                GITHUB_WEBHOOK_URL,
+            ]
+        );
+    }
+
+    #[test]
+    fn no_maintainer_delegates_env_var() {
+        assert!(!include_str!("../../../.env.example").contains("SR_MAINTAINER_DELEGATES"));
+        let env = required_env();
+        Config::from_lookup(|key| {
+            assert_ne!(key, "SR_MAINTAINER_DELEGATES");
+            Ok(env.get(key).cloned())
+        })
+        .unwrap();
     }
 
     #[test]
@@ -699,12 +854,7 @@ pub(crate) mod tests {
         let mut env = required_env();
         env.insert(ALLOWED_LOGINS, " , ,".to_owned());
         assert!(
-            matches!(
-                parse(&env),
-                Err(ConfigError::NoAllowedLogins {
-                    key: ALLOWED_LOGINS
-                })
-            ),
+            matches!(parse(&env), Err(ConfigError::NoAllowedLogins)),
             "only separators"
         );
     }
@@ -1066,6 +1216,44 @@ pub(crate) mod tests {
         env.insert(LISTEN_ADDR, "127.0.0.1:3000".to_owned());
         env.insert(RUNNER_LISTEN_ADDR, "10.0.0.2:3000".to_owned());
         assert!(parse(&env).is_ok(), "same port on different addresses");
+    }
+
+    #[test]
+    fn webhook_listener_address_is_separate_and_configurable() {
+        let mut env = required_env();
+        assert_eq!(
+            parse(&env).unwrap().webhook_listen_addr,
+            "127.0.0.1:3002".parse().unwrap()
+        );
+        env.insert(WEBHOOK_LISTEN_ADDR, "127.0.0.1:4321".to_owned());
+        assert_eq!(
+            parse(&env).unwrap().webhook_listen_addr,
+            "127.0.0.1:4321".parse().unwrap()
+        );
+        env.insert(WEBHOOK_LISTEN_ADDR, "127.0.0.1:3000".to_owned());
+        assert!(matches!(
+            parse(&env),
+            Err(ConfigError::ListenersCollide {
+                key: WEBHOOK_LISTEN_ADDR,
+                other: LISTEN_ADDR
+            })
+        ));
+        env.insert(WEBHOOK_LISTEN_ADDR, "127.0.0.1:3001".to_owned());
+        assert!(matches!(
+            parse(&env),
+            Err(ConfigError::ListenersCollide {
+                key: WEBHOOK_LISTEN_ADDR,
+                other: RUNNER_LISTEN_ADDR
+            })
+        ));
+        env.insert(WEBHOOK_LISTEN_ADDR, "invalid".to_owned());
+        assert!(matches!(
+            parse(&env),
+            Err(ConfigError::InvalidSocketAddr {
+                key: WEBHOOK_LISTEN_ADDR,
+                ..
+            })
+        ));
     }
 
     #[test]
