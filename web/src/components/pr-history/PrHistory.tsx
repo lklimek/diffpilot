@@ -17,6 +17,7 @@ interface Entry {
   reviewHref?: string;
   lastActivityAt: string;
   openedAt?: string;
+  archived?: "merged" | "closed";
   requestedAt?: string;
   analysisStatus?: AnalysisStatus;
   headMoved?: boolean;
@@ -109,6 +110,7 @@ export function PrHistory({
                     analysis {STATUS[analysisStatus]}
                   </span>
                 )}
+                {row.archived && <span className={BADGE}>Archived: {row.archived}</span>}
                 {row.headMoved && <span className={BADGE}>head moved</span>}
                 {watch && <span className={BADGE}>{WATCH_LABEL[watch.state] ?? "watching"}</span>}
               </span>

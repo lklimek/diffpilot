@@ -36,6 +36,7 @@ export function PrReviewPanel({
   const outcome = result && reviewOutcome(result);
   useTabActivity("pr-check", check.isPending ? "busy" : check.isError ? "attention" : null);
   if (!result) {
+    const liveId = progressId ?? previous?.id;
     if (check.isPending) return <StatusMessage kind="loading">Checking the pull request…</StatusMessage>;
     return (
       <>
@@ -45,20 +46,16 @@ export function PrReviewPanel({
             Try again
           </button>
         </Tooltip>
-        {previous && <LiveReview analysisId={previous.id} />}
+        {liveId && <LiveReview analysisId={liveId} />}
       </>
     );
   }
 
   const moved = outcome?.kind === "head_moved" ? outcome.analysis : undefined;
   const existing = result.analysis;
-  const liveId = moved
-    ? progressId === moved.id
-      ? progressId
-      : undefined
-    : outcome?.kind === "in_progress" || outcome?.kind === "failed"
-      ? outcome.analysis.id
-      : progressId;
+  const liveId =
+    progressId ??
+    (outcome?.kind === "in_progress" || outcome?.kind === "failed" ? outcome.analysis.id : undefined);
   const differentLanguage =
     existing && existing.state.state !== "cancelled" && language && existing.language !== language
       ? language

@@ -28,11 +28,14 @@ import { Tooltip } from "../../components/tooltip/Tooltip";
 import {
   barPullRequests,
   chartPoints,
+  chartProjects,
   dailySeries,
   headline,
+  historyProject,
   throughputWeeks,
   weeklySeries,
 } from "./history";
+import { prPath } from "../pr/paths";
 import { GITHUB_SYNC_SETTINGS_PATH, LLM_USAGE_PATH, PRS_PATH } from "../shell/paths";
 import { ShellActions, useShellSlots } from "../shell/ShellRoute";
 import {
@@ -67,6 +70,7 @@ export function DashboardScreen() {
   const go = (href: string) => void navigate(href);
   const [helpOpen, setHelpOpen] = useState(false);
   const [unit, setUnit] = useState<ChartUnit>("day");
+  const [chartProject, setChartProject] = useState("");
   // The chart bar whose pull requests are listed, by its first day; it belongs to one unit.
   const [bar, setBar] = useState<{ unit: ChartUnit; day: string } | null>(null);
   const { me, user, view, now } = page;
@@ -84,31 +88,44 @@ export function DashboardScreen() {
   }, [signedIn, setHelp]);
 
   const zone = summary?.schedule.time_zone;
+  const history = snapshot?.history;
+  const projects = useMemo(() => chartProjects(history ?? []), [history]);
+  const project = projects.find((name) => name.toLowerCase() === chartProject.toLowerCase()) ?? "";
+  const chartEvents = useMemo(
+    () =>
+      project
+        ? history?.filter((event) => historyProject(event)?.toLowerCase() === project.toLowerCase())
+        : history,
+    [history, project],
+  );
   const charts = useMemo(() => {
-    if (!snapshot) return null;
-    const events = snapshot.history;
+    if (!history || !chartEvents) return null;
+    const figures = headline(chartEvents, now, zone);
     return {
-      figures: headline(events, now, zone),
-      days: chartPoints(dailySeries(events, now), "day"),
-      weeks: chartPoints(weeklySeries(events, now), "week"),
-      throughput: throughputWeeks(events, now),
+      figures,
+      yesterday: chartEvents === history ? figures : headline(history, now, zone),
+      days: chartPoints(dailySeries(chartEvents, now), "day"),
+      weeks: chartPoints(weeklySeries(chartEvents, now), "week"),
+      throughput: throughputWeeks(history, now),
     };
-  }, [snapshot, now, zone]);
+  }, [history, chartEvents, now, zone]);
 
   const points = charts && (unit === "day" ? charts.days : charts.weeks);
   const selectedIndex = bar?.unit === unit ? (points?.findIndex((p) => p.day === bar.day) ?? -1) : -1;
   const listed = useMemo(() => {
-    if (!snapshot || !bar) return null;
+    if (!snapshot || !chartEvents || !bar) return null;
     const titles = new Map<string, string>();
     for (const item of [
       ...(page.allItems ?? []),
       ...snapshot.awaiting,
+      ...snapshot.ready_to_merge,
       ...(snapshot.exclusions?.items ?? []),
+      ...(summary?.mentions ?? []),
     ])
-      if (item.repo && item.number !== null)
-        titles.set(`${item.repo.owner}/${item.repo.name}#${item.number}`, item.title);
-    return barPullRequests(snapshot.history, bar.day, bar.unit, titles);
-  }, [snapshot, bar, page.allItems]);
+      if ((!("kind" in item) || item.kind === "pr") && item.repo && item.number !== null)
+        titles.set(`${item.repo.owner}/${item.repo.name}#${item.number}`.toLowerCase(), item.title);
+    return barPullRequests(chartEvents, bar.day, bar.unit, titles);
+  }, [snapshot, chartEvents, bar, page.allItems, summary?.mentions]);
 
   const snapshotAt = snapshot?.scanned_at ?? null;
   const stale = view?.stale && snapshotAt ? clockText(snapshotAt, now) : null;
@@ -171,6 +188,10 @@ export function DashboardScreen() {
           selected={selectedIndex >= 0 ? selectedIndex : null}
           onSelect={(i) => setBar(i === null || !points?.[i] ? null : { unit, day: points[i].day })}
           listed={listed}
+          projects={projects}
+          project={project}
+          onProjectChange={setChartProject}
+          onNavigate={go}
           staleNote={stale && `From the ${stale} snapshot.`}
         />
       )}
@@ -181,6 +202,8 @@ export function DashboardScreen() {
         onWithBotsChange={page.setWithBots}
         onHide={(id) => page.hideMention.mutate(id)}
         hidingIds={page.hideMention.pendingIds}
+        prHref={prPath}
+        onNavigate={go}
         expanded={page.mentionsExpanded}
         onExpandedChange={page.setMentionsExpanded}
         now={now}
@@ -269,6 +292,7 @@ export function DashboardScreen() {
           usageHref={LLM_USAGE_PATH}
           snapshotAt={snapshotAt}
           reviewHref={reviewHref}
+          prHref={prPath}
           commentsHref={commentsHref}
           onWatch={(item, watching) =>
             item.repo &&
@@ -339,17 +363,25 @@ export function DashboardScreen() {
       {main &&
         (snapshot && charts ? (
           <SidePanel main={main} railText={railText(snapshot)}>
-            <WaitingOnOthers items={snapshot.awaiting} now={now} slackNames={page.slackNames} />
+            <WaitingOnOthers
+              items={snapshot.awaiting}
+              now={now}
+              slackNames={page.slackNames}
+              prHref={prPath}
+              onNavigate={go}
+            />
             <ReadyToMerge
               items={snapshot.ready_to_merge}
               pending={snapshot.merge_state_pending}
               plugins={summary?.plugins}
+              prHref={prPath}
+              onNavigate={go}
             />
             <Yesterday
-              label={charts.figures.yesterday.label}
-              zoneLabel={charts.figures.zoneLabel}
-              prs={charts.figures.yesterdayDetails.prs}
-              reviews={charts.figures.yesterdayDetails.reviews}
+              label={charts.yesterday.yesterday.label}
+              zoneLabel={charts.yesterday.zoneLabel}
+              prs={charts.yesterday.yesterdayDetails.prs}
+              reviews={charts.yesterday.yesterdayDetails.reviews}
             />
             <ThroughputMinis weeks={charts.throughput} />
             <QueueAge

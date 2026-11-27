@@ -123,7 +123,7 @@ async fn other_users_jobs_have_only_kind() {
     assert_eq!(own["running"][0]["id"], running.to_string());
     assert_eq!(
         own["running"][0]["subject"]["href"],
-        "/pr/acme/node-client/482"
+        format!("/pr/acme/node-client/482/analyses/{analysis}/progress")
     );
     assert!(own["running"][0]["since"].is_string());
     assert!(own["queued"][0]["queued_at"].is_string());

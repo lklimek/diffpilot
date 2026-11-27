@@ -1,5 +1,12 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import type { Exclusions, Tier, TodosState, WorkItem, StatusCounts } from "../../../api/generated/types";
+import type {
+  Exclusions,
+  PrRef,
+  Tier,
+  TodosState,
+  WorkItem,
+  StatusCounts,
+} from "../../../api/generated/types";
 import { AlarmRow } from "../alarm-row/AlarmRow";
 import { TIER_RULE, tierName } from "../common/format";
 import type { Navigate } from "../common/navigate";
@@ -47,6 +54,7 @@ interface WorkListProps {
   snapshotAt?: string | null;
   /** In-app href of a pull request's review (plan §F.1); built by the screen. */
   reviewHref: (item: WorkItem) => string;
+  prHref?: (pr: PrRef) => string;
   /** In-app href of a pull request's Comments (owner 2026-11-23); built by the screen. */
   commentsHref?: (item: WorkItem) => string;
   onWatch?: (item: WorkItem, watching: boolean) => void;
@@ -123,6 +131,7 @@ export function WorkList({
   usageHref,
   snapshotAt,
   reviewHref,
+  prHref,
   commentsHref,
   onWatch,
   watchingKeys = [],
@@ -374,6 +383,7 @@ export function WorkList({
             onWake={onWake}
             wakingKeys={wakingKeys}
             onNavigate={onNavigate}
+            prHref={prHref}
           />
         ) : (
           shown.length === 0 &&

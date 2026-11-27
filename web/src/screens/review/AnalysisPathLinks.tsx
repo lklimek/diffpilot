@@ -5,6 +5,8 @@ import { displaySide, filesHash } from "../../components/files/model";
 import { githubLineUrl } from "../../components/github/links";
 import { PathLinks, pathMatcher } from "../../components/section/pathLinks";
 
+import { analysisPath } from "../pr/paths";
+
 export function AnalysisPathLinks({
   analysisId,
   head,
@@ -42,7 +44,7 @@ export function AnalysisPathLinks({
           };
         }
         return {
-          href: `/analyses/${encodeURIComponent(analysisId)}/files${filesHash({ ...at, file: at.path, side })}`,
+          href: `${analysisPath(pr, analysisId, "files")}${filesHash({ ...at, file: at.path, side })}`,
           tip: `Open ${at.path}${location} in Files`,
         };
       },

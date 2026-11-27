@@ -1,6 +1,7 @@
+import type { PrRef } from "../../api/generated/types";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Navigate, useLocation, useNavigate, useParams } from "react-router";
+import { useOutletContext, Navigate, useLocation, useNavigate, useParams } from "react-router";
 import { ApiError, errorText } from "../../api/client";
 import { routes } from "../../api/generated/routes";
 import type {
@@ -84,14 +85,16 @@ import { Workspace } from "../tour/Workspace";
 import { useAskChat, useAskPlace, type AnswerDraft } from "../review/askChat";
 import { rangeText } from "../../components/section/format";
 import { FileCode } from "./FileCode";
-import { commentsPath, prPath } from "../pr/paths";
+import { analysisPath, analysisProgressPath, commentsPath, prPath } from "../pr/paths";
 
 const short = (sha: string) => sha.slice(0, 7);
 const lastKey = (id: AnalysisId) => `diffpilot.files.last.${id}`;
 
-/** `/analyses/{id}/files` (brief §4.5): file tree, one file, Inspector; the same analysis as the Flows view. */
+/** Files (brief §4.5): file tree, one file, Inspector; the same analysis as the Flows view. */
 export function FilesScreen() {
   const { analysisId = "" } = useParams();
+  const pr = useOutletContext<PrRef>();
+  const location = useLocation();
   const me = useMe();
   const tour = useTour(analysisId);
   const files = useFiles(analysisId);
@@ -100,7 +103,13 @@ export function FilesScreen() {
   const notFinished = [tour.error, files.error].some(
     (e) => e instanceof ApiError && e.code === "analysis_not_finished",
   );
-  if (notFinished) return <Navigate to={`/analyses/${encodeURIComponent(analysisId)}/progress`} replace />;
+  if (notFinished)
+    return (
+      <Navigate
+        to={{ pathname: analysisProgressPath(pr, analysisId), search: location.search, hash: location.hash }}
+        replace
+      />
+    );
   const failed = [tour, files].find((q) => q.isError && (!q.data || !transient(q.error)));
   if (failed) {
     return (
@@ -322,7 +331,7 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
     setFocusNext(null);
   }, [focusNext, layout, file.path]);
 
-  const flowsHref = `/analyses/${analysisId}`;
+  const flowsHref = analysisPath(tour.analysis.pr, analysisId);
   // Where `s` and the view menu land in the Flows view: the narrowed step, else the first step at the subject.
   const flowsTarget = (): string => {
     if (subject.kind === "hunk" && subject.step) return `${flowsHref}#${encodeURIComponent(subject.step)}`;
@@ -993,8 +1002,8 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
         view={{
           current: "files",
           flowsHref: flowsTarget(),
-          filesHref: `${location.pathname}${location.hash}`,
-          depsHref: `/analyses/${analysisId}/deps`,
+          filesHref: `${analysisPath(tour.analysis.pr, analysisId, "files")}${location.search}${location.hash}`,
+          depsHref: analysisPath(tour.analysis.pr, analysisId, "deps"),
           commentsHref: commentsPath(tour.analysis.pr),
           prPageHref: prPath(tour.analysis.pr),
           onNavigate: (href) => void navigate(href),

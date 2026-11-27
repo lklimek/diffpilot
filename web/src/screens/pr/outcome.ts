@@ -1,5 +1,6 @@
 // What the PR panel offers after resolving a PR URL (brief §4.1).
 import type { AnalysisSummary, ResolvePrResponse } from "../../api/generated/types";
+import { analysisPath, analysisProgressPath } from "./paths";
 
 /** The panel’s answer to a resolved PR. */
 export type ReviewOutcome =
@@ -27,8 +28,8 @@ export function reviewOutcome(resolved: ResolvePrResponse): ReviewOutcome {
 /** The review of a finished analysis, else its progress screen. */
 export const analysisHref = (analysis: AnalysisSummary) =>
   analysis.review_ready || analysis.state.state === "finished"
-    ? `/analyses/${analysis.id}`
-    : `/analyses/${analysis.id}/progress`;
+    ? analysisPath(analysis.pr, analysis.id)
+    : analysisProgressPath(analysis.pr, analysis.id);
 
 /** Tooltip of the "Open" link of an analysis: it only navigates; ticks and answers are kept once the user started. */
 export const openTip = (analysis: { has_my_state?: boolean }) =>

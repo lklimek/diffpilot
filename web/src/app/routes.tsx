@@ -6,7 +6,7 @@ import { NotFoundScreen } from "../screens/home/NotFoundScreen";
 import { CommentsRoute } from "../screens/comments/CommentsRoute";
 import { CarryOversScreen, LogScreen, RoundsScreen, TableScreen } from "../screens/comments/CommentPages";
 import { QuestionsScreen } from "../screens/comments/QuestionsScreen";
-import { ProgressRedirect } from "../screens/pr/ProgressRedirect";
+import { AnalysisAdmission, LegacyAnalysisRedirect } from "../screens/pr/AnalysisAdmission";
 import { PrScreen } from "../screens/pr/PrScreen";
 import { AllCarryOversScreen } from "../screens/watching/WatchingScreens";
 import { SettingsHelpScreen } from "../screens/settings/SettingsHelpScreen";
@@ -51,15 +51,24 @@ const pages: RouteObject[] = [
     ],
   },
   {
-    path: "/analyses/:analysisId",
-    element: <ReviewRoute />,
+    path: "/pr/:owner/:repo/:number/analyses/:analysisId",
+    element: <AnalysisAdmission />,
     children: [
-      { index: true, element: <TourScreen /> },
-      { path: "files", element: <FilesScreen /> },
-      { path: "deps", element: <DependenciesScreen /> },
+      {
+        element: <ReviewRoute />,
+        children: [
+          { index: true, element: <TourScreen /> },
+          { path: "files", element: <FilesScreen /> },
+          { path: "deps", element: <DependenciesScreen /> },
+        ],
+      },
+      { path: "progress", element: <PrScreen /> },
     ],
   },
-  { path: "/analyses/:analysisId/progress", element: <ProgressRedirect /> },
+  { path: "/analyses/:analysisId", element: <LegacyAnalysisRedirect /> },
+  { path: "/analyses/:analysisId/files", element: <LegacyAnalysisRedirect view="files" /> },
+  { path: "/analyses/:analysisId/deps", element: <LegacyAnalysisRedirect view="deps" /> },
+  { path: "/analyses/:analysisId/progress", element: <LegacyAnalysisRedirect view="progress" /> },
   { path: "*", element: <NotFoundScreen /> },
 ];
 

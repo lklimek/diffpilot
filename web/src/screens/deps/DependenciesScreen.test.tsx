@@ -26,7 +26,7 @@ const repositories = () => screen.findByRole("list", { name: "Repositories" });
 
 describe("Dependencies view (brief 2026-11-20, plan U1–U3)", () => {
   it("is the third view of the review: the menu names it and the tree opens with this repository", async () => {
-    renderRoute(`/analyses/${ID}/deps`);
+    renderRoute(`/pr/acme/node-client/482/analyses/${ID}/deps`);
     await heading();
     expect(screen.getByRole("button", { name: "View: Dependencies" })).toBeVisible();
     const list = await repositories();
@@ -39,19 +39,23 @@ describe("Dependencies view (brief 2026-11-20, plan U1–U3)", () => {
   });
 
   it("the Files view's menu leads here", async () => {
-    const router = renderRoute(`/analyses/${ID}/files`);
+    const router = renderRoute(`/pr/acme/node-client/482/analyses/${ID}/files`);
     await userEvent.click(await screen.findByRole("button", { name: "View: Files" }));
     await userEvent.click(screen.getByRole("menuitemradio", { name: "Dependencies" }));
-    await waitFor(() => expect(router.state.location.pathname).toBe(`/analyses/${ID}/deps`));
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe(`/pr/acme/node-client/482/analyses/${ID}/deps`),
+    );
     await heading();
   });
 
   it("a fact's line in a file of the pull request opens the Files view at that line", async () => {
     setScenario("deps-multi");
-    const router = renderRoute(`/analyses/${ID}/deps`);
+    const router = renderRoute(`/pr/acme/node-client/482/analyses/${ID}/deps`);
     await repositories();
     await userEvent.click(screen.getByRole("link", { name: "src/rpc/error.rs:12" }));
-    await waitFor(() => expect(router.state.location.pathname).toBe(`/analyses/${ID}/files`));
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe(`/pr/acme/node-client/482/analyses/${ID}/files`),
+    );
     expect(decodeURIComponent(router.state.location.hash)).toBe(
       "#lines?file=src/rpc/error.rs&side=head&line=12",
     );
@@ -59,7 +63,7 @@ describe("Dependencies view (brief 2026-11-20, plan U1–U3)", () => {
 
   it("a line in a file the pull request does not change opens on GitHub at the head commit", async () => {
     setScenario("deps-multi");
-    renderRoute(`/analyses/${ID}/deps`);
+    renderRoute(`/pr/acme/node-client/482/analyses/${ID}/deps`);
     await repositories();
     const tour = seedFor("default", "tour") as { analysis: { pr: { head_sha: string } } };
     const def = screen.getByRole("link", { name: "crates/node-proto/src/event.rs:8" });
@@ -72,7 +76,7 @@ describe("Dependencies view (brief 2026-11-20, plan U1–U3)", () => {
 
   it("a line of a PR file the Files view does not render (generated Cargo.lock) opens on GitHub", async () => {
     setScenario("deps-multi");
-    renderRoute(`/analyses/${ID}/deps`);
+    renderRoute(`/pr/acme/node-client/482/analyses/${ID}/deps`);
     const list = await repositories();
     await userEvent.click(within(list).getByRole("button", { name: /^acme\/node-sdk/ }));
     await userEvent.click(within(list).getByRole("button", { name: /^rpc-types/ }));
@@ -87,16 +91,16 @@ describe("Dependencies view (brief 2026-11-20, plan U1–U3)", () => {
   });
 
   it("a flow link opens the flow in the Flows view", async () => {
-    const router = renderRoute(`/analyses/${ID}/deps`);
+    const router = renderRoute(`/pr/acme/node-client/482/analyses/${ID}/deps`);
     await repositories();
     await userEvent.click(screen.getByRole("link", { name: "Send an RPC request with retry" }));
     await waitFor(() => expect(router.state.location.hash).toBe("#f1"));
-    expect(router.state.location.pathname).toBe(`/analyses/${ID}`);
+    expect(router.state.location.pathname).toBe(`/pr/acme/node-client/482/analyses/${ID}`);
   });
 
   it("remembers opened and closed levels per analysis", async () => {
     setScenario("deps-multi");
-    renderRoute(`/analyses/${ID}/deps`);
+    renderRoute(`/pr/acme/node-client/482/analyses/${ID}/deps`);
     const list = await repositories();
     await userEvent.click(within(list).getByRole("button", { name: /^acme\/node-sdk/ }));
     await userEvent.click(within(list).getByRole("button", { name: /^acme\/node-client/ }));
@@ -105,7 +109,7 @@ describe("Dependencies view (brief 2026-11-20, plan U1–U3)", () => {
       this: false,
     });
     document.body.innerHTML = "";
-    renderRoute(`/analyses/${ID}/deps`);
+    renderRoute(`/pr/acme/node-client/482/analyses/${ID}/deps`);
     const again = await repositories();
     expect(within(again).getByRole("button", { name: /^acme\/node-sdk/ })).toHaveAttribute(
       "aria-expanded",
@@ -119,7 +123,7 @@ describe("Dependencies view (brief 2026-11-20, plan U1–U3)", () => {
 
   it("not_rust: the sentence only, no tree", async () => {
     setScenario("deps-not-rust");
-    renderRoute(`/analyses/${ID}/deps`);
+    renderRoute(`/pr/acme/node-client/482/analyses/${ID}/deps`);
     expect(
       await screen.findByText(
         "Dependencies: not available — this view reads Cargo (Rust) workspaces only; nothing was checked.",
@@ -130,7 +134,7 @@ describe("Dependencies view (brief 2026-11-20, plan U1–U3)", () => {
 
   it("a read error says so and Retry reads again (nothing is shown as checked)", async () => {
     setScenario("deps-error");
-    renderRoute(`/analyses/${ID}/deps`);
+    renderRoute(`/pr/acme/node-client/482/analyses/${ID}/deps`);
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "The dependencies could not be read: The repository could not be read. Try again in a minute.",
     );
@@ -146,8 +150,10 @@ describe("Dependencies view (brief 2026-11-20, plan U1–U3)", () => {
         HttpResponse.json({ code: "analysis_not_finished", message: "Not finished." }, { status: 409 }),
       ),
     );
-    const router = renderRoute(`/analyses/${ID}/deps`);
-    await waitFor(() => expect(router.state.location.pathname).toBe(`/analyses/${ID}/progress`));
+    const router = renderRoute(`/pr/acme/node-client/482/analyses/${ID}/deps`);
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe(`/pr/acme/node-client/482/analyses/${ID}/progress`),
+    );
   });
 
   it("controlled organisations saved in Settings apply to the view at once", async () => {
@@ -160,7 +166,7 @@ describe("Dependencies view (brief 2026-11-20, plan U1–U3)", () => {
     expect(await within(card).findByRole("status")).toHaveTextContent("Controlled organisations saved.");
     expect(card).toHaveTextContent(/changed by lklimek at/);
     document.body.innerHTML = "";
-    renderRoute(`/analyses/${ID}/deps`);
+    renderRoute(`/pr/acme/node-client/482/analyses/${ID}/deps`);
     await repositories();
     expect(document.body).toHaveTextContent("Yours: acme (this pull request's owner), dashpay.");
     await userEvent.click(screen.getByRole("checkbox", { name: /Show unchanged dependencies/ }));
@@ -171,7 +177,7 @@ describe("Dependencies view (brief 2026-11-20, plan U1–U3)", () => {
 
 it("starts with unchanged crates hidden and remembers the checkbox", async () => {
   setScenario("deps-multi");
-  const route = `/analyses/${ID}/deps`;
+  const route = `/pr/acme/node-client/482/analyses/${ID}/deps`;
   const first = renderRoute(route);
   const checkbox = await screen.findByRole("checkbox", { name: /Show unchanged dependencies/ });
   expect(checkbox).not.toBeChecked();

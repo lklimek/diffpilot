@@ -43,10 +43,11 @@ const emit = (state: AnalysisState) =>
 const pageText = () => document.body.textContent ?? "";
 
 describe("Analysis progress on the PR page (brief §4.2, review-workflow-plan §3.1, sse-events.md)", () => {
-  it("the old progress URL opens the PR page; before the snapshot: connecting", async () => {
-    const router = renderRoute(`/analyses/${ID}/progress?scenario=x`);
+  it("the old progress URL opens the PR page with its location and the same live analysis", async () => {
+    const router = renderRoute(`/analyses/${ID}/progress?scenario=x#previous`);
     await waitFor(() => expect(router.state.location.pathname).toBe("/pr/acme/node-client/482"));
     expect(router.state.location.search).toBe("?scenario=x");
+    expect(router.state.location.hash).toBe("#previous");
     expect(await screen.findByText("Connecting…")).toBeVisible();
     await waitFor(() =>
       expect(FakeEventSource.latest(`/api/v1/analyses/${ID}/events`).url).toBe(
@@ -65,7 +66,10 @@ describe("Analysis progress on the PR page (brief §4.2, review-workflow-plan §
     expect(screen.queryByRole("link", { name: "Open" })).toBeNull();
     emit({ state: "finished", total: 5 });
     expect(screen.getByText("5 of 5 flows analysed")).toBeVisible();
-    expect(screen.getByRole("link", { name: "Open review" })).toHaveAttribute("href", `/analyses/${ID}`);
+    expect(screen.getByRole("link", { name: "Open review" })).toHaveAttribute(
+      "href",
+      `/pr/acme/node-client/482/analyses/${ID}`,
+    );
     expect(screen.queryByRole("button", { name: "Cancel analysis" })).toBeNull();
     act(() =>
       FakeEventSource.latest(`/api/v1/analyses/${ID}/events`).emit({
@@ -73,7 +77,10 @@ describe("Analysis progress on the PR page (brief §4.2, review-workflow-plan §
         summary: { ...analysis, state: { state: "finished", total: 5 }, has_my_state: true },
       }),
     );
-    expect(screen.getByRole("link", { name: "Open review" })).toHaveAttribute("href", `/analyses/${ID}`);
+    expect(screen.getByRole("link", { name: "Open review" })).toHaveAttribute(
+      "href",
+      `/pr/acme/node-client/482/analyses/${ID}`,
+    );
     expectTrustWording(pageText());
   });
 

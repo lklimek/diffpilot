@@ -30,7 +30,7 @@ const inspector = () => screen.getByRole("complementary", { name: "Inspector" })
 const launcher = () => screen.getByRole("button", { name: /^Ask.*: open your private chat/ });
 
 async function openTour(hash = "") {
-  const router = renderRoute(`/analyses/${ID}${hash}`);
+  const router = renderRoute(`/pr/acme/node-client/482/analyses/${ID}${hash}`);
   await within(await screen.findByRole("navigation", { name: "Flows and steps" })).findByRole("button", {
     name: /^Flow 1:/,
   });
@@ -60,7 +60,9 @@ describe("Ask chat in the review (proposal AC1, AC4, AC6, AC8, AC11)", () => {
     const panel = chat();
     await user().type(within(panel).getByRole("textbox", { name: "Your question" }), "draft");
     await act(() =>
-      router.navigate(`/analyses/${ID}/files#lines?file=src/rpc/client.rs&side=head&line=100&end=102`),
+      router.navigate(
+        `/pr/acme/node-client/482/analyses/${ID}/files#lines?file=src/rpc/client.rs&side=head&line=100&end=102`,
+      ),
     );
     await waitFor(() => expect(panel).toHaveTextContent(/About:\s*Step 1\.6 · client\.rs 100–102/));
     expect(chat()).toBe(panel);

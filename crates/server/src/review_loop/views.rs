@@ -29,6 +29,7 @@ use super::{Loaded, LoopError, PrHandle, READ_INTERVAL};
 use super::{freshness, queue};
 use crate::auth::Session;
 use crate::dashboard::plugin;
+use crate::frontend::analysis_path;
 use crate::github::mirror;
 use crate::pipeline::context::StoredResults;
 use crate::pipeline::tour::{self, TourLoadError};
@@ -1242,7 +1243,7 @@ async fn analysis_context(
             return found;
         }
     };
-    let (in_flows, notes) = notes_on(summary.id, &tour, &files, deps.as_ref(), path, lines);
+    let (in_flows, notes) = notes_on(&tour, &files, deps.as_ref(), path, lines);
     AnalysisContext {
         in_flows,
         notes,
@@ -1253,14 +1254,20 @@ async fn analysis_context(
 /// The flow steps whose head lines contain `lines` of `path`, and the notes elsewhere about them: the LLM's Flows
 /// flags on those lines, Files incidental-change notes on them and the Dependencies notes of the file's crate.
 fn notes_on(
-    analysis: AnalysisId,
     tour: &Tour,
     files: &[PrFile],
     deps: Option<&DependencyView>,
     path: &str,
     lines: LineRange,
 ) -> (Vec<FlowStepRef>, Vec<NoteElsewhere>) {
-    let base = format!("/analyses/{analysis}");
+    let pr = &tour.analysis.pr;
+    let base = analysis_path(
+        &PrRef {
+            repo: pr.repo.clone(),
+            number: pr.number,
+        },
+        tour.analysis.id,
+    );
     let overlaps = |range: &LineRange| {
         range.start_line <= lines.end_line && lines.start_line <= range.end_line
     };
@@ -1484,14 +1491,7 @@ mod notes_tests {
             start_line: 98,
             end_line: 101,
         };
-        let (steps, notes) = notes_on(
-            analysis,
-            &tour(),
-            &files(),
-            Some(&deps()),
-            "src/rpc/client.rs",
-            lines,
-        );
+        let (steps, notes) = notes_on(&tour(), &files(), Some(&deps()), "src/rpc/client.rs", lines);
         assert_eq!(
             steps
                 .iter()
@@ -1499,7 +1499,7 @@ mod notes_tests {
                 .collect::<Vec<_>>(),
             ["f1.4", "f1.5", "f1.6"]
         );
-        let base = format!("/analyses/{analysis}");
+        let base = format!("/pr/acme/node-client/482/analyses/{analysis}");
         assert_eq!(
             notes,
             vec![
@@ -1530,21 +1530,11 @@ mod notes_tests {
     /// Lines without flags or incidental notes get only their crate's notes; without a dependency map, none.
     #[test]
     fn lines_without_notes_get_none() {
-        let analysis = AnalysisId(uuid::Uuid::from_u128(
-            0x6d3a_2f1e_0482_4c5e_9a7b_0000_0000_0482,
-        ));
         let lines = LineRange {
             start_line: 21,
             end_line: 22,
         };
-        let (_, notes) = notes_on(
-            analysis,
-            &tour(),
-            &[],
-            Some(&deps()),
-            "src/rpc/retry.rs",
-            lines,
-        );
+        let (_, notes) = notes_on(&tour(), &[], Some(&deps()), "src/rpc/retry.rs", lines);
         assert_eq!(
             notes
                 .iter()
@@ -1552,7 +1542,7 @@ mod notes_tests {
                 .collect::<Vec<_>>(),
             ["Dependencies: 1 note on what changed in crate rpc-core"]
         );
-        let (_, notes) = notes_on(analysis, &tour(), &[], Some(&deps()), "src/lib.rs", lines);
+        let (_, notes) = notes_on(&tour(), &[], Some(&deps()), "src/lib.rs", lines);
         assert_eq!(
             notes
                 .iter()
@@ -1560,7 +1550,7 @@ mod notes_tests {
                 .collect::<Vec<_>>(),
             ["Dependencies: 2 notes on what changed in crate node-client"]
         );
-        let (_, notes) = notes_on(analysis, &tour(), &[], None, "src/lib.rs", lines);
+        let (_, notes) = notes_on(&tour(), &[], None, "src/lib.rs", lines);
         assert!(notes.is_empty(), "{notes:?}");
     }
 }

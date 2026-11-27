@@ -198,6 +198,7 @@ mod tests {
                 body: String::new(),
                 url: "https://github.com/acme/node-client/pull/482".to_owned(),
                 state: "OPEN".to_owned(),
+                updated_at: None,
                 is_draft: false,
                 author: Some(Author {
                     database_id: None,
@@ -207,7 +208,6 @@ mod tests {
                 base_ref_name: "main".to_owned(),
                 base_ref_oid: "92f2274efbb93570cc8f820a49c058cf66b0dbe9".to_owned(),
                 head_ref_oid: "52d2da140191a9d47becf6a446310be803c007fc".to_owned(),
-                updated_at: None,
                 review_decision: None,
             },
             threads,

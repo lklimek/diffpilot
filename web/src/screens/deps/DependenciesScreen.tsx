@@ -1,5 +1,6 @@
+import type { PrRef } from "../../api/generated/types";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Navigate, useLocation, useNavigate, useParams } from "react-router";
+import { useOutletContext, Navigate, useLocation, useNavigate, useParams } from "react-router";
 import { ApiError, errorText } from "../../api/client";
 import { routes } from "../../api/generated/routes";
 import type { AnalysisId, FilesResponse, Tour } from "../../api/generated/types";
@@ -22,7 +23,7 @@ import { Tooltip } from "../../components/tooltip/Tooltip";
 import { ReviewTopBar } from "../shell/ReviewTopBar";
 import { GITHUB_SYNC_SETTINGS_PATH } from "../shell/paths";
 import { checksHref } from "../tour/review";
-import { commentsPath, prPath } from "../pr/paths";
+import { analysisPath, analysisProgressPath, commentsPath, prPath } from "../pr/paths";
 
 const SHOW_UNCHANGED = "diffpilot.deps.show-unchanged";
 
@@ -47,9 +48,11 @@ function loadOpen(id: AnalysisId): Record<string, boolean> {
   }
 }
 
-/** `/analyses/{id}/deps` (brief 2026-11-20): the crates the pull request changes and what they depend on. */
+/** Dependencies (brief 2026-11-20): the crates the pull request changes and what they depend on. */
 export function DependenciesScreen() {
   const { analysisId = "" } = useParams();
+  const pr = useOutletContext<PrRef>();
+  const location = useLocation();
   const me = useMe();
   const tour = useTour(analysisId);
   const files = useFiles(analysisId);
@@ -57,7 +60,13 @@ export function DependenciesScreen() {
   const notFinished = [tour.error, files.error].some(
     (e) => e instanceof ApiError && e.code === "analysis_not_finished",
   );
-  if (notFinished) return <Navigate to={`/analyses/${encodeURIComponent(analysisId)}/progress`} replace />;
+  if (notFinished)
+    return (
+      <Navigate
+        to={{ pathname: analysisProgressPath(pr, analysisId), search: location.search, hash: location.hash }}
+        replace
+      />
+    );
   const failed = [tour, files].find((q) => q.isError && !q.data);
   if (failed) {
     return (
@@ -129,8 +138,8 @@ function DependenciesView({
     );
     crate?.focus();
   }, [target, mapReady]);
-  const base = `/analyses/${analysisId}`;
   const pr = tour.analysis.pr;
+  const base = analysisPath(pr, analysisId);
   const toggle = (key: string, value: boolean) => {
     const next = { ...open, [key]: value };
     setOpen(next);
@@ -173,7 +182,7 @@ function DependenciesView({
   };
   let body: ReactNode;
   if (deps.isError && deps.error instanceof ApiError && deps.error.code === "analysis_not_finished") {
-    return <Navigate to={`${base}/progress`} replace />;
+    return <Navigate to={analysisProgressPath(pr, analysisId)} replace />;
   } else if (deps.isError) {
     body = (
       <>

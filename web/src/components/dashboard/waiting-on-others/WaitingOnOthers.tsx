@@ -1,4 +1,4 @@
-import type { AwaitingItem, SlackName } from "../../../api/generated/types";
+import type { AwaitingItem, PrRef, SlackName } from "../../../api/generated/types";
 import { CopyLineButton } from "../common/CopyLineButton";
 import { CopyListButton } from "../common/CopyListButton";
 import { atLogin, slackName } from "../common/copyList";
@@ -6,6 +6,8 @@ import { daysSince } from "../common/format";
 import { OpenExternal, openLabel } from "../common/OpenExternal";
 import { FactTags, SizePill } from "../common/Tags";
 import { AsideSection } from "../side-panel/AsideSection";
+import { WorkTitleLink } from "../common/WorkTitleLink";
+import type { Navigate } from "../common/navigate";
 
 /** Why the PR waits, in a few words; a plug-in's reason is attributed and links to its evidence. */
 function Reason({ item }: { item: AwaitingItem }) {
@@ -36,10 +38,14 @@ export function WaitingOnOthers({
   items,
   now,
   slackNames,
+  prHref,
+  onNavigate,
 }: {
   items: AwaitingItem[];
   now: Date;
   slackNames?: SlackName[];
+  prHref?: (pr: PrRef) => string;
+  onNavigate?: Navigate;
 }) {
   const sorted = [...items].sort((a, b) => a.waiting_since.localeCompare(b.waiting_since));
   const oldest = sorted[0] ? daysSince(sorted[0].waiting_since, now) : null;
@@ -79,7 +85,13 @@ export function WaitingOnOthers({
                 <CopyLineButton line={line(item)} id={item.id} />
                 {slackLine && <CopyLineButton line={slackLine(item)} id={item.id} slack />}
               </div>
-              <div className="[overflow-wrap:anywhere]">{item.title}</div>
+              <WorkTitleLink
+                className="block min-h-6 [overflow-wrap:anywhere]"
+                href={prHref?.(item)}
+                onNavigate={onNavigate}
+              >
+                {item.title}
+              </WorkTitleLink>
               <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted">
                 <span>
                   {waits(item)} <b className="text-text">{daysSince(item.waiting_since, now)} d</b>

@@ -115,6 +115,10 @@ pub struct PrHistoryItem {
     pub pr: PrRef,
     /// Latest stored pull request title.
     pub title: String,
+    /// The last known GitHub lifecycle state; absent until GitHub reports it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub pr_state: Option<PrLifecycleState>,
     /// Latest activity across all included sources.
     pub last_activity_at: Timestamp,
     /// When the reader last opened the pull request page.
@@ -129,6 +133,18 @@ pub struct PrHistoryItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub watch: Option<PrHistoryWatch>,
+}
+
+/// A pull request's lifecycle state on GitHub.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum PrLifecycleState {
+    /// GitHub reports an open pull request.
+    Open,
+    /// GitHub reports a pull request closed without a merge.
+    Closed,
+    /// GitHub reports a merged pull request.
+    Merged,
 }
 
 /// The reader's most recent analysis of a pull request.

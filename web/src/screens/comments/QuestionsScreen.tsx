@@ -45,7 +45,7 @@ import { Kbd } from "../../components/help/Kbd";
 import { Tooltip } from "../../components/tooltip/Tooltip";
 import { buttonClass } from "../../components/button/button";
 import { useAskChat, useAskPlace } from "../review/askChat";
-import { commentsPath, prPath } from "../pr/paths";
+import { analysisPath, commentsPath, prPath } from "../pr/paths";
 import { useComments } from "./CommentsRoute";
 
 const LINES_STEP = 12;
@@ -445,11 +445,13 @@ export function QuestionsScreen() {
         purpose={overview.purpose}
         context={contextState}
         flowHref={(f) =>
-          `/analyses/${encodeURIComponent(context.data?.analysis ?? "")}#${encodeURIComponent(f.step)}`
+          context.data?.analysis
+            ? `${analysisPath(overview.pr, context.data.analysis)}#${encodeURIComponent(f.step)}`
+            : prPath(pr)
         }
         filesHref={
           context.data?.analysis && context.data.analysis_head === overview.head
-            ? `/analyses/${encodeURIComponent(context.data.analysis)}/files`
+            ? analysisPath(overview.pr, context.data.analysis, "files")
             : null
         }
         prPageHref={prPath(pr)}

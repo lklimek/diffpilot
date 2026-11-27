@@ -35,6 +35,17 @@
           "description": "Latest stored pull request title.",
           "type": "string"
         },
+        "pr_state": {
+          "description": "The last known GitHub lifecycle state; absent until GitHub reports it.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PrLifecycleState"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "last_activity_at": {
           "description": "Latest activity across all included sources.",
           "type": "string",
@@ -113,6 +124,26 @@
       "required": [
         "owner",
         "name"
+      ]
+    },
+    "PrLifecycleState": {
+      "description": "A pull request's lifecycle state on GitHub.",
+      "oneOf": [
+        {
+          "description": "GitHub reports an open pull request.",
+          "type": "string",
+          "const": "open"
+        },
+        {
+          "description": "GitHub reports a pull request closed without a merge.",
+          "type": "string",
+          "const": "closed"
+        },
+        {
+          "description": "GitHub reports a merged pull request.",
+          "type": "string",
+          "const": "merged"
+        }
       ]
     },
     "PrHistoryAnalysis": {

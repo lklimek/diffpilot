@@ -243,7 +243,11 @@ mod tests {
                         event: "pull_request",
                         action: None,
                         installation_id: None,
-                        effect: Effect::Signal(&change.repository, std::slice::from_ref(&change)),
+                        effect: Effect::Signal(
+                            &change.repository,
+                            std::slice::from_ref(&change),
+                            None,
+                        ),
                     },
                     now,
                 )

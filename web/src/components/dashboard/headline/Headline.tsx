@@ -4,6 +4,7 @@ import { netTone, signed } from "../common/format";
 import { Segmented } from "../common/Segmented";
 import { BarPullRequests, type BarPullRequest } from "../bar-pull-requests/BarPullRequests";
 import { NetChart, type NetPoint } from "../net-chart/NetChart";
+import type { Navigate } from "../common/navigate";
 
 /** Pull requests closed and opened in a period (OD16: pull requests only). */
 export interface PeriodCount {
@@ -42,6 +43,10 @@ interface HeadlineProps {
   onSelect?: (index: number | null) => void;
   /** The pull requests of the selected bar. */
   listed?: { opened: BarPullRequest[]; closed: BarPullRequest[] } | null;
+  projects?: string[];
+  project?: string;
+  onProjectChange?: (project: string) => void;
+  onNavigate?: Navigate;
 }
 
 const net = (period: PeriodCount) => period.closed - period.opened;
@@ -73,6 +78,10 @@ export function Headline({
   selected = null,
   onSelect,
   listed,
+  projects = [],
+  project = "",
+  onProjectChange,
+  onNavigate,
 }: HeadlineProps) {
   const titleId = useId();
   const subId = useId();
@@ -153,6 +162,21 @@ export function Headline({
                   Net per {unit === "day" ? "working day" : "week"}, with cumulative total
                 </h3>
                 <span className="flex-1" />
+                {projects.length > 0 && onProjectChange && (
+                  <select
+                    aria-label="Chart project"
+                    className="min-h-6 max-w-full rounded border border-border bg-surface-2 px-1.5 text-xs text-text"
+                    value={project}
+                    onChange={(event) => onProjectChange(event.target.value)}
+                  >
+                    <option value="">All projects</option>
+                    {projects.map((option) => (
+                      <option key={option.toLowerCase()} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+                )}
                 <Segmented
                   label="Period"
                   value={unit}
@@ -168,8 +192,10 @@ export function Headline({
           {bar && listed && onSelect && (
             <BarPullRequests
               period={`${bar.full}${bar.partial ? " (so far)" : ""}`}
+              unit={unit}
               opened={listed.opened}
               closed={listed.closed}
+              onNavigate={onNavigate}
               onHide={() => onSelect(null)}
               focusAfter={() => chart.current}
             />

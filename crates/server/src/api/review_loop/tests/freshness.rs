@@ -103,6 +103,97 @@ async fn flush(w: &World) {
 }
 
 #[tokio::test]
+async fn conflicting_lifecycle_signals_refresh_history_without_an_active_watch_or_reader() {
+    let w = covered().await;
+    w.get(PR).await;
+    let signal = |action, state, merged| {
+        json!({
+            "action": action,
+            "installation": {"id": 123},
+            "repository": {"id": REPO_ID, "full_name": "acme/node-client", "private": false},
+            "number": 482,
+            "pull_request": {"state": state, "merged": merged, "updated_at": UPDATED}
+        })
+    };
+    assert_eq!(
+        delivery(&w, "pull_request", signal("closed", "closed", false)).await,
+        StatusCode::ACCEPTED
+    );
+    let closed = w.get("/api/v1/me/prs").await;
+    assert_eq!(closed["prs"][0]["pr_state"], "closed", "{closed}");
+    assert_eq!(
+        delivery(&w, "pull_request", signal("reopened", "open", false)).await,
+        StatusCode::ACCEPTED
+    );
+    let mut probe = super::watching::probe_answer(UPDATED);
+    probe["data"]["a0"]["databaseId"] = json!(REPO_ID);
+    probe["data"]["a0"]["isPrivate"] = json!(false);
+    super::watching::mount_probe(&w.server, probe).await;
+
+    flush(&w).await;
+    let reopened = w.get("/api/v1/me/prs").await;
+    assert_eq!(reopened["prs"][0]["pr_state"], "open", "{reopened}");
+    assert_eq!(
+        pull_reads(&w).await,
+        1,
+        "only the initial Comments read was full"
+    );
+}
+
+#[tokio::test]
+async fn pr_page_reconciles_lifecycle_signals_dispatched_before_the_pr_was_stored() {
+    let w = covered().await;
+    serve(
+        &w.server,
+        &[("pr.json", &|answer| {
+            let pr = &mut answer["data"]["repository"]["pullRequest"];
+            pr["state"] = json!("OPEN");
+            pr["updatedAt"] = json!(UPDATED);
+        })],
+    )
+    .await;
+    let mut old = recorded("pr.json");
+    let pr = &mut old["data"]["repository"]["pullRequest"];
+    pr["state"] = json!("CLOSED");
+    pr["updatedAt"] = json!(UPDATED);
+    Mock::given(method("POST"))
+        .and(path("/api/graphql"))
+        .and(body_string_contains("reviewDecision"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(old)
+                .set_delay(Duration::from_secs(1)),
+        )
+        .with_priority(1)
+        .up_to_n_times(1)
+        .mount(&w.server)
+        .await;
+    let events = async {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while pull_reads(&w).await == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("first GitHub request started");
+        for (action, state) in [("closed", "closed"), ("reopened", "open")] {
+            let mut signal = pr_signal(action, HEAD, HEAD, UPDATED);
+            signal["pull_request"]["state"] = json!(state);
+            signal["pull_request"]["merged"] = json!(false);
+            assert_eq!(
+                delivery(&w, "pull_request", signal).await,
+                StatusCode::ACCEPTED
+            );
+        }
+        flush(&w).await;
+    };
+    tokio::join!(w.get(PR), events);
+    let history = w.get("/api/v1/me/prs").await;
+    assert_eq!(history["prs"][0]["pr_state"], "open", "{history}");
+    assert_eq!(pull_reads(&w).await, 2);
+}
+
+#[tokio::test]
 async fn comments_get_polls_use_storage_while_repository_is_covered() {
     let w = covered().await;
     let first = w.get(COMMENTS).await;
@@ -516,7 +607,7 @@ async fn receive_commit_order_cannot_rewind_the_comments_invalidation() {
                     event: "pull_request",
                     action: Some("synchronize"),
                     installation_id: Some(123),
-                    effect: Effect::Signal(&repo, &changes),
+                    effect: Effect::Signal(&repo, &changes, None),
                 },
                 received,
             )

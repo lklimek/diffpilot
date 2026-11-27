@@ -177,7 +177,7 @@ describe("NetChart: a bar lists its pull requests", () => {
       /^Day 17 Nov.*Click or press Enter to hide its pull requests$/,
     );
     expect(document.querySelector('[data-point="1"][data-selected]')).not.toBeNull();
-    expect(screen.getByRole("link", { name: /^acme\/a#5/ })).toBeVisible();
+    expect(screen.getByRole("link", { name: "Open acme/a#5 on GitHub (new tab)" })).toBeVisible();
     clickBar(2);
     expect(list("Day 17 Nov")).toBeNull();
     expect(list("Day 18 Nov (so far)")).toBeVisible();

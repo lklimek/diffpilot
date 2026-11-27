@@ -64,6 +64,7 @@ const NEW: &[&str] = &[
     "dashboard_ranking_resets",
     "dashboard_sends",
     "github_deliveries",
+    "github_pr_lifecycle_signals",
     "pr_page_openings",
     "analytic_threads",
     "assessment_attempt_usage",
@@ -240,7 +241,13 @@ async fn migration_0030_cleans_populated_0029_and_preserves_identity_and_setting
             "{table}"
         );
     }
-    assert_eq!(snapshot(&db.pool, "pull_requests", &[]).await.1, pr.1);
+    let lifecycle_columns = ["lifecycle", "lifecycle_updated_at", "lifecycle_read_at"];
+    assert_eq!(
+        snapshot(&db.pool, "pull_requests", &lifecycle_columns)
+            .await
+            .1,
+        pr.1
+    );
     let removed: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM pragma_table_info('pull_requests') WHERE name IN ('agent_thread_id','analytic_generation','session_state')",
     ).fetch_one(&db.pool).await.unwrap();

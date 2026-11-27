@@ -371,7 +371,8 @@ async fn tenant_id_on_every_table() {
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
            AND name NOT IN ('_sqlx_migrations', 'tenants', 'users', 'llm_selection',
                'user_llm_selection', 'assessment_config', 'assessment_daily_usage',
-               'github_deliveries', 'app_repositories', 'comment_decision_origins') ORDER BY name",
+               'github_deliveries', 'github_pr_lifecycle_signals', 'app_repositories',
+               'comment_decision_origins') ORDER BY name",
     )
     .fetch_all(&db.pool)
     .await
@@ -2820,4 +2821,46 @@ async fn pr_page_openings_belong_to_a_member_and_pr_in_the_same_tenant() {
         .await
         .unwrap();
     assert_eq!(times, ["other"]);
+}
+
+#[tokio::test]
+async fn pr_lifecycle_migration_backfills_only_known_github_state() {
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .in_memory(true)
+        .foreign_keys(true);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .expect("pool");
+    migrate(&pool, migration_count_through(40)).await.unwrap();
+    sqlx::raw_sql(
+        "INSERT INTO repos (id, tenant_id, owner, name) VALUES (1, 'default', 'acme', 'node-client');
+         INSERT INTO pull_requests
+             (id, tenant_id, repo_id, number, title, author, html_url, base_sha, head_sha, fetched_at)
+         VALUES (1, 'default', 1, 482, 'Merged PR', 'alice', 'https://github.com/acme/node-client/pull/482',
+                   'b', 'h', '2026-11-26T00:00:00.000000Z'),
+                (2, 'default', 1, 483, 'Legacy PR', 'alice', 'https://github.com/acme/node-client/pull/483',
+                   'b', 'h', '2026-11-26T00:00:00.000000Z');
+         INSERT INTO comment_prs (pull_request_id, tenant_id, github_snapshot, read_at, created_at)
+         VALUES (1, 'default', json_object('state', 'MERGED', 'updated_at', '2026-11-27T10:59:59.123456789Z'),
+                 '2026-11-27T11:00:00.000000Z', '2026-11-27T11:00:00.000000Z');",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    migrate(&pool, MIGRATIONS.len()).await.unwrap();
+
+    let states: Vec<Option<String>> =
+        sqlx::query_scalar("SELECT lifecycle FROM pull_requests ORDER BY number")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(states, [Some("merged".into()), None]);
+    let upstream_version: String =
+        sqlx::query_scalar("SELECT lifecycle_updated_at FROM pull_requests WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(upstream_version, "2026-11-27T10:59:59.123456Z");
 }

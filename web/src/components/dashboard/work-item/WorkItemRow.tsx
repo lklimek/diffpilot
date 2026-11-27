@@ -122,7 +122,7 @@ export function WorkItemRow({
         </div>
         <div className="col-start-2 min-w-0 sm:col-start-3">
           <div className="text-sm font-semibold [overflow-wrap:anywhere]">
-            <WorkTitle item={item} />
+            <WorkTitle item={item} href={reviewHref} onNavigate={onNavigate} />
           </div>
           <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-muted">
             <WorkFacts item={item} onFilter={onFilter} snapshotAt={snapshotAt} now={now} />

@@ -1,10 +1,12 @@
 import { useState } from "react";
 import { commentText } from "../../../lib/commentText";
-import type { Mention, MentionCoverage } from "../../../api/generated/types";
+import type { Mention, MentionCoverage, PrRef } from "../../../api/generated/types";
 import { Tooltip } from "../../tooltip/Tooltip";
 import { dateTimeText } from "../../format/time";
 import { Segmented } from "../common/Segmented";
 import { OpenExternal } from "../common/OpenExternal";
+import { WorkTitleLink } from "../common/WorkTitleLink";
+import type { Navigate } from "../common/navigate";
 
 interface Props {
   items: Mention[];
@@ -16,6 +18,8 @@ interface Props {
   onHide: (id: string) => void;
   hidingIds: string[];
   now: Date;
+  prHref?: (pr: PrRef) => string;
+  onNavigate?: Navigate;
 }
 
 const waiting = (at: string, now: Date) => {
@@ -38,6 +42,8 @@ export function Mentions({
   onHide,
   hidingIds,
   now,
+  prHref,
+  onNavigate,
 }: Props) {
   const [all, setAll] = useState(false);
   const notes: string[] = [];
@@ -125,7 +131,13 @@ export function Mentions({
                     >
                       @{item.author}
                       {item.is_bot && <span> · bot</span>} · {item.repo.owner}/{item.repo.name}#{item.number}{" "}
-                      · {item.title}
+                      ·{" "}
+                      <WorkTitleLink
+                        href={item.kind === "pr" ? prHref?.(item) : undefined}
+                        onNavigate={onNavigate}
+                      >
+                        {item.title}
+                      </WorkTitleLink>
                     </div>
                     <p className="truncate text-xs text-muted" title={item.text}>
                       <time dateTime={item.created_at} title={dateTimeText(item.created_at)}>

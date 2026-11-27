@@ -1,3 +1,4 @@
+import { analysisPath } from "../screens/pr/paths";
 // The review loop as the mocks' server holds it (docs/review-workflow-plan.md, mockup docs/mockups/10-review-loop.html):
 // the PR page, items with assessments and decisions, the log, rounds, carry-overs, watches and notification
 // channels of the fixture PR acme/node-client #482. Decisions change the store until `resetReviewLoop`.
@@ -919,7 +920,7 @@ export function context(no: number, from: number | null, to: number | null): Cod
   const last = to ?? CODE.at(-1)!.line;
   const lines = CODE.filter((l) => l.line >= first && l.line <= last);
   const withAnalysis = analysis();
-  const base = withAnalysis ? `/analyses/${withAnalysis.id}` : null;
+  const base = withAnalysis ? analysisPath(withAnalysis.pr, withAnalysis.id) : null;
   const plugins = [
     {
       source: "pr_hygiene" as const,

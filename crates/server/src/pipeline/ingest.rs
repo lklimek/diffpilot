@@ -56,6 +56,7 @@ async fn fetch_pull(
         return Err(IngestError::InvalidRepository);
     }
     let token = user_access_token(state, &session.user_id).await?;
+    let read_at = Timestamp::now();
     let pull = match rest::get_pull(&state.config.github, &token, pr).await {
         Ok(pull) => pull,
         Err(GithubError::Unauthorized) => {
@@ -81,6 +82,26 @@ async fn fetch_pull(
         .pull_requests()
         .upsert(&session.tenant_id, repo.id, &pull.summary, Timestamp::now())
         .await?;
+    let requests = state.db.pull_requests();
+    let repo_id = Some(pull.repo_github_id);
+    if let Some((lifecycle, updated_at)) = pull.lifecycle
+        && !requests
+            .record_lifecycle(pr_id, lifecycle, updated_at, read_at, repo_id)
+            .await?
+        && requests.lifecycle_needs_read(pr_id).await?
+    {
+        // A conflicting Webhook may have been delivered before this REST read admitted the PR.
+        let retry_at = Timestamp::now();
+        if let Ok(current) = rest::get_pull(&state.config.github, &token, pr).await
+            && !current.private
+            && current.repo_github_id == pull.repo_github_id
+            && let Some((lifecycle, updated_at)) = current.lifecycle
+        {
+            requests
+                .record_lifecycle(pr_id, lifecycle, updated_at, retry_at, repo_id)
+                .await?;
+        }
+    }
     Ok((pull, pr_id))
 }
 

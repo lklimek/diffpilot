@@ -3,6 +3,7 @@ import type { HistoryEvent, HistoryKind } from "../../api/generated/types";
 import {
   barPullRequests,
   chartPoints,
+  chartProjects,
   dailySeries,
   headline,
   localDay,
@@ -207,9 +208,16 @@ describe("barPullRequests (the pull requests behind one bar)", () => {
           id: "acme/a#2",
           title: "fix: retry",
           url: "https://github.com/acme/a/pull/2",
+          href: "/pr/acme/a/2",
           outcome: "merged",
         },
-        { id: "acme/a#3", title: null, url: "https://github.com/acme/a/pull/3", outcome: "merged" },
+        {
+          id: "acme/a#3",
+          title: null,
+          url: "https://github.com/acme/a/pull/3",
+          href: "/pr/acme/a/3",
+          outcome: "merged",
+        },
       ],
     });
     const friday = barPullRequests(EVENTS, "2026-11-13", "day", titles);
@@ -244,9 +252,21 @@ describe("barPullRequests (the pull requests behind one bar)", () => {
       "day",
       new Map(),
     );
-    expect(listed.opened).toEqual([{ id: "acme/a#9", title: null, url: "https://github.com/acme/a/pull/9" }]);
+    expect(listed.opened).toEqual([
+      { id: "acme/a#9", title: null, url: "https://github.com/acme/a/pull/9", href: "/pr/acme/a/9" },
+    ]);
     expect(listed.closed.map((pr) => pr.id)).toEqual(["acme/a#9"]);
   });
+});
+
+it("lists chart repositories once per owner and name, ignoring review-only repositories", () => {
+  expect(
+    chartProjects([
+      ...EVENTS,
+      ev("pr_opened", 11, 18, "ACME/A#15"),
+      ev("pr_opened", 11, 18, "other/a#3"),
+    ]).map((project) => project.toLowerCase()),
+  ).toEqual(["acme/a", "other/a"]);
 });
 
 describe("pullRequestUrl", () => {

@@ -25,7 +25,7 @@ const chat = () => screen.getByRole("dialog", { name: "Ask" });
 const field = () => within(chat()).getByRole("textbox", { name: "Your question" });
 
 async function openTour(hash = "") {
-  const router = renderRoute(`/analyses/${ID}${hash}`);
+  const router = renderRoute(`/pr/acme/node-client/482/analyses/${ID}${hash}`);
   await within(await screen.findByRole("navigation", { name: "Flows and steps" })).findByRole("button", {
     name: /^Flow 1:/,
   });
@@ -78,7 +78,9 @@ describe("Ask chat review repros", () => {
     await within(root).findByText("And on timeout?");
 
     await reader.click(within(root).getByRole("button", { name: /^Step 1\.5/ }));
-    await waitFor(() => expect(router.state.location.pathname).toBe(`/analyses/${ID}`));
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe(`/pr/acme/node-client/482/analyses/${ID}`),
+    );
     expect(router.state.location.hash).toBe("#f1.5");
     await act(() => router.navigate(`/analyses/${ID}/files`));
     await checkThreads();
@@ -93,7 +95,7 @@ describe("Ask chat review repros", () => {
   it("a thread chip with selected lines opens those lines in Files (AC7)", async () => {
     const reader = user();
     const router = renderRoute(
-      `/analyses/${ID}/files#lines?file=src/rpc/client.rs&side=head&line=100&end=102`,
+      `/pr/acme/node-client/482/analyses/${ID}/files#lines?file=src/rpc/client.rs&side=head&line=100&end=102`,
     );
     await screen.findByRole("button", { name: /^Ask.*: open your private chat/ });
     await screen.findByRole("heading", { name: "Your selection · client.rs lines 100–102" });
@@ -110,9 +112,9 @@ describe("Ask chat review repros", () => {
     const chip = within(thread).getByRole("button", { name: /client\.rs 100–102/ });
     expect(chip).toHaveAccessibleDescription(/Opens them in the Files view/);
     // Navigate away first so the click must bring the reader back.
-    await act(() => router.navigate(`/analyses/${ID}#pr_context`));
+    await act(() => router.navigate(`/pr/acme/node-client/482/analyses/${ID}#pr_context`));
     await reader.click(chip);
-    expect(router.state.location.pathname).toBe(`/analyses/${ID}/files`);
+    expect(router.state.location.pathname).toBe(`/pr/acme/node-client/482/analyses/${ID}/files`);
     expect(decodeURIComponent(router.state.location.hash)).toContain("line=100&end=102");
   }, 10_000);
 

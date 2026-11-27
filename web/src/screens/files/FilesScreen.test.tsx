@@ -38,7 +38,7 @@ const fileHeading = () =>
 const hashOf = (router: ReturnType<typeof renderRoute>) => decodeURIComponent(router.state.location.hash);
 
 async function open(hash = "") {
-  const router = renderRoute(`/analyses/${ID}/files${hash}`);
+  const router = renderRoute(`/pr/acme/node-client/482/analyses/${ID}/files${hash}`);
   await waitFor(() => expect(fileHeading()).toBeDefined());
   return router;
 }
@@ -223,7 +223,7 @@ describe("Files view (brief §4.5)", () => {
         HttpResponse.json({ code: "unauthenticated", message: "Sign in again." }, { status: 401 }),
       ),
     );
-    renderRoute(`/analyses/${ID}/files`);
+    renderRoute(`/pr/acme/node-client/482/analyses/${ID}/files`);
     expect(await screen.findByText("Sign in again.")).toBeVisible();
     expect(screen.getByRole("link", { name: "Sign in again" })).toHaveAttribute("href", "/auth/github/login");
   });
@@ -338,7 +338,9 @@ describe("Files view (brief §4.5)", () => {
   it("s switches to the Flows view at the narrowed step", async () => {
     const router = await open("#lines?file=src%2Frpc%2Fclient.rs&side=head&line=99&step=f1.5");
     await user().keyboard("s");
-    await waitFor(() => expect(router.state.location.pathname).toBe(`/analyses/${ID}`));
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe(`/pr/acme/node-client/482/analyses/${ID}`),
+    );
     expect(router.state.location.hash).toBe("#f1.5");
   });
 });

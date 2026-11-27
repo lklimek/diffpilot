@@ -3,6 +3,7 @@
 // unmerged, opened = opened; reviews given are counted apart and never enter the net.
 import type { HistoryEvent, HistoryKind } from "../../api/generated/types";
 import type { BarPullRequest } from "../../components/dashboard/bar-pull-requests/BarPullRequests";
+import { parsePrRef, prPath } from "../pr/paths";
 
 /** One bucket of the net chart; `day` is its first local date (`YYYY-MM-DD`; Monday for weeks). */
 export interface NetBucket {
@@ -286,6 +287,23 @@ export function pullRequestUrl(id: string): string | null {
   return `https://github.com/${match[1]}/${match[2]}/pull/${match[3]}`;
 }
 
+/** The repositories represented in the chart, displayed with their GitHub owner. */
+export function chartProjects(events: readonly HistoryEvent[]): string[] {
+  const projects = new Map<string, string>();
+  for (const event of events) {
+    if (!OPENED.includes(event.kind) && !CLOSED.includes(event.kind)) continue;
+    const project = historyProject(event);
+    if (project) projects.set(project.toLowerCase(), project);
+  }
+  return Array.from(projects.values()).sort((a, b) => a.localeCompare(b));
+}
+
+/** A chart event's GitHub project as owner/repository. */
+export const historyProject = (event: HistoryEvent): string | undefined => {
+  const pr = parsePrRef(event.item_id);
+  return pr ? `${pr.repo.owner}/${pr.repo.name}` : undefined;
+};
+
 /**
  * The pull requests behind one bar of the net chart (the bar starting at `day`), bucketed as the chart buckets
  * them; `titles` maps `owner/name#number` to the titles the snapshot knows. In event order.
@@ -302,11 +320,15 @@ export function barPullRequests(
       return localDay(unit === "day" ? bucket : monday(bucket)) === day;
     })
     .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
-  const pr = (e: HistoryEvent): BarPullRequest => ({
-    id: e.item_id,
-    title: titles.get(e.item_id) ?? null,
-    url: pullRequestUrl(e.item_id),
-  });
+  const pr = (e: HistoryEvent): BarPullRequest => {
+    const ref = parsePrRef(e.item_id);
+    return {
+      id: e.item_id,
+      title: titles.get(e.item_id.toLowerCase()) ?? null,
+      url: pullRequestUrl(e.item_id),
+      ...(ref ? { href: prPath(ref) } : {}),
+    };
+  };
   return {
     opened: inBar.filter((e) => OPENED.includes(e.kind)).map(pr),
     closed: inBar

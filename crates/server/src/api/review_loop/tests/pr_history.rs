@@ -336,3 +336,46 @@ async fn me_prs_no_longer_501() {
         json!({"prs": [], "next_cursor": null})
     );
 }
+
+#[tokio::test]
+async fn lifecycle_observations_keep_legacy_rows_and_reopened_pulls_distinct() {
+    use contracts::api::pr::PrLifecycleState::{Closed, Merged, Open};
+
+    let w = world().await;
+    let closed = seed_pr(&w, DEFAULT_TENANT, 481).await;
+    let merged = seed_pr(&w, DEFAULT_TENANT, 482).await;
+    let legacy = seed_pr(&w, DEFAULT_TENANT, 483).await;
+    let prs = w.state.db.pull_requests();
+    for pr in [closed, merged, legacy] {
+        prs.record_opening(DEFAULT_TENANT, "u1", pr, at(8))
+            .await
+            .unwrap();
+    }
+    prs.record_lifecycle(closed, Closed, at(2), at(3), None)
+        .await
+        .unwrap();
+    prs.record_lifecycle(merged, Merged, at(4), at(5), None)
+        .await
+        .unwrap();
+
+    let first = history(&w, HISTORY).await;
+    let state = |rows: &PrHistory, number| {
+        rows.prs
+            .iter()
+            .find(|row| row.pr.number == number)
+            .unwrap()
+            .pr_state
+    };
+    assert_eq!(state(&first, 481), Some(Closed));
+    assert_eq!(state(&first, 482), Some(Merged));
+    assert_eq!(state(&first, 483), None);
+
+    prs.record_lifecycle(closed, Open, at(5), at(6), None)
+        .await
+        .unwrap();
+    prs.record_lifecycle(closed, Closed, at(2), at(7), None)
+        .await
+        .unwrap();
+    let second = history(&w, HISTORY).await;
+    assert_eq!(state(&second, 481), Some(Open));
+}

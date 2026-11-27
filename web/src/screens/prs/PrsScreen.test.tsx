@@ -142,11 +142,11 @@ it("names review links and shows the request time separately from the latest ope
   }
   expect(list.getByRole("link", { name: "Review acme/node-client #482" })).toHaveAttribute(
     "href",
-    "/analyses/analysis-482",
+    "/pr/acme/node-client/482/analyses/analysis-482",
   );
   expect(list.getByRole("link", { name: "Review acme/node-client #483" })).toHaveAttribute(
     "href",
-    "/analyses/analysis-483",
+    "/pr/acme/node-client/483/analyses/analysis-483",
   );
 });
 
@@ -157,4 +157,58 @@ it("discloses automatic assessment and token use before starting a watch from hi
   expect(screen.getByRole("menuitem", { name: "Watch" })).toHaveAccessibleDescription(
     /assessed automatically.*uses LLM tokens/i,
   );
+});
+
+it("fills the visible page past archived rows and combines the archive, watch, analysis and search filters", async () => {
+  const row = (number: number, pr_state?: "open" | "merged" | "closed") => ({
+    pr: { repo: { owner: "acme", name: "project" }, number },
+    title: `Sample ${number}`,
+    last_activity_at: "2026-11-25T10:00:00Z",
+    pr_state,
+    watch: { state: "ended", since: "2026-11-24T10:00:00Z", ended_at: "2026-11-25T10:00:00Z" },
+    analysis: {
+      id: `analysis-${number}`,
+      status: "finished",
+      head_sha: "abc123",
+      head_moved: false,
+      requested_at: "2026-11-24T18:00:00Z",
+    },
+  });
+  server.use(
+    http.get("/api/v1/me/prs", ({ request }) => {
+      const cursor = new URL(request.url).searchParams.get("cursor");
+      return HttpResponse.json(
+        cursor === "next"
+          ? {
+              prs: [row(51, "open"), row(52)],
+              next_cursor: null,
+            }
+          : {
+              prs: Array.from({ length: 50 }, (_, i) => row(i + 1, i % 2 === 0 ? "merged" : "closed")),
+              next_cursor: "next",
+            },
+      );
+    }),
+  );
+  renderRoute("/prs");
+  const list = within(await screen.findByRole("list", { name: "Your pull requests" }));
+  expect(await list.findByText(/Sample 51$/)).toBeVisible();
+  expect(list.getByText(/Sample 52$/)).toBeVisible();
+  expect(list.queryByText(/Sample 1$/)).toBeNull();
+  expect(list.queryByText(/Sample 2$/)).toBeNull();
+
+  const toggle = screen.getByRole("button", { name: "Show archived" });
+  await userEvent.click(toggle);
+  expect(toggle).toHaveAttribute("aria-pressed", "true");
+  expect(list.getAllByText("Archived: merged").length).toBeGreaterThan(0);
+  expect(list.getAllByText("Archived: closed").length).toBeGreaterThan(0);
+  for (const view of ["Watched", "Analysed"]) {
+    await userEvent.click(screen.getByRole("button", { name: view }));
+    expect(list.getByText(/Sample 1$/)).toBeVisible();
+  }
+  await userEvent.type(screen.getByRole("searchbox"), "Sample 50");
+  expect(list.getByText(/Sample 50$/)).toBeVisible();
+  expect(list.queryByText(/Sample 51$/)).toBeNull();
+  await userEvent.click(toggle);
+  expect(await screen.findByText("No pull requests match these filters.")).toBeVisible();
 });

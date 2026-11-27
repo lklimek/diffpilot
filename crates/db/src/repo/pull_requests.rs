@@ -1,6 +1,8 @@
 //! Repository for `pull_requests`: the latest snapshot of each resolved pull request.
 
-use contracts::api::pr::{PrHistoryAnalysis, PrHistoryItem, PrHistoryWatch, PrSummary};
+use contracts::api::pr::{
+    PrHistoryAnalysis, PrHistoryItem, PrHistoryWatch, PrLifecycleState, PrSummary,
+};
 use contracts::common::{LlmLanguage, PrRef, RepoRef};
 use contracts::time::Timestamp;
 use sqlx::sqlite::SqliteRow;
@@ -56,6 +58,84 @@ impl PullRequests<'_> {
         .await?)
     }
 
+    /// Records lifecycle evidence from a GitHub read and returns whether it covered the stored evidence.
+    pub async fn record_lifecycle(
+        &self,
+        pr_id: i64,
+        state: PrLifecycleState,
+        updated_at: Timestamp,
+        read_at: Timestamp,
+        repository_id: Option<i64>,
+    ) -> Result<bool, DbError> {
+        let recorded = sqlx::query(
+            "UPDATE pull_requests AS p SET lifecycle = ?1, lifecycle_updated_at = ?2, lifecycle_read_at = ?3
+             WHERE p.id = ?4 AND (?5 IS NULL OR EXISTS (
+                 SELECT 1 FROM repos r WHERE r.id = p.repo_id AND r.github_id = ?5
+             )) AND (
+                 lifecycle_updated_at IS NULL OR lifecycle_updated_at < ?2 OR
+                 (lifecycle_updated_at = ?2 AND (lifecycle_read_at IS NULL OR lifecycle_read_at < ?3))
+             ) AND NOT EXISTS (
+                 SELECT 1 FROM repos r JOIN github_pr_lifecycle_signals s
+                    ON s.repository_id = r.github_id AND s.number = p.number
+                 WHERE r.id = p.repo_id AND
+                       (s.updated_at > ?2 OR (s.updated_at = ?2 AND s.received_at >= ?3))
+             )",
+        )
+        .bind(wire_name(state)?)
+        .bind(ts(updated_at))
+        .bind(ts(read_at))
+        .bind(pr_id)
+        .bind(repository_id)
+        .execute(self.pool)
+        .await?;
+        Ok(recorded.rows_affected() != 0)
+    }
+
+    /// Whether stored GitHub lifecycle evidence cannot be ordered without another read.
+    pub async fn lifecycle_needs_read(&self, pr_id: i64) -> Result<bool, DbError> {
+        Ok(
+            sqlx::query_scalar("SELECT needs_read FROM pull_request_lifecycle WHERE id = ?")
+                .bind(pr_id)
+                .fetch_one(self.pool)
+                .await?,
+        )
+    }
+
+    /// Selects a current member with a GitHub token to resolve conflicting lifecycle evidence for a historical PR.
+    pub async fn lifecycle_probe(&self, pr_id: i64) -> Result<Option<LifecycleProbe>, DbError> {
+        let row = sqlx::query(
+            "WITH readers(user_id, at) AS (
+                 SELECT user_id, last_opened_at FROM pr_page_openings WHERE pull_request_id = ?1
+                 UNION ALL SELECT created_by, created_at FROM analyses WHERE pull_request_id = ?1
+                 UNION ALL SELECT user_id, since FROM pr_watches WHERE pull_request_id = ?1
+             )
+             SELECT readers.user_id, r.github_id, r.owner, r.name, p.number
+             FROM pull_request_lifecycle l JOIN pull_requests p ON p.id = l.id
+             JOIN repos r ON r.id = p.repo_id
+             JOIN readers JOIN memberships m ON m.tenant_id = p.tenant_id AND m.user_id = readers.user_id
+             JOIN user_tokens t ON t.user_id = m.user_id
+             WHERE p.id = ?1 AND l.needs_read
+             ORDER BY readers.at DESC, readers.user_id LIMIT 1",
+        )
+        .bind(pr_id)
+        .fetch_optional(self.pool)
+        .await?;
+        row.map(|row| {
+            Ok(LifecycleProbe {
+                user_id: row.try_get("user_id")?,
+                repository_id: row.try_get("github_id")?,
+                pr: PrRef {
+                    repo: RepoRef {
+                        owner: row.try_get("owner")?,
+                        name: row.try_get("name")?,
+                    },
+                    number: row.try_get("number")?,
+                },
+            })
+        })
+        .transpose()
+    }
+
     /// Records a member's latest successful PR page opening.
     pub async fn record_opening(
         &self,
@@ -109,13 +189,15 @@ impl PullRequests<'_> {
              ), history AS (
                  SELECT pull_request_id, MAX(at) AS last_activity_at FROM activity GROUP BY pull_request_id
              )
-             SELECT p.id, p.title, p.number, r.owner, r.name, h.last_activity_at, o.last_opened_at,
+             SELECT p.id, p.title, p.number, CASE WHEN NOT l.needs_read THEN l.lifecycle END AS lifecycle,
+                 r.owner, r.name, h.last_activity_at, o.last_opened_at,
                  a.id AS analysis_id, a.state AS analysis_state, a.head_sha AS analysis_head,
                  a.created_at AS analysis_requested_at,
                  a.head_sha <> p.head_sha AS head_moved, w.state AS watch_state, w.since, w.ended_at
              FROM history h
              JOIN pull_requests p ON p.id = h.pull_request_id AND p.tenant_id = ?1
              JOIN repos r ON r.id = p.repo_id AND r.tenant_id = ?1
+             JOIN pull_request_lifecycle l ON l.id = p.id
              LEFT JOIN latest_analyses a ON a.pull_request_id = p.id
              LEFT JOIN watches w ON w.pull_request_id = p.id
              LEFT JOIN openings o ON o.pull_request_id = p.id
@@ -278,6 +360,10 @@ fn history_item(row: &SqliteRow) -> Result<(i64, PrHistoryItem), DbError> {
                 number: row.try_get("number")?,
             },
             title: row.try_get("title")?,
+            pr_state: row
+                .try_get::<Option<&str>, _>("lifecycle")?
+                .map(|state| parse_wire(state, "pull_requests.lifecycle"))
+                .transpose()?,
             last_activity_at: parse_ts(row.try_get("last_activity_at")?, "last_activity_at")?,
             opened_at: optional_time("last_opened_at")?,
             analysis,
@@ -306,6 +392,16 @@ pub struct PullRequestRecord {
     pub tenant_id: String,
     /// The pull request as last resolved (title, author, base and head).
     pub pr: PrSummary,
+}
+
+/// A targeted lifecycle read for an existing public GitHub pull request.
+pub struct LifecycleProbe {
+    /// Current tenant member whose GitHub token can read the PR.
+    pub user_id: String,
+    /// GitHub repository identity to verify before recording the response.
+    pub repository_id: i64,
+    /// Repository coordinates and pull request number.
+    pub pr: PrRef,
 }
 
 /// Fault injection for pull-request repository tests.

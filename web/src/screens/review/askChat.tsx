@@ -56,7 +56,7 @@ import {
 import { growField } from "../../components/inspector/action";
 import { answerComment } from "../../components/comment/prefill";
 import { filesHash } from "../../components/files/model";
-import { commentsPath, itemPath } from "../pr/paths";
+import { analysisPath, commentsPath, itemPath } from "../pr/paths";
 import { blockFragment } from "../tour/sequence";
 import { chatGeometry } from "./chatGeometry";
 
@@ -156,7 +156,7 @@ const commentLink = (pr: PrRef, item: string, numbers: ItemNumbers) => {
 
 // Where a subject chip goes: lines (a step's too) are selected in Files, comment items in Comments, the rest in Flows.
 const linkOf = (id: AnalysisId, anchor: AskAnchor, tour: Tour, numbers: ItemNumbers): string => {
-  const base = `/analyses/${encodeURIComponent(id)}`;
+  const base = analysisPath(tour.analysis.pr, id);
   const lines = anchor.kind === "step" && anchor.lines ? linesOf(anchor, tour) : null;
   if (lines)
     return `${base}/files${filesHash({ file: lines.path, side: lines.side, line: lines.from, end: lines.to ?? lines.from })}`;

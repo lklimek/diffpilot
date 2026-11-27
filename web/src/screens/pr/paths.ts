@@ -1,11 +1,24 @@
 // In-app paths of the PR page and the Comments view (plan docs/review-workflow-plan.md §3 V0–V6).
-import type { PrRef } from "../../api/generated/types";
+import type { AnalysisId, PrRef } from "../../api/generated/types";
 import type { CommentsPage } from "../../components/comments/CommentsTabs";
 
 const seg = (value: string | number) => encodeURIComponent(String(value));
 
 /** V0 PR page: `/pr/:owner/:repo/:number`. */
 export const prPath = (pr: PrRef) => `/pr/${seg(pr.repo.owner)}/${seg(pr.repo.name)}/${seg(pr.number)}`;
+
+/** A browser link to an analysis or one of its views. */
+export const analysisPath = (pr: PrRef, id: AnalysisId, view?: "files" | "deps") =>
+  `${prPath(pr)}/analyses/${seg(id)}${view ? `/${view}` : ""}`;
+
+/** The PR page with the selected analysis's progress. */
+export const analysisProgressPath = (pr: PrRef, id: AnalysisId) => `${analysisPath(pr, id)}/progress`;
+
+/** GitHub repository identity is case-insensitive. */
+export const samePr = (a: PrRef, b: PrRef) =>
+  a.number === b.number &&
+  a.repo.owner.toLowerCase() === b.repo.owner.toLowerCase() &&
+  a.repo.name.toLowerCase() === b.repo.name.toLowerCase();
 
 const PAGE_PATH: Record<CommentsPage, string> = {
   questions: "",

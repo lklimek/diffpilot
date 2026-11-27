@@ -143,6 +143,8 @@ impl Github<'_> {
         Ok(sqlx::query_as(
             "WITH signals AS (
                SELECT value ->> '$.kind' = 'pull_request_review' AS review,
+                      value ->> '$.kind' = 'pull_request'
+                         AND value ->> '$.action' IN ('opened', 'closed', 'reopened') AS lifecycle,
                       value ->> '$.repository.id' AS repo_id,
                       value ->> '$.repository.name.owner' AS owner,
                       value ->> '$.repository.name.name' AS name,
@@ -158,6 +160,8 @@ impl Github<'_> {
                            AND (c.read_at IS NOT NULL OR c.github_dirty_at IS NOT NULL))
                 OR EXISTS (SELECT 1 FROM pr_watches w JOIN memberships m USING (tenant_id, user_id)
                            WHERE w.pull_request_id = p.id AND w.state != 'ended')
+                OR (s.lifecycle AND r.github_id = s.repo_id AND EXISTS (
+                      SELECT 1 FROM pull_request_lifecycle l WHERE l.id = p.id AND l.needs_read))
              GROUP BY p.id",
         )
         .bind(serde_json::to_string(changes)?)

@@ -30,6 +30,33 @@ const renderList = (extra: Partial<Parameters<typeof BarPullRequests>[0]> = {}) 
 };
 
 describe("BarPullRequests", () => {
+  it("groups a day's PRs without repeating ones that opened and closed that day", () => {
+    const done = pr("acme/platform#1210", { title: "feat: retry", outcome: "merged" });
+    const later = pr("acme/docs#7", { title: "docs: retry" });
+    renderList({ unit: "day", opened: [done, later], closed: [done, CLOSED[0]!] });
+    const both = screen.getByRole("group", { name: "Opened and closed (1)" });
+    const open = screen.getByRole("group", { name: "Opened only (1)" });
+    const closed = screen.getByRole("group", { name: "Closed from earlier days (1)" });
+    expect(within(both).getByText("merged")).toBeVisible();
+    expect(within(open).getByText(later.id)).toBeVisible();
+    expect(within(closed).getByText(CLOSED[0]!.id)).toBeVisible();
+    expect(screen.getAllByText(done.id)).toHaveLength(1);
+  });
+
+  it("links the title to DiffPilot and places a separately named GitHub icon after it", async () => {
+    const navigate = vi.fn();
+    const title = "feat: retry";
+    const item = pr("acme/platform#1210", { title, href: "/pr/acme/platform/1210" });
+    renderList({ opened: [item], closed: [], onNavigate: navigate });
+    const link = screen.getByRole("link", { name: title });
+    const external = screen.getByRole("link", { name: "Open acme/platform#1210 on GitHub (new tab)" });
+    expect(link).toHaveAttribute("href", "/pr/acme/platform/1210");
+    expect(external).toHaveAttribute("href", item.url);
+    expect(link.compareDocumentPosition(external) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await userEvent.click(link);
+    expect(navigate).toHaveBeenCalledWith("/pr/acme/platform/1210");
+  });
+
   it("names the bar and lists opened and closed pull requests with their counts", () => {
     renderList();
     const region = screen.getByRole("region", { name: "Pull requests of Tue 17 Nov" });
@@ -41,18 +68,18 @@ describe("BarPullRequests", () => {
       "Your pull requests merged or closed without merge",
     );
     expect(within(opened).getAllByRole("listitem").map(rowText)).toEqual([
-      "acme/platform#1210 (opens on GitHub in a new tab)feat: <b>bold</b> retry",
-      "acme/docs#7 (opens on GitHub in a new tab)",
+      "acme/platform#1210feat: <b>bold</b> retry",
+      "acme/docs#7",
     ]);
     expect(within(closed).getAllByRole("listitem").map(rowText)).toEqual([
-      "acme/platform#1187 (opens on GitHub in a new tab)fix: racemerged",
-      "acme/consensus#99 (opens on GitHub in a new tab)closed without merge",
+      "acme/platform#1187fix: racemerged",
+      "acme/consensus#99closed without merge",
     ]);
   });
 
   it("links each pull request to GitHub in a new tab with the GitHub mark", () => {
     renderList();
-    const link = screen.getByRole("link", { name: /^acme\/platform#1187/ });
+    const link = screen.getByRole("link", { name: "Open acme/platform#1187 on GitHub (new tab)" });
     expect(link).toHaveAttribute("href", "https://github.com/acme/platform/pull/1187");
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noopener noreferrer");

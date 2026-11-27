@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useAssessmentSettings } from "../../api/assessment-settings";
 import { AssessmentQuotaText } from "../../components/comments/AssessmentQuotaText";
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -14,7 +15,7 @@ import { PrUrlForm } from "../../components/pr-form/PrUrlForm";
 import { SignInCard } from "../../components/sign-in/SignInCard";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { Tooltip } from "../../components/tooltip/Tooltip";
-import { ALL_CARRY_OVERS_PATH, parsePrRef, prPath } from "../pr/paths";
+import { ALL_CARRY_OVERS_PATH, analysisPath, parsePrRef, prPath } from "../pr/paths";
 import { MY_WORK_PATH, PRS_PATH } from "../shell/paths";
 import { historyFromLegacy, historyFromServer, historyKey } from "./history";
 
@@ -122,6 +123,7 @@ function History({
       api.listMyPrs({ limit: PR_HISTORY_PAGE_SIZE, cursor: pageParam ?? undefined }, signal),
     getNextPageParam: (page) => page?.next_cursor ?? undefined,
     retry: false,
+    refetchInterval: (query) => (query.state.data?.pages[0] === null ? false : 60_000),
   });
   const fallback = history.data?.pages[0] === null;
   const analyses = useMyAnalyses(fallback, 100);
@@ -147,11 +149,13 @@ function History({
         ).values(),
       ];
   const show = params.get("show") ?? "all";
+  const showArchived = params.get("archived") === "true";
   const filter = params.get("q") ?? "";
   const query = filter.trim().toLowerCase();
   const count = Number(params.get("limit"));
   const limit = Number.isSafeInteger(count) && count > PR_HISTORY_PAGE_SIZE ? count : PR_HISTORY_PAGE_SIZE;
   const filtered = entries.filter((entry) => {
+    if (!showArchived && (entry.pr_state === "closed" || entry.pr_state === "merged")) return false;
     if (show === "watched" && !entry.watch) return false;
     if (show === "analysed" && !entry.analysis) return false;
     return (
@@ -165,23 +169,28 @@ function History({
     next.delete("limit");
     setParams(next, { replace: key === "q", preventScrollReset: true });
   };
-  const pending = history.isPending || (fallback && (watches.isPending || analyses.isPending));
-  const rows = (fallback ? filtered.slice(0, limit) : filtered).map(
-    ({ pr, title, opened_at, last_activity_at, analysis, watch }) => ({
+  const fillPage = history.hasNextPage && filtered.length < limit && !history.isFetchNextPageError;
+  const { fetchNextPage, isFetching } = history;
+  useEffect(() => {
+    if (fillPage && !isFetching) void fetchNextPage();
+  }, [fillPage, isFetching, fetchNextPage]);
+  const pending = history.isPending || fillPage || (fallback && (watches.isPending || analyses.isPending));
+  const rows = filtered
+    .slice(0, limit)
+    .map(({ pr, title, opened_at, last_activity_at, analysis, watch, pr_state }) => ({
       id: `${pr.repo.owner}/${pr.repo.name}#${pr.number}`,
       pr,
       title,
       prHref: prPath(pr),
-      reviewHref:
-        analysis?.status === "finished" ? `/analyses/${encodeURIComponent(analysis.id)}` : undefined,
+      reviewHref: analysis?.status === "finished" ? analysisPath(pr, analysis.id) : undefined,
       lastActivityAt: last_activity_at,
       openedAt: opened_at,
       requestedAt: analysis?.requestedAt,
       analysisStatus: analysis?.status,
       headMoved: analysis?.headMoved,
       watch,
-    }),
-  );
+      archived: pr_state === "merged" || pr_state === "closed" ? pr_state : undefined,
+    }));
   const announcedWatch =
     watch.isSuccess && watch.variables
       ? `${watch.variables.enabled ? "Watching" : "Stopped watching"} ${historyKey(watch.variables.pr)}.`
@@ -209,6 +218,16 @@ function History({
             );
           })}
         </div>
+        <Tooltip tip="Include merged and closed pull requests in the history.">
+          <button
+            type="button"
+            aria-pressed={showArchived}
+            className={buttonClass(showArchived ? "primary" : "plain", true)}
+            onClick={() => setFilter("archived", showArchived ? "" : "true")}
+          >
+            Show archived
+          </button>
+        </Tooltip>
         <input
           type="search"
           aria-label="Filter by repository or title"
@@ -242,7 +261,7 @@ function History({
           : `${rows.length} ${rows.length === 1 ? "pull request" : "pull requests"} shown.`}
         {announcedWatch && ` ${announcedWatch}`}
       </div>
-      {pending && <p className="text-sm text-muted">Loading pull requests…</p>}
+      {pending && rows.length === 0 && <p className="text-sm text-muted">Loading pull requests…</p>}
       {rows.length > 0 && (
         <PrHistory
           rows={rows}
@@ -264,7 +283,7 @@ function History({
           )}
         </p>
       )}
-      {(history.hasNextPage || (fallback && filtered.length > limit)) && (
+      {(history.hasNextPage || filtered.length > limit) && (
         <Tooltip tip="Shows more pull requests from your history.">
           <button
             type="button"
@@ -272,12 +291,13 @@ function History({
             aria-disabled={history.isFetchingNextPage || undefined}
             onClick={() => {
               if (history.isFetchingNextPage) return;
-              if (!fallback) void history.fetchNextPage();
-              else {
-                const next = new URLSearchParams(params);
-                next.set("limit", String(limit + PR_HISTORY_PAGE_SIZE));
-                setParams(next, { preventScrollReset: true });
+              if (history.isFetchNextPageError) {
+                void fetchNextPage();
+                return;
               }
+              const next = new URLSearchParams(params);
+              next.set("limit", String(limit + PR_HISTORY_PAGE_SIZE));
+              setParams(next, { preventScrollReset: true });
             }}
           >
             {history.isFetchingNextPage ? "Loading…" : "Show more"}

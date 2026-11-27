@@ -98,6 +98,23 @@ async fn watched_pr_still_auto_assesses() {
     assert_eq!(pass.user_id.as_deref(), Some("u1"));
 }
 
+#[tokio::test]
+async fn uncovered_watch_records_a_confirmed_closure_in_history() {
+    let w = world().await;
+    let pr = watched_482(&w).await;
+    let closed_at = Timestamp::now();
+    let mut answer = probe_answer(&closed_at.to_string());
+    answer["data"]["a0"]["isPrivate"] = json!(false);
+    answer["data"]["a0"]["databaseId"] = json!(100000482);
+    answer["data"]["a0"]["pullRequest"]["state"] = json!("CLOSED");
+    mount_probe(&w.server, answer).await;
+    watch::tick_at(&w.state, closed_at).await.unwrap();
+
+    let history = w.get("/api/v1/me/prs").await;
+    assert_eq!(history["prs"][0]["pr_state"], "closed", "{history}");
+    assert_eq!(the_watch(&w, pr).await.state, WatchState::Ended);
+}
+
 async fn the_watch(w: &World, pr: i64) -> WatchRecord {
     w.state
         .db

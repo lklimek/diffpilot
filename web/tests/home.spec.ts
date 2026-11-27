@@ -92,7 +92,7 @@ test("head moved: banner, Start analysis starts a fresh analysis", async ({ page
   await expect(banner).toContainText("Analysis of 52d2da1; the PR is now at d41b7a0.");
   await expect(banner.getByRole("link", { name: "Open the old analysis" })).toHaveAttribute(
     "href",
-    `/analyses/${ANALYSIS_ID}`,
+    `/pr/acme/node-client/482/analyses/${ANALYSIS_ID}`,
   );
   await expectTooltips(page);
   await expectAccessible(page);
