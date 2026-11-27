@@ -3,6 +3,7 @@ import type { GithubThread } from "../../api/generated/types";
 import { commentText } from "../../lib/commentText";
 import { inApp } from "../inApp";
 import { CodeText } from "../section/CodeText";
+import { Tooltip } from "../tooltip/Tooltip";
 
 export interface GithubThreadActions {
   loadBody: (id: string) => Promise<{ body: string } | { error: string }>;
@@ -54,16 +55,17 @@ export function GithubThreadPreview({
   };
   return (
     <span className="block">
-      <button
-        type="button"
-        aria-expanded={expanded}
-        aria-controls={target}
-        title={expanded ? "Collapse the comment" : "Show the full comment"}
-        onClick={() => void toggle()}
-        className={`${previewLayout} cursor-pointer rounded text-left whitespace-pre-wrap text-accent hover:underline [overflow-wrap:anywhere]`}
-      >
-        {preview}
-      </button>
+      <Tooltip tip={expanded ? "Collapse the comment" : "Show the full comment"}>
+        <button
+          type="button"
+          aria-expanded={expanded}
+          aria-controls={target}
+          onClick={() => void toggle()}
+          className={`${previewLayout} cursor-pointer rounded text-left whitespace-pre-wrap text-accent hover:underline [overflow-wrap:anywhere]`}
+        >
+          {preview}
+        </button>
+      </Tooltip>
       <span id={target} hidden={!expanded} className="mt-1">
         {loading && <span role="status">Reading the GitHub comment…</span>}
         {error && <span role="alert">Could not read the GitHub comment. {error}</span>}
