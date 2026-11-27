@@ -297,7 +297,9 @@ async fn overview(
 ) -> ApiResult<Json<CommentsOverview>> {
     mark_present(&state, &session);
     let handle = handle_of(&state, &session, path).await?;
-    state.comments_readers.touch(&session, handle.id);
+    if state.comments_readers.touch(&session, handle.id) {
+        review_loop::refresh_invalidated(&state, &session, &handle).await?;
+    }
     Ok(Json(views::overview(&state, &session, handle).await?))
 }
 
@@ -307,7 +309,8 @@ async fn visit(
     path: PrPath,
 ) -> ApiResult<StatusCode> {
     let handle = handle_of(&state, &session, path).await?;
-    review_loop::refresh_on_visit(&state, &session, &handle).await?;
+    state.comments_readers.touch(&session, handle.id);
+    review_loop::refresh_invalidated(&state, &session, &handle).await?;
     state
         .db
         .review_loop()

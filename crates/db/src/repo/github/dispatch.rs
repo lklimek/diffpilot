@@ -35,7 +35,7 @@ struct Target {
     candidate: bool,
 }
 
-// Match only previously read PRs by the same repository identity used by watch routing.
+// Match Comments PRs by the same repository identity used by watch routing.
 pub(super) async fn invalidate_comments(
     conn: &mut SqliteConnection,
     hints: &str,
@@ -50,11 +50,12 @@ pub(super) async fn invalidate_comments(
                   CASE WHEN value ->> '$.action' = 'synchronize'
                          AND value ->> '$.kind' = 'pull_request'
                        THEN value ->> '$.head_sha' END AS head,
-                  value ->> '$.synchronize_at' AS head_at
+                  value ->> '$.synchronize_at' AS head_at,
+                  value ->> '$.synchronize_before' AS prior_head
            FROM json_each(?1)
            WHERE value ->> '$.kind' IN ('pull_request','pull_request_review')
          ), affected AS (
-           SELECT p.id, s.head, s.head_at
+           SELECT p.id, s.head, s.head_at, s.prior_head
            FROM signals s JOIN repos r ON r.github_id = s.repo_id
              OR ((s.repo_id IS NULL OR r.github_id IS NULL)
                  AND r.owner = s.owner COLLATE NOCASE AND r.name = s.name COLLATE NOCASE)
@@ -66,17 +67,22 @@ pub(super) async fn invalidate_comments(
                  AND (ar.repository_id IS NULL OR r.github_id IS NULL)))
            )
          )
-         UPDATE comment_prs AS c SET github_dirty_at = ?2,
+         UPDATE comment_prs AS c SET github_dirty_at = MAX(COALESCE(c.github_dirty_at, ?2), ?2),
            (github_head, github_head_at) = (
              SELECT CASE WHEN fresh THEN a.head ELSE c.github_head END,
                     CASE WHEN fresh THEN a.head_at ELSE c.github_head_at END
-             FROM (SELECT a.head IS NOT NULL
-               AND (a.head_at IS NULL OR (
-                 julianday(a.head_at) >= COALESCE(julianday(c.github_head_at), 0)
-                 AND julianday(a.head_at) >= COALESCE(julianday(c.github_snapshot ->> '$.updated_at'), 0)
-               )) AS fresh)
+             FROM (SELECT a.head IS NOT NULL AND (
+               julianday(a.head_at) > latest
+               OR (COALESCE(c.github_dirty_at, ?2) <= ?2 AND (
+                 a.head_at IS NULL
+                 OR (julianday(a.head_at) = latest AND a.prior_head = current_head COLLATE NOCASE)
+               ))
+             ) AS fresh
+             FROM (SELECT MAX(COALESCE(julianday(c.github_head_at), 0),
+                              COALESCE(julianday(c.github_snapshot ->> '$.updated_at'), 0)) AS latest,
+                          COALESCE(c.github_head, c.github_snapshot ->> '$.head') AS current_head))
            )
-         FROM affected a WHERE c.pull_request_id = a.id AND c.read_at IS NOT NULL",
+         FROM affected a WHERE c.pull_request_id = a.id",
     )
     .bind(hints)
     .bind(ts(now))
@@ -105,7 +111,8 @@ impl Github<'_> {
                OR ((s.repo_id IS NULL OR r.github_id IS NULL)
                    AND r.owner = s.owner COLLATE NOCASE AND r.name = s.name COLLATE NOCASE)
              JOIN pull_requests p ON p.repo_id = r.id AND p.number = s.number
-             WHERE EXISTS (SELECT 1 FROM comment_prs c WHERE c.pull_request_id = p.id AND c.read_at IS NOT NULL)
+             WHERE EXISTS (SELECT 1 FROM comment_prs c WHERE c.pull_request_id = p.id
+                           AND (c.read_at IS NOT NULL OR c.github_dirty_at IS NOT NULL))
                 OR EXISTS (SELECT 1 FROM pr_watches w JOIN memberships m USING (tenant_id, user_id)
                            WHERE w.pull_request_id = p.id AND w.state != 'ended')
              GROUP BY p.id",

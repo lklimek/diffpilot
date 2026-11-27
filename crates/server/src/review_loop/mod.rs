@@ -262,13 +262,12 @@ pub async fn ensure_read(
     )
 }
 
-/// Refreshes an invalidated snapshot when a reader enters Comments after its event was processed.
-pub(crate) async fn refresh_on_visit(
+/// Refreshes an invalidated snapshot when a browser reader enters or resumes Comments.
+pub(crate) async fn refresh_invalidated(
     state: &AppState,
     session: &Session,
     handle: &PrHandle,
 ) -> Result<(), LoopError> {
-    state.comments_readers.touch(session, handle.id);
     if !freshness::covered(state, &session.tenant_id, &handle.pr.repo).await? {
         return Ok(());
     }
@@ -416,6 +415,18 @@ async fn read_now(
     };
     let config = &state.config.github;
     let started_at = Timestamp::now();
+    if let Some(id) = state
+        .db
+        .pull_requests()
+        .find(tenant, &pr.repo, pr.number)
+        .await?
+    {
+        state
+            .db
+            .review_loop()
+            .ensure_pr(tenant, id, started_at)
+            .await?;
+    }
     let read = match reads::read(config, &token, pr, budget).await {
         Ok(read) => read,
         Err(ReadError::Graphql(GraphqlError::EventBudget(delay))) => {

@@ -78,6 +78,9 @@ pub struct WebhookChange {
     /// GitHub's PR update time for a signed synchronize event.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub synchronize_at: Option<Timestamp>,
+    /// The previous head reported by a synchronize event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synchronize_before: Option<String>,
     /// GitHub action selected by the receiver.
     pub action: Option<String>,
     /// GitHub App installation.

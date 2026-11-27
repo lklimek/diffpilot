@@ -202,6 +202,11 @@ pub(super) fn extract(
             } else {
                 None
             },
+            synchronize_before: if event == "pull_request" && action_name == "synchronize" {
+                sha(&body["before"])
+            } else {
+                None
+            },
             action: action.map(str::to_owned),
             installation_id: installation,
             base_repository,

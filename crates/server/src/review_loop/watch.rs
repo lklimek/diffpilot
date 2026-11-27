@@ -418,7 +418,7 @@ pub(crate) async fn event_probe(
     {
         ProbeOutcome::Complete => {
             settle_all(state, Some(&HashSet::from([pr])), now).await?;
-            Ok(None)
+            refresh_readers(state, pr, now, budgets, instant).await
         }
         ProbeOutcome::Incomplete => Err(WatchError::IncompleteProbe),
         ProbeOutcome::Deferred(delay) => Ok(Some(delay.max(EVENT_PROBE_INTERVAL.unsigned_abs()))),

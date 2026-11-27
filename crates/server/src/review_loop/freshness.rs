@@ -21,14 +21,16 @@ impl CommentsReaders {
         at.elapsed() <= READ_INTERVAL.unsigned_abs() * 2
     }
 
-    /// Renews a browser reader's presence for two poll intervals.
-    pub(crate) fn touch(&self, session: &Session, pr: i64) {
+    /// Renews presence for two poll intervals, returning true when a browser reader becomes active.
+    pub(crate) fn touch(&self, session: &Session, pr: i64) -> bool {
         if session.is_access_token() {
-            return;
+            return false;
         }
         let mut readers = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         readers.retain(|_, (_, at)| Self::active(*at));
-        readers.insert(pr, (session.user_id.clone(), Instant::now()));
+        readers
+            .insert(pr, (session.user_id.clone(), Instant::now()))
+            .is_none()
     }
 
     /// Most recent active browser reader of the PR.

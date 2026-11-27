@@ -216,6 +216,7 @@ fn signal(kind: ChangeKind, repository: RepoRef, number: Option<u32>) -> Webhook
         head_repository: None,
         head_sha: None,
         synchronize_at: None,
+        synchronize_before: None,
         number,
         action: Some("edited".into()),
         installation_id: Some(42),
