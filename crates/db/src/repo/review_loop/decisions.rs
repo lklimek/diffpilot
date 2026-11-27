@@ -1148,6 +1148,9 @@ async fn store(
         }
         let supersedes = current_id(tx, new.item).await?;
         if let Some(previous) = &supersedes {
+            if super::actions::pending_issue(tx, previous).await? {
+                return Err(DbError::Conflict);
+            }
             super::actions::cancel_unclaimed(tx, previous, now).await?;
             superseded.push((previous.clone(), &new.user_id));
         }

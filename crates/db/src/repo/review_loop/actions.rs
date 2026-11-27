@@ -53,13 +53,27 @@ pub(crate) async fn cancel_unclaimed(
 ) -> Result<(), DbError> {
     sqlx::query(
         "UPDATE comment_effects SET state = 'cancelled', updated_at = ?
-         WHERE decision_id = ? AND state IN ('waiting', 'open')",
+         WHERE decision_id = ? AND state IN ('waiting', 'open') AND issue_attempt_id IS NULL",
     )
     .bind(ts(now))
     .bind(decision)
     .execute(&mut **tx)
     .await?;
     Ok(())
+}
+
+/// An issue creation may have reached GitHub even after the claim was released.
+pub(super) async fn pending_issue(
+    tx: &mut sqlx::Transaction<'static, sqlx::Sqlite>,
+    decision: &str,
+) -> Result<bool, DbError> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM comment_effects WHERE decision_id = ?
+            AND issue_attempt_id IS NOT NULL AND state IN ('open', 'claimed'))",
+    )
+    .bind(decision)
+    .fetch_one(&mut **tx)
+    .await?)
 }
 
 impl ReviewLoop<'_> {
@@ -131,14 +145,7 @@ impl ReviewLoop<'_> {
         if record.state == ItemState::Outside {
             return Ok(ActionOutcome::NoDecision);
         }
-        let issue_pending: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM comment_effects WHERE decision_id = ?
-                AND issue_attempt_id IS NOT NULL AND state IN ('open', 'claimed'))",
-        )
-        .bind(&decision)
-        .fetch_one(&mut *tx)
-        .await?;
-        if issue_pending {
+        if pending_issue(&mut tx, &decision).await? {
             return Ok(ActionOutcome::EffectClaimed);
         }
         super::origins::reopen_with_followers(&mut tx, &decision, item, now).await?;
@@ -182,6 +189,10 @@ impl ReviewLoop<'_> {
             tx.commit().await?;
             return Ok(outcome);
         };
+        if pending_issue(&mut tx, &decision).await? {
+            tx.commit().await?;
+            return Ok(outcome);
+        }
         super::origins::reopen_with_followers(&mut tx, &decision, id, now).await?;
         let record = item_in(&mut tx, id).await?;
         tx.commit().await?;

@@ -808,6 +808,16 @@ async fn follow_up_issue_attempt_is_fenced_across_claimants_and_reports() {
             .await;
         assert_eq!(status, StatusCode::CONFLICT, "{action}: {value}");
     }
+    let mut repeated = super::decision("follow_up_issue");
+    repeated["target"] = json!({"type": "follow_up_issue", "title": "Bound retries"});
+    repeated["item_revision"] = item["revision"].clone();
+    let (status, value) = w
+        .post(
+            &format!("{PR}/comments/items/C{}/decisions", item["no"]),
+            repeated,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{value}");
 
     let (status, _, value) = with_token(&w, &b, "POST", &claim_uri, Some(kinds.clone())).await;
     assert_eq!(status, StatusCode::CREATED, "{value}");
