@@ -9,6 +9,7 @@ use contracts::generate::{
 };
 use contracts::routes::{
     GET_GITHUB_THREAD, GET_ME, Listener, RESERVE_ISSUE_ATTEMPT, ROUTES, RouteAuth,
+    SUBMIT_AGENT_COMMENT,
 };
 
 fn repo_root() -> PathBuf {
@@ -100,7 +101,13 @@ fn every_token_readable_route_has_a_response_schema() {
         .iter()
         .filter(|route| {
             matches!(route.auth, RouteAuth::SessionOrToken(_))
-                || [GET_ME, GET_GITHUB_THREAD, RESERVE_ISSUE_ATTEMPT].contains(route)
+                || [
+                    GET_ME,
+                    GET_GITHUB_THREAD,
+                    RESERVE_ISSUE_ATTEMPT,
+                    SUBMIT_AGENT_COMMENT,
+                ]
+                .contains(route)
         })
         .map(|route| route.name)
         .collect();

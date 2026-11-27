@@ -129,6 +129,33 @@ test("Dashboard settings: client and server validation, save, reload; the rankin
   await checkScreen(page);
 });
 
+test("saving TODO sources from a stale tab preserves the new GitHub sync schedule", async ({ page }) => {
+  await signIn(page);
+  const memcan = await page.context().newPage();
+  try {
+    await Promise.all([page.goto("/settings/github-sync"), memcan.goto("/settings/memcan")]);
+    const project = memcan.getByRole("textbox", { name: "Add a MemCan project" });
+    await project.fill("concurrent-review");
+    await memcan.getByRole("button", { name: "Add to extra memcan projects" }).click();
+    await page.getByLabel("Time of day").selectOption("08:45");
+    const save = page.getByRole("button", { name: "Save", exact: true });
+    await save.click();
+    await expect(page.getByText("Dashboard settings saved.", { exact: true })).toBeVisible();
+
+    await memcan.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(memcan.getByText("Dashboard settings saved.", { exact: true })).toBeVisible();
+    const saved = await page.request.get("/api/v1/settings/dashboard");
+    expect(await saved.json()).toMatchObject({
+      settings: {
+        schedule_time: "08:45",
+        memcan_extra_projects: expect.arrayContaining(["concurrent-review"]),
+      },
+    });
+  } finally {
+    await memcan.close();
+  }
+});
+
 test("a personal access token reads with its bearer only, cannot write, and stops at revoke", async ({
   page,
   stack,
@@ -139,7 +166,7 @@ test("a personal access token reads with its bearer only, cannot write, and stop
   await expect(card).toContainText("No tokens yet.");
   await card.getByRole("button", { name: "New token" }).click();
   const dialog = page.getByRole("dialog", { name: "New access token" });
-  await dialog.getByLabel("Name").fill("e2e agent");
+  await dialog.getByLabel("Name", { exact: true }).fill("e2e agent");
   await dialog.getByRole("button", { name: "Create token" }).click();
   const created = page.getByRole("dialog", { name: "Token created" });
   const secret = await created.getByLabel("Your new token").inputValue();
