@@ -1194,3 +1194,95 @@ async fn lifecycle_signal_survives_first_pull_request_upsert() {
         Some(Merged),
     );
 }
+
+#[tokio::test]
+async fn lifecycle_observation_accepts_equivalent_evidence_and_an_unbound_repository() {
+    use PrLifecycleState::{Closed, Open};
+
+    let db = test_db().await;
+    let prs = db.pull_requests();
+    let now = Timestamp::now();
+    let older = now - SignedDuration::from_secs(1);
+    sqlx::query("UPDATE repos SET github_id = NULL")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert!(
+        prs.record_lifecycle(1, Closed, older, now, Some(7))
+            .await
+            .unwrap()
+    );
+
+    sqlx::query("UPDATE repos SET github_id = 7")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert!(
+        prs.record_lifecycle(1, Closed, older, older, Some(7))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !prs.record_lifecycle(1, Open, older, older, Some(7))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !prs.record_lifecycle(1, Closed, older, older, Some(8))
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn signed_lifecycle_events_track_pulls_in_history_from_page_openings() {
+    let db = test_db().await;
+    let repository = repo(8, "acme", "visited");
+    let stored = db
+        .repos()
+        .upsert("default", &repository.name, repository.id)
+        .await
+        .unwrap();
+    let prs = db.pull_requests();
+    let mut summary = prs.get(1).await.unwrap().pr;
+    summary.repo = repository.name.clone();
+    let now = Timestamp::now();
+    let id = prs
+        .upsert("default", stored.id, &summary, now)
+        .await
+        .unwrap();
+    let delivery = NewDelivery {
+        id: Uuid::new_v4(),
+        hash: &"3".repeat(64),
+        event: "pull_request",
+        action: Some("closed"),
+        installation_id: None,
+        effect: Effect::Signal(
+            &repository,
+            &[],
+            Some(PrLifecycleChange {
+                number: summary.number,
+                state: PrLifecycleState::Closed,
+                updated_at: now,
+            }),
+        ),
+    };
+    assert_eq!(
+        db.github().record(&delivery, now).await.unwrap(),
+        Outcome::NotAllowed
+    );
+    prs.record_opening("default", "u1", id, now).await.unwrap();
+    assert_eq!(
+        db.github().record(&delivery, now).await.unwrap(),
+        Outcome::Queued
+    );
+    let rows = prs.history("default", "u1", None, 10).await.unwrap();
+    assert_eq!(
+        rows.into_iter()
+            .find(|(pr, _)| *pr == id)
+            .unwrap()
+            .1
+            .pr_state,
+        Some(PrLifecycleState::Closed)
+    );
+}

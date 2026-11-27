@@ -115,6 +115,33 @@ async fn uncovered_watch_records_a_confirmed_closure_in_history() {
     assert_eq!(the_watch(&w, pr).await.state, WatchState::Ended);
 }
 
+#[tokio::test]
+async fn watch_ends_when_the_same_closure_was_already_recorded_by_a_newer_read() {
+    let w = world().await;
+    let pr = watched_482(&w).await;
+    let now = Timestamp::now();
+    let newer_read = now + SignedDuration::from_mins(5);
+    w.state
+        .db
+        .pull_requests()
+        .record_lifecycle(
+            pr,
+            contracts::api::pr::PrLifecycleState::Closed,
+            now,
+            newer_read,
+            Some(100000482),
+        )
+        .await
+        .unwrap();
+    let mut answer = probe_answer(&now.to_string());
+    answer["data"]["a0"]["isPrivate"] = json!(false);
+    answer["data"]["a0"]["databaseId"] = json!(100000482);
+    answer["data"]["a0"]["pullRequest"]["state"] = json!("CLOSED");
+    mount_probe(&w.server, answer).await;
+    watch::tick_at(&w.state, now).await.unwrap();
+    assert_eq!(the_watch(&w, pr).await.state, WatchState::Ended);
+}
+
 async fn the_watch(w: &World, pr: i64) -> WatchRecord {
     w.state
         .db

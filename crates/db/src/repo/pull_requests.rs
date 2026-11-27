@@ -58,7 +58,7 @@ impl PullRequests<'_> {
         .await?)
     }
 
-    /// Records lifecycle evidence from a GitHub read and returns whether it covered the stored evidence.
+    /// Records a GitHub lifecycle read or accepts equivalent evidence already stored for the same repository.
     pub async fn record_lifecycle(
         &self,
         pr_id: i64,
@@ -67,10 +67,12 @@ impl PullRequests<'_> {
         read_at: Timestamp,
         repository_id: Option<i64>,
     ) -> Result<bool, DbError> {
+        let state = wire_name(state)?;
+        let updated_at = ts(updated_at);
         let recorded = sqlx::query(
             "UPDATE pull_requests AS p SET lifecycle = ?1, lifecycle_updated_at = ?2, lifecycle_read_at = ?3
              WHERE p.id = ?4 AND (?5 IS NULL OR EXISTS (
-                 SELECT 1 FROM repos r WHERE r.id = p.repo_id AND r.github_id = ?5
+                 SELECT 1 FROM repos r WHERE r.id = p.repo_id AND (r.github_id IS NULL OR r.github_id = ?5)
              )) AND (
                  lifecycle_updated_at IS NULL OR lifecycle_updated_at < ?2 OR
                  (lifecycle_updated_at = ?2 AND (lifecycle_read_at IS NULL OR lifecycle_read_at < ?3))
@@ -81,14 +83,32 @@ impl PullRequests<'_> {
                        (s.updated_at > ?2 OR (s.updated_at = ?2 AND s.received_at >= ?3))
              )",
         )
-        .bind(wire_name(state)?)
-        .bind(ts(updated_at))
+        .bind(&state)
+        .bind(&updated_at)
         .bind(ts(read_at))
         .bind(pr_id)
         .bind(repository_id)
         .execute(self.pool)
         .await?;
-        Ok(recorded.rows_affected() != 0)
+        if recorded.rows_affected() != 0 {
+            return Ok(true);
+        }
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS (
+                 SELECT 1 FROM pull_request_lifecycle l JOIN pull_requests p ON p.id = l.id
+                 JOIN repos r ON r.id = p.repo_id
+                 LEFT JOIN github_pr_lifecycle_signals s ON s.repository_id = r.github_id AND s.number = p.number
+                 WHERE p.id = ?1 AND (?2 IS NULL OR r.github_id IS NULL OR r.github_id = ?2)
+                   AND l.lifecycle = ?3 AND NOT l.needs_read
+                   AND ?4 = MAX(COALESCE(p.lifecycle_updated_at, ''), COALESCE(s.updated_at, ''))
+             )",
+        )
+        .bind(pr_id)
+        .bind(repository_id)
+        .bind(state)
+        .bind(updated_at)
+        .fetch_one(self.pool)
+        .await?)
     }
 
     /// Whether stored GitHub lifecycle evidence cannot be ordered without another read.
@@ -101,9 +121,9 @@ impl PullRequests<'_> {
         )
     }
 
-    /// Selects a current member with a GitHub token to resolve conflicting lifecycle evidence for a historical PR.
-    pub async fn lifecycle_probe(&self, pr_id: i64) -> Result<Option<LifecycleProbe>, DbError> {
-        let row = sqlx::query(
+    /// Current members with GitHub tokens, newest activity first, who can resolve a conflicting lifecycle read.
+    pub async fn lifecycle_probes(&self, pr_id: i64) -> Result<Vec<LifecycleProbe>, DbError> {
+        let rows = sqlx::query(
             "WITH readers(user_id, at) AS (
                  SELECT user_id, last_opened_at FROM pr_page_openings WHERE pull_request_id = ?1
                  UNION ALL SELECT created_by, created_at FROM analyses WHERE pull_request_id = ?1
@@ -115,25 +135,27 @@ impl PullRequests<'_> {
              JOIN readers JOIN memberships m ON m.tenant_id = p.tenant_id AND m.user_id = readers.user_id
              JOIN user_tokens t ON t.user_id = m.user_id
              WHERE p.id = ?1 AND l.needs_read
-             ORDER BY readers.at DESC, readers.user_id LIMIT 1",
+             GROUP BY readers.user_id
+             ORDER BY MAX(readers.at) DESC, readers.user_id",
         )
         .bind(pr_id)
-        .fetch_optional(self.pool)
+        .fetch_all(self.pool)
         .await?;
-        row.map(|row| {
-            Ok(LifecycleProbe {
-                user_id: row.try_get("user_id")?,
-                repository_id: row.try_get("github_id")?,
-                pr: PrRef {
-                    repo: RepoRef {
-                        owner: row.try_get("owner")?,
-                        name: row.try_get("name")?,
+        rows.into_iter()
+            .map(|row| {
+                Ok(LifecycleProbe {
+                    user_id: row.try_get("user_id")?,
+                    repository_id: row.try_get("github_id")?,
+                    pr: PrRef {
+                        repo: RepoRef {
+                            owner: row.try_get("owner")?,
+                            name: row.try_get("name")?,
+                        },
+                        number: row.try_get("number")?,
                     },
-                    number: row.try_get("number")?,
-                },
+                })
             })
-        })
-        .transpose()
+            .collect()
     }
 
     /// Records a member's latest successful PR page opening.

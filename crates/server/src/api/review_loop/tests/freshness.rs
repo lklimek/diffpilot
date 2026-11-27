@@ -102,8 +102,7 @@ async fn flush(w: &World) {
         .unwrap();
 }
 
-#[tokio::test]
-async fn conflicting_lifecycle_signals_refresh_history_without_an_active_watch_or_reader() {
+async fn history_lifecycle_conflict() -> World {
     let w = covered().await;
     w.get(PR).await;
     let signal = |action, state, merged| {
@@ -125,6 +124,12 @@ async fn conflicting_lifecycle_signals_refresh_history_without_an_active_watch_o
         delivery(&w, "pull_request", signal("reopened", "open", false)).await,
         StatusCode::ACCEPTED
     );
+    w
+}
+
+#[tokio::test]
+async fn conflicting_lifecycle_signals_refresh_history_without_an_active_watch_or_reader() {
+    let w = history_lifecycle_conflict().await;
     let mut probe = super::watching::probe_answer(UPDATED);
     probe["data"]["a0"]["databaseId"] = json!(REPO_ID);
     probe["data"]["a0"]["isPrivate"] = json!(false);
@@ -138,6 +143,71 @@ async fn conflicting_lifecycle_signals_refresh_history_without_an_active_watch_o
         1,
         "only the initial Comments read was full"
     );
+}
+
+#[tokio::test]
+async fn conflicting_lifecycle_read_respects_github_retry_after() {
+    let w = history_lifecycle_conflict().await;
+    Mock::given(method("POST"))
+        .and(path("/api/graphql"))
+        .and(body_string_contains("reviews(last: 1)"))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "137"))
+        .mount(&w.server)
+        .await;
+    let delay = crate::review_loop::watch::event_probe(
+        &w.state,
+        w.pr_id().await,
+        Timestamp::now(),
+        false,
+        &mut std::collections::HashMap::new(),
+        Instant::now(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(delay, Some(Duration::from_secs(137)));
+}
+
+#[tokio::test]
+async fn conflicting_lifecycle_read_uses_another_reader_after_sign_in_expires() {
+    let w = history_lifecycle_conflict().await;
+    crate::test_support::other_user_cookie(&w.state).await;
+    let now = Timestamp::now();
+    let grant = TokenGrant {
+        access_token: SecretString::from("ghu_lifecycle_fixture"),
+        expires_in: 3600,
+        refresh_token: SecretString::from("ghr_lifecycle_fixture"),
+        refresh_token_expires_in: 0,
+    };
+    let lock = lock_user("u2").await;
+    store_sign_in_tokens(&w.state, &lock, DEFAULT_TENANT, &grant, now)
+        .await
+        .unwrap();
+    drop(lock);
+    w.state
+        .db
+        .pull_requests()
+        .record_opening(DEFAULT_TENANT, "u2", w.pr_id().await, now)
+        .await
+        .unwrap();
+    Mock::given(method("POST"))
+        .and(path("/api/graphql"))
+        .and(wiremock::matchers::header(
+            "authorization",
+            "Bearer ghu_lifecycle_fixture",
+        ))
+        .respond_with(ResponseTemplate::new(401))
+        .expect(1)
+        .mount(&w.server)
+        .await;
+    let mut probe = super::watching::probe_answer(UPDATED);
+    probe["data"]["a0"]["databaseId"] = json!(REPO_ID);
+    probe["data"]["a0"]["isPrivate"] = json!(false);
+    super::watching::mount_probe(&w.server, probe).await;
+
+    flush(&w).await;
+    let history = w.get("/api/v1/me/prs").await;
+    assert_eq!(history["prs"][0]["pr_state"], "open", "{history}");
+    assert!(w.state.db.user_tokens().get("u2").await.unwrap().is_none());
 }
 
 #[tokio::test]

@@ -457,58 +457,78 @@ async fn refresh_lifecycle(
     instant: Instant,
 ) -> Result<Option<Duration>, WatchError> {
     let requests = state.db.pull_requests();
-    let Some(target) = requests.lifecycle_probe(pr).await? else {
-        return Ok(None);
-    };
-    let budget = budgets.entry(target.user_id.clone()).or_default();
-    let wait = limit_until(&target.user_id, now)
-        .and_then(|until| Duration::try_from(until - now).ok())
-        .unwrap_or_default()
-        .max(budget.blocked_for(instant, now).await);
-    if !wait.is_zero() {
-        return Ok(Some(wait));
-    }
-    let client = WorkClient::new(
-        state.config.github.api_url.clone(),
-        UserTokens {
-            state: state.clone(),
-            user_id: target.user_id.clone(),
-        },
-    )?
-    .with_event_budget(budget.clone(), instant);
-    let read_at = Timestamp::now();
-    let result = match client.batched(&[target.pr], 1, "", lookup).await {
-        Ok(result) => result,
-        Err(WorkError::EventBudget) => return Ok(Some(budget.blocked_for(instant, now).await)),
-        Err(WorkError::PrimaryRateLimit { reset }) => {
-            return Ok(Some(backoff_for_rate_limit(&target.user_id, reset, now)));
+    let mut earliest_wait = None;
+    let mut incomplete = false;
+    for target in requests.lifecycle_probes(pr).await? {
+        let budget = budgets.entry(target.user_id.clone()).or_default();
+        let mut wait = limit_until(&target.user_id, now)
+            .and_then(|until| Duration::try_from(until - now).ok())
+            .unwrap_or_default()
+            .max(budget.blocked_for(instant, now).await);
+        if wait.is_zero() {
+            let client = WorkClient::new(
+                state.config.github.api_url.clone(),
+                UserTokens {
+                    state: state.clone(),
+                    user_id: target.user_id.clone(),
+                },
+            )?
+            .with_event_budget(budget.clone(), instant);
+            let read_at = Timestamp::now();
+            match client.batched(&[target.pr], 1, "", lookup).await {
+                Ok(result) => {
+                    let lifecycle = result
+                        .resolved
+                        .into_iter()
+                        .next()
+                        .and_then(|(_, value)| {
+                            serde_json::from_value::<ProbedRepository>(value).ok()
+                        })
+                        .filter(|repo| {
+                            repo.database_id == Some(target.repository_id)
+                                && repo.is_private == Some(false)
+                        })
+                        .and_then(|repo| repo.pull_request?.lifecycle());
+                    if let Some((lifecycle, updated_at)) = lifecycle {
+                        requests
+                            .record_lifecycle(
+                                pr,
+                                lifecycle,
+                                updated_at,
+                                read_at,
+                                Some(target.repository_id),
+                            )
+                            .await?;
+                    }
+                    if !requests.lifecycle_needs_read(pr).await? {
+                        return Ok(None);
+                    }
+                    incomplete = true;
+                    continue;
+                }
+                Err(WorkError::Token(UserTokenError::SignInRequired) | WorkError::Unauthorized) => {
+                    continue;
+                }
+                Err(WorkError::EventBudget) => wait = budget.blocked_for(instant, now).await,
+                Err(WorkError::PrimaryRateLimit { reset }) => {
+                    wait = backoff_for_rate_limit(&target.user_id, reset, now);
+                }
+                Err(WorkError::SecondaryRateLimit { retry_after }) => {
+                    return Ok(Some(backoff_for_rate_limit(
+                        &target.user_id,
+                        secondary_reset(now, retry_after),
+                        now,
+                    )));
+                }
+                Err(error) => return Err(error.into()),
+            }
         }
-        Err(error) => return Err(error.into()),
-    };
-    let lifecycle = result
-        .resolved
-        .into_iter()
-        .next()
-        .and_then(|(_, value)| serde_json::from_value::<ProbedRepository>(value).ok())
-        .filter(|repo| {
-            repo.database_id == Some(target.repository_id) && repo.is_private == Some(false)
-        })
-        .and_then(|repo| repo.pull_request?.lifecycle());
-    if let Some((lifecycle, updated_at)) = lifecycle {
-        requests
-            .record_lifecycle(
-                pr,
-                lifecycle,
-                updated_at,
-                read_at,
-                Some(target.repository_id),
-            )
-            .await?;
+        earliest_wait = Some(earliest_wait.map_or(wait, |old: Duration| old.min(wait)));
     }
-    if requests.lifecycle_probe(pr).await?.is_some() {
+    if incomplete && earliest_wait.is_none() {
         return Err(WatchError::IncompleteProbe);
     }
-    Ok(None)
+    Ok(earliest_wait)
 }
 
 async fn refresh_readers(
@@ -637,10 +657,11 @@ async fn probe(
             return ProbeOutcome::Deferred(backoff_for_rate_limit(user, reset, now));
         }
         Err(WorkError::SecondaryRateLimit { retry_after }) => {
-            let reset = retry_after
-                .and_then(|wait| SignedDuration::try_from(wait).ok())
-                .and_then(|wait| now.checked_add(wait));
-            return ProbeOutcome::Deferred(backoff_for_rate_limit(user, reset, now));
+            return ProbeOutcome::Deferred(backoff_for_rate_limit(
+                user,
+                secondary_reset(now, retry_after),
+                now,
+            ));
         }
         Err(WorkError::EventBudget) => {
             if let ProbeTrigger::Webhook {
@@ -689,6 +710,12 @@ async fn probe(
     } else {
         ProbeOutcome::Incomplete
     }
+}
+
+fn secondary_reset(now: Timestamp, retry_after: Option<Duration>) -> Option<Timestamp> {
+    retry_after
+        .and_then(|wait| SignedDuration::try_from(wait).ok())
+        .and_then(|wait| now.checked_add(wait))
 }
 
 fn backoff_for_rate_limit(user: &str, reset: Option<Timestamp>, now: Timestamp) -> Duration {
@@ -773,6 +800,11 @@ async fn observe(
             .record_lifecycle(pr, lifecycle, updated_at, read_at, Some(repo_id))
             .await?
     {
+        if matches!(trigger, ProbeTrigger::Webhook { .. })
+            && state.db.pull_requests().lifecycle_needs_read(pr).await?
+        {
+            return Err(WatchError::IncompleteProbe);
+        }
         return keep_probe(state, watch, now).await.map(|()| None);
     }
     if let Some(closed) = pull.state.as_deref().filter(|state| *state != "OPEN") {
