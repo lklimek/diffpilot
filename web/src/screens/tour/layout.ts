@@ -4,6 +4,9 @@
 /** A column of the review screen. */
 export type Column = "nav" | "main" | "inspector";
 
+/** Flow context sections that can stay above the scrolling review. */
+export type PinnedFlowContext = "why" | "diagram";
+
 /** All columns, left to right. */
 export const COLUMNS: readonly Column[] = ["nav", "main", "inspector"];
 
@@ -19,6 +22,8 @@ export interface TourLayout {
   diagram: boolean;
   /** Dragged height in px of the flow diagram; null = default. */
   diagramHeight: number | null;
+  /** Independently pinned context sections. */
+  pinned: Record<PinnedFlowContext, boolean>;
 }
 
 /** localStorage key of the layout. */
@@ -31,6 +36,7 @@ export const DEFAULT_LAYOUT: TourLayout = {
   widths: { nav: null, inspector: null },
   diagram: false,
   diagramHeight: null,
+  pinned: { why: false, diagram: false },
 };
 
 /** Smallest height in px of the flow diagram, so it never collapses to nothing. */
@@ -73,6 +79,7 @@ export function loadLayout(): TourLayout {
       widths: { nav: width("nav", raw.widths?.nav), inspector: width("inspector", raw.widths?.inspector) },
       diagram: raw.diagram === true,
       diagramHeight: height(raw.diagramHeight, DIAGRAM_MIN_PX),
+      pinned: { why: raw.pinned?.why === true, diagram: raw.pinned?.diagram === true },
     };
     return COLUMNS.some((c) => !layout.hidden[c]) ? layout : { ...layout, hidden: DEFAULT_LAYOUT.hidden };
   } catch {

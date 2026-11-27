@@ -1,5 +1,5 @@
 import { CodeText } from "../section/CodeText";
-import { useId, useState, type ReactNode } from "react";
+import { useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type {
   FileViewedState,
   ImpactRef,
@@ -135,6 +135,73 @@ function CodeSlot({ step, changed, children }: { step: Step; changed: number; ch
   );
 }
 
+/** One line of an impact reason, with a disclosure when more text is available. */
+function ImpactReason({ reason, basis }: Pick<ImpactRef, "reason" | "basis">) {
+  const text = reason.trim();
+  const firstLine = text.split(/\r?\n/, 1)[0] ?? "";
+  const hasDetails = firstLine !== text;
+  const [clipped, setClipped] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const excerpt = useRef<HTMLSpanElement>(null);
+  const detailsId = useId();
+  const disclose = hasDetails || clipped || expanded;
+
+  useLayoutEffect(() => {
+    const element = excerpt.current;
+    if (!element || hasDetails) return;
+    const measure = () => setClipped(element.scrollWidth > element.clientWidth);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [basis, firstLine, hasDetails]);
+
+  const preview = (linkPaths: boolean) => (
+    <>
+      <CodeText text={firstLine} linkPaths={linkPaths} />
+      {hasDetails ? "… " : " "}
+      <span className="text-muted">({basis})</span>
+    </>
+  );
+  return (
+    <div className="relative min-w-0">
+      {/* Measure the linked line even when the clipped button needs noninteractive text. */}
+      {!hasDetails && (
+        <span
+          ref={excerpt}
+          inert={disclose || undefined}
+          aria-hidden={disclose || undefined}
+          className={`block truncate ${disclose ? "invisible absolute inset-x-0 top-0" : ""}`}
+        >
+          {preview(true)}
+        </span>
+      )}
+      {disclose && (
+        <Tooltip
+          tip={expanded ? "Collapses this explanation to one line." : "Shows the full impact explanation."}
+          className="block"
+        >
+          <button
+            type="button"
+            className="block min-h-6 w-full cursor-pointer rounded text-left text-accent underline decoration-dotted underline-offset-2"
+            aria-controls={expanded ? detailsId : undefined}
+            aria-expanded={expanded}
+            onClick={() => setExpanded(!expanded)}
+          >
+            <span className="block truncate">{preview(false)}</span>
+          </button>
+        </Tooltip>
+      )}
+      {expanded && (
+        <div id={detailsId} className="mt-1 whitespace-pre-line">
+          <CodeText text={reason} /> <span className="text-muted">({basis})</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** One impact: file header, its explanation, and its code collapsed until the header is clicked. */
 function ImpactItem({
   impact,
@@ -146,7 +213,7 @@ function ImpactItem({
   const [open, setOpen] = useState(false);
   const where = `${impact.file} lines ${rangeText(impact.range)}`;
   return (
-    <li>
+    <li className="min-w-0">
       <p className="flex flex-wrap items-center gap-2">
         {impactCode ? (
           <Tooltip tip="Show or hide the code of these lines.">
@@ -168,9 +235,7 @@ function ImpactItem({
           L{rangeText(impact.range)}
         </GithubLink>
       </p>
-      <div>
-        <CodeText text={impact.reason} /> <span className="text-muted">({impact.basis})</span>
-      </div>
+      <ImpactReason reason={impact.reason} basis={impact.basis} />
       {open && impactCode?.(impact)}
     </li>
   );

@@ -46,6 +46,8 @@ interface NavListProps {
   onFlag?: (steps: Step[]) => void;
   /** Ticks (`true`) or unticks (`false`) every step of a flow; no flow toggle without it. */
   onSetFlowReviewed?: (flow: Flow, reviewed: boolean) => void;
+  /** Ticks or unticks one step independently from its navigation button. */
+  onSetStepReviewed?: (step: StepId, reviewed: boolean) => void;
 }
 
 // Spoken count of the questions entry while it has no number.
@@ -120,6 +122,7 @@ export function NavList({
   onRemark,
   onFlag,
   onSetFlowReviewed,
+  onSetStepReviewed,
 }: NavListProps) {
   const openFlow = currentFlowId(flows, shown);
   const current = shown;
@@ -221,16 +224,32 @@ export function NavList({
                     const asked = questionCounts[step.id] ?? 0;
                     return (
                       <li key={step.id} className="flex items-start gap-1">
+                        {onSetStepReviewed && (
+                          <Tooltip
+                            tip={done ? "Marks this step unread." : "Marks this step reviewed."}
+                            className="inline-flex size-6 shrink-0 items-center justify-center"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={done}
+                              aria-label={`Mark step ${step.number} reviewed: ${step.llm.title}`}
+                              onChange={(event) => onSetStepReviewed(step.id, event.currentTarget.checked)}
+                              className="size-6 cursor-pointer rounded accent-accent outline-offset-1"
+                            />
+                          </Tooltip>
+                        )}
                         <button
                           type="button"
-                          className={`${ITEM} flex-1 py-0.5 text-[12.5px]`}
+                          className={`${ITEM} min-w-0 flex-1 py-0.5 text-[12.5px] break-words`}
                           aria-current={ariaCurrent(current?.block === "step" && current.step_id === step.id)}
                           onClick={() => onSelect({ block: "step", step_id: step.id })}
                           aria-label={`Step ${step.number}: ${step.llm.title}${asked > 0 ? `, ${plural(asked, "question")} asked` : ""}${done ? ", reviewed" : ""}`}
                         >
-                          <span aria-hidden className="inline-block w-3.5 font-bold text-accent">
-                            {done ? "☑" : ""}
-                          </span>
+                          {!onSetStepReviewed && (
+                            <span aria-hidden className="inline-block w-3.5 font-bold text-accent">
+                              {done ? "☑" : ""}
+                            </span>
+                          )}
                           <Tooltip
                             tip={`Step kind: ${step.llm.kind === "context" ? "unchanged context" : step.llm.kind === "added" ? "added" : `changed (${step.llm.kind.replaceAll("_", " ")})`}. LLM classification; the diff marks changed lines.`}
                           >

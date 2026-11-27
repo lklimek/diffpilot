@@ -7,7 +7,7 @@ import { FlagMarker } from "../../components/flag/FlagMarker";
 import { flagComment } from "../../components/comment/prefill";
 import { flagTarget, remarkTarget, summariseRemarks } from "../../components/remark-pills/remarks";
 import { useSectionState } from "../../components/inspector/sectionState";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   useOutletContext,
   Navigate,
@@ -54,7 +54,7 @@ import { isFlowReviewed } from "../../components/flow-intro/progress";
 import { HelpDialog } from "../../components/help/HelpDialog";
 import { quietTitle } from "../../components/inspector/summaries";
 import { shortcutAction } from "../../components/help/shortcuts";
-import { FlowWhy } from "../../components/flow-intro/FlowWhy";
+import { FlowWhy, hasWhy } from "../../components/flow-intro/FlowWhy";
 import { NavList } from "../../components/nav/NavList";
 import { filesHash, stepFilesLink } from "../../components/files/model";
 import { PrContextBlock } from "../../components/pr-context/PrContextBlock";
@@ -71,7 +71,7 @@ import { ChunkedCode, DiffCode, FileDiffCode, useHideContextChanges, type CodeCo
 import { DiagramPane } from "./DiagramPane";
 import { useCommentDrafts, useUnresolvedPosts } from "./drafts";
 import { InspectorPane, type CommentLineState } from "./InspectorPane";
-import { loadLayout, saveLayout, showColumn, type TourLayout } from "./layout";
+import { loadLayout, saveLayout, showColumn, type PinnedFlowContext, type TourLayout } from "./layout";
 import {
   blockTitle,
   buildSequence,
@@ -251,6 +251,9 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   const [layout, setLayoutState] = useState(loadLayout);
   const [focusNext, setFocusNext] = useState<"comment" | null>(null);
   const mainRef = useRef<HTMLDivElement>(null);
+  const whyPinButton = useRef<HTMLButtonElement>(null);
+  const diagramPinButton = useRef<HTMLButtonElement>(null);
+  const restorePinFocus = useRef<PinnedFlowContext | null>(null);
   // Inspector sections, remembered per user; scoped reveals close again on another block.
   const sections = useSectionState(JSON.stringify(current));
   const commentRef = useRef<HTMLTextAreaElement>(null);
@@ -258,6 +261,21 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   const setLayout = (next: TourLayout) => {
     saveLayout(next);
     setLayoutState(next);
+  };
+  useLayoutEffect(() => {
+    const section = restorePinFocus.current;
+    if (!section) return;
+    restorePinFocus.current = null;
+    (section === "why" ? whyPinButton : diagramPinButton).current?.focus();
+  }, [layout.pinned]);
+  const togglePin = (section: PinnedFlowContext) => {
+    restorePinFocus.current = section;
+    const pinned = !layout.pinned[section];
+    setLayout({
+      ...layout,
+      diagram: layout.diagram || (section === "diagram" && pinned),
+      pinned: { ...layout.pinned, [section]: pinned },
+    });
   };
   const openInspector = () => {
     if (layout.full !== "inspector" && (layout.full !== null || layout.hidden.inspector)) {
@@ -889,6 +907,34 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
       error={work.background.error ? errorText(work.background.error) : undefined}
     />
   );
+  const why = step && flow && hasWhy(flow) && (
+    <FlowWhy
+      flow={flow}
+      open={sections.isOpen("whyflow")}
+      onToggle={() => sections.toggle("whyflow")}
+      onOpenIntro={() => go({ block: "flow_intro", flow_id: flow.id })}
+      pin={{ pinned: layout.pinned.why, onToggle: () => togglePin("why"), buttonRef: whyPinButton }}
+    />
+  );
+  const diagram = flow && flow.steps.length > 0 && (
+    <DiagramPane
+      key={flow.id}
+      flow={flow}
+      currentStepId={step?.id ?? null}
+      onSelectStep={selectStep}
+      open={layout.diagram}
+      onToggle={() => setLayout({ ...layout, diagram: !layout.diagram })}
+      height={layout.diagramHeight}
+      onHeight={(diagramHeight) => setLayout({ ...layout, diagramHeight })}
+      pin={{
+        pinned: layout.pinned.diagram,
+        onToggle: () => togglePin("diagram"),
+        buttonRef: diagramPinButton,
+      }}
+    />
+  );
+  const pinnedWhy = layout.pinned.why ? why : null;
+  const pinnedDiagram = layout.pinned.diagram ? diagram : null;
   const centre = (
     <>
       <AnalysisStateBanner
@@ -947,26 +993,8 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
           {progressAlert}
         </p>
       )}
-      {step && flow && (
-        <FlowWhy
-          flow={flow}
-          open={sections.isOpen("whyflow")}
-          onToggle={() => sections.toggle("whyflow")}
-          onOpenIntro={() => go({ block: "flow_intro", flow_id: flow.id })}
-        />
-      )}
-      {flow && flow.steps.length > 0 && (
-        <DiagramPane
-          key={flow.id}
-          flow={flow}
-          currentStepId={step?.id ?? null}
-          onSelectStep={selectStep}
-          open={layout.diagram}
-          onToggle={() => setLayout({ ...layout, diagram: !layout.diagram })}
-          height={layout.diagramHeight}
-          onHeight={(diagramHeight) => setLayout({ ...layout, diagramHeight })}
-        />
-      )}
+      {!layout.pinned.why && why}
+      {!layout.pinned.diagram && diagram}
       {block ?? <StatusMessage kind="empty">This block is not part of the analysis.</StatusMessage>}
       <BlockNav
         previous={previous && blockTitle(tour, previous)}
@@ -1044,6 +1072,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
               handledRemarks={handledRemarks}
               onRemark={jumpToRemark}
               onFlag={(steps) => jumpToRemark(steps, "flag")}
+              onSetStepReviewed={(id, on) => setTicks([id], on)}
               onSetFlowReviewed={(f, on) =>
                 setTicks(
                   f.steps.map((s) => s.id),
@@ -1070,6 +1099,14 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
           </>
         }
         main={centre}
+        pinnedContext={
+          (pinnedWhy || pinnedDiagram) && (
+            <>
+              {pinnedWhy}
+              {pinnedDiagram}
+            </>
+          )
+        }
         inspector={
           <InspectorPane
             analysisId={analysisId}

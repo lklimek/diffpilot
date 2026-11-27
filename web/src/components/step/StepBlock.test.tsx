@@ -295,6 +295,30 @@ describe("StepBlock", () => {
     expect(screen.queryByText("code of tests/sync_headers.rs")).toBeNull();
   });
 
+  it("opens only the selected impact reason and retains the original basis", async () => {
+    const step = structuredClone(stepOf(tour, "f2.1"));
+    const first = step.llm.impact[0]!;
+    first.reason = "Summary of the consequence.\nThe unchanged caller relies on the old limit.";
+    step.llm.impact.push({
+      ...first,
+      range: { start_line: 16, end_line: 20 },
+      reason: "Another consequence.\nA different reader uses this value.",
+    });
+    render(<StepBlock step={step} code={null} />);
+    const excerpt = screen.getByRole("button", { name: /^Summary of the consequence/ });
+    expect(excerpt).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText(/The unchanged caller/)).toBeNull();
+    excerpt.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(excerpt).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText(/The unchanged caller.*old limit/)).toBeVisible();
+    expect(screen.getByText(/The unchanged caller.*old limit/).parentElement).toHaveTextContent("(fact)");
+    expect(screen.queryByText(/A different reader/)).toBeNull();
+    await userEvent.keyboard(" ");
+    expect(excerpt).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText(/The unchanged caller/)).toBeNull();
+  });
+
   it("names an impact's file and lines without a toggle when no code is supplied", () => {
     render(<StepBlock step={stepOf(tour, "f2.1")} code={null} />);
     const impact = screen.getByRole("region", { name: "Impact outside the diff" });
