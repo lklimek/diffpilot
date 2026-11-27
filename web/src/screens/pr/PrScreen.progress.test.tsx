@@ -142,6 +142,33 @@ describe("Analysis progress on the PR page (brief §4.2, review-workflow-plan §
     expect(router.state.location.pathname).toBe("/pr/acme/node-client/482");
   });
 
+  it.each([`/pr/acme/node-client/482/analyses/${ID}/progress`, `/analyses/${ID}/progress`])(
+    "starts a fresh analysis from %s and follows its progress",
+    async (path) => {
+      const fresh = {
+        ...analysis,
+        id: "00000000-0000-4000-8000-000000000042",
+        state: { state: "planning" },
+      } satisfies AnalysisSummary;
+      server.use(
+        http.post("/api/v1/analyses", () => HttpResponse.json(fresh, { status: 202 })),
+        http.get(`/api/v1/analyses/${fresh.id}`, () => HttpResponse.json(fresh)),
+      );
+      const router = renderRoute(path);
+      await waitFor(() => expect(FakeEventSource.latest(`/api/v1/analyses/${ID}/events`)).toBeDefined());
+      emit({ state: "cancelled" });
+      await userEvent.click(await screen.findByRole("button", { name: "Start analysis" }));
+
+      await waitFor(() =>
+        expect(router.state.location.pathname).toBe(`/pr/acme/node-client/482/analyses/${fresh.id}/progress`),
+      );
+      expect(router.state.historyAction).toBe("REPLACE");
+      await waitFor(() =>
+        expect(FakeEventSource.latest(`/api/v1/analyses/${fresh.id}/events`)).toBeDefined(),
+      );
+    },
+  );
+
   it("a failed cancel request is reported and the analysis stays", async () => {
     server.use(
       http.post(`/api/v1/analyses/${ID}/cancel`, () =>

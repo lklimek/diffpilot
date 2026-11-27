@@ -144,15 +144,19 @@ describe("Dependencies view (brief 2026-11-20, plan U1–U3)", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("an analysis not finished goes to its progress page", async () => {
+  it("an unfinished dependencies response keeps the query and fragment on its progress page", async () => {
     server.use(
       http.get("/api/v1/analyses/:id/dependencies", () =>
         HttpResponse.json({ code: "analysis_not_finished", message: "Not finished." }, { status: 409 }),
       ),
     );
-    const router = renderRoute(`/pr/acme/node-client/482/analyses/${ID}/deps`);
+    const router = renderRoute(`/pr/acme/node-client/482/analyses/${ID}/deps?view=direct#crate-node-client`);
     await waitFor(() =>
-      expect(router.state.location.pathname).toBe(`/pr/acme/node-client/482/analyses/${ID}/progress`),
+      expect(router.state.location).toMatchObject({
+        pathname: `/pr/acme/node-client/482/analyses/${ID}/progress`,
+        search: "?view=direct",
+        hash: "#crate-node-client",
+      }),
     );
   });
 

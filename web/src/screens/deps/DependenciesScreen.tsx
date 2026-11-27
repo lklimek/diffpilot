@@ -182,7 +182,12 @@ function DependenciesView({
   };
   let body: ReactNode;
   if (deps.isError && deps.error instanceof ApiError && deps.error.code === "analysis_not_finished") {
-    return <Navigate to={analysisProgressPath(pr, analysisId)} replace />;
+    return (
+      <Navigate
+        to={{ pathname: analysisProgressPath(pr, analysisId), search: location.search, hash: location.hash }}
+        replace
+      />
+    );
   } else if (deps.isError) {
     body = (
       <>
