@@ -2037,7 +2037,11 @@ badge: PrBadgeView,
 /**
  * Latest analysis of this PR, if any (the view menu needs one for Flows, Files and Dependencies).
  */
-analysis: AnalysisId | null, };
+analysis: AnalysisId | null,
+/**
+ * Review-ready analysis of the current head used by Ask, absent if only standalone questions are available.
+ */
+ask_analysis?: AnalysisId, };
 
 /**
  * Comments summary on the PR page.

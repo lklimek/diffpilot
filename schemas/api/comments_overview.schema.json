@@ -78,6 +78,17 @@
           "type": "null"
         }
       ]
+    },
+    "ask_analysis": {
+      "description": "Review-ready analysis of the current head used by Ask, absent if only standalone questions are available.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [

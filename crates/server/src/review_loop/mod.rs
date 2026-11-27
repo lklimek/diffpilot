@@ -415,12 +415,12 @@ async fn read_now(
     };
     let config = &state.config.github;
     let started_at = Timestamp::now();
-    if let Some(id) = state
+    let existing_pr = state
         .db
         .pull_requests()
         .find(tenant, &pr.repo, pr.number)
-        .await?
-    {
+        .await?;
+    if let Some(id) = existing_pr {
         state
             .db
             .review_loop()
@@ -477,6 +477,13 @@ async fn read_now(
         .upsert(tenant, repo.id, &summary, now)
         .await?;
     state.db.review_loop().ensure_pr(tenant, id, now).await?;
+    if existing_pr.is_none() {
+        state
+            .db
+            .github()
+            .reconcile_first_comments_read(id, started_at)
+            .await?;
+    }
     let handle = PrHandle {
         pr: PrRef {
             repo: repo.repo,

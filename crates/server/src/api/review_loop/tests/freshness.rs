@@ -370,6 +370,83 @@ async fn signal_invalidates_a_pr_whose_first_comments_read_has_not_finished() {
 }
 
 #[tokio::test]
+async fn webhooks_cover_a_pr_still_missing_during_its_first_read() {
+    let w = covered().await;
+    Mock::given(method("POST"))
+        .and(path("/api/graphql"))
+        .and(body_string_contains("reviewDecision"))
+        .with_priority(1)
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(recorded("pr.json"))
+                .set_delay(Duration::from_secs(1)),
+        )
+        .up_to_n_times(1)
+        .mount(&w.server)
+        .await;
+    let deliver_while_reading = async {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while pull_reads(&w).await == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("first GitHub request started");
+        assert!(
+            w.state
+                .db
+                .pull_requests()
+                .find(DEFAULT_TENANT, &pr_482().repo, 482)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            delivery(
+                &w,
+                "pull_request",
+                pr_signal("synchronize", HEAD, NEW_HEAD, UPDATED)
+            )
+            .await,
+            StatusCode::ACCEPTED
+        );
+        flush(&w).await;
+    };
+    let (_, ()) = tokio::join!(w.items(), deliver_while_reading);
+    let id = w.pr_id().await;
+    let pending = w
+        .state
+        .db
+        .review_loop()
+        .pr_state(id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(pending.github_dirty_at.is_some());
+    assert_eq!(pending.github_head.as_deref(), Some(NEW_HEAD));
+
+    serve(
+        &w.server,
+        &[("pr.json", &|answer| {
+            let pull = &mut answer["data"]["repository"]["pullRequest"];
+            pull["headRefOid"] = json!(NEW_HEAD);
+            pull["updatedAt"] = json!(UPDATED);
+        })],
+    )
+    .await;
+    assert_eq!(w.get(COMMENTS).await["head"], NEW_HEAD);
+    let done = w
+        .state
+        .db
+        .review_loop()
+        .pr_state(id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(done.github_dirty_at.is_none());
+}
+
+#[tokio::test]
 async fn equal_second_synchronize_requires_forward_lineage_to_mark_the_view_stale() {
     let w = covered().await;
     assert_eq!(w.get(COMMENTS).await["head"], HEAD);

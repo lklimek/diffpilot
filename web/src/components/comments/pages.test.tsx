@@ -241,6 +241,7 @@ describe("DecisionLog (V3)", () => {
   it("lists a standing GitHub import once when it occurs in both responses", async () => {
     const stored = log();
     const item = listItems()[0]!;
+    const evidence = { evidence_url: "https://github.com/acme/node-client/pull/482#issuecomment-17" };
     const imported: Decision = {
       ...stored.decisions[0]!,
       id: "imported",
@@ -249,6 +250,14 @@ describe("DecisionLog (V3)", () => {
       decided_by: "external-maintainer",
       kind: "resolve",
       override: null,
+      imported: {
+        ...evidence,
+        by: "external-maintainer",
+        by_id: null,
+        at: stored.decisions[0]!.decided_at,
+        quote: "Done.",
+        relay: null,
+      },
     };
     render(
       <DecisionLog
@@ -260,7 +269,7 @@ describe("DecisionLog (V3)", () => {
               kind: "resolve",
               by: imported.decided_by,
               at: imported.decided_at,
-              evidence_url: "https://github.com/acme/node-client/pull/482#issuecomment-17",
+              ...evidence,
             },
           },
         ]}
@@ -274,6 +283,10 @@ describe("DecisionLog (V3)", () => {
     await userEvent.selectOptions(screen.getByRole("combobox", { name: "Decision source" }), "github");
     expect(screen.getByText(/by external-maintainer/)).toBeVisible();
     expect(screen.queryByText(/Resolved on GitHub by/)).toBeNull();
+    expect(screen.getByRole("link", { name: /Evidence for C\d+ on GitHub/ })).toHaveAttribute(
+      "href",
+      evidence.evidence_url,
+    );
   });
 
   it("labels and links the effect of creating a follow-up issue", () => {

@@ -255,16 +255,16 @@ export function PrAskChatProvider({
   children,
 }: {
   pr: PrRef;
-  analysisId: AnalysisId | null;
+  analysisId: AnalysisId | null | undefined;
   /** `C<no>` of the PR's items. */
   numbers: ItemNumbers;
   children: ReactNode;
 }) {
-  const questions = usePrQuestions(pr);
+  const questions = usePrQuestions(pr, analysisId);
   // Only the ready head analysis contributes non-comment questions to this feed.
   const hasAnalysisQuestions = questions.data?.some((question) => question.anchor.kind !== "comment_item");
-  const tour = useTour(analysisId ?? "", analysisId !== null && hasAnalysisQuestions === true).data;
-  const ask = useAskPrQuestion(pr, analysisId);
+  const tour = useTour(analysisId ?? "", analysisId != null && hasAnalysisQuestions === true).data;
+  const ask = useAskPrQuestion(pr, analysisId ?? null);
   const source: ChatSource = {
     key: `pr:${pr.repo.owner}/${pr.repo.name}/${pr.number}`,
     questions,

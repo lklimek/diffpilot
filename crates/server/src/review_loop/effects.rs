@@ -73,7 +73,7 @@ impl EffectItem {
             format!("Re [the source comment]({url}):\n")
         };
         if let Some(quote) = self.short_quote() {
-            prefix.push_str(&format!("> {quote}\n"));
+            prefix.push_str(&format!("> {quote}\n\n"));
         }
         if text.starts_with(&prefix) {
             text

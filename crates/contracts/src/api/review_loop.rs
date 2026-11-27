@@ -1351,6 +1351,10 @@ pub struct CommentsOverview {
     pub badge: PrBadgeView,
     /// Latest analysis of this PR, if any (the view menu needs one for Flows, Files and Dependencies).
     pub analysis: Option<AnalysisId>,
+    /// Review-ready analysis of the current head used by Ask, absent if only standalone questions are available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub ask_analysis: Option<AnalysisId>,
 }
 
 /// Comments summary on the PR page.

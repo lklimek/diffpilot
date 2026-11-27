@@ -367,10 +367,17 @@ export function useMarkGate(pr: PrRef) {
 }
 
 /** The reader's shared review history and standalone comments, read again while one is open. */
-export const usePrQuestions = (pr: PrRef) =>
+const prQuestionsKey = (pr: PrRef, analysisId: AnalysisId | null) => [
+  "pr-questions",
+  ...prKey(pr),
+  analysisId,
+];
+
+export const usePrQuestions = (pr: PrRef, analysisId: AnalysisId | null | undefined) =>
   useQuery({
-    queryKey: ["pr-questions", ...prKey(pr)],
+    queryKey: prQuestionsKey(pr, analysisId ?? null),
     queryFn: () => api.listPrQuestions(pr),
+    enabled: analysisId !== undefined,
     // A failed question asked again shows once, as in the analysis chat.
     select: withoutRetried,
     refetchInterval: (query) => (query.state.data?.some(awaitsFinalAnswer) ? QUESTIONS_POLL_MS : false),
@@ -379,7 +386,7 @@ export const usePrQuestions = (pr: PrRef) =>
 /** Asks about a comment item (RC7) or continues an analysis thread from Comments. */
 export function useAskPrQuestion(pr: PrRef, analysisId: AnalysisId | null) {
   const client = useQueryClient();
-  const queryKey = ["pr-questions", ...prKey(pr)];
+  const queryKey = prQuestionsKey(pr, analysisId);
   return useMutation({
     mutationFn: (body: AnchoredAskRequest) =>
       analysisId && body.anchor.kind !== "comment_item"

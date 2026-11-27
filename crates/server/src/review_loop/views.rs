@@ -828,6 +828,8 @@ pub async fn overview(
         queue: entries,
         badge: comments_badge(badge, &loaded, snapshot, pass.as_ref()),
         analysis,
+        ask_analysis: super::assess::head_analysis(state, &session.user_id, loaded.handle.id)
+            .await?,
     })
 }
 

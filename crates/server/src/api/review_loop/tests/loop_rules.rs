@@ -1015,7 +1015,7 @@ async fn pr_level_comments_name_the_review_they_answer() {
         assert_eq!(
             previewed,
             &json!(format!(
-                "{line}\n> {quote}\nPer maintainer decision, this is fixed in this pull request."
+                "{line}\n> {quote}\n\nPer maintainer decision, this is fixed in this pull request."
             )),
             "{preview}"
         );

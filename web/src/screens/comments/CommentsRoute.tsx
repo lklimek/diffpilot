@@ -77,11 +77,11 @@ function WithAsk({
   children,
 }: {
   pr: PrRef;
-  analysisId: AnalysisId | null;
+  analysisId: AnalysisId | null | undefined;
   items: readonly CommentItem[] | undefined;
   children: (count: (id: string) => number) => ReactNode;
 }) {
-  const questions = usePrQuestions(pr);
+  const questions = usePrQuestions(pr, analysisId);
   const numbers = useMemo(() => new Map((items ?? []).map((item) => [item.id, item.no])), [items]);
   const count = useCallback(
     (id: string) =>
@@ -427,7 +427,7 @@ function CommentsVisit({ pr }: { pr: PrRef }) {
           />
         )}
         <AnalysisPathLinks analysisId={analysis} head={o?.head ?? null}>
-          <WithAsk pr={pr} analysisId={analysis} items={items.data}>
+          <WithAsk pr={pr} analysisId={o ? (o.ask_analysis ?? null) : undefined} items={items.data}>
             {body}
           </WithAsk>
         </AnalysisPathLinks>

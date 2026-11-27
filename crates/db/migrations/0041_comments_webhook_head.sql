@@ -3,6 +3,8 @@ ALTER TABLE comment_prs ADD COLUMN github_dirty_at TEXT;
 ALTER TABLE comment_prs ADD COLUMN github_head TEXT;
 ALTER TABLE comment_prs ADD COLUMN github_head_at TEXT;
 ALTER TABLE comment_prs ADD COLUMN github_head_before TEXT;
+-- Dispatch replaces its input with per-destination progress. Keep receipt evidence for reads still admitting a PR.
+ALTER TABLE github_deliveries ADD COLUMN comment_hints TEXT CHECK (json_valid(comment_hints) OR comment_hints IS NULL);
 
 -- A follow-up issue's creation reservation survives lease expiry and reports.
 ALTER TABLE comment_effects ADD COLUMN issue_attempt_id TEXT;

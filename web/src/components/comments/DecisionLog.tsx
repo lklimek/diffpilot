@@ -314,6 +314,15 @@ export function DecisionLog({
                     </>
                   )}
                   by {d.decided_by} · {VIA[d.via] ?? d.via} · resolve: {d.resolve_ticked ? "yes" : "no"}
+                  {d.imported && isGithubUrl(d.imported.evidence_url) && (
+                    <>
+                      {" "}
+                      <OpenExternal
+                        href={d.imported.evidence_url}
+                        label={`Evidence for ${decisionItemId(d)} on GitHub`}
+                      />
+                    </>
+                  )}
                   {d.recommendation && (
                     <>
                       {" "}

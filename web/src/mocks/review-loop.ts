@@ -825,6 +825,7 @@ export function overview(): CommentsOverview {
     queue: queue(list),
     badge: badge(list),
     analysis: analysis()?.id ?? null,
+    ask_analysis: analysis()?.id,
     watch: watchOfPr() ?? undefined,
   };
 }

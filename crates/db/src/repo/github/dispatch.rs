@@ -4,8 +4,9 @@ use contracts::common::RepoRef;
 use contracts::time::Timestamp;
 use sqlx::{FromRow, SqliteConnection};
 
-use super::{Github, WebhookChange, ts};
+use super::{Github, WebhookChange, parse_ts, ts};
 use crate::error::DbError;
+use crate::repo::write_tx;
 
 /// A current dashboard item or a candidate for a targeted read.
 #[derive(Debug)]
@@ -40,6 +41,7 @@ pub(super) async fn invalidate_comments(
     conn: &mut SqliteConnection,
     hints: &str,
     now: Timestamp,
+    only_pr: Option<i64>,
 ) -> Result<(), DbError> {
     sqlx::query(
         "WITH signals AS (
@@ -60,7 +62,7 @@ pub(super) async fn invalidate_comments(
              OR ((s.repo_id IS NULL OR r.github_id IS NULL)
                  AND r.owner = s.owner COLLATE NOCASE AND r.name = s.name COLLATE NOCASE)
            JOIN pull_requests p ON p.repo_id = r.id AND p.number = s.number
-           WHERE EXISTS (
+           WHERE (?3 IS NULL OR p.id = ?3) AND EXISTS (
              SELECT 1 FROM app_repositories ar WHERE ar.suspended = 0
                AND (ar.repository_id = r.github_id OR (
                  ar.owner = r.owner COLLATE NOCASE AND ar.name = r.name COLLATE NOCASE
@@ -88,12 +90,51 @@ pub(super) async fn invalidate_comments(
     )
     .bind(hints)
     .bind(ts(now))
+    .bind(only_pr)
     .execute(conn)
     .await?;
     Ok(())
 }
 
 impl Github<'_> {
+    /// Applies admitted changes received during the first GitHub read, before the PR had a local row.
+    pub async fn reconcile_first_comments_read(
+        &self,
+        pr: i64,
+        started_at: Timestamp,
+    ) -> Result<(), DbError> {
+        let mut tx = write_tx(self.pool).await?;
+        let receipts: Vec<(String, String)> = sqlx::query_as(
+            "SELECT d.comment_hints, d.received_at
+             FROM pull_requests p JOIN repos r ON r.id = p.repo_id
+             JOIN github_deliveries d ON d.received_at >= ?2 AND d.comment_hints IS NOT NULL
+             WHERE p.id = ?1 AND EXISTS (
+               SELECT 1 FROM json_each(d.comment_hints) h
+               WHERE h.value ->> '$.number' = p.number
+                 AND (h.value ->> '$.repository.id' = r.github_id
+                   OR (h.value ->> '$.repository.id' IS NULL
+                     AND h.value ->> '$.repository.name.owner' = r.owner COLLATE NOCASE
+                     AND h.value ->> '$.repository.name.name' = r.name COLLATE NOCASE))
+             )
+             ORDER BY d.received_at, d.rowid",
+        )
+        .bind(pr)
+        .bind(ts(started_at))
+        .fetch_all(&mut *tx)
+        .await?;
+        for (hints, received_at) in receipts {
+            invalidate_comments(
+                &mut tx,
+                &hints,
+                parse_ts(&received_at, "received_at")?,
+                Some(pr),
+            )
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Finds watched or previously read PRs and whether their review or comments changed.
     pub async fn review_targets(
         &self,

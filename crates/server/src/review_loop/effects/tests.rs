@@ -598,7 +598,7 @@ fn pr_level_comments_name_the_source_even_when_edited() {
     assert_eq!(
         planned_text(&comment, &fix),
         "Re [the source comment](https://github.com/acme/node-client/pull/482#issuecomment-5000000103):\n\
-         > Bound the retry loop.\nPer maintainer decision, this is fixed in this pull request."
+         > Bound the retry loop.\n\nPer maintainer decision, this is fixed in this pull request."
     );
     let edited = DecideRequest {
         reply_text: Some("Thanks, fixed in the retry loop.".into()),
