@@ -4436,6 +4436,28 @@ at: string,
 evidence_url: string, };
 
 /**
+ * The current durable reservation and whether this call won the right to create.
+ */
+export type IssueAttempt = {
+/**
+ * The server-generated attempt, absent if no reservation exists.
+ */
+attempt_id: string | null,
+/**
+ * Only true on the single successful transition to a new reservation.
+ */
+reserved: boolean, };
+
+/**
+ * Reserves the GitHub write for a claimed follow-up issue.
+ */
+export type IssueAttemptRequest = {
+/**
+ * The exact previous attempt, only after verifying its writer stopped and GitHub created no issue.
+ */
+retry_of: string | null, };
+
+/**
  * Body of the item actions Undo, Reopen and Skip: the item revision the reader saw (409 `item_changed`
  * otherwise).
  */

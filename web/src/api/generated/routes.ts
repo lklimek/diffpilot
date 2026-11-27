@@ -110,6 +110,7 @@ export const routes = {
   decisionFeedEvents: { method: "GET", path: "/api/v1/decision-feed/events", auth: "read" },
   claimDecision: { method: "POST", path: "/api/v1/decision-feed/decisions/{id}/claim", auth: "token_review_loop_execute" },
   reportEffect: { method: "POST", path: "/api/v1/decision-feed/effects/{id}/reports", auth: "token_review_loop_execute" },
+  reserveIssueAttempt: { method: "POST", path: "/api/v1/decision-feed/effects/{id}/issue-attempt", auth: "token_review_loop_execute" },
   putPushTarget: { method: "PUT", path: "/api/v1/decision-feed/push-target", auth: "token_review_loop_execute" },
   deletePushTarget: { method: "DELETE", path: "/api/v1/decision-feed/push-target", auth: "token_review_loop_execute" },
 } as const;

@@ -15,6 +15,26 @@ pub struct RepoRef {
     pub name: String,
 }
 
+impl RepoRef {
+    /// Whether this is a canonical GitHub issue URL in this repository.
+    pub fn contains_issue_url(&self, reference: &str) -> bool {
+        let Some(path) = reference.strip_prefix("https://github.com/") else {
+            return false;
+        };
+        let mut parts = path.splitn(4, '/');
+        let (Some(owner), Some(name), Some("issues"), Some(number)) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            return false;
+        };
+        owner.eq_ignore_ascii_case(&self.owner)
+            && name.eq_ignore_ascii_case(&self.name)
+            && !number.starts_with('0')
+            && number.bytes().all(|byte| byte.is_ascii_digit())
+            && number.parse::<u64>().is_ok()
+    }
+}
+
 /// A pull request of a repository.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
 pub struct PrRef {

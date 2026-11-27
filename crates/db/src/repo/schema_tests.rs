@@ -2541,7 +2541,10 @@ async fn migrations_upgrade_v13_db_in_place() {
              '{}', 'decided', 't', 't' FROM pull_requests LIMIT 1;
          INSERT INTO comment_decisions (id, tenant_id, item_id, user_id, kind, resolve_ticked, via, head, body_hash, decided_at)
          SELECT 'v13-decision', i.tenant_id, i.id, r.user_id, 'reject', 0, 'question', i.first_seen_head, i.body_hash, 't'
-             FROM comment_items i JOIN dashboard_refreshes r ON r.id = 'recent' WHERE i.id = 'v13-item';",
+             FROM comment_items i JOIN dashboard_refreshes r ON r.id = 'recent' WHERE i.id = 'v13-item';
+         INSERT INTO comment_effects (id, tenant_id, decision_id, seq, kind, executor, params, state, updated_at)
+         SELECT 'v13-effect', tenant_id, id, 1, 'reply', 'agent', '{}', 'done', 't'
+             FROM comment_decisions WHERE id = 'v13-decision';",
     )
     .execute(&pool)
     .await
@@ -2586,6 +2589,34 @@ async fn migrations_upgrade_v13_db_in_place() {
     .await
     .unwrap();
     assert_eq!(kept, (3, 7, "question".into(), None, 0));
+
+    // The widened CHECK accepts the new kind while keeping legacy decisions and their dependent effects.
+    sqlx::query(
+        "INSERT INTO comment_decisions (id, tenant_id, item_id, user_id, kind, resolve_ticked, via,
+             supersedes, head, body_hash, decided_at)
+         SELECT 'v16-decision', tenant_id, item_id, user_id, 'follow_up_issue', 0, 'question', id,
+             head, body_hash, 't2' FROM comment_decisions WHERE id = 'v13-decision'",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let kept_effect: (String, Option<String>) = sqlx::query_as(
+        "SELECT decision_id, issue_attempt_id FROM comment_effects WHERE id = 'v13-effect'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(kept_effect, ("v13-decision".into(), None));
+    let append_only =
+        sqlx::query("UPDATE comment_decisions SET reason = 'changed' WHERE id = 'v13-decision'")
+            .execute(&db.pool)
+            .await
+            .expect_err("decisions stay append-only");
+    assert!(
+        append_only
+            .to_string()
+            .contains("decisions are append-only")
+    );
     assert!(
         sqlx::query("UPDATE comment_items SET status_comment = 2 WHERE id = 'v13-item'")
             .execute(&db.pool)

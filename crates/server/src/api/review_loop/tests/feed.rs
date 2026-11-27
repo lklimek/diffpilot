@@ -739,3 +739,251 @@ async fn a_decision_newly_within_capabilities_is_announced() {
         "an agent the decision fitted before was told already"
     );
 }
+
+#[tokio::test]
+async fn follow_up_issue_attempt_is_fenced_across_claimants_and_reports() {
+    let w = world().await;
+    w.get(&format!("{PR}/comments")).await;
+    let mut body = decision("follow_up_issue");
+    body["target"] = json!({"type": "follow_up_issue", "title": "Bound retries"});
+    body["resolve_ticked"] = json!(true);
+    let decision = w.decide_ok(L2, body).await;
+    let effects = decision["effects"].as_array().expect("effects");
+    assert_eq!(effects.len(), 3);
+    let effect = |index: usize| effects[index]["id"].as_str().expect("effect id");
+    let attempt_uri = format!("{FEED}/effects/{}/issue-attempt", effect(0));
+    let claim_uri = claim_uri(&decision);
+    let kinds = json!({"capabilities": ["upstream_issue", "reply", "resolve"]});
+    let (a, _) = agent(&w, &EXECUTE).await;
+    let (b, _) = agent(&w, &EXECUTE).await;
+    let reserve = |retry_of: Option<uuid::Uuid>| json!({"retry_of": retry_of});
+    let (status, _, value) = with_token(&w, &a, "POST", &claim_uri, Some(kinds.clone())).await;
+    assert_eq!(status, StatusCode::CREATED, "{value}");
+    let (left, right) = tokio::join!(
+        with_token(&w, &a, "POST", &attempt_uri, Some(reserve(None))),
+        with_token(&w, &a, "POST", &attempt_uri, Some(reserve(None))),
+    );
+    assert_eq!(
+        (left.0, right.0),
+        (StatusCode::OK, StatusCode::OK),
+        "{left:?} {right:?}"
+    );
+    assert_ne!(left.2["reserved"], right.2["reserved"]);
+    assert_eq!(left.2["attempt_id"], right.2["attempt_id"]);
+    let previous: uuid::Uuid =
+        serde_json::from_value(left.2["attempt_id"].clone()).expect("attempt");
+    let (status, _, duplicate) =
+        with_token(&w, &a, "POST", &attempt_uri, Some(reserve(None))).await;
+    assert_eq!(status, StatusCode::OK, "{duplicate}");
+    assert_eq!(
+        duplicate,
+        json!({"attempt_id": previous, "reserved": false})
+    );
+
+    let report_uri = format!("{FEED}/effects/{}/reports", effect(0));
+    let (status, _, value) = with_token(
+        &w,
+        &a,
+        "POST",
+        &report_uri,
+        Some(report("failed", None, Some("Issue creation failed."))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{value}");
+    let fd = format!("{FEED}/decisions/{}", decision["id"].as_str().unwrap());
+    let (status, _, value) = with_token(&w, &b, "GET", &fd, None).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let after = value["decision"]["effects"].as_array().expect("effects");
+    assert_eq!(after[0]["state"], "open");
+    assert_eq!(after[0]["reports"][0]["message"], "Issue creation failed.");
+    assert_eq!(after[1]["state"], "waiting");
+    assert_eq!(after[2]["state"], "waiting");
+
+    let (status, _, value) = with_token(&w, &b, "POST", &claim_uri, Some(kinds.clone())).await;
+    assert_eq!(status, StatusCode::CREATED, "{value}");
+    let (status, _, blocked) = with_token(&w, &b, "POST", &attempt_uri, Some(reserve(None))).await;
+    assert_eq!(status, StatusCode::OK, "{blocked}");
+    assert_eq!(blocked, json!({"attempt_id": previous, "reserved": false}));
+    let (status, _, wrong) = with_token(
+        &w,
+        &b,
+        "POST",
+        &attempt_uri,
+        Some(reserve(Some(uuid::Uuid::new_v4()))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{wrong}");
+    assert_eq!(wrong, blocked);
+    let (status, _, now) =
+        with_token(&w, &b, "POST", &attempt_uri, Some(reserve(Some(previous)))).await;
+    assert_eq!(status, StatusCode::OK, "{now}");
+    assert_eq!(now["reserved"], true);
+    let replacement: uuid::Uuid =
+        serde_json::from_value(now["attempt_id"].clone()).expect("replacement");
+    assert_ne!(replacement, previous);
+    let (status, _, outdated) =
+        with_token(&w, &b, "POST", &attempt_uri, Some(reserve(Some(previous)))).await;
+    assert_eq!(status, StatusCode::OK, "{outdated}");
+    assert_eq!(
+        outdated,
+        json!({"attempt_id": replacement, "reserved": false})
+    );
+    let (status, _, forbidden) = with_token(
+        &w,
+        &a,
+        "POST",
+        &attempt_uri,
+        Some(reserve(Some(replacement))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{forbidden}");
+
+    w.state
+        .db
+        .review_loop()
+        .expire_leases(Timestamp::now() + SignedDuration::from_mins(31))
+        .await
+        .expect("expire lease");
+    let (status, _, expired) = with_token(&w, &b, "POST", &attempt_uri, Some(reserve(None))).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{expired}");
+    assert_eq!(expired["code"], "lease_expired");
+    let (status, _, value) = with_token(&w, &b, "POST", &claim_uri, Some(kinds)).await;
+    assert_eq!(status, StatusCode::CREATED, "{value}");
+    let (status, _, recovered) =
+        with_token(&w, &b, "POST", &attempt_uri, Some(reserve(None))).await;
+    assert_eq!(status, StatusCode::OK, "{recovered}");
+    assert_eq!(recovered, outdated);
+
+    let (status, _, wrong_repo) = with_token(
+        &w,
+        &b,
+        "POST",
+        &report_uri,
+        Some(report(
+            "done",
+            Some("https://github.com/other/repo/issues/2"),
+            None,
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{wrong_repo}");
+    let url = "https://github.com/acme/node-client/issues/2";
+    let (status, _, body) = with_token(
+        &w,
+        &b,
+        "POST",
+        &report_uri,
+        Some(report("done", Some(url), None)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, _, value) = with_token(&w, &b, "GET", &fd, None).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let open = value["decision"]["effects"].as_array().expect("effects");
+    assert_eq!(open[0]["reports"][1]["reference"], url);
+}
+
+#[tokio::test]
+async fn failed_follow_up_issue_leaves_descendants_waiting() {
+    let w = world().await;
+    w.get(&format!("{PR}/comments")).await;
+    let mut body = decision("follow_up_issue");
+    body["target"] = json!({"type": "follow_up_issue", "title": "Bound retries"});
+    body["resolve_ticked"] = json!(true);
+    let decision = w.decide_ok(L2, body).await;
+    let (token, _) = agent(&w, &EXECUTE).await;
+    let (status, _, value) = with_token(
+        &w,
+        &token,
+        "POST",
+        &claim_uri(&decision),
+        Some(json!({"capabilities": ["upstream_issue", "reply", "resolve"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{value}");
+    let issue = decision["effects"][0]["id"].as_str().expect("id");
+    let (status, _, value) = with_token(
+        &w,
+        &token,
+        "POST",
+        &format!("{FEED}/effects/{issue}/reports"),
+        Some(report("failed", None, Some("Permission denied."))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{value}");
+    let (_, _, value) = with_token(
+        &w,
+        &token,
+        "GET",
+        &format!("{FEED}/decisions/{}", decision["id"].as_str().expect("id")),
+        None,
+    )
+    .await;
+    let effects = value["decision"]["effects"].as_array().expect("effects");
+    assert_eq!(effects[0]["state"], "open");
+    assert_eq!(effects[0]["reports"][0]["message"], "Permission denied.");
+    assert_eq!(effects[1]["state"], "waiting");
+    assert_eq!(effects[2]["state"], "waiting");
+}
+
+async fn carry_follow_up_issue(reference: Option<&str>) -> (Value, Value) {
+    let w = world().await;
+    w.get(&format!("{PR}/comments")).await;
+    let mut body = decision("follow_up_issue");
+    body["target"] = json!({"type": "follow_up_issue", "title": "Bound retries"});
+    let first = w.decide_ok(L2, body).await;
+    if let Some(reference) = reference {
+        let (token, _) = agent(&w, &EXECUTE).await;
+        let (status, _, value) = with_token(
+            &w,
+            &token,
+            "POST",
+            &claim_uri(&first),
+            Some(json!({"capabilities": ["upstream_issue", "reply", "resolve"]})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{value}");
+        let issue = first["effects"][0]["id"].as_str().expect("id");
+        let (status, _, value) = with_token(
+            &w,
+            &token,
+            "POST",
+            &format!("{FEED}/effects/{issue}/reports"),
+            Some(report("done", Some(reference), None)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{value}");
+    }
+
+    let new_thread: &dyn Fn(&mut Value) = &|answer| {
+        let thread = thread_node(answer, "PRRT_fixture482_l2");
+        thread["id"] = json!("PRRT_fixture482_l2b");
+        thread["comments"]["nodes"][0]["url"] =
+            json!("https://github.com/acme/node-client/pull/482#discussion_r3000000999");
+    };
+    w.reread(&[("review-threads.json", new_thread)]).await;
+    (first, w.item(L2).await)
+}
+
+#[tokio::test]
+async fn carried_follow_up_issue_reuses_the_recorded_issue() {
+    let url = "https://github.com/acme/node-client/issues/97";
+    let (first, item) = carry_follow_up_issue(Some(url)).await;
+    let decisions = item["decisions"].as_array().expect("decisions");
+    assert_eq!(decisions.len(), 2, "{item}");
+    assert_eq!(decisions[1]["carried_from"], first["id"]);
+    assert_eq!(decisions[1]["kind"], "upstream_issue");
+    assert_eq!(
+        decisions[1]["target"],
+        json!({"type": "upstream_issue", "url": url})
+    );
+    assert_eq!(decisions[1]["effects"][0]["params"]["url"], url);
+}
+
+#[tokio::test]
+async fn carried_follow_up_issue_without_a_reference_is_asked_again() {
+    let (_, item) = carry_follow_up_issue(None).await;
+    assert_eq!(item["state"], "reopened", "{item}");
+    assert_eq!(item["decisions"].as_array().map(Vec::len), Some(1));
+    assert_eq!(item["decisions"][0]["effects"][0]["state"], "cancelled");
+}

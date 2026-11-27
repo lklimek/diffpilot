@@ -35,9 +35,9 @@ use crate::api::review_loop::{
     CodeContext, CommentItem, CommentLog, CommentsOverview, ContextQuery, DecideRequest,
     DecideRest, Decision, DecisionBatchRequest, DecisionFeed, EffectReportRequest, EffectsPreview,
     EffectsPreviewRequest, FeedDecision, FeedEvent, FeedQuery, GateMarkRequest, GithubThreadDetail,
-    ItemActionRequest, ItemsQuery, MarkedItems, MarkedItemsQuery, NotificationSettings, PrPage,
-    PushTarget, PutChannelRequest, PutPushTargetRequest, UserStreamEvent, WatchList,
-    WebhookPayload,
+    IssueAttempt, IssueAttemptRequest, ItemActionRequest, ItemsQuery, MarkedItems,
+    MarkedItemsQuery, NotificationSettings, PrPage, PushTarget, PutChannelRequest,
+    PutPushTargetRequest, UserStreamEvent, WatchList, WebhookPayload,
 };
 use crate::api::settings::{
     GithubWebhook, LlmJobSlots, RankingUsage, RepoSettings, RepositoryInstallations,
@@ -158,6 +158,8 @@ pub const API_SCHEMAS: &[ApiSchema] = &[
     api_schema::<DecisionFeed>("decision_feed", &[routes::GET_DECISION_FEED]),
     api_schema::<FeedDecision>("feed_decision", &[routes::GET_FEED_DECISION]),
     api_schema::<FeedEvent>("feed_event", &[routes::DECISION_FEED_EVENTS]),
+    api_schema::<IssueAttemptRequest>("issue_attempt_request", &[]),
+    api_schema::<IssueAttempt>("issue_attempt", &[routes::RESERVE_ISSUE_ATTEMPT]),
 ];
 
 const NOTE: &str = "This file is generated from crates/contracts by the test generated_artifacts_are_current \
@@ -436,6 +438,8 @@ fn typescript_types() -> Result<String, GenerateError> {
     collector.visit::<ClaimRequest>();
     collector.visit::<Claim>();
     collector.visit::<EffectReportRequest>();
+    collector.visit::<IssueAttemptRequest>();
+    collector.visit::<IssueAttempt>();
     collector.visit::<WebhookPayload>();
     collector.visit::<AgentPushPayload>();
     if let Some(name) = collector.duplicate {

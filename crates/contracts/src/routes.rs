@@ -790,6 +790,13 @@ pub const REPORT_EFFECT: Route = route(
     "/api/v1/decision-feed/effects/{id}/reports",
     EXECUTE,
 );
+/// RF4b: reserves or observes the creation attempt of a claimed follow-up issue.
+pub const RESERVE_ISSUE_ATTEMPT: Route = route(
+    "reserveIssueAttempt",
+    Post,
+    "/api/v1/decision-feed/effects/{id}/issue-attempt",
+    EXECUTE,
+);
 /// RF5: registers the calling token's push target.
 pub const PUT_PUSH_TARGET: Route = route(
     "putPushTarget",
@@ -916,6 +923,7 @@ pub const ROUTES: &[Route] = &[
     DECISION_FEED_EVENTS,
     CLAIM_DECISION,
     REPORT_EFFECT,
+    RESERVE_ISSUE_ATTEMPT,
     PUT_PUSH_TARGET,
     DELETE_PUSH_TARGET,
     RUNNER_CLAIM,

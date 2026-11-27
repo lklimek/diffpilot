@@ -1631,7 +1631,7 @@ fn names<T: serde::Serialize>(values: impl IntoIterator<Item = T>) -> String {
     format!("IN ({})", quoted.join(", "))
 }
 
-/// The CHECK lists of migration 0017 mirror the contract enums (`contracts::api::review_loop`).
+/// The review loop CHECK lists mirror the contract enums (`contracts::api::review_loop`).
 #[tokio::test]
 async fn check_lists_mirror_the_review_loop_enums() {
     use contracts::api::review_loop::{
@@ -1685,6 +1685,7 @@ async fn check_lists_mirror_the_review_loop_enums() {
                 D::Reject,
                 D::HandledInPr,
                 D::FollowUpPr,
+                D::FollowUpIssue,
                 D::UpstreamIssue,
                 D::Todo,
                 D::MergeWithFollowUps,

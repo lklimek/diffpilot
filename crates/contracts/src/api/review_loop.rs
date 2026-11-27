@@ -2012,6 +2012,23 @@ pub struct Claim {
     pub lease_until: Timestamp,
 }
 
+/// Reserves the GitHub write for a claimed follow-up issue.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct IssueAttemptRequest {
+    /// The exact previous attempt, only after verifying its writer stopped and GitHub created no issue.
+    pub retry_of: Option<Uuid>,
+}
+
+/// The current durable reservation and whether this call won the right to create.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct IssueAttempt {
+    /// The server-generated attempt, absent if no reservation exists.
+    pub attempt_id: Option<Uuid>,
+    /// Only true on the single successful transition to a new reservation.
+    pub reserved: bool,
+}
+
 /// Body of RF4 (`POST …/effects/{id}/reports`); a repeated idempotency key is a no-op.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct EffectReportRequest {

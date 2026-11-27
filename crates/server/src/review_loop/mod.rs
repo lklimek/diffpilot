@@ -9,10 +9,10 @@ use contracts::api::dashboard::default_known_bots;
 use contracts::api::pr::PrSummary;
 use contracts::api::review_loop::{
     AuthorKind, BatchVia, CarryKind, CommentItemKind, DecideRequest, Decision, DecisionBatchRow,
-    DecisionKind, DecisionVia, EffectKind, EffectState, Gate, GateMark, GateSource,
-    ItemGithubFacts, ItemState, OutsideResolution, PlannedEffect, ReadFailure,
+    DecisionKind, DecisionTarget, DecisionVia, EffectKind, EffectState, Gate, GateMark, GateSource,
+    ItemGithubFacts, ItemState, OutsideResolution, PlannedEffect, ReadFailure, ReportOutcome,
 };
-use contracts::common::PrRef;
+use contracts::common::{PrRef, RepoRef};
 use contracts::ids::CommitSha;
 use contracts::time::Timestamp;
 use db::error::DbError;
@@ -939,6 +939,22 @@ async fn diff_since<'a>(
     cache.get(&from.0).and_then(Option::as_ref)
 }
 
+/// Finds the same-repository issue already recorded for this decision.
+fn carried_issue_reference<'a>(decision: &'a Decision, repo: &RepoRef) -> Option<&'a str> {
+    decision
+        .effects
+        .iter()
+        .find(|effect| {
+            effect.kind == EffectKind::UpstreamIssue && effect.state == EffectState::Done
+        })?
+        .reports
+        .iter()
+        .rev()
+        .filter(|report| report.outcome == ReportOutcome::Done)
+        .filter_map(|report| report.reference.as_deref())
+        .find(|url| repo.contains_issue_url(url))
+}
+
 /// Applies a repeat's verdict: the decision is carried (a new decision `via carried` with the same choice and
 /// fresh effects) or the item is asked again; either is logged with its evidence.
 async fn carry_over(
@@ -960,10 +976,23 @@ async fn carry_over(
         // Keep the original provenance when an automatic decision's point is repeated.
         carry::Verdict::Carry(evidence) if automatic => (CarryKind::Carried, None, evidence),
         carry::Verdict::Carry(evidence) => {
+            let (kind, target) = if stored.decision.kind == DecisionKind::FollowUpIssue {
+                let Some(url) = carried_issue_reference(&stored.decision, &handle.pr.repo) else {
+                    return ask_again(state, handle, record).await;
+                };
+                (
+                    DecisionKind::UpstreamIssue,
+                    Some(DecisionTarget::UpstreamIssue {
+                        url: Some(url.to_owned()),
+                    }),
+                )
+            } else {
+                (stored.decision.kind, stored.decision.target.clone())
+            };
             let request = DecideRequest {
-                kind: stored.decision.kind,
+                kind,
                 reason: stored.decision.reason.clone(),
-                target: stored.decision.target.clone(),
+                target,
                 r#override: stored.decision.r#override.clone(),
                 resolve_ticked: stored.decision.resolve_ticked,
                 reply_text: stored.decision.reply_text.clone(),

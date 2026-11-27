@@ -14,7 +14,7 @@ use std::time::Duration;
 use contracts::api::access_tokens::{AccessTokenId, TokenScope};
 use contracts::api::review_loop::{
     Claim, DecisionFeed, EffectKind, EffectReportRequest, EffectState, FeedDecision, FeedEvent,
-    ReportOutcome, UserEventKind,
+    IssueAttempt, IssueAttemptRequest, ReportOutcome, UserEventKind,
 };
 use contracts::common::{PrRef, RepoRef};
 use contracts::ids::{DecisionId, EffectId};
@@ -390,6 +390,34 @@ pub async fn claim(
     })
 }
 
+/// RF4b: observes or atomically grants a follow-up issue creation attempt.
+pub async fn reserve_issue_attempt(
+    state: &AppState,
+    principal: &TokenPrincipal,
+    effect: EffectId,
+    request: IssueAttemptRequest,
+) -> Result<IssueAttempt, FeedError> {
+    let outcome = state
+        .db
+        .review_loop()
+        .reserve_issue_attempt(
+            &principal.tenant_id,
+            effect,
+            &principal.token_id,
+            request.retry_of,
+            Timestamp::now(),
+        )
+        .await;
+    match outcome {
+        Ok(Ok(attempt)) => Ok(attempt),
+        Ok(Err(ReportOutcomeRecord::NotClaimer)) => Err(FeedError::Claimed),
+        Ok(Err(ReportOutcomeRecord::LeaseExpired)) => Err(FeedError::LeaseExpired),
+        Ok(Err(_)) => Err(FeedError::NothingOpen),
+        Err(DbError::NotFound) => Err(FeedError::NotFound),
+        Err(error) => Err(error.into()),
+    }
+}
+
 fn report_text(value: Option<&str>) -> Result<Option<String>, FeedError> {
     let value = value.map(str::trim).filter(|value| !value.is_empty());
     if value.is_some_and(|value| value.chars().count() > MAX_REPORT_TEXT) {
@@ -460,6 +488,11 @@ pub async fn report(
         Ok(ReportOutcomeRecord::NotClaimer) => return Err(FeedError::Claimed),
         Ok(ReportOutcomeRecord::LeaseExpired) => return Err(FeedError::LeaseExpired),
         Ok(ReportOutcomeRecord::Ended) => return Err(FeedError::NothingOpen),
+        Ok(ReportOutcomeRecord::InvalidIssueReference) => {
+            return Err(FeedError::Report(
+                "the issue must be in the pull request's GitHub repository",
+            ));
+        }
         Ok(ReportOutcomeRecord::Waiting) => {
             return Err(FeedError::Report(
                 "an effect is done only after the effect it waits for is done",
