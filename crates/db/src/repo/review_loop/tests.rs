@@ -955,7 +955,10 @@ async fn comment_tallies_count_current_comments_per_read_pull_request_and_name_w
     )
     .await
     .expect("read");
-    let mut views = rl.comment_tally_views(T, &[PR, 2]).await.expect("batch");
+    let mut views = rl
+        .comment_tally_views(T, "u1", &[PR, 2])
+        .await
+        .expect("batch");
     let ready = views.remove(&PR).expect("read PR").expect("valid rows");
     assert_eq!(
         ready.pr.items.len(),
@@ -1628,7 +1631,7 @@ fn names<T: serde::Serialize>(values: impl IntoIterator<Item = T>) -> String {
     format!("IN ({})", quoted.join(", "))
 }
 
-/// The CHECK lists of migration 0017 mirror the contract enums (`contracts::api::review_loop`).
+/// The review loop CHECK lists mirror the contract enums (`contracts::api::review_loop`).
 #[tokio::test]
 async fn check_lists_mirror_the_review_loop_enums() {
     use contracts::api::review_loop::{
@@ -1682,6 +1685,7 @@ async fn check_lists_mirror_the_review_loop_enums() {
                 D::Reject,
                 D::HandledInPr,
                 D::FollowUpPr,
+                D::FollowUpIssue,
                 D::UpstreamIssue,
                 D::Todo,
                 D::MergeWithFollowUps,
@@ -1872,7 +1876,7 @@ async fn comment_item_question_without_an_analysis() {
     let questions = db.questions();
     assert_eq!(
         questions
-            .list_for_pull_request(PR, "u1", at(4))
+            .list_for_pull_request(PR, None, "u1", at(4))
             .await
             .expect("list")
             .len(),
@@ -1880,7 +1884,7 @@ async fn comment_item_question_without_an_analysis() {
     );
     assert!(
         questions
-            .list_for_pull_request(PR, "u2", at(4))
+            .list_for_pull_request(PR, None, "u2", at(4))
             .await
             .expect("list")
             .is_empty()

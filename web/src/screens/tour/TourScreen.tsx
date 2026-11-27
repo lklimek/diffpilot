@@ -8,7 +8,7 @@ import { flagTarget, remarkTarget, summariseRemarks } from "../../components/rem
 import { useSectionState } from "../../components/inspector/sectionState";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Navigate, useParams, useLocation, useNavigate, useNavigationType } from "react-router";
-import { ApiError, errorText } from "../../api/client";
+import { api, ApiError, errorText } from "../../api/client";
 import type {
   AnalysisId,
   Annotation,
@@ -75,7 +75,7 @@ import {
   blockFromHash,
   evidenceFromHash,
 } from "./sequence";
-import { commentsPath, prPath } from "../pr/paths";
+import { commentsPath, githubThreadPath, prPath } from "../pr/paths";
 import { useNow } from "../../app/now";
 import { FlowsMenu } from "./FlowsMenu";
 import { Workspace } from "./Workspace";
@@ -563,6 +563,19 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
       .find((s) => s.llm.annotations.some((annotation) => annotation.id === remark.id));
     if (owner) chat.open({ anchor: { kind: "step", step_id: owner.id, lines: remark.range }, remark });
   };
+  const threadActions: NonNullable<CodeContext["threadActions"]> = {
+    loadBody: async (id) => {
+      try {
+        const thread = await api.getGithubThread(tour.analysis.pr, id);
+        const first = thread.comments[0];
+        return first ? { body: first.body } : { error: "GitHub returned no submitted comments." };
+      } catch (error) {
+        return { error: errorText(error) };
+      }
+    },
+    href: (id) => githubThreadPath(tour.analysis.pr, id),
+    navigate: (href) => void navigate(href),
+  };
   const ctx: CodeContext = {
     hideContextChanges,
     analysisId,
@@ -594,6 +607,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
     onDeleteComment: comments.remove,
     flash: evidence ?? null,
     onShowInInspector: showInInspector,
+    threadActions,
     onAskRemark: askRemark,
     otherThreadStep: (t) => {
       const owner = t.step_id && t.step_id !== step?.id ? findStep(tour, t.step_id) : undefined;
@@ -1066,6 +1080,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
             commentRef={commentRef}
             onAskLine={ctx.onAskLine}
             onAskRemark={askRemark}
+            threadActions={threadActions}
             onFlagAsComment={onFlagAsComment}
             commentPrefill={commentPrefill}
             onCommentPrefilled={() => setCommentPrefill(null)}

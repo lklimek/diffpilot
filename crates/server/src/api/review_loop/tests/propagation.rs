@@ -635,7 +635,7 @@ async fn duplicate_reply_waits_for_the_primary_outcome() {
         assert_eq!(reply["state"], "open");
         assert_eq!(
             reply["params"]["text"],
-            format!("Duplicate of {primary_url}\nTracked in {outcome}")
+            format!("Duplicate of Cap the backoff delay: {primary_url}\nTracked in {outcome}")
         );
     }
 }

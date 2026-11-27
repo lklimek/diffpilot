@@ -511,6 +511,10 @@ failure: string | null,
  */
 created_at: string,
 /**
+ * When the answer became final; null for an open question, a ready output or a failure.
+ */
+answered_at?: string | null,
+/**
  * While `pending` and waiting for the LLM usage limit to reset: when its job is queued again; absent
  * otherwise.
  */
@@ -2033,7 +2037,11 @@ badge: PrBadgeView,
 /**
  * Latest analysis of this PR, if any (the view menu needs one for Flows, Files and Dependencies).
  */
-analysis: AnalysisId | null, };
+analysis: AnalysisId | null,
+/**
+ * Review-ready analysis of the current head used by Ask, absent if only standalone questions are available.
+ */
+ask_analysis?: AnalysisId, };
 
 /**
  * Comments summary on the PR page.
@@ -2811,7 +2819,7 @@ export type DecisionId = string;
 /**
  * A review decision or an internal mark accepted by the decide routes.
  */
-export type DecisionKind = "resolve" | "fix_here" | "reject" | "handled_in_pr" | "follow_up_pr" | "upstream_issue" | "todo" | "merge_with_follow_ups" | "another_round" | "dismiss_stale_reviews" | "keep_reviews" | "not_a_review_point";
+export type DecisionKind = "resolve" | "fix_here" | "reject" | "handled_in_pr" | "follow_up_pr" | "follow_up_issue" | "upstream_issue" | "todo" | "merge_with_follow_ups" | "another_round" | "dismiss_stale_reviews" | "keep_reviews" | "not_a_review_point";
 
 /**
  * The target a decision needs.
@@ -2824,7 +2832,11 @@ number: number, } | { "type": "follow_up_pr",
 /**
  * Title.
  */
-title: string | null, } | { "type": "upstream_issue",
+title: string | null, } | { "type": "follow_up_issue",
+/**
+ * Title.
+ */
+title: string, } | { "type": "upstream_issue",
 /**
  * Issue URL.
  */
@@ -4094,7 +4106,7 @@ comments: number,
  */
 failure: ReadFailure | null,
 /**
- * Next automatic read.
+ * Next timed GitHub read, when polling is the fallback.
  */
 next_read_at: string | null, };
 
@@ -4158,6 +4170,52 @@ llm_status: ThreadLlmStatus | null,
  * LLM reason for the status.
  */
 llm_reason: string | null, };
+
+/**
+ * One submitted GitHub review comment.
+ */
+export type GithubThreadComment = {
+/**
+ * GitHub login, or `ghost` when the account was deleted.
+ */
+author: string,
+/**
+ * The original body, with whitespace and markup.
+ */
+body: string,
+/**
+ * The time the comment was created.
+ */
+created_at: string,
+/**
+ * Link to the comment on GitHub.
+ */
+url: string | null, };
+
+/**
+ * A submitted GitHub conversation and its exact review card, when it has one.
+ */
+export type GithubThreadDetail = {
+/**
+ * GitHub pull request title.
+ */
+title: string,
+/**
+ * Repository-relative path.
+ */
+path: string,
+/**
+ * Number of the review card for this exact GitHub thread, when known.
+ */
+item_no: number | null,
+/**
+ * Whether GitHub returned every page.
+ */
+complete: boolean,
+/**
+ * The first comment followed by the submitted replies.
+ */
+comments: Array<GithubThreadComment>, };
 
 /**
  * GitHub App webhook configuration and delivery status.
@@ -4380,6 +4438,28 @@ at: string,
  * GitHub URL of the statement.
  */
 evidence_url: string, };
+
+/**
+ * The current durable reservation and whether this call won the right to create.
+ */
+export type IssueAttempt = {
+/**
+ * The server-generated attempt, absent if no reservation exists.
+ */
+attempt_id: string | null,
+/**
+ * Only true on the single successful transition to a new reservation.
+ */
+reserved: boolean, };
+
+/**
+ * Reserves the GitHub write for a claimed follow-up issue.
+ */
+export type IssueAttemptRequest = {
+/**
+ * The exact previous attempt, only after verifying its writer stopped and GitHub created no issue.
+ */
+retry_of: string | null, };
 
 /**
  * Body of the item actions Undo, Reopen and Skip: the item revision the reader saw (409 `item_changed`
@@ -5955,7 +6035,11 @@ details: Array<string>,
 /**
  * Labelled values (PR Hygiene: stage, whose move, lateness).
  */
-facts: Array<Fact>, };
+facts: Array<Fact>,
+/**
+ * Ordered actionable statements for the PR Hygiene disclosure in Comments.
+ */
+actions?: Array<string>, };
 
 /**
  * Whether a plug-in's statements are shown.
@@ -6007,7 +6091,7 @@ path: string, };
 /**
  * PR state badge (plan §3.9 B1–B5); first match wins.
  */
-export type PrBadge = "blocked_failing" | "questions_waiting" | "executing" | "waiting_for_bot_round" | "ready_to_merge";
+export type PrBadge = "blocked_failing" | "github_outdated" | "assessment_needed" | "assessing" | "questions_waiting" | "executing" | "waiting_for_bot_round" | "ready_to_merge";
 
 /**
  * The badge with the facts behind it (tooltip).
@@ -6648,7 +6732,7 @@ item_nos: Array<number>,
  */
 reason: QueueReason,
 /**
- * The reader skipped it ("Skip for now") at its current revision; skipped entries come last. Absent when not.
+ * The reader skipped it at its current revision and it belongs in Skipped. Absent when active.
  */
 skipped?: boolean, };
 
@@ -7322,7 +7406,7 @@ head_moved: boolean, };
 /**
  * A review decision (D1–D7 and P1–P4) eligible for external use.
  */
-export type ReviewDecisionKind = "resolve" | "fix_here" | "reject" | "handled_in_pr" | "follow_up_pr" | "upstream_issue" | "todo" | "merge_with_follow_ups" | "another_round" | "dismiss_stale_reviews" | "keep_reviews";
+export type ReviewDecisionKind = "resolve" | "fix_here" | "reject" | "handled_in_pr" | "follow_up_pr" | "follow_up_issue" | "upstream_issue" | "todo" | "merge_with_follow_ups" | "another_round" | "dismiss_stale_reviews" | "keep_reviews";
 
 /**
  * The user's diffpilot analysis of a pull request item.

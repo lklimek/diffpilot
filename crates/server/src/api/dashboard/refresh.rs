@@ -494,7 +494,7 @@ async fn comment_tallies(
     let mut batch = match state
         .db
         .review_loop()
-        .comment_tally_views(&session.tenant_id, &read)
+        .comment_tally_views(&session.tenant_id, &session.user_id, &read)
         .await
     {
         Ok(batch) => Some(batch),

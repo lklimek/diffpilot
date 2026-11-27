@@ -37,6 +37,7 @@ fn statement(mark: &str, readiness: Option<Readiness>) -> PrStatement {
             label: "Stage".to_owned(),
             value: "self-review".to_owned(),
         }],
+        actions: Vec::new(),
         ready_to_merge: readiness,
         whose_move: None,
         github_updated_at: None,

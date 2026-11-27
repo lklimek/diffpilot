@@ -302,7 +302,7 @@ async fn route(
     let github = state.db.github();
     let (dashboard, watched) = tokio::try_join!(
         github.dashboard_targets(changes, SNAPSHOT_VERSION),
-        github.watch_targets(changes),
+        github.review_targets(changes),
     )?;
     let mut targets = BTreeMap::new();
     for target in dashboard {

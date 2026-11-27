@@ -106,8 +106,6 @@ pub struct QuestionRecord {
     pub user_id: String,
     /// The `ask` job, once submitted.
     pub job_id: Option<JobId>,
-    /// When the job's result confirmed the answer; `None` while an `answered` question shows a ready output.
-    pub answered_at: Option<Timestamp>,
     /// Tour steps the asked lines touch, chosen when the job was submitted; `None` until then (or for a step).
     pub touched_steps: Option<Vec<StepId>>,
 }
@@ -175,6 +173,7 @@ fn record_from_row(row: &SqliteRow) -> Result<QuestionRecord, DbError> {
             answer: answer.map(|text| serde_json::from_str(&text)).transpose()?,
             failure: row.try_get("failure")?,
             created_at: parse_ts(&created_at, "questions.created_at")?,
+            answered_at: optional_ts(row, "answered_at")?,
             resumes_at: optional_ts(row, "resumes_at")?,
         },
         analysis_id: analysis
@@ -185,7 +184,6 @@ fn record_from_row(row: &SqliteRow) -> Result<QuestionRecord, DbError> {
         job_id: job
             .map(|job| parse_wire(&job, "questions.job_id"))
             .transpose()?,
-        answered_at: optional_ts(row, "answered_at")?,
         touched_steps: touched
             .map(|ids| serde_json::from_str::<Vec<String>>(&ids))
             .transpose()?
@@ -585,22 +583,24 @@ impl Questions<'_> {
         }
     }
 
-    /// The reader's questions about the review-comment items of a pull request, with or without an analysis, oldest
-    /// first; `resumes_at` as of `now`.
+    /// The reader's standalone comment questions and questions of the given analysis, oldest first.
     pub async fn list_for_pull_request(
         &self,
         pull_request_id: i64,
+        analysis: Option<AnalysisId>,
         user: &str,
         now: Timestamp,
     ) -> Result<Vec<AskQuestion>, DbError> {
         let rows = sqlx::query(concat!(
             question_select!(),
-            " WHERE q.pull_request_id = ?2 AND q.user_id = ?3 AND q.kind = 'comment_item'
+            " WHERE q.pull_request_id = ?2 AND q.user_id = ?3
+               AND (q.analysis_id = ?4 OR (q.analysis_id IS NULL AND q.kind = 'comment_item'))
              ORDER BY q.created_at, q.rowid"
         ))
         .bind(ts(now))
         .bind(pull_request_id)
         .bind(user)
+        .bind(analysis.map(|id| id.to_string()))
         .fetch_all(self.pool)
         .await?;
         rows.iter()
@@ -1178,14 +1178,17 @@ mod tests {
         assert_eq!(list[1].failure.as_deref(), Some("No answer."));
         assert_eq!(list[1].answer, None);
         let record = questions.get(first, at(4)).await.expect("get");
-        assert_eq!(record.answered_at, Some(at(3)));
+        assert_eq!(record.question.answered_at, Some(at(3)));
         // A requeued attempt returns it to answering: the provisional answer goes.
         questions
             .update(first, &QuestionUpdate::Answering, at(5))
             .await
             .expect("answering again");
         let record = questions.get(first, at(5)).await.expect("get");
-        assert_eq!((record.question.answer, record.answered_at), (None, None));
+        assert_eq!(
+            (record.question.answer, record.question.answered_at),
+            (None, None)
+        );
         let unanswered = questions.unanswered(at(5)).await.expect("unanswered");
         assert_eq!(
             unanswered.len(),
@@ -1365,7 +1368,7 @@ mod tests {
             .expect("provisional");
         let record = questions.get(first, at(2)).await.expect("get");
         assert_eq!(record.question.state, AskState::Answered, "shown at once");
-        assert_eq!(record.answered_at, None, "not final");
+        assert_eq!(record.question.answered_at, None, "not final");
         // Its job may have ended already (a restart between the job result and the question update).
         assert_eq!(open().await, [first, later]);
         assert!(

@@ -34,6 +34,10 @@ pub struct CommentPrRecord {
     pub read_failure: Option<(ReadFailure, Timestamp)>,
     /// The server's snapshot of the last successful read.
     pub github_snapshot: Option<serde_json::Value>,
+    /// Receipt of a GitHub event the snapshot may not cover yet.
+    pub github_dirty_at: Option<Timestamp>,
+    /// The head reported by a synchronize webhook, until covered by a successful read.
+    pub github_head: Option<String>,
     /// Bot rounds read.
     pub round_count: u32,
     /// The PR purpose of the latest pass (LLM).
@@ -565,14 +569,14 @@ impl ReviewLoop<'_> {
         Ok(())
     }
 
-    /// Creates the PR's review-loop row if missing (idempotent).
+    /// Creates the PR's review-loop row if missing, returning whether a row was inserted.
     pub async fn ensure_pr(
         &self,
         tenant_id: &str,
         pull_request_id: i64,
         now: Timestamp,
-    ) -> Result<(), DbError> {
-        sqlx::query(
+    ) -> Result<bool, DbError> {
+        let inserted = sqlx::query(
             "INSERT INTO comment_prs (pull_request_id, tenant_id, created_at) VALUES (?, ?, ?)
              ON CONFLICT (pull_request_id) DO NOTHING",
         )
@@ -580,8 +584,9 @@ impl ReviewLoop<'_> {
         .bind(tenant_id)
         .bind(ts(now))
         .execute(self.pool)
-        .await?;
-        Ok(())
+        .await?
+        .rows_affected();
+        Ok(inserted != 0)
     }
 
     /// Records a GitHub read: a success replaces the snapshot and clears the failure; a failure keeps the last
@@ -592,18 +597,49 @@ impl ReviewLoop<'_> {
         result: &ReadResult,
         now: Timestamp,
     ) -> Result<(), DbError> {
+        self.record_read_started(pull_request_id, result, now, now)
+            .await
+    }
+
+    /// Records the snapshot or failure and retains signals received while the request was in flight.
+    pub async fn record_read_started(
+        &self,
+        pull_request_id: i64,
+        result: &ReadResult,
+        started_at: Timestamp,
+        now: Timestamp,
+    ) -> Result<(), DbError> {
         let updated = match result {
             ReadResult::Read {
                 snapshot,
                 round_count,
             } => sqlx::query(
-                "UPDATE comment_prs SET read_at = ?, read_failure = NULL, read_failed_at = NULL,
-                     github_snapshot = ?, round_count = ? WHERE pull_request_id = ?",
+                "UPDATE comment_prs SET read_at = ?1, read_failure = NULL, read_failed_at = NULL,
+                   github_snapshot = ?2, round_count = ?3,
+                   (github_dirty_at, github_head, github_head_at, github_head_before) = (
+                     SELECT CASE WHEN github_dirty_at <= ?5 AND (github_head IS NULL OR covered)
+                                 THEN NULL ELSE github_dirty_at END,
+                            CASE WHEN covered THEN NULL ELSE github_head END,
+                            CASE WHEN covered THEN NULL ELSE github_head_at END,
+                            CASE WHEN covered THEN NULL ELSE github_head_before END
+                     FROM (SELECT github_head = (?2 ->> '$.head') COLLATE NOCASE OR (
+                       github_dirty_at <= ?5 AND (
+                         observed_at > signal_at
+                         OR ((github_head_before IS NULL
+                              OR github_head_before != (?2 ->> '$.head') COLLATE NOCASE)
+                             AND (signal_at IS NULL OR observed_at >= signal_at))
+                       )
+                     ) AS covered
+                     FROM (SELECT julianday(?2 ->> '$.updated_at') AS observed_at,
+                                  julianday(github_head_at) AS signal_at))
+                   )
+                 WHERE pull_request_id = ?4",
             )
             .bind(ts(now))
             .bind(json(snapshot)?)
             .bind(round_count)
-            .bind(pull_request_id),
+            .bind(pull_request_id)
+            .bind(ts(started_at)),
             ReadResult::Failed(failure) => sqlx::query(
                 "UPDATE comment_prs SET read_failure = ?, read_failed_at = ? WHERE pull_request_id = ?",
             )
@@ -1061,6 +1097,7 @@ impl ReviewLoop<'_> {
     pub async fn comment_tally_views(
         &self,
         tenant_id: &str,
+        user_id: &str,
         prs: &[i64],
     ) -> Result<HashMap<i64, Result<PrTallyView, DbError>>, DbError> {
         if prs.is_empty() {
@@ -1070,7 +1107,7 @@ impl ReviewLoop<'_> {
         let mut tx = read_tx(self.pool).await?;
         let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT c.pull_request_id, c.read_at, c.read_failure, c.read_failed_at, NULL AS github_snapshot,
-                    c.round_count, c.purpose, p.id, p.user_id, p.cause, p.head, p.state, p.job_id,
+                    c.round_count, c.purpose, c.github_dirty_at, c.github_head, p.id, p.user_id, p.cause, p.head, p.state, p.job_id,
                     p.sent, p.question_id, p.created_at, p.finished_at, {PASS_MAY_CONTINUE}
              FROM comment_prs c LEFT JOIN comment_passes p ON p.id = (
                  SELECT id FROM comment_passes WHERE pull_request_id = c.pull_request_id
@@ -1095,6 +1132,7 @@ impl ReviewLoop<'_> {
                             assessments: vec![],
                             decisions: vec![],
                         },
+                        skips: vec![],
                         latest_pass: row
                             .try_get::<Option<String>, _>("id")?
                             .map(|_| pass_from_row(row))
@@ -1113,12 +1151,15 @@ impl ReviewLoop<'_> {
         }
         let ids = json(&ids)?;
         let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
-            "SELECT i.*, i.pull_request_id AS tally_pr, a.body AS assessment_body, a.fingerprint AS assessment_fingerprint
+            "SELECT i.*, i.pull_request_id AS tally_pr, a.body AS assessment_body,
+                    a.fingerprint AS assessment_fingerprint, s.revision AS skipped_revision
              FROM (SELECT {ITEM_COLUMNS}, {ACTIVE_MARK_COLUMN} FROM comment_items WHERE pull_request_id IN (SELECT value FROM json_each(?))) i
              LEFT JOIN comment_assessments a ON a.id = (SELECT MAX(l.id) FROM comment_assessments l WHERE l.item_id = i.id)
+             LEFT JOIN comment_item_skips s ON s.item_id = i.id AND s.user_id = ?
              ORDER BY i.pull_request_id, i.item_no",
         )))
         .bind(&ids)
+        .bind(user_id)
         .fetch_all(&mut *tx)
         .await?;
         apply_tally_rows(&mut views, &rows, |view, row| {
@@ -1128,6 +1169,9 @@ impl ReviewLoop<'_> {
                     item.id,
                     stored_assessment(assessment, row.try_get("assessment_fingerprint")?),
                 ));
+            }
+            if let Some(revision) = row.try_get("skipped_revision")? {
+                view.skips.push((item.id, revision));
             }
             view.pr.items.push(item);
             Ok(())
@@ -1365,6 +1409,8 @@ pub struct PrView {
 pub struct PrTallyView {
     /// Items, their latest assessments and the decisions needed for queue membership.
     pub pr: PrView,
+    /// Items the reader skipped, with the revision they skipped.
+    pub skips: Vec<(CommentItemId, u32)>,
     /// The latest assessment pass.
     pub latest_pass: Option<PassRecord>,
 }
@@ -1436,7 +1482,7 @@ async fn pr_state_with<'e>(
     pull_request_id: i64,
 ) -> Result<Option<CommentPrRecord>, DbError> {
     let Some(row) = sqlx::query(
-        "SELECT pull_request_id, read_at, read_failure, read_failed_at, github_snapshot, round_count, purpose
+        "SELECT pull_request_id, read_at, read_failure, read_failed_at, github_snapshot, round_count, purpose, github_dirty_at, github_head
          FROM comment_prs WHERE pull_request_id = ?",
     )
     .bind(pull_request_id)
@@ -1456,6 +1502,8 @@ fn pr_state_from_row(row: &SqliteRow) -> Result<CommentPrRecord, DbError> {
         read_at: opt_ts_col(row, "read_at")?,
         read_failure: failure.zip(failed_at),
         github_snapshot: opt_json_col(row, "github_snapshot")?,
+        github_dirty_at: opt_ts_col(row, "github_dirty_at")?,
+        github_head: row.try_get("github_head")?,
         round_count: u32_col(row, "round_count")?,
         purpose: row.try_get("purpose")?,
     })

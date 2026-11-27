@@ -533,6 +533,8 @@ decision_kinds! {
     HandledInPr,
     /// D5: create a follow-up pull request.
     FollowUpPr,
+    /// Create a follow-up issue in the pull request's repository.
+    FollowUpIssue,
     /// D6: upstream issue (link or create).
     UpstreamIssue,
     /// D7: TODO, out of scope for this pull request.
@@ -560,6 +562,11 @@ pub enum DecisionTarget {
     FollowUpPr {
         /// Title.
         title: Option<String>,
+    },
+    /// The follow-up issue's title.
+    FollowUpIssue {
+        /// Title.
+        title: String,
     },
     /// D6: an issue URL, or null to create one.
     UpstreamIssue {
@@ -1157,7 +1164,7 @@ pub struct GithubRead {
     pub comments: u32,
     /// The latest attempt failed.
     pub failure: Option<ReadFailure>,
-    /// Next automatic read.
+    /// Next timed GitHub read, when polling is the fallback.
     pub next_read_at: Option<Timestamp>,
 }
 
@@ -1225,6 +1232,12 @@ pub struct CommentCounts {
 pub enum PrBadge {
     /// B1.
     BlockedFailing,
+    /// A newer GitHub head is known and the shown Comments snapshot is from an older head.
+    GithubOutdated,
+    /// Review items need an assessment.
+    AssessmentNeeded,
+    /// An assessment pass is queued or running.
+    Assessing,
     /// B2.
     QuestionsWaiting,
     /// B3.
@@ -1273,10 +1286,38 @@ pub struct QueueEntry {
     pub item_nos: Vec<u32>,
     /// Reason.
     pub reason: QueueReason,
-    /// The reader skipped it ("Skip for now") at its current revision; skipped entries come last. Absent when not.
+    /// The reader skipped it at its current revision and it belongs in Skipped. Absent when active.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[ts(as = "Option<bool>", optional)]
     pub skipped: bool,
+}
+
+/// A submitted GitHub conversation and its exact review card, when it has one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct GithubThreadDetail {
+    /// GitHub pull request title.
+    pub title: String,
+    /// Repository-relative path.
+    pub path: String,
+    /// Number of the review card for this exact GitHub thread, when known.
+    pub item_no: Option<u32>,
+    /// Whether GitHub returned every page.
+    pub complete: bool,
+    /// The first comment followed by the submitted replies.
+    pub comments: Vec<GithubThreadComment>,
+}
+
+/// One submitted GitHub review comment.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct GithubThreadComment {
+    /// GitHub login, or `ghost` when the account was deleted.
+    pub author: String,
+    /// The original body, with whitespace and markup.
+    pub body: String,
+    /// The time the comment was created.
+    pub created_at: Timestamp,
+    /// Link to the comment on GitHub.
+    pub url: Option<String>,
 }
 
 /// Response of RC2.
@@ -1310,6 +1351,10 @@ pub struct CommentsOverview {
     pub badge: PrBadgeView,
     /// Latest analysis of this PR, if any (the view menu needs one for Flows, Files and Dependencies).
     pub analysis: Option<AnalysisId>,
+    /// Review-ready analysis of the current head used by Ask, absent if only standalone questions are available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub ask_analysis: Option<AnalysisId>,
 }
 
 /// Comments summary on the PR page.
@@ -1969,6 +2014,23 @@ pub struct Claim {
     pub decision: FeedDecision,
     /// Lease end (30 minutes; renewed by each report).
     pub lease_until: Timestamp,
+}
+
+/// Reserves the GitHub write for a claimed follow-up issue.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct IssueAttemptRequest {
+    /// The exact previous attempt, only after verifying its writer stopped and GitHub created no issue.
+    pub retry_of: Option<Uuid>,
+}
+
+/// The current durable reservation and whether this call won the right to create.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct IssueAttempt {
+    /// The server-generated attempt, absent if no reservation exists.
+    pub attempt_id: Option<Uuid>,
+    /// Only true on the single successful transition to a new reservation.
+    pub reserved: bool,
 }
 
 /// Body of RF4 (`POST …/effects/{id}/reports`); a repeated idempotency key is a no-op.

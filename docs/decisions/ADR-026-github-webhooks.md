@@ -71,6 +71,15 @@ Automatic re-judging of changed items spent the daily cap (120) on items whose r
    judgement and never causes a GitHub write. A decision imported from GitHub (ADR-023 amendment 2026-11-25) never
    has effects; only a later decision of the owner in diffpilot acts.
 
+### Comments refresh (v1.6)
+
+The browser polls DiffPilot for stored Comments state. A tracked repository with an active App installation and
+webhook configuration uses verified PR and review events to refresh existing snapshots. An unwatched PR is
+refreshed within the event budget when a browser reader is active. Otherwise the event invalidates the snapshot,
+and the next Comments visit refreshes it. An accepted `pull_request.synchronize` marks the view outdated while it
+still displays the earlier head. Browser reads remain available before the first snapshot, for manual refresh,
+and on the existing timer when coverage is absent. Watch settings control automatic assessment independently.
+
 ## Alternatives considered
 | Alternative | Why not |
 |---|---|

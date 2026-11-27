@@ -8,11 +8,21 @@ import { Tooltip } from "../tooltip/Tooltip";
 export { isGithubUrl };
 
 /** Link to GitHub in a new tab; plain text when the URL is not a GitHub URL. */
-export function GithubLink({ url, tip, children }: { url: string; tip: string; children: ReactNode }) {
+export function GithubLink({
+  url,
+  tip,
+  children,
+  className = "",
+}: {
+  url: string;
+  tip: string;
+  children: ReactNode;
+  className?: string;
+}) {
   if (!isGithubUrl(url)) return <span className="font-mono text-xs">{children}</span>;
   return (
     <Tooltip tip={tip}>
-      <a href={url} target="_blank" rel="noopener noreferrer" className="font-mono text-xs">
+      <a href={url} target="_blank" rel="noopener noreferrer" className={`font-mono text-xs ${className}`}>
         {children}
         <GithubMark />
       </a>

@@ -75,6 +75,12 @@ pub struct WebhookChange {
     pub number: Option<u32>,
     /// Head commit for mapping check events.
     pub head_sha: Option<String>,
+    /// GitHub's PR update time for a signed synchronize event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synchronize_at: Option<Timestamp>,
+    /// The previous head reported by a synchronize event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synchronize_before: Option<String>,
     /// GitHub action selected by the receiver.
     pub action: Option<String>,
     /// GitHub App installation.
@@ -276,12 +282,22 @@ impl Github<'_> {
             return Ok(Outcome::Duplicate);
         }
 
-        let (changes, error) = match admitted {
+        let (changes, error, comments_changed) = match admitted {
             Admitted::Signal(tracked, changes) => {
                 if !tracked.bind(&mut tx).await? {
                     return Ok(Outcome::NotAllowed);
                 }
-                (serde_json::to_string(changes)?, None)
+                let hints = serde_json::to_string(changes)?;
+                let comments_changed = changes.iter().any(|change| {
+                    matches!(
+                        change.kind,
+                        ChangeKind::PullRequest | ChangeKind::PullRequestReview
+                    )
+                });
+                if comments_changed {
+                    dispatch::invalidate_comments(&mut tx, &hints, now, None).await?;
+                }
+                (hints, None, comments_changed)
             }
             Admitted::Installation(installation, update) => {
                 let Some(applied) =
@@ -292,14 +308,15 @@ impl Github<'_> {
                 (
                     applied.removed,
                     applied.capped.then_some(DeliveryError::InstallationCap),
+                    false,
                 )
             }
         };
         let state = if error.is_some() { "done" } else { "pending" };
         sqlx::query(
             "INSERT INTO github_deliveries (delivery_id, body_sha256, event, action, installation_id,
-                                            changes, state, received_at, processed_at, error)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                            changes, state, received_at, processed_at, error, comment_hints)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, CASE WHEN ?11 THEN ?6 END)
              ON CONFLICT(delivery_id) DO UPDATE SET
                  changes = CASE WHEN json_type(github_deliveries.changes, '$[0].destination') = 'object'
                      THEN (SELECT json_group_array(json_set(value, '$.attempts', 0, '$.ready_at', NULL,
@@ -307,11 +324,13 @@ impl Github<'_> {
                            FROM json_each(github_deliveries.changes))
                      ELSE excluded.changes END,
                  state = excluded.state, processed_at = excluded.processed_at,
-                 received_at = excluded.received_at, attempts = 0, error = excluded.error",
+                 received_at = excluded.received_at, attempts = 0, error = excluded.error,
+                 comment_hints = excluded.comment_hints",
         )
         .bind(id).bind(delivery.hash).bind(delivery.event).bind(delivery.action).bind(delivery.installation_id)
         .bind(changes).bind(state).bind(ts(now)).bind(error.map(|_| ts(now)))
         .bind(error.map(|code| code.to_string()))
+        .bind(comments_changed)
         .execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(if error.is_some() {

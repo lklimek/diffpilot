@@ -46,6 +46,50 @@ function captureAsk() {
 }
 
 describe("Ask chat review repros", () => {
+  it("shows the same numbered threads and subjects in Flows, Files, and Comments", async () => {
+    const reader = user();
+    const router = await openTour("#f1.5");
+    await reader.keyboard("a");
+    await reader.type(field(), "Why retry here?{Enter}");
+    await within(chat()).findByRole("listitem", { name: "Question: Why retry here?" });
+    await reader.type(field(), "Which errors are permanent?{Enter}");
+    await within(chat()).findByRole("listitem", { name: "Question: Which errors are permanent?" });
+
+    await act(() => router.navigate("/pr/acme/node-client/482/comments?item=C14"));
+    await reader.click(await screen.findByRole("button", { name: "Ask about this comment" }));
+    await reader.type(field(), "Is this retry bounded?{Enter}");
+    const expected = ["Why retry here?", "Which errors are permanent?", "Is this retry bounded?"];
+    const checkThreads = async () => {
+      for (const [index, text] of expected.entries()) {
+        const thread = await within(chat()).findByRole("listitem", { name: `Question: ${text}` });
+        expect(thread).toHaveTextContent(`Q${index + 1}`);
+      }
+    };
+    await checkThreads();
+    const root = within(chat()).getByRole("listitem", { name: "Question: Why retry here?" });
+    expect(within(root).getByRole("button", { name: /^Step 1\.5/ })).toBeVisible();
+    const show = within(root).queryByRole("button", { name: "Show Q1" });
+    if (show) await reader.click(show);
+    await reader.click(within(root).getByRole("button", { name: "Follow up on Q1" }));
+    await reader.type(
+      within(root).getByRole("textbox", { name: /Follow-up to Q1/ }),
+      "And on timeout?{Enter}",
+    );
+    await within(root).findByText("And on timeout?");
+
+    await reader.click(within(root).getByRole("button", { name: /^Step 1\.5/ }));
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/analyses/${ID}`));
+    expect(router.state.location.hash).toBe("#f1.5");
+    await act(() => router.navigate(`/analyses/${ID}/files`));
+    await checkThreads();
+    const fileThread = within(chat()).getByRole("listitem", { name: "Question: Why retry here?" });
+    const showInFiles = within(fileThread).queryByRole("button", { name: "Show Q1" });
+    if (showInFiles) await reader.click(showInFiles);
+    await within(fileThread).findByText("And on timeout?");
+    await act(() => router.navigate(`/analyses/${ID}#f1.5`));
+    await checkThreads();
+  }, 15_000);
+
   it("a thread chip with selected lines opens those lines in Files (AC7)", async () => {
     const reader = user();
     const router = renderRoute(

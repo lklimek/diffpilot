@@ -14,9 +14,8 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
-// Plan §3.2 item 9: "Skip for now moves on the same way" as Decide: the entry after the skipped one in the list.
-describe("V1 Questions: Skip for now goes to the next entry (plan §3.2 item 9)", () => {
-  it("Skip on a question picked from the middle of the list opens the next one, not the first", async () => {
+describe("Skipping a question", () => {
+  it("moves it to Skipped, lowers Needs you and opens the next active question", async () => {
     renderRoute(`${PR}/comments`);
     const queue = await screen.findByRole("navigation", { name: "Queue" });
     await userEvent.click(await within(queue).findByRole("button", { name: /^C15(?!\d)/ }));
@@ -25,16 +24,14 @@ describe("V1 Questions: Skip for now goes to the next entry (plan §3.2 item 9)"
     expect(
       await screen.findByRole("heading", { name: /C11 · Backoff cap is not configurable/ }),
     ).toBeVisible();
-    // The skipped question is last of Needs you, before the PR-level section.
-    await waitFor(() => {
-      const rows = within(queue)
-        .getAllByRole("button")
-        .map((b) => b.textContent ?? "")
-        .filter((t) => /^(C|G|P)\d*/.test(t));
-      const c15 = rows.findIndex((t) => t.startsWith("C15"));
-      const p24 = rows.findIndex((t) => t.startsWith("P24"));
-      expect(c15).toBeGreaterThan(0);
-      expect(p24).toBeGreaterThan(c15);
-    });
+    await waitFor(() =>
+      expect(within(queue).getByRole("button", { name: /^Status: Needs you · 10/ })).toBeVisible(),
+    );
+    const skipped = within(queue).getByRole("group", { name: "Skipped" });
+    await userEvent.click(within(skipped).getByText("Skipped (1)"));
+    await userEvent.click(within(skipped).getByRole("button", { name: /^C15(?!\d)/ }));
+    expect(await screen.findByRole("heading", { name: /C15 · Debug log prints/ })).toBeVisible();
+    expect(screen.queryByRole("button", { name: /Skip for now/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /^Decide$/ })).toBeVisible();
   });
 });

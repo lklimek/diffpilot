@@ -9,10 +9,10 @@ use contracts::api::dashboard::default_known_bots;
 use contracts::api::pr::PrSummary;
 use contracts::api::review_loop::{
     AuthorKind, BatchVia, CarryKind, CommentItemKind, DecideRequest, Decision, DecisionBatchRow,
-    DecisionKind, DecisionVia, EffectKind, EffectState, Gate, GateMark, GateSource,
-    ItemGithubFacts, ItemState, OutsideResolution, PlannedEffect, ReadFailure,
+    DecisionKind, DecisionTarget, DecisionVia, EffectKind, EffectState, Gate, GateMark, GateSource,
+    ItemGithubFacts, ItemState, OutsideResolution, PlannedEffect, ReadFailure, ReportOutcome,
 };
-use contracts::common::PrRef;
+use contracts::common::{PrRef, RepoRef};
 use contracts::ids::CommitSha;
 use contracts::time::Timestamp;
 use db::error::DbError;
@@ -36,6 +36,7 @@ mod clean;
 mod context;
 mod effects;
 pub mod feed;
+pub(crate) mod freshness;
 mod handin;
 mod markers;
 pub mod notify;
@@ -50,7 +51,7 @@ pub use effects::DecisionError;
 use effects::{EffectItem, PrQuestion, PrScope};
 use observe::{BotRule, Observed, Snapshot};
 
-/// A page reads GitHub again when its last read is older than this (plan §4.1).
+/// Browser polling can read GitHub again at this interval in repositories without webhook coverage.
 pub const READ_INTERVAL: SignedDuration = SignedDuration::from_secs(60);
 /// "Read GitHub again" is refused within this time of the last read (RC3: 429).
 pub const MIN_REREAD: SignedDuration = SignedDuration::from_secs(10);
@@ -168,6 +169,60 @@ pub async fn find(state: &AppState, tenant_id: &str, pr: &PrRef) -> Result<PrHan
     Ok(PrHandle { pr: pr.clone(), id })
 }
 
+/// Reads one submitted thread and looks up its exact review card without refreshing Comments.
+pub async fn github_thread(
+    state: &AppState,
+    session: &Session,
+    handle: PrHandle,
+    id: &str,
+) -> Result<contracts::api::review_loop::GithubThreadDetail, LoopError> {
+    if id.is_empty() || id.len() > 256 || !id.bytes().all(|byte| byte.is_ascii_graphic()) {
+        return Err(LoopError::NotFound);
+    }
+    let token = user_access_token(state, &session.user_id).await?;
+    let mut detail =
+        match crate::github::threads::detail(&state.config.github, &token, &handle.pr, id).await {
+            Ok(Some(detail)) => detail,
+            Ok(None) => return Err(LoopError::NotFound),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    Some(GraphqlErrorType::NotFound | GraphqlErrorType::Forbidden)
+                ) =>
+            {
+                return Err(LoopError::NotFound);
+            }
+            Err(error) => {
+                if matches!(error, GraphqlError::Unauthorized) {
+                    user_token_rejected(state, &session.user_id, &token).await;
+                }
+                return Err(LoopError::Unreadable(failure_of(&ReadError::Graphql(
+                    error,
+                ))));
+            }
+        };
+    let view = state.db.review_loop().pr_view(handle.id).await?;
+    if let Some(snapshot) = view
+        .row
+        .and_then(|row| row.github_snapshot)
+        .and_then(|data| serde_json::from_value::<Snapshot>(data).ok())
+    {
+        detail.item_no = view
+            .items
+            .iter()
+            .find(|item| {
+                item.kind == CommentItemKind::Thread
+                    && item.gone_at.is_none()
+                    && snapshot
+                        .thread_ids
+                        .get(&item.stable_key)
+                        .is_some_and(|thread| thread == id)
+            })
+            .map(|item| item.no);
+    }
+    Ok(detail)
+}
+
 /// When the PR's last read was attempted.
 async fn last_attempt(state: &AppState, id: i64) -> Result<Option<Timestamp>, DbError> {
     Ok(state.db.review_loop().pr_state(id).await?.and_then(|row| {
@@ -176,8 +231,8 @@ async fn last_attempt(state: &AppState, id: i64) -> Result<Option<Timestamp>, Db
     }))
 }
 
-/// The pull request for a page: read from GitHub first when its last read is older than [`READ_INTERVAL`] (or
-/// always with `force`). Browser reads use the reader's GitHub token without scheduling assessment.
+/// The pull request for a page: read from GitHub initially, periodically without coverage, or on a manual refresh.
+/// Browser reads use the reader's GitHub token without scheduling assessment.
 /// Access-token requests read stored data without updating the database (ADR-019).
 pub async fn ensure_read(
     state: &AppState,
@@ -188,11 +243,52 @@ pub async fn ensure_read(
     if session.is_access_token() {
         return find(state, &session.tenant_id, pr).await;
     }
+    if !force
+        && let Ok(handle) = find(state, &session.tenant_id, pr).await
+        && state
+            .db
+            .review_loop()
+            .pr_state(handle.id)
+            .await?
+            .is_some_and(|row| row.github_snapshot.is_some())
+        && freshness::covered(state, &session.tenant_id, &pr.repo).await?
+    {
+        return Ok(handle);
+    }
     Ok(
         read_if_due(state, &session.tenant_id, &session.user_id, pr, force)
             .await?
             .handle,
     )
+}
+
+/// Refreshes an invalidated snapshot when a browser reader enters or resumes Comments.
+pub(crate) async fn refresh_invalidated(
+    state: &AppState,
+    session: &Session,
+    handle: &PrHandle,
+) -> Result<(), LoopError> {
+    if !freshness::covered(state, &session.tenant_id, &handle.pr.repo).await? {
+        return Ok(());
+    }
+    let _guard = read_lock(&session.tenant_id, &handle.pr).await;
+    if state
+        .db
+        .review_loop()
+        .pr_state(handle.id)
+        .await?
+        .is_some_and(|row| row.github_dirty_at.is_some())
+    {
+        read_now(
+            state,
+            &session.tenant_id,
+            &session.user_id,
+            &handle.pr,
+            None,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 /// What [`read_if_due`] did.
@@ -318,6 +414,21 @@ async fn read_now(
         Err(error) => return Err(error.into()),
     };
     let config = &state.config.github;
+    let started_at = Timestamp::now();
+    let existing_pr = state
+        .db
+        .pull_requests()
+        .find(tenant, &pr.repo, pr.number)
+        .await?;
+    let first_comments_read = if let Some(id) = existing_pr {
+        state
+            .db
+            .review_loop()
+            .ensure_pr(tenant, id, started_at)
+            .await?
+    } else {
+        true
+    };
     let read = match reads::read(config, &token, pr, budget).await {
         Ok(read) => read,
         Err(ReadError::Graphql(GraphqlError::EventBudget(delay))) => {
@@ -368,6 +479,13 @@ async fn read_now(
         .upsert(tenant, repo.id, &summary, now)
         .await?;
     state.db.review_loop().ensure_pr(tenant, id, now).await?;
+    if first_comments_read {
+        state
+            .db
+            .github()
+            .reconcile_first_comments_read(id, started_at)
+            .await?;
+    }
     let handle = PrHandle {
         pr: PrRef {
             repo: repo.repo,
@@ -549,12 +667,13 @@ async fn read_now(
     state
         .db
         .review_loop()
-        .record_read(
+        .record_read_started(
             id,
             &ReadResult::Read {
                 snapshot,
                 round_count,
             },
+            started_at,
             Timestamp::now(),
         )
         .await?;
@@ -829,6 +948,22 @@ async fn diff_since<'a>(
     cache.get(&from.0).and_then(Option::as_ref)
 }
 
+/// Finds the same-repository issue already recorded for this decision.
+fn carried_issue_reference<'a>(decision: &'a Decision, repo: &RepoRef) -> Option<&'a str> {
+    decision
+        .effects
+        .iter()
+        .find(|effect| {
+            effect.kind == EffectKind::UpstreamIssue && effect.state == EffectState::Done
+        })?
+        .reports
+        .iter()
+        .rev()
+        .filter(|report| report.outcome == ReportOutcome::Done)
+        .filter_map(|report| report.reference.as_deref())
+        .find(|url| repo.contains_issue_url(url))
+}
+
 /// Applies a repeat's verdict: the decision is carried (a new decision `via carried` with the same choice and
 /// fresh effects) or the item is asked again; either is logged with its evidence.
 async fn carry_over(
@@ -850,10 +985,23 @@ async fn carry_over(
         // Keep the original provenance when an automatic decision's point is repeated.
         carry::Verdict::Carry(evidence) if automatic => (CarryKind::Carried, None, evidence),
         carry::Verdict::Carry(evidence) => {
+            let (kind, target) = if stored.decision.kind == DecisionKind::FollowUpIssue {
+                let Some(url) = carried_issue_reference(&stored.decision, &handle.pr.repo) else {
+                    return ask_again(state, handle, record).await;
+                };
+                (
+                    DecisionKind::UpstreamIssue,
+                    Some(DecisionTarget::UpstreamIssue {
+                        url: Some(url.to_owned()),
+                    }),
+                )
+            } else {
+                (stored.decision.kind, stored.decision.target.clone())
+            };
             let request = DecideRequest {
-                kind: stored.decision.kind,
+                kind,
                 reason: stored.decision.reason.clone(),
-                target: stored.decision.target.clone(),
+                target,
                 r#override: stored.decision.r#override.clone(),
                 resolve_ticked: stored.decision.resolve_ticked,
                 reply_text: stored.decision.reply_text.clone(),
@@ -999,7 +1147,7 @@ pub(crate) fn question_of(record: &ItemRecord) -> Option<(PrQuestion, u32)> {
 
 fn effect_item(record: &ItemRecord, snapshot: &Snapshot, gates: &[Gate]) -> EffectItem {
     EffectItem {
-        quote: record.quote.clone(),
+        quote: record.quote.clone().or_else(|| Some(record.title.clone())),
         no: record.no,
         kind: record.kind,
         author: record.author.clone(),

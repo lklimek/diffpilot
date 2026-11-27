@@ -71,6 +71,8 @@ pub struct PrFacts {
     pub base_ref_oid: String,
     /// Head commit.
     pub head_ref_oid: String,
+    /// GitHub's PR update time.
+    pub updated_at: Option<contracts::time::Timestamp>,
     /// `APPROVED`, `CHANGES_REQUESTED`, `REVIEW_REQUIRED` or null.
     pub review_decision: Option<String>,
 }

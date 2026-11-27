@@ -27,6 +27,7 @@ import { Popover } from "../popover/Popover";
 import { Tooltip } from "../tooltip/Tooltip";
 import type { Highlight, Token } from "./highlight";
 import { Mark, RemarkMarker, ThreadMarker, type MarkerTarget } from "./markers";
+import type { GithubThreadActions } from "../comments/GithubThreadPreview";
 import { FLAG_LOOK, strongestFlag } from "../flag/flags";
 import { CHANGE_LOOK, changeLineText, flagBar, REMARK_LOOK } from "./changeLook";
 import { foldRuns, type Piece } from "./fold";
@@ -95,6 +96,7 @@ export interface CodeViewProps {
   onAskRemark?: (annotation: Annotation) => void;
   /** "N.M" of a thread's step when it is not the step shown; its Show in Inspector then names that step. */
   otherThreadStep?: (thread: GithubThread) => string | null;
+  threadActions?: GithubThreadActions;
   /** Rating of each remark's step when the code mixes steps (Files view); a run takes the highest. */
   bandOf?: (annotation: Annotation) => RiskBand | null;
   /** The step a remark belongs to when the code mixes steps ("flow 1 · step 2"), named with it. */
@@ -173,6 +175,7 @@ interface LineContext {
   onAskRemark?: (annotation: Annotation) => void;
   unrated: boolean;
   otherThreadStep?: (thread: GithubThread) => string | null;
+  threadActions?: GithubThreadActions;
   remarkOwner?: (annotation: Annotation) => string | null;
   bandOf?: (annotation: Annotation) => RiskBand | null;
   /** Selected lines of the view's side; undefined: no selecting (line numbers comment). */
@@ -371,6 +374,7 @@ function Line({ ctx, side, line, text, tokens, row, removed = false, remarks, co
               line={line}
               onShowInInspector={ctx.onShowInInspector}
               otherStep={ctx.otherThreadStep}
+              threadActions={ctx.threadActions}
             />
           )}
           {mine && (
@@ -747,6 +751,7 @@ export function CodeView({
   onShowInInspector,
   onAskRemark,
   otherThreadStep,
+  threadActions,
   bandOf,
   remarkOwner,
   selection,
@@ -913,6 +918,7 @@ export function CodeView({
     onAskRemark,
     unrated: band === null,
     otherThreadStep,
+    threadActions,
     remarkOwner,
     bandOf,
     selection:

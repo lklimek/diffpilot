@@ -10,7 +10,7 @@ import {
   type QueryClient,
 } from "@tanstack/react-query";
 import { api, ApiError, AssessmentAdmissionError, errorText, type AssessmentAdmissionIssue } from "./client";
-import { withoutRetried } from "./questionHistory";
+import { awaitsFinalAnswer, QUESTIONS_POLL_MS, withoutRetried } from "./questionHistory";
 import type {
   CommentItem,
   CommentsOverview,
@@ -300,6 +300,21 @@ export function useItemAction(pr: PrRef) {
   });
 }
 
+/** Skip every item of a question at its displayed revision, then refresh the reader's queue. */
+export function useSkipCommentItems(pr: PrRef) {
+  const invalidate = useInvalidatePr(pr);
+  return useMutation({
+    mutationFn: async (items: Pick<CommentItem, "no" | "revision">[]) => {
+      const results = await Promise.allSettled(
+        items.map(({ no, revision }) => api.skipCommentItem(pr, no, { item_revision: revision })),
+      );
+      const failure = results.find((result) => result.status === "rejected");
+      if (failure) throw failure.reason;
+    },
+    onSettled: invalidate,
+  });
+}
+
 /**
  * Undo of the reader's decision `decision` on item `C<no>` (RC12) at the item's current revision: the items are
  * read again first, so an Undo right after deciding never sends the revision from before that decision. When the
@@ -351,31 +366,39 @@ export function useMarkGate(pr: PrRef) {
   });
 }
 
-/** How often the reader's open questions about comment items are read again (no event stream without an analysis). */
-export const PR_QUESTIONS_POLL_MS = 3_000;
+/** The reader's shared review history and standalone comments, read again while one is open. */
+const prQuestionsKey = (pr: PrRef, analysisId: AnalysisId | null) => [
+  "pr-questions",
+  ...prKey(pr),
+  analysisId,
+];
 
-const openQuestion = (q: AskQuestion) => q.state === "pending" || q.state === "answering";
-
-/** The reader's questions about the PR's comment items (RC7), read again while one is open. */
-export const usePrQuestions = (pr: PrRef) =>
+export const usePrQuestions = (pr: PrRef, analysisId: AnalysisId | null | undefined) =>
   useQuery({
-    queryKey: ["pr-questions", ...prKey(pr)],
+    queryKey: prQuestionsKey(pr, analysisId ?? null),
     queryFn: () => api.listPrQuestions(pr),
+    enabled: analysisId !== undefined,
     // A failed question asked again shows once, as in the analysis chat.
     select: withoutRetried,
-    refetchInterval: (query) => (query.state.data?.some(openQuestion) ? PR_QUESTIONS_POLL_MS : false),
+    refetchInterval: (query) => (query.state.data?.some(awaitsFinalAnswer) ? QUESTIONS_POLL_MS : false),
   });
 
-/** Asks about a comment item (RC7); the question joins the list at once. */
-export function useAskPrQuestion(pr: PrRef) {
+/** Asks about a comment item (RC7) or continues an analysis thread from Comments. */
+export function useAskPrQuestion(pr: PrRef, analysisId: AnalysisId | null) {
   const client = useQueryClient();
+  const queryKey = prQuestionsKey(pr, analysisId);
   return useMutation({
-    mutationFn: (body: AnchoredAskRequest) => api.askPrQuestion(pr, body),
-    onSuccess: (question) =>
-      client.setQueryData<AskQuestion[]>(["pr-questions", ...prKey(pr)], (all = []) => [
+    mutationFn: (body: AnchoredAskRequest) =>
+      analysisId && body.anchor.kind !== "comment_item"
+        ? api.askAnchored(analysisId, body)
+        : api.askPrQuestion(pr, body),
+    onSuccess: (question) => {
+      client.setQueryData<AskQuestion[]>(queryKey, (all = []) => [
         ...all.filter((q) => q.id !== question.id),
         question,
-      ]),
+      ]);
+      void client.invalidateQueries({ queryKey });
+    },
   });
 }
 

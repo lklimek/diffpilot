@@ -50,27 +50,63 @@ pub struct EffectItem {
 }
 
 impl EffectItem {
-    /// `text` as posted on this item: a PR-level comment answering a review starts with a line naming the review
-    /// (plan §2.3), a person by an @-mention, a bot without one (the mention would trigger it).
-    fn on_review(&self, text: String) -> String {
-        let url = match (&self.thread_id, &self.review_id, &self.url) {
-            (None, Some(_), Some(url)) if self.kind == CommentItemKind::ReviewBody => url,
-            _ => return text,
-        };
-        let line = match self.author_kind {
-            AuthorKind::Human => format!("@{}, re [your review]({url}):", self.author),
-            AuthorKind::Bot | AuthorKind::Diffpilot => {
-                format!("Re [{}'s review]({url}):", self.author)
-            }
-        };
-        match self
-            .quote
-            .as_deref()
-            .and_then(|quote| quote.lines().find(|line| !line.trim().is_empty()))
-        {
-            Some(quote) => format!("{line}\n> {quote}\n{text}"),
-            None => format!("{line}\n{text}"),
+    /// Starts every PR-level reply with the evidence it addresses, including an edited reply.
+    pub(super) fn with_source(&self, text: String) -> String {
+        if self.thread_id.is_some() {
+            return text;
         }
+        let Some(url) = self
+            .url
+            .as_deref()
+            .and_then(crate::github::threads::github_web_url)
+        else {
+            return text;
+        };
+        let mut prefix = if self.kind == CommentItemKind::ReviewBody && self.review_id.is_some() {
+            match self.author_kind {
+                AuthorKind::Human => format!("@{}, re [your review]({url}):\n", self.author),
+                AuthorKind::Bot | AuthorKind::Diffpilot => {
+                    format!("Re [{}'s review]({url}):\n", self.author)
+                }
+            }
+        } else {
+            format!("Re [the source comment]({url}):\n")
+        };
+        if let Some(quote) = self.short_quote() {
+            prefix.push_str(&format!("> {quote}\n\n"));
+        }
+        if text.starts_with(&prefix) {
+            text
+        } else {
+            format!("{prefix}{text}")
+        }
+    }
+
+    fn short_quote(&self) -> Option<String> {
+        let line = self
+            .quote
+            .as_deref()?
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())?;
+        let mut chars = line.chars();
+        let mut quote: String = chars.by_ref().take(200).collect();
+        if chars.next().is_some() {
+            quote.push('…');
+        }
+        Some(quote)
+    }
+
+    fn issue_body(&self) -> Option<String> {
+        let url = self
+            .url
+            .as_deref()
+            .and_then(crate::github::threads::github_web_url)?;
+        let mut body = format!("Follow-up from [the original review comment]({url}).");
+        if let Some(quote) = self.short_quote() {
+            body.push_str(&format!("\n\n> {quote}"));
+        }
+        Some(body)
     }
 }
 
@@ -261,7 +297,10 @@ pub fn plan<Kind: Copy + Into<DecisionKind>>(
     };
     let target_fits = match (&request.target, kind) {
         (None, K::FollowUpPr) => true,
-        (None, kind) => !matches!(kind, K::HandledInPr | K::UpstreamIssue | K::Todo),
+        (None, kind) => !matches!(
+            kind,
+            K::HandledInPr | K::FollowUpIssue | K::UpstreamIssue | K::Todo
+        ),
         (Some(DecisionTarget::ExistingPr { number }), K::HandledInPr) => {
             if *number == 0 || *number == scope.number {
                 return Err(DecisionError::TargetInvalid);
@@ -273,6 +312,12 @@ pub fn plan<Kind: Copy + Into<DecisionKind>>(
                 return Err(DecisionError::TooLong);
             }
             true
+        }
+        (Some(DecisionTarget::FollowUpIssue { title }), K::FollowUpIssue) => {
+            if too_long(Some(title)) {
+                return Err(DecisionError::TooLong);
+            }
+            non_empty(Some(title)).is_some()
         }
         (Some(DecisionTarget::UpstreamIssue { url }), K::UpstreamIssue) => {
             let valid = url.as_deref().is_none_or(|url| {
@@ -309,21 +354,20 @@ pub fn plan<Kind: Copy + Into<DecisionKind>>(
     }
     let resolve = request.resolve_ticked;
     let edited = non_empty(request.reply_text.as_deref()).map(str::to_owned);
-    // An edited reply text is posted as written: it starts from the planned one, line naming the review included.
-    let reply = |default: String| Some(edited.clone().unwrap_or_else(|| item.on_review(default)));
+    let reply = |default: String| Some(item.with_source(edited.clone().unwrap_or(default)));
     let mut out = Builder {
         effects: Vec::new(),
     };
     let reply_text = match kind {
         K::Resolve => {
-            let text = (item.author_kind == AuthorKind::Human).then(|| {
-                edited.clone().unwrap_or_else(|| {
-                    item.on_review(
+            let text = (item.author_kind == AuthorKind::Human)
+                .then(|| {
+                    reply(
                         "Per maintainer decision, this is already addressed in this pull request."
-                            .to_owned(),
+                            .into(),
                     )
                 })
-            });
+                .flatten();
             out.reply_and_resolve(item, text.clone(), None, true);
             text
         }
@@ -382,6 +426,25 @@ pub fn plan<Kind: Copy + Into<DecisionKind>>(
             out.reply_and_resolve(item, text.clone(), Some(create), resolve);
             text
         }
+        K::FollowUpIssue => {
+            let Some(DecisionTarget::FollowUpIssue { title }) = &request.target else {
+                return Err(DecisionError::TargetRequired);
+            };
+            let issue = out.push(
+                EffectKind::UpstreamIssue,
+                None,
+                EffectParams {
+                    title: Some(title.trim().to_owned()),
+                    text: item.issue_body(),
+                    item_nos: vec![item.no],
+                    ..EffectParams::default()
+                },
+            );
+            let text =
+                reply("Per maintainer decision, this is tracked in a follow-up issue.".into());
+            out.reply_and_resolve(item, text.clone(), Some(issue), resolve);
+            text
+        }
         K::UpstreamIssue => {
             let url = match &request.target {
                 Some(DecisionTarget::UpstreamIssue { url }) => non_empty(url.as_deref()),
@@ -435,7 +498,7 @@ pub fn plan<Kind: Copy + Into<DecisionKind>>(
                 for remaining in &scope.remaining {
                     out.reply_and_resolve(
                         remaining,
-                        Some(remaining.on_review(FOLLOW_UP_REPLY.to_owned())),
+                        Some(remaining.with_source(FOLLOW_UP_REPLY.to_owned())),
                         Some(create),
                         true,
                     );

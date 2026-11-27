@@ -384,8 +384,7 @@ impl Fixture {
             .send(job, JobUpdate::OutputReady(good_answer()));
         self.scripted.send(job, succeeded(job, good_answer()));
         self.scripted.close(job);
-        self.wait_for(question, |q| q.state == AskState::Answered)
-            .await;
+        self.wait_for(question, |q| q.answered_at.is_some()).await;
     }
 
     async fn ask_anchored(&self, anchor: Value, text: &str) -> (StatusCode, Value) {
@@ -1238,7 +1237,7 @@ async fn restart_after_the_job_result_replaces_a_provisional_answer_with_the_fin
         .get(id, Timestamp::now())
         .await
         .expect("q");
-    assert!(record.answered_at.is_some(), "final");
+    assert!(record.question.answered_at.is_some(), "final");
 }
 
 #[tokio::test]
@@ -1297,7 +1296,7 @@ async fn restart_after_the_lease_expired_withdraws_the_provisional_answer_of_the
         .get(id, Timestamp::now())
         .await
         .expect("q");
-    assert!(record.answered_at.is_some(), "final");
+    assert!(record.question.answered_at.is_some(), "final");
 }
 
 #[tokio::test]
@@ -1334,7 +1333,7 @@ async fn restart_shows_again_a_provisional_answer_whose_attempt_still_runs() {
         .await
         .expect("q");
     assert_eq!(
-        record.answered_at, None,
+        record.question.answered_at, None,
         "still provisional before the result"
     );
     f.post_result(
@@ -1352,6 +1351,7 @@ async fn restart_shows_again_a_provisional_answer_whose_attempt_still_runs() {
         .get(id, Timestamp::now())
         .await
         .expect("q")
+        .question
         .answered_at
         .is_none()
     {
@@ -2654,6 +2654,14 @@ async fn comment_item(state: &AppState, key: &str) -> db::repo::review_loop::Ite
 
 /// Posts a question about `item` to the pull request's question route as the fixture user.
 async fn ask_on_pr(f: &Fixture, item: &str, text: &str) -> (StatusCode, Value) {
+    ask_on_pr_body(
+        f,
+        json!({ "text": text, "anchor": { "kind": "comment_item", "item": item } }),
+    )
+    .await
+}
+
+async fn ask_on_pr_body(f: &Fixture, body: Value) -> (StatusCode, Value) {
     let path = ASK_PR_QUESTION
         .path
         .replace("{owner}", "acme")
@@ -2663,9 +2671,7 @@ async fn ask_on_pr(f: &Fixture, item: &str, text: &str) -> (StatusCode, Value) {
         .header(header::COOKIE, &f.cookie)
         .header(header::CONTENT_TYPE, "application/json")
         .header("x-csrf-token", "csrf")
-        .body(Body::from(
-            json!({ "text": text, "anchor": { "kind": "comment_item", "item": item } }).to_string(),
-        ))
+        .body(Body::from(body.to_string()))
         .expect("request");
     json_of(
         router(f.state.clone())
@@ -2674,6 +2680,28 @@ async fn ask_on_pr(f: &Fixture, item: &str, text: &str) -> (StatusCode, Value) {
             .expect("response"),
     )
     .await
+}
+
+async fn list_questions_at(f: &Fixture, path: String, cookie: &str) -> (StatusCode, Value) {
+    let request = Request::get(path)
+        .header(header::COOKIE, cookie)
+        .body(Body::empty())
+        .expect("request");
+    json_of(
+        router(f.state.clone())
+            .oneshot(request)
+            .await
+            .expect("response"),
+    )
+    .await
+}
+
+fn pr_questions_path() -> String {
+    LIST_PR_QUESTIONS
+        .path
+        .replace("{owner}", "acme")
+        .replace("{name}", "node-client")
+        .replace("{number}", "482")
 }
 
 /// With a finished analysis of the head, a question about a review comment goes to the Ask session with the
@@ -2691,6 +2719,10 @@ async fn comment_item_question_with_an_analysis_uses_the_ask_session() {
         .await
         .expect("head");
     let item = comment_item(&f.state, "k1").await;
+    let first = f.asked("f1.5", "Why retry here?").await;
+    f.answer_with_good_answer(first).await;
+    let second = f.asked("f1.5", "Which errors are permanent?").await;
+    f.answer_with_good_answer(second).await;
     let (status, body) = ask_on_pr(&f, &item.id.to_string(), "Is the retry bounded?").await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
     assert_eq!(body["anchor"]["kind"], "comment_item");
@@ -2728,24 +2760,124 @@ async fn comment_item_question_with_an_analysis_uses_the_ask_session() {
             .is_empty()
     );
 
-    let path = LIST_PR_QUESTIONS
-        .path
-        .replace("{owner}", "acme")
-        .replace("{name}", "node-client")
-        .replace("{number}", "482");
-    let request = Request::get(path)
-        .header(header::COOKIE, &f.cookie)
-        .body(Body::empty())
-        .expect("request");
-    let (status, list) = json_of(
-        router(f.state.clone())
-            .oneshot(request)
-            .await
-            .expect("response"),
+    let (status, list) = list_questions_at(&f, pr_questions_path(), &f.cookie).await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    assert_eq!(
+        list.as_array()
+            .unwrap()
+            .iter()
+            .map(id_of)
+            .collect::<Vec<_>>(),
+        vec![first, second, id],
+    );
+    assert!(list[0]["answered_at"].is_string(), "{list}");
+    assert_eq!(f.list().await, (StatusCode::OK, list));
+
+    let (status, body) = ask_on_pr_body(
+        &f,
+        json!({
+            "text": "And on timeout?",
+            "anchor": { "kind": "comment_item", "item": item.id },
+            "parent_id": id,
+        }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{list}");
-    assert_eq!(list.as_array().map(Vec::len), Some(1), "{list}");
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(body["parent_id"], json!(id));
+}
+
+#[tokio::test]
+async fn shared_history_keeps_standalone_threads_and_isolates_archives_and_readers() {
+    use db::repo::questions::{NewPrQuestion, PrQuestionLimits};
+
+    let f = fixture(false).await;
+    let other_cookie = crate::test_support::other_user_cookie(&f.state).await;
+    let item = comment_item(&f.state, "history").await;
+    let pr: PrSummary =
+        serde_json::from_value(fixture_json("api-seed/default/pr-resolve.json")["pr"].clone())
+            .expect("pr");
+    let now = Timestamp::now();
+    f.state
+        .db
+        .pull_requests()
+        .upsert(DEFAULT_TENANT, 1, &pr, now)
+        .await
+        .unwrap();
+    let questions = f.state.db.questions();
+    let standalone = QuestionId::new_random();
+    let limits = QuestionLimits {
+        per_analysis: 100,
+        per_user: 30,
+        user_window_start: now - SignedDuration::from_hours(1),
+    };
+    let active = QuestionId::new_random();
+    let archived = QuestionId::new_random();
+    let other = QuestionId::new_random();
+    for (id, analysis_id, user_id) in [
+        (active, f.analysis, "u1"),
+        (archived, f.other, "u1"),
+        (other, f.analysis, "u2"),
+    ] {
+        let question = NewQuestion {
+            id,
+            analysis_id,
+            anchor: AskAnchor::Pr,
+            parent_id: None,
+            user_id: user_id.into(),
+            text: format!("Question {id}?"),
+        };
+        assert!(matches!(
+            questions.create(question, limits, now).await.unwrap(),
+            Asked::Stored(_)
+        ));
+    }
+    let question = NewPrQuestion {
+        id: standalone,
+        pull_request_id: 1,
+        item: item.id,
+        parent_id: None,
+        user_id: "u1".into(),
+        text: "What did the comment mean?".into(),
+    };
+    let standalone_limits = PrQuestionLimits {
+        per_pull_request: 100,
+        per_user: 30,
+        user_window_start: now - SignedDuration::from_hours(1),
+    };
+    assert!(matches!(
+        questions
+            .create_private_for_pr(
+                question,
+                standalone_limits,
+                now - SignedDuration::from_secs(30)
+            )
+            .await
+            .unwrap(),
+        Asked::Stored(_)
+    ));
+
+    let listed_ids = |(status, body): (StatusCode, Value)| {
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body.as_array()
+            .unwrap()
+            .iter()
+            .map(id_of)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(listed_ids(f.list().await), vec![standalone, active]);
+    assert_eq!(
+        listed_ids(list_questions_at(&f, pr_questions_path(), &f.cookie).await),
+        vec![standalone, active]
+    );
+    assert_eq!(
+        listed_ids(list_questions_at(&f, pr_questions_path(), &other_cookie).await),
+        vec![other]
+    );
+    let archived_path = LIST_QUESTIONS.path.replace("{id}", &f.other.to_string());
+    assert_eq!(
+        listed_ids(list_questions_at(&f, archived_path, &f.cookie).await),
+        vec![archived]
+    );
 }
 
 /// Without an analysis of the head (the PR moved on), the question is stored for the pull request and a
@@ -2786,6 +2918,17 @@ async fn comment_item_question_without_an_analysis_starts_a_private_ask() {
     assert_eq!(job.spec.payer.0, "u1");
     assert!(job.spec.assessment.is_none());
     f.answer_with_good_answer(id).await;
+    let (status, list) = list_questions_at(&f, pr_questions_path(), &f.cookie).await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    assert_eq!(
+        list.as_array()
+            .unwrap()
+            .iter()
+            .map(id_of)
+            .collect::<Vec<_>>(),
+        vec![id]
+    );
+    assert!(list[0]["answered_at"].is_string(), "{list}");
 
     let (status, body) = ask_on_pr(
         &f,
@@ -2811,10 +2954,24 @@ async fn private_comment_ask_claim_has_verify_policy_and_reuses_its_private_thre
         .quota(&contracts::ids::UserId("u1".into()), Timestamp::now())
         .await
         .unwrap();
+    let mut root = None;
     for turn in 0..2 {
-        let (status, body) = ask_on_pr(&f, &item.id.to_string(), "Is this retry bounded?").await;
+        let (status, body) = ask_on_pr_body(
+            &f,
+            json!({
+                "text": "Is this retry bounded?",
+                "anchor": {"kind": "comment_item", "item": item.id},
+                "parent_id": root
+            }),
+        )
+        .await;
         assert_eq!(status, StatusCode::ACCEPTED, "{body}");
         let id: QuestionId = serde_json::from_value(body["id"].clone()).unwrap();
+        if let Some(root) = root {
+            assert_eq!(body["parent_id"], json!(root));
+        } else {
+            root = Some(id);
+        }
         f.queued_job(id).await;
         let claim = f.claim().await.expect("private Ask claim");
         assert_eq!(

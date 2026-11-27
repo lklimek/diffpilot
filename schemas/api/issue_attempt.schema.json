@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "IssueAttempt",
+  "description": "The current durable reservation and whether this call won the right to create.",
+  "type": "object",
+  "properties": {
+    "attempt_id": {
+      "description": "The server-generated attempt, absent if no reservation exists.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "reserved": {
+      "description": "Only true on the single successful transition to a new reservation.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "reserved"
+  ]
+}

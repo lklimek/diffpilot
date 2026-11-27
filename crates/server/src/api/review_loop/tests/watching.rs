@@ -27,7 +27,7 @@ fn pr_482() -> PrRef {
 }
 
 /// The probe of PR 482 as the recorded answer holds it (spike S13-2), open.
-fn probe_answer(updated_at: &str) -> Value {
+pub(super) fn probe_answer(updated_at: &str) -> Value {
     json!({"data": {"a0": {"pullRequest": {
         "state": "OPEN",
         "headRefOid": crate::test_support::github::HEAD,
@@ -38,7 +38,7 @@ fn probe_answer(updated_at: &str) -> Value {
     }}}})
 }
 
-async fn mount_probe(server: &MockServer, answer: Value) {
+pub(super) async fn mount_probe(server: &MockServer, answer: Value) {
     Mock::given(method("POST"))
         .and(path("/api/graphql"))
         .and(body_string_contains(PROBE_MARKER))

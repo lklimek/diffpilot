@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "IssueAttemptRequest",
+  "description": "Reserves the GitHub write for a claimed follow-up issue.",
+  "type": "object",
+  "properties": {
+    "retry_of": {
+      "description": "The exact previous attempt, only after verifying its writer stopped and GitHub created no issue.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    }
+  },
+  "additionalProperties": false
+}

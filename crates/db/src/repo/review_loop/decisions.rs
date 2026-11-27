@@ -6,12 +6,13 @@ use jiff::SignedDuration;
 use serde::de::DeserializeOwned;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, Sqlite, Transaction};
+use uuid::Uuid;
 
 use contracts::api::access_tokens::AccessTokenId;
 use contracts::api::review_loop::{
     ClaimInfo, Decision, DecisionKind, DecisionTarget, DecisionVia, Effect, EffectKind,
     EffectParams, EffectReport, EffectState, Executor, FeedDecision, FeedItem, ImportedDecision,
-    ItemState, Override, Recommendation, ReportOutcome, ReviewDecisionKind,
+    IssueAttempt, ItemState, Override, Recommendation, ReportOutcome, ReviewDecisionKind,
 };
 use contracts::common::{LineRange, PrRef, RepoRef};
 use contracts::ids::{CommentItemId, CommitSha, DecisionId, EffectId};
@@ -150,6 +151,8 @@ pub enum ReportOutcomeRecord {
     Ended,
     /// `done` on an effect whose `after` effect is not done.
     Waiting,
+    /// A follow-up issue was reported with a URL outside its server-bound repository.
+    InvalidIssueReference,
 }
 
 /// A claimable decision as the feed tracks it: no live claim, with these kinds of agent effects not yet ended.
@@ -694,8 +697,57 @@ impl ReviewLoop<'_> {
         Ok(ClaimOutcome::Claimed(until))
     }
 
+    /// Grants one writer per attempt for the current claimer of a follow-up issue.
+    pub async fn reserve_issue_attempt(
+        &self,
+        tenant_id: &str,
+        effect: EffectId,
+        token: &AccessTokenId,
+        retry_of: Option<Uuid>,
+        now: Timestamp,
+    ) -> Result<Result<IssueAttempt, ReportOutcomeRecord>, DbError> {
+        let mut tx = write_tx(self.pool).await?;
+        let row = sqlx::query(
+            "SELECT e.state, e.claim_token_id, e.lease_until, e.lapsed_token_id, e.issue_attempt_id,
+                    EXISTS (SELECT 1 FROM comment_decisions n WHERE n.supersedes = d.id
+                            UNION ALL SELECT 1 FROM comment_decision_undos u WHERE u.decision_id = d.id) AS ended
+             FROM comment_effects e JOIN comment_decisions d ON d.id = e.decision_id
+             WHERE e.id = ? AND e.tenant_id = ? AND d.tenant_id = e.tenant_id
+               AND d.kind = 'follow_up_issue' AND e.kind = 'upstream_issue' AND e.executor = 'agent'",
+        )
+        .bind(effect.to_string())
+        .bind(tenant_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(DbError::NotFound)?;
+        if row.try_get::<bool, _>("ended")? {
+            return Ok(Err(ReportOutcomeRecord::Ended));
+        }
+        if let Some(refused) = effect_claim_refusal(&row, token, now)? {
+            return Ok(Err(refused));
+        }
+        let current: Option<Uuid> = opt_wire_col(&row, "issue_attempt_id")?;
+        let reserved = current == retry_of;
+        let attempt_id = if reserved {
+            let attempt = Uuid::new_v4();
+            sqlx::query("UPDATE comment_effects SET issue_attempt_id = ? WHERE id = ?")
+                .bind(attempt.to_string())
+                .bind(effect.to_string())
+                .execute(&mut *tx)
+                .await?;
+            Some(attempt)
+        } else {
+            current
+        };
+        tx.commit().await?;
+        Ok(Ok(IssueAttempt {
+            attempt_id,
+            reserved,
+        }))
+    }
+
     /// Records a report of the effect's claimer: `done` and `failed` end the effect, `released` returns every
-    /// effect of the claim to the feed; each report renews the lease of the claim's other effects.
+    /// effect of the claim to the feed. A failed follow-up issue is returned to the feed with its attempt intact.
     pub async fn report(
         &self,
         tenant_id: &str,
@@ -719,32 +771,37 @@ impl ReviewLoop<'_> {
             return Ok(ReportOutcomeRecord::Duplicate);
         }
         let row = sqlx::query(
-            "SELECT e.decision_id, e.state, e.claim_token_id, e.lease_until, e.lapsed_token_id,
+            "SELECT e.decision_id, e.state, e.claim_token_id, e.lease_until, e.lapsed_token_id, r.owner, r.name,
+                 d.kind = 'follow_up_issue' AND e.kind = 'upstream_issue' AS issue_creation,
                  (SELECT p.state FROM comment_effects p WHERE p.decision_id = e.decision_id
                     AND p.seq = e.after_seq) AS after_state
-             FROM comment_effects e WHERE e.id = ?",
+             FROM comment_effects e JOIN comment_decisions d ON d.id = e.decision_id
+             JOIN comment_items i ON i.id = d.item_id JOIN pull_requests p ON p.id = i.pull_request_id
+             JOIN repos r ON r.id = p.repo_id
+             WHERE e.id = ? AND e.tenant_id = ?",
         )
         .bind(effect.to_string())
+        .bind(tenant_id)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or(DbError::NotFound)?;
+        if let Some(refused) = effect_claim_refusal(&row, token, now)? {
+            return Ok(refused);
+        }
         let decision: String = row.try_get("decision_id")?;
-        let holder: Option<String> = row.try_get("claim_token_id")?;
-        let lapsed: Option<String> = row.try_get("lapsed_token_id")?;
-        let state: EffectState = wire_col(&row, "state")?;
-        let token_id = Some(token.0.as_str());
-        if terminal(state) {
-            return Ok(ReportOutcomeRecord::Ended);
-        }
-        if state != EffectState::Claimed || holder.as_deref() != token_id {
-            return Ok(if lapsed.as_deref() == token_id {
-                ReportOutcomeRecord::LeaseExpired
-            } else {
-                ReportOutcomeRecord::NotClaimer
-            });
-        }
-        if opt_ts_col(&row, "lease_until")?.is_some_and(|until| until < now) {
-            return Ok(ReportOutcomeRecord::LeaseExpired);
+        let issue_creation: bool = row.try_get("issue_creation")?;
+        if issue_creation && report.outcome == ReportOutcome::Done {
+            let repo = RepoRef {
+                owner: row.try_get("owner")?,
+                name: row.try_get("name")?,
+            };
+            if !report
+                .reference
+                .as_deref()
+                .is_some_and(|url| repo.contains_issue_url(url))
+            {
+                return Ok(ReportOutcomeRecord::InvalidIssueReference);
+            }
         }
         let after: Option<EffectState> = opt_wire_col(&row, "after_state")?;
         if report.outcome == ReportOutcome::Done
@@ -768,6 +825,9 @@ impl ReviewLoop<'_> {
         .execute(&mut *tx)
         .await?;
         match report.outcome {
+            ReportOutcome::Failed if issue_creation => {
+                release(&mut tx, &decision, Some(&token.0), now).await?;
+            }
             ReportOutcome::Done | ReportOutcome::Failed => {
                 sqlx::query(
                     "UPDATE comment_effects SET state = ?, reference = ?, message = ?, claim_token_id = NULL,
@@ -965,6 +1025,30 @@ async fn release(
     Ok(())
 }
 
+fn effect_claim_refusal(
+    row: &SqliteRow,
+    token: &AccessTokenId,
+    now: Timestamp,
+) -> Result<Option<ReportOutcomeRecord>, DbError> {
+    let state: EffectState = wire_col(row, "state")?;
+    if terminal(state) {
+        return Ok(Some(ReportOutcomeRecord::Ended));
+    }
+    let holder: Option<String> = row.try_get("claim_token_id")?;
+    if state != EffectState::Claimed || holder.as_deref() != Some(token.0.as_str()) {
+        let lapsed: Option<String> = row.try_get("lapsed_token_id")?;
+        return Ok(Some(if lapsed.as_deref() == Some(token.0.as_str()) {
+            ReportOutcomeRecord::LeaseExpired
+        } else {
+            ReportOutcomeRecord::NotClaimer
+        }));
+    }
+    if opt_ts_col(row, "lease_until")?.is_some_and(|until| until < now) {
+        return Ok(Some(ReportOutcomeRecord::LeaseExpired));
+    }
+    Ok(None)
+}
+
 /// Why `token` cannot claim the decision now, if it cannot.
 async fn claim_refusal(
     tx: &mut Transaction<'static, Sqlite>,
@@ -1064,6 +1148,9 @@ async fn store(
         }
         let supersedes = current_id(tx, new.item).await?;
         if let Some(previous) = &supersedes {
+            if super::actions::pending_issue(tx, previous).await? {
+                return Err(DbError::Conflict);
+            }
             super::actions::cancel_unclaimed(tx, previous, now).await?;
             superseded.push((previous.clone(), &new.user_id));
         }

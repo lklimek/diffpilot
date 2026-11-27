@@ -21,7 +21,7 @@ export interface CardKeys {
   choose?: (index: number) => void;
   decide: () => void;
   ask?: () => void;
-  skip: () => void;
+  skip?: () => void;
 }
 
 /** Listens for the card's keys while focus is not in a field, the Ask chat or a dialog. */
@@ -49,14 +49,14 @@ export function useCardKeys(keys: CardKeys): void {
         choose(n - 1);
       } else if (
         event.key === "Enter" &&
-        !(event.target instanceof HTMLButtonElement || event.target instanceof HTMLAnchorElement)
+        !(event.target instanceof HTMLElement && event.target.closest("button, a, summary"))
       ) {
         event.preventDefault();
         decide();
       } else if (event.key === "a" && ask) {
         event.preventDefault();
         ask();
-      } else if (event.key === "s") {
+      } else if (event.key === "s" && skip) {
         event.preventDefault();
         skip();
       }

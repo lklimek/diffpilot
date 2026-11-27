@@ -2313,7 +2313,7 @@ async fn question_without_analysis_is_answered_by_a_question_pass() {
         .state
         .db
         .questions()
-        .list_for_pull_request(PR, "u1", Timestamp::now())
+        .list_for_pull_request(PR, None, "u1", Timestamp::now())
         .await
         .expect("list");
     assert_eq!(questions.len(), 1);
@@ -2578,7 +2578,7 @@ async fn stored_texts_pass_the_current_guard_when_read() {
         },
         id: PR,
     };
-    let rest = super::super::views::decide_rest(&f.state, handle)
+    let rest = super::super::views::decide_rest(&f.state, "u1", handle)
         .await
         .expect("rows");
     let row = rest.rows.first().expect("a row");
@@ -2779,7 +2779,9 @@ fn verify_comments_prompt_explains_translated_technical_terms() {
         let (instructions, _) = prompt
             .split_once(agent::verify_comments::DATA_BLOCK_OPEN)
             .expect("data block");
-        assert!(instructions.contains("`reply_drafts`, which are always in English"));
+        assert!(instructions.contains(
+            "`reply_drafts` and the GitHub pull request title in `recommendation.title` for `follow_up_pr`, which are always in English"
+        ));
         assert_eq!(
             instructions.contains(rule),
             language != LlmLanguage::En,

@@ -3631,6 +3631,7 @@ async fn stating(
         summary: Some("Stage owner".to_owned()),
         details: Vec::new(),
         facts: Vec::new(),
+        actions: Vec::new(),
         ready_to_merge: None,
         whose_move: Some(whose),
         github_updated_at: None,
@@ -3795,7 +3796,7 @@ async fn nonretryable_failures_end_ranking_with_their_plain_cause() {
     for (kind, message) in [
         (
             Configuration,
-            "The server is misconfigured: a required agent skill is missing. Ask the administrator.",
+            "The server configuration prevented the job from running. Ask the administrator.",
         ),
         (OutputNotJson, format),
         (CredentialUnusable, link),

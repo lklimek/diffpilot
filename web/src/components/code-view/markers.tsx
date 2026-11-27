@@ -1,5 +1,9 @@
 import { AskRemarkButton } from "../ask/AskRemarkButton";
-import { GithubCommentText } from "../comments/GithubCommentText";
+import {
+  GithubThreadPreview,
+  OpenThreadInComments,
+  type GithubThreadActions,
+} from "../comments/GithubThreadPreview";
 import type { Annotation, AnnotationId, GithubThread } from "../../api/generated/types";
 import { MARKER, SpeechBubble } from "../comment/LineComments";
 import { GithubLink, isGithubUrl } from "../inspector/text";
@@ -171,12 +175,14 @@ export function ThreadMarker({
   line,
   onShowInInspector,
   otherStep,
+  threadActions,
 }: {
   threads: readonly GithubThread[];
   line: number;
   onShowInInspector?: (target: MarkerTarget) => void;
   /** "N.M" of a thread's step when it is not the step shown. */
   otherStep?: (thread: GithubThread) => string | null;
+  threadActions?: GithubThreadActions;
 }) {
   const n = threads.length;
   return (
@@ -188,10 +194,8 @@ export function ThreadMarker({
         threads.map((t) => (
           <span key={t.id} className="block">
             <span className="block font-semibold">@{t.author}</span>{" "}
-            <span className="line-clamp-4 whitespace-pre-wrap">
-              <GithubCommentText text={t.excerpt} />
-            </span>
-            {pinned && ((onShowInInspector && t.step_id !== null) || isGithubUrl(t.url)) && (
+            <GithubThreadPreview thread={t} actions={pinned ? threadActions : undefined} compact />
+            {pinned && (threadActions || (onShowInInspector && t.step_id !== null) || isGithubUrl(t.url)) && (
               <span className="mt-0.5 flex flex-wrap items-center gap-x-3">
                 {onShowInInspector && t.step_id !== null && (
                   <ShowInInspector
@@ -201,10 +205,15 @@ export function ThreadMarker({
                   />
                 )}
                 {isGithubUrl(t.url) && (
-                  <GithubLink url={t.url} tip="Open the thread on GitHub (new tab)">
+                  <GithubLink
+                    url={t.url}
+                    tip="Open the thread on GitHub (new tab)"
+                    className="inline-flex min-h-6 items-center"
+                  >
                     Open on GitHub
                   </GithubLink>
                 )}
+                {threadActions && <OpenThreadInComments id={t.id} actions={threadActions} />}
               </span>
             )}
           </span>

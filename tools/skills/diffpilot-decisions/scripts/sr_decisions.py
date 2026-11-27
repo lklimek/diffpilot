@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Carry out the owner's decisions from the diffpilot decision feed (list, wait, claim, report).
 
-Contract: diffpilot docs/contracts/agent-api.md §7, http-api.md "Review loop" (RF1-RF4), sse-events.md.
+Contract: diffpilot docs/contracts/agent-api.md §7, http-api.md "Review loop" (RF1–RF4b), sse-events.md.
 The access token (scope review_loop_execute) is read from SR_AGENT_KEY in the env file and sent only as
 `Authorization: Bearer`. Exit codes: 0 ok, 2 configuration or bad request, 3 authentication, 4 server or
 unreachable, 5 nothing claimable, 6 not yours or gone, 7 lease ended.
@@ -26,6 +26,7 @@ import tempfile
 import time
 import unicodedata
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 
@@ -60,6 +61,7 @@ REPLY_KINDS = ("reply", "pr_comment")
 REVIEW_LINE_RE = re.compile(r"(@[^\s,]+, re \[your review\]|Re \[\S+'s review\])\(https://github\.com/[^\s()]+\):")
 ENDED_STATES = ("done", "failed", "cancelled")
 GH_TIMEOUT = 60
+ISSUE_CLOCK_SKEW = timedelta(minutes=5)
 # GitHub moves a PR head shortly after a push: a `behind` compare is read again this often, this far apart.
 HEAD_REREADS = 3
 HEAD_REREAD_DELAY = 5
@@ -994,7 +996,8 @@ def _combined(parts: list[tuple[int, str, str]]) -> str:
         first, sep, rest = text.partition("\n")
         if sep and REVIEW_LINE_RE.fullmatch(first) and heading in (None, first):
             heading, text = first, rest
-        listed.append(f"C{no}: {text}")
+        separator = "\n" if text.startswith("> ") else " "
+        listed.append(f"C{no}:{separator}{text}")
     body = "\n\n".join(listed)
     return body if heading is None else f"{heading}\n{body}"
 
@@ -1105,6 +1108,132 @@ def _gh(command: list[str]) -> subprocess.CompletedProcess:
 def _gh_failure(done: subprocess.CompletedProcess) -> str:
     lines = done.stderr.strip().splitlines()
     return f"exit {done.returncode}" + (f": {clean(lines[-1])[:200]}" if lines else "")
+
+
+def _github_item_url(value: object, repo: str, kind: str, number: int | None = None) -> str | None:
+    value = _safe_url(value)
+    if value is None:
+        return None
+    parts = urlsplit(value)
+    suffix = str(number) if number is not None else r"[1-9][0-9]*"
+    expected = rf"/{re.escape(repo)}/{kind}/{suffix}"
+    if parts.scheme != "https" or parts.netloc != "github.com" or parts.query or (kind == "issues" and parts.fragment):
+        return None
+    return value if re.fullmatch(expected, parts.path, re.IGNORECASE) else None
+
+
+def _existing_issue(repo: str, since: str, marker: str) -> str | None:
+    query = urlencode({"state": "all", "sort": "created", "direction": "desc", "since": since, "per_page": 100})
+    listed = _gh(["gh", "api", "--hostname", "github.com", "--paginate", "--slurp", f"repos/{repo}/issues?{query}"])
+    if listed.returncode:
+        raise SrError("could not look for an existing follow-up issue", EXIT_SERVER)
+    try:
+        pages = json.loads(listed.stdout)
+    except ValueError:
+        raise SrError("GitHub returned an unexpected issue list", EXIT_SERVER) from None
+    if not isinstance(pages, list) or not all(isinstance(page, list) for page in pages):
+        raise SrError("GitHub returned an unexpected issue list", EXIT_SERVER)
+    found = set()
+    for page in pages:
+        for issue in page:
+            if not isinstance(issue, dict) or "body" not in issue:
+                raise SrError("GitHub returned an unexpected issue list", EXIT_SERVER)
+            body = issue["body"]
+            if "pull_request" in issue or not isinstance(body, str) or marker not in body.splitlines():
+                continue
+            url = _github_item_url(issue.get("html_url"), repo, "issues")
+            if url is None:
+                raise SrError("a matching issue has no valid URL", EXIT_SERVER)
+            found.add(url)
+    if len(found) > 1:
+        raise SrError("multiple issues carry this follow-up marker; identify the intended issue before continuing", EXIT_CONFIG)
+    return next(iter(found), None)
+
+
+def cmd_create_issue(client: Client, args) -> int:
+    fd = _feed_decision(client, args.decision)
+    decision = fd["decision"]
+    match = PR_SPEC_RE.fullmatch(_pr_name(fd.get("pr")))
+    if match is None or match[1].lower() != args.repo.lower() or decision.get("kind") != "follow_up_issue":
+        raise SrError("the decision is not a follow-up issue for the specified repository", EXIT_CONFIG)
+    repo, number = match[1], int(match[2])
+    effect = next((e for e in _effects(decision) if e.get("id") == args.effect), {})
+    if effect.get("kind") != "upstream_issue" or effect.get("executor") != "agent":
+        raise SrError("the effect is not this decision's issue creation", EXIT_CONFIG)
+    if reference := _github_item_url(_done_reference(effect), repo, "issues"):
+        print(reference)
+        return EXIT_OK
+    since = decision.get("decided_at")
+    if not isinstance(since, str) or not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z", since):
+        raise SrError("the decision is missing its creation time", EXIT_SERVER)
+    try:
+        since = (datetime.fromisoformat(since[:19]) - ISSUE_CLOCK_SKEW).isoformat(timespec="seconds") + "Z"
+    except (ValueError, OverflowError):
+        raise SrError("the decision has an invalid creation time", EXIT_SERVER) from None
+    try:
+        title = Path(args.title_file).read_text(encoding="utf-8").strip()
+        body = Path(args.body_file).read_text(encoding="utf-8").strip() if args.body_file else ""
+    except (OSError, UnicodeDecodeError) as exc:
+        raise SrError(f"cannot read the issue title or body file ({type(exc).__name__})", EXIT_CONFIG) from None
+    if not title or "\n" in title or "\r" in title:
+        raise SrError("the title must be one nonempty line", EXIT_CONFIG)
+    if client.cfg.footer and body.endswith(client.cfg.footer):
+        body = body.removesuffix(client.cfg.footer).rstrip()
+    source = _github_item_url(_obj(fd.get("item")).get("url"), repo, "pull", number)
+    source = source or f"https://github.com/{repo}/pull/{number}"
+    if source not in body:
+        citation = f"Original review: {source}"
+        body = _paragraph(body, citation) if body else citation
+    marker = f"<!-- diffpilot-follow-up:{args.effect} -->"
+    path = write_new(signed(_paragraph(body, marker), client.cfg.footer), None)
+    try:
+        claimed = _obj(_claim(client, args.decision, args.capabilities).get("decision"))
+        if not any(e.get("id") == args.effect and e.get("state") == "claimed" for e in _effects(claimed["decision"])):
+            raise SrError("the issue creation is no longer claimed", EXIT_GONE)
+        if reference := _existing_issue(repo, since, marker):
+            print(reference)
+            return EXIT_OK
+        attempt_path = f"{FEED_PATH}/effects/{args.effect}/issue-attempt"
+        _, _, raw = client.request(
+            "POST", attempt_path, body={"retry_of": args.retry_confirmed_missing}, subject=args.effect,
+        )
+        attempt = _decode(raw, attempt_path)
+        attempt_id = attempt.get("attempt_id")
+        if attempt_id is None and attempt.get("reserved") is False and args.retry_confirmed_missing is not None:
+            raise SrError("there is no prior issue creation attempt for this effect", EXIT_CONFIG)
+        if not isinstance(attempt_id, str) or not UUID_RE.fullmatch(attempt_id):
+            raise SrError("the server did not identify an issue creation attempt; check the claim and retry", EXIT_SERVER)
+        if attempt.get("reserved") is not True or args.retry_confirmed_missing is not None:
+            if reference := _existing_issue(repo, since, marker):
+                print(reference)
+                return EXIT_OK
+        if attempt.get("reserved") is not True:
+            raise SrError(
+                f"issue creation attempt {attempt_id} is not confirmed; retry only when its executor "
+                "has stopped and GitHub confirms no issue was created",
+                EXIT_SERVER,
+            )
+        try:
+            created = _gh([
+                "gh", "issue", "create", "--repo", f"github.com/{repo}", f"--title={title}", "--body-file", str(path)
+            ])
+        except SrError:
+            created = None
+    finally:
+        path.unlink(missing_ok=True)
+    reference = _github_item_url(created.stdout.strip(), repo, "issues") if created and not created.returncode else None
+    if reference is None:
+        try:
+            reference = _existing_issue(repo, since, marker)
+        except SrError as exc:
+            raise SrError(f"issue creation attempt {attempt_id} was not confirmed ({exc})", exc.exit_code) from None
+    if reference is None:
+        raise SrError(
+            f"issue creation attempt {attempt_id} was not confirmed; check the repository before retrying",
+            EXIT_SERVER,
+        )
+    print(reference)
+    return EXIT_OK
 
 
 def _verify_head(args, reference: str | None) -> None:
@@ -1399,6 +1528,17 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     renew = sub.add_parser("renew", help="renew your lease on a decision (claims it again)")
     renew.add_argument("decision", type=_id)
     caps(renew)
+    issue = sub.add_parser("create-issue", help="create or recover a claimed same-repository follow-up issue")
+    issue.add_argument("decision", type=_id)
+    issue.add_argument("effect", type=_id)
+    issue.add_argument("--repo", type=_repo, required=True, metavar="OWNER/NAME")
+    issue.add_argument("--title-file", required=True, metavar="FILE")
+    issue.add_argument("--body-file", metavar="FILE")
+    issue.add_argument(
+        "--retry-confirmed-missing", type=_id, metavar="ATTEMPT",
+        help="retry this exact attempt only after its executor stopped and GitHub created no issue",
+    )
+    caps(issue)
     rep = sub.add_parser("report", help="report one effect: done, failed or released (RF4)")
     rep.add_argument("effect", type=_id)
     rep.add_argument("outcome", choices=("done", "failed", "released"))
@@ -1427,6 +1567,7 @@ COMMANDS = {
     "combine": cmd_combine,
     "claim": cmd_claim,
     "renew": cmd_renew,
+    "create-issue": cmd_create_issue,
     "report": cmd_report,
     "footer": cmd_footer,
 }

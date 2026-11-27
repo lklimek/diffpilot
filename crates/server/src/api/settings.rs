@@ -418,7 +418,7 @@ pub(crate) fn plain_failure(failure: Option<CallFailure>) -> &'static str {
             | JobFailureKind::CredentialMissing
             | JobFailureKind::CredentialRelink => SIGN_IN_NEEDED,
             JobFailureKind::Configuration => {
-                "The server is misconfigured: a required agent skill is missing. Ask the administrator."
+                "The server configuration prevented the job from running. Ask the administrator."
             }
             JobFailureKind::ProviderFailed => PROVIDER_REJECTED,
             JobFailureKind::OutputNotJson => ANSWER_FORMAT,

@@ -232,11 +232,12 @@ fn every_route_has_a_token_classification() {
 /// Sensitive credential and notification settings stay session-only alongside the token list.
 #[tokio::test]
 async fn every_session_get_route_accepts_read_tokens_except_listed() {
-    const SESSION_ONLY: [Route; 4] = [
+    const SESSION_ONLY: [Route; 5] = [
         LIST_ACCESS_TOKENS,
         GET_NOTIFICATION_SETTINGS,
         contracts::routes::GET_CODEX,
         contracts::routes::GET_CODEX_LINK,
+        contracts::routes::GET_GITHUB_THREAD,
     ];
     for route in ROUTES.iter().filter(|route| {
         route.listener == Listener::Public

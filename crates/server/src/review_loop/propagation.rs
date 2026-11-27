@@ -289,8 +289,8 @@ impl Loaded {
                     item_revision: item.revision,
                     plan_digest: None,
                 };
-                let mut planned =
-                    effects::plan(&self.effect_item(item).ok()?, &request, &scope).ok()?;
+                let effect_item = self.effect_item(item).ok()?;
+                let mut planned = effects::plan(&effect_item, &request, &scope).ok()?;
                 if let Some(artefact) = planned
                     .effects
                     .iter()
@@ -302,7 +302,15 @@ impl Loaded {
                         .as_deref()
                         .and_then(crate::github::threads::github_web_url)
                         .unwrap_or_else(|| snapshot.url.clone());
-                    let text = format!("Duplicate of {link}");
+                    let title: String = source
+                        .title
+                        .lines()
+                        .next()
+                        .unwrap_or_default()
+                        .chars()
+                        .take(200)
+                        .collect();
+                    let text = effect_item.with_source(format!("Duplicate of {title}: {link}"));
                     planned.reply_text = Some(text.clone());
                     planned.effects.retain(|effect| !is_artefact(effect.kind));
                     for effect in &mut planned.effects {

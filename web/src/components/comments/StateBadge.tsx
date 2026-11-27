@@ -4,6 +4,9 @@ import { Tooltip } from "../tooltip/Tooltip";
 // Plan §3.9 B1–B5: colour, icon and text together; the tooltip lists the facts diffpilot read.
 const LOOK: Record<PrBadge, { label: string; icon: string; look: string }> = {
   blocked_failing: { label: "Blocked / failing", icon: "✕", look: "border-high-bd bg-high-bg text-high" },
+  github_outdated: { label: "GitHub data outdated", icon: "↻", look: "border-high-bd bg-high-bg text-high" },
+  assessment_needed: { label: "Assessment needed", icon: "◌", look: "border-med-bd bg-med-bg text-med" },
+  assessing: { label: "Assessment in progress", icon: "◌", look: "border-med-bd bg-med-bg text-med" },
   questions_waiting: { label: "Questions waiting", icon: "?", look: "border-med-bd bg-med-bg text-med" },
   executing: { label: "Executing", icon: "▶", look: "border-chg-bd bg-chg-bg text-chg" },
   waiting_for_bot_round: {

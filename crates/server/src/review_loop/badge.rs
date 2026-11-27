@@ -782,7 +782,7 @@ mod tests {
         rl.set_watch_state("u1", handle.id, WatchState::LimitReached, now)
             .await
             .unwrap();
-        let view = || super::super::views::badge(&state, handle.clone(), &work);
+        let view = || super::super::views::badge(&state, handle.clone(), "u1", &work);
         assert_eq!(view().await.unwrap().badge, Some(PrBadge::ReadyToMerge));
         rl.upsert_item(
             DEFAULT_TENANT,
@@ -811,7 +811,7 @@ mod tests {
             .await
             .unwrap();
         }
-        let view = super::super::views::badge(&state, handle, &work)
+        let view = super::super::views::badge(&state, handle, "u1", &work)
             .await
             .unwrap();
         assert_eq!(view.badge, Some(PrBadge::ReadyToMerge), "{view:?}");
@@ -873,7 +873,7 @@ mod tests {
         else {
             panic!("new pass")
         };
-        let view = || super::super::views::badge(&state, handle.clone(), &work);
+        let view = || super::super::views::badge(&state, handle.clone(), "u1", &work);
         let reassessing = "1 review item being assessed again".to_owned();
         let queued = view().await.unwrap();
         assert_eq!(queued.badge, Some(PrBadge::ReadyToMerge));
@@ -1016,7 +1016,7 @@ mod tests {
             .unwrap(),
             ReportOutcomeRecord::Recorded
         );
-        let view = super::super::views::badge(&state, handle, &work)
+        let view = super::super::views::badge(&state, handle, "u1", &work)
             .await
             .unwrap();
         assert_eq!(view.badge, Some(PrBadge::ReadyToMerge), "{view:?}");

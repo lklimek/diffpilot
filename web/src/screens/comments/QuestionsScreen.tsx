@@ -12,7 +12,7 @@ import {
   useDecideBatch,
   useDecideRest,
   useEffectsPreview,
-  useItemAction,
+  useSkipCommentItems,
   transientFailure,
   useMarkGate,
   useUndoDecision,
@@ -91,7 +91,7 @@ export function QuestionsScreen() {
   const chat = useAskChat();
   const decide = useDecide(pr);
   const batch = useDecideBatch(pr);
-  const action = useItemAction(pr);
+  const skipItems = useSkipCommentItems(pr);
   const undoDecision = useUndoDecision(pr);
   const assessAgain = useAssessAgain(pr);
   const markGate = useMarkGate(pr);
@@ -101,7 +101,6 @@ export function QuestionsScreen() {
   const decideRest = useDecideRest(pr);
   // The decision drafted on the shown card; the server plans it (RC16).
   const [draft, setDraft] = useState<DecisionBatchRow[] | null>(null);
-  const [skipped, setSkipped] = useState<ReadonlySet<string>>(new Set());
   // After Decide or Skip: the items that follow in the list; the first one still queued opens (plan §3.2 item 9).
   const [after, setAfter] = useState<number[] | null>(null);
   const [individual, setIndividual] = useState<ReadonlySet<number>>(new Set());
@@ -129,37 +128,34 @@ export function QuestionsScreen() {
   }, [items]);
   const storageKey = `${login}:comments-question`;
 
-  // The queue in list order with groups split where the owner chose to discuss rows individually; skipped entries
-  // last in their section.
+  // Split groups where the reader chose to discuss rows individually.
   const queue = useMemo(() => {
     const out: QueueEntry[] = [];
     for (const entry of needsYouQueue(overview.queue, byNo)) {
       const nos = entry.item_nos.filter((n) => byNo.has(n));
       const singles = nos.filter((n) => individual.has(n));
       const kept = nos.filter((n) => !individual.has(n));
-      out.push(...singles.map((n) => ({ item_nos: [n], reason: "single" as const })));
+      out.push(...singles.map((n) => ({ ...entry, item_nos: [n], reason: "single" as const })));
       if (kept.length >= 2) out.push({ ...entry, item_nos: kept });
       else if (kept.length === 1)
         out.push({ ...entry, item_nos: kept, reason: nos.length > 1 ? "single" : entry.reason });
     }
-    return inListOrder([
-      ...out.filter((e) => !skipped.has(entryKey(e))),
-      ...out.filter((e) => skipped.has(entryKey(e))),
-    ]);
-  }, [overview.queue, byNo, individual, skipped]);
+    return inListOrder(out);
+  }, [overview.queue, byNo, individual]);
+  const active = queue.filter((entry) => !entry.skipped);
 
   const asked = search.get("item");
   const askedNo = asked && /^[CP]\d+$/.test(asked) ? Number(asked.slice(1)) : null;
   const askedEntry = askedNo === null ? undefined : queue.find((e) => e.item_nos.includes(askedNo));
   const following = after
-    ?.map((no) => queue.find((e) => e.item_nos.includes(no)))
+    ?.map((no) => active.find((e) => e.item_nos.includes(no)))
     .find((e) => e !== undefined);
   const entry: QueueEntry | null =
     askedEntry ??
     (askedNo !== null && byNo.has(askedNo)
       ? { item_nos: [askedNo], reason: "single" }
-      : (following ?? queue[0] ?? null));
-  const index = entry ? queue.findIndex((e) => entryKey(e) === entryKey(entry)) : -1;
+      : (following ?? active[0] ?? null));
+  const index = entry ? active.findIndex((e) => entryKey(e) === entryKey(entry)) : -1;
   const single = entry && entry.item_nos.length === 1 ? byNo.get(entry.item_nos[0]!) : undefined;
 
   // A PR-level question's plan also depends on the other items (P1 acts on what still waits, P3 on stale reviews).
@@ -217,11 +213,10 @@ export function QuestionsScreen() {
       `${what}: ${mark ? "Not a review point" : "decision recorded"}. ${left} ${left === 1 ? "question" : "questions"} left.`,
     );
     selectItem(null, true);
-    setSkipped(new Set());
     setAfter(next);
   };
   const onDecide = (item: CommentItem, request: DecideRequest) => {
-    const next = entry && itemsAfter(queue, entry);
+    const next = entry && itemsAfter(active, entry);
     decide.mutate(
       { no: item.no, body: request },
       {
@@ -235,7 +230,7 @@ export function QuestionsScreen() {
   };
   // A group goes on after itself; "Decide the rest" opens the first entry still waiting.
   const onBatch = (via: "group" | "bulk", rows: DecisionBatchRow[]) => {
-    const next = via === "group" && entry ? itemsAfter(queue, entry) : null;
+    const next = via === "group" && entry ? itemsAfter(active, entry) : null;
     batch.mutate(
       { via, rows },
       {
@@ -268,23 +263,26 @@ export function QuestionsScreen() {
         setAssessNote({ no: item.no, text: "Asked: diffpilot's LLM assesses this comment again." }),
       onError: (failure) => setAssessNote({ no: item.no, text: errorText(failure) }),
     });
-  // "Skip for now": last in this reader's queue, here at once and on the server until the item changes; the next
-  // entry in the list opens.
   const skip = () => {
-    if (entry) setSkipped(new Set(skipped).add(entryKey(entry)));
-    setAfter(entry && [...itemsAfter(queue, entry), ...entry.item_nos]);
-    for (const no of entry?.item_nos ?? []) {
+    if (!entry || entry.skipped || skipItems.isPending) return;
+    const next = itemsAfter(active, entry);
+    const revisions = entry.item_nos.flatMap((no) => {
       const item = byNo.get(no);
-      if (item) action.mutate({ action: "skip", no, revision: item.revision });
-    }
-    selectItem(null, true);
+      return item ? [item] : [];
+    });
+    skipItems.mutate(revisions, {
+      onSuccess: () => {
+        setAfter(next);
+        selectItem(null, true);
+      },
+    });
   };
   const ask = (item: CommentItem) => chat.open({ anchor: { kind: "comment_item", item: item.id } });
 
   // Queue keys (plan §3.8); the card handles 1–8, Enter, a and s.
-  const latestRef = useRef({ queue, index, single, navigate, pr, open });
+  const latestRef = useRef({ queue: active, index, single, navigate, pr, open });
   useLayoutEffect(() => {
-    latestRef.current = { queue, index, single, navigate, pr, open };
+    latestRef.current = { queue: active, index, single, navigate, pr, open };
   });
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -323,11 +321,17 @@ export function QuestionsScreen() {
     single?.state === "reopened"
       ? log.data?.carry_events.find((e) => e.item_no === single.no && e.kind === "asked_again")
       : undefined;
-  const gateCount = queue
+  const gateCount = active
     .flatMap((e) => e.item_nos)
     .map((n) => byNo.get(n))
     .filter((i) => i && i.gates.length > 0).length;
-  const error = decide.isError ? errorText(decide.error) : batch.isError ? errorText(batch.error) : null;
+  const error = decide.isError
+    ? errorText(decide.error)
+    : batch.isError
+      ? errorText(batch.error)
+      : skipItems.isError
+        ? errorText(skipItems.error)
+        : null;
   const undoError = undoable && undoDecision.isError ? errorText(undoDecision.error) : null;
 
   const deferred = new Map<QueueStatus, number>();
@@ -387,13 +391,13 @@ export function QuestionsScreen() {
         key={entryKey(entry)}
         items={entry.item_nos.map((n) => byNo.get(n)!)}
         duplicates={duplicates}
-        position={{ index: index + 1, total: queue.length }}
+        position={{ index: index + 1, total: active.length }}
         onDecide={(rows) => onBatch("group", rows)}
         onDiscussIndividually={(no) => {
           setIndividual(new Set(individual).add(no));
           setAnnouncement(`C${no} will be asked on its own.`);
         }}
-        onSkip={skip}
+        onSkip={entry.skipped ? undefined : skip}
         busy={batch.isPending}
         error={error}
         storageKey={storageKey}
@@ -408,7 +412,7 @@ export function QuestionsScreen() {
         item={single}
         prUrl={overview.url}
         onDecide={(request) => onDecide(single, request)}
-        onSkip={skip}
+        onSkip={entry.skipped ? undefined : skip}
         busy={decide.isPending}
         error={error}
         preview={preview}
@@ -429,12 +433,14 @@ export function QuestionsScreen() {
   else if (single)
     card = (
       <QuestionCard
+        repository={`${pr.repo.owner}/${pr.repo.name}`}
         key={single.id}
         item={single}
         duplicates={duplicates.get(single.no) ?? []}
         primaryHref={primary != null && byNo.has(primary) ? itemHref(primary) : undefined}
         reask={reask}
-        position={{ index: index + 1, total: Math.max(queue.length, index + 1) }}
+        position={index < 0 ? undefined : { index: index + 1, total: active.length }}
+        skipped={entry.skipped}
         prNumber={pr.number}
         purpose={overview.purpose}
         context={contextState}
@@ -453,7 +459,7 @@ export function QuestionsScreen() {
         onAsk={() => ask(single)}
         onOpenAnswers={() => ask(single)}
         onDecide={(request) => onDecide(single, request)}
-        onSkip={skip}
+        onSkip={entry.skipped ? undefined : skip}
         preview={preview}
         onDraft={setDraft}
         onMoreLines={(direction) => {

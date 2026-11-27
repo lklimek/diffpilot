@@ -300,7 +300,9 @@ thepastaclaw status, the Watch toggle with its badge. Two cards side by side:
    and Files, brief amendment 2026-11-19, subject chip "Comment C14"; no separate ask box), **Skip for now**. After
    Decide the next card opens with focus on its heading: the entry after the decided one in the list (after a group,
    the entry after the group; after the last entry, the first one still waiting), skipping entries a decision took
-   out of the queue (owner 2026-11-23); Skip for now moves on the same way, and "Decide the rest" opens the first
+   out of the queue (owner 2026-11-23). Skip for now opens the next active question and moves the skipped questions
+   to Skipped for this reader and item revision. Skipped entries remain available for an explicit decision. They are
+   excluded from Needs you and Decide the rest. "Decide the rest" opens the first
    entry still waiting. The live region announces the outcome and the count; Undo until an effect is claimed. The
    Ask chat's threads about this item are counted on the card ("1 Ask answer").
 
@@ -378,7 +380,10 @@ targets ≥ 24 px; focus not hidden by sticky bars; no colour-only meaning; axe 
 | ID | Label | Colour (token) | Rule (facts diffpilot read; tooltip lists them) |
 |---|---|---|---|
 | B1 | Blocked / failing | red (`high`) | a failed effect, CI failed (the reader's Ignored checks, failing or pending, left out as in My work), or a push channel failing for this PR's events |
-| B2 | Questions waiting | amber (`med`) | undecided questions exist |
+| B1a | GitHub data outdated | red (`high`) | Comments still shows an earlier head after a verified synchronize event. The badge lasts until the displayed snapshot includes that update. |
+| B1b | Assessment in progress | amber (`med`) | Comments shows a queued or running assessment. |
+| B1c | Assessment needed | amber (`med`) | Comments shows review items that still need an assessment at this head. |
+| B2 | Questions waiting | muted blue (`low`) in Comments, amber (`med`) elsewhere | active undecided questions exist |
 | B3 | Executing | teal (`bot`) | decided effects are open or claimed |
 | B4 | Waiting for bot round | blue (`low`) | thepastaclaw reports this head reviewing or queued, or a watched pass waits for the round |
 | B5 | Ready to merge | green (`ok`) | none of B1–B4; CI passed; no review requests changes (or all such are dismissed); PR Hygiene, when present, agrees; My work lists it as Ready to merge (K17) at this head, base branch and base commit, and the last read shows no draft and no unresolved thread |

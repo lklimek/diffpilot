@@ -107,8 +107,8 @@ WP11-DB. Frozen cross-WP signatures (bodies return `NotImplemented` until filled
 Schema changes are change requests to the coordinator.
 
 `analyses.failure_reason` preserves the optional API failure code, including `configuration`; state transitions
-clear it together with the failure message. `llm_credentials.last_call_failure` accepts `configuration` for a
-required agent skill that could not be provided. These remain additions to the single pre-deployment schema.
+clear it together with the failure message. `llm_credentials.last_call_failure` accepts `configuration` for an
+invalid job or worker configuration. These remain additions to the single pre-deployment schema.
 
 User pause keeps existing jobs and documents. The claim query excludes pipeline jobs of analyses with `user_paused_at` (private Ask remains available);
 state updates preserve the user pause even when a provider limit arrives. Resume clears only the user

@@ -1069,7 +1069,7 @@ mod tests {
                 (
                     failed(
                         Some(ApiErrorCode::Configuration),
-                        "The server is misconfigured: a required agent skill is missing. Ask the administrator.",
+                        "The server configuration prevented the job from running. Ask the administrator.",
                     ),
                     "Ask the administrator to fix the server configuration.",
                 ),

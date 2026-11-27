@@ -118,7 +118,7 @@ interface GroupCardProps {
   onDecide: (rows: DecisionBatchRow[]) => void;
   /** Takes the item out of the group: it is asked on its own. */
   onDiscussIndividually: (no: number) => void;
-  onSkip: () => void;
+  onSkip?: () => void;
   busy: boolean;
   error: string | null;
   storageKey: string;
@@ -374,11 +374,13 @@ export function GroupCard({
             </button>
           </Tooltip>
         )}
-        <Tooltip tip="Keeps this group undecided and opens the next question (s).">
-          <button type="button" onClick={onSkip} className={buttonClass("plain")}>
-            Skip for now <Kbd decorative>s</Kbd>
-          </button>
-        </Tooltip>
+        {onSkip && (
+          <Tooltip tip="Keeps this group undecided and opens the next question (s).">
+            <button type="button" onClick={onSkip} className={buttonClass("plain")}>
+              Skip for now <Kbd decorative>s</Kbd>
+            </button>
+          </Tooltip>
+        )}
       </div>
     </form>
   );
@@ -612,7 +614,7 @@ interface PrQuestionCardProps {
   /** The PR on GitHub ("Merge on GitHub"). */
   prUrl: string;
   onDecide: (request: DecideRequest) => void;
-  onSkip: () => void;
+  onSkip?: () => void;
   busy: boolean;
   error: string | null;
   /** The server's plan of the chosen option (RC16): what happens next and the default dismissal message. */
@@ -810,11 +812,13 @@ export function PrQuestionCard({
             </a>
           </Tooltip>
         )}
-        <Tooltip tip="Keeps this question undecided and opens the next one (s).">
-          <button type="button" onClick={onSkip} className={buttonClass("plain")}>
-            Skip for now <Kbd decorative>s</Kbd>
-          </button>
-        </Tooltip>
+        {onSkip && (
+          <Tooltip tip="Keeps this question undecided and opens the next one (s).">
+            <button type="button" onClick={onSkip} className={buttonClass("plain")}>
+              Skip for now <Kbd decorative>s</Kbd>
+            </button>
+          </Tooltip>
+        )}
       </div>
     </form>
   );

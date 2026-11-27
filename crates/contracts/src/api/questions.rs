@@ -118,6 +118,10 @@ pub struct AskQuestion {
     pub failure: Option<String>,
     /// When it was asked.
     pub created_at: Timestamp,
+    /// When the answer became final; null for an open question, a ready output or a failure.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub answered_at: Option<Timestamp>,
     /// While `pending` and waiting for the LLM usage limit to reset: when its job is queued again; absent
     /// otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]

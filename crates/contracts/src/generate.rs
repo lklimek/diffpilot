@@ -34,9 +34,10 @@ use crate::api::review_loop::{
     AgentPushPayload, CarryOverPage, CarryOverQuery, ChannelTestResult, Claim, ClaimRequest,
     CodeContext, CommentItem, CommentLog, CommentsOverview, ContextQuery, DecideRequest,
     DecideRest, Decision, DecisionBatchRequest, DecisionFeed, EffectReportRequest, EffectsPreview,
-    EffectsPreviewRequest, FeedDecision, FeedEvent, FeedQuery, GateMarkRequest, ItemActionRequest,
-    ItemsQuery, MarkedItems, MarkedItemsQuery, NotificationSettings, PrPage, PushTarget,
-    PutChannelRequest, PutPushTargetRequest, UserStreamEvent, WatchList, WebhookPayload,
+    EffectsPreviewRequest, FeedDecision, FeedEvent, FeedQuery, GateMarkRequest, GithubThreadDetail,
+    IssueAttempt, IssueAttemptRequest, ItemActionRequest, ItemsQuery, MarkedItems,
+    MarkedItemsQuery, NotificationSettings, PrPage, PushTarget, PutChannelRequest,
+    PutPushTargetRequest, UserStreamEvent, WatchList, WebhookPayload,
 };
 use crate::api::settings::{
     GithubWebhook, LlmJobSlots, RankingUsage, RepoSettings, RepositoryInstallations,
@@ -144,6 +145,7 @@ pub const API_SCHEMAS: &[ApiSchema] = &[
     api_schema::<Vec<CommentItem>>("comment_item_list", &[routes::LIST_COMMENT_ITEMS]),
     api_schema::<ContextQuery>("context_query", &[]),
     api_schema::<CodeContext>("code_context", &[routes::GET_COMMENT_CONTEXT]),
+    api_schema::<GithubThreadDetail>("github_thread_detail", &[routes::GET_GITHUB_THREAD]),
     api_schema::<CommentLog>("comment_log", &[routes::GET_COMMENT_LOG]),
     api_schema::<MarkedItems>("marked_items", &[routes::LIST_MARKED_ITEMS]),
     api_schema::<MarkedItemsQuery>("marked_items_query", &[]),
@@ -156,6 +158,8 @@ pub const API_SCHEMAS: &[ApiSchema] = &[
     api_schema::<DecisionFeed>("decision_feed", &[routes::GET_DECISION_FEED]),
     api_schema::<FeedDecision>("feed_decision", &[routes::GET_FEED_DECISION]),
     api_schema::<FeedEvent>("feed_event", &[routes::DECISION_FEED_EVENTS]),
+    api_schema::<IssueAttemptRequest>("issue_attempt_request", &[]),
+    api_schema::<IssueAttempt>("issue_attempt", &[routes::RESERVE_ISSUE_ATTEMPT]),
 ];
 
 const NOTE: &str = "This file is generated from crates/contracts by the test generated_artifacts_are_current \
@@ -406,6 +410,7 @@ fn typescript_types() -> Result<String, GenerateError> {
     collector.visit::<CommentItem>();
     collector.visit::<ContextQuery>();
     collector.visit::<CodeContext>();
+    collector.visit::<GithubThreadDetail>();
     collector.visit::<DecideRequest>();
     collector.visit::<DecisionBatchRequest>();
     collector.visit::<ItemActionRequest>();
@@ -433,6 +438,8 @@ fn typescript_types() -> Result<String, GenerateError> {
     collector.visit::<ClaimRequest>();
     collector.visit::<Claim>();
     collector.visit::<EffectReportRequest>();
+    collector.visit::<IssueAttemptRequest>();
+    collector.visit::<IssueAttempt>();
     collector.visit::<WebhookPayload>();
     collector.visit::<AgentPushPayload>();
     if let Some(name) = collector.duplicate {

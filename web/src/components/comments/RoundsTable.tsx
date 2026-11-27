@@ -65,7 +65,9 @@ export function RoundsTable({ rounds, prNumber }: { rounds: Round[]; prNumber: n
               <td className={N}>{r.asked_again}</td>
               <td className={N}>{count(r, ["fix_here"])}</td>
               <td className={N}>{count(r, ["reject"])}</td>
-              <td className={N}>{count(r, ["handled_in_pr", "follow_up_pr", "upstream_issue", "todo"])}</td>
+              <td className={N}>
+                {count(r, ["handled_in_pr", "follow_up_pr", "follow_up_issue", "upstream_issue", "todo"])}
+              </td>
               <td className={N}>{r.undecided}</td>
             </tr>
           ))}

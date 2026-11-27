@@ -135,6 +135,13 @@ const OUTCOME = { answered: "answered", failed: "⚠ failed" };
 const timeOf = (iso: string) => clockText(iso, new Date(iso));
 const settled = (q: AskQuestion) => q.state === "answered" || q.state === "failed";
 
+function timestampTip(question: AskQuestion, prefix = ""): string {
+  const time = prefix + dateTimeText(question.created_at);
+  if (question.state !== "answered" || !question.answered_at) return time;
+  const ms = Date.parse(question.answered_at) - Date.parse(question.created_at);
+  return Number.isFinite(ms) && ms >= 0 ? `${time} · Took ${Math.round(ms / 1000)}s` : time;
+}
+
 function QuestionState({
   question,
   waitsFor,
@@ -264,11 +271,7 @@ export function AskThread(props: ThreadProps) {
         <span className="min-w-0 flex-1 truncate">{!expanded && `“${summary}”`}</span>
         {fresh && <span className="shrink-0 font-semibold text-text">new</span>}
         <span className="shrink text-right">{state(active, true)}</span>
-        <time
-          dateTime={root.created_at}
-          title={`Asked by you · ${dateTimeText(root.created_at)}`}
-          className="shrink-0"
-        >
+        <time dateTime={root.created_at} title={timestampTip(root, "Asked by you · ")} className="shrink-0">
           {timeOf(root.created_at)}
         </time>
       </div>
@@ -289,7 +292,7 @@ export function AskThread(props: ThreadProps) {
                     <div className="flex flex-wrap items-baseline gap-x-2 text-[11.5px] text-muted">
                       <span>
                         ↳ Follow-up ·{" "}
-                        <time dateTime={q.created_at} title={dateTimeText(q.created_at)}>
+                        <time dateTime={q.created_at} title={timestampTip(q)}>
                           {timeOf(q.created_at)}
                         </time>
                       </span>

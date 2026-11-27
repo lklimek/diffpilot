@@ -336,6 +336,7 @@ impl PrHygiene {
             summary: record.next_action.clone(),
             details: context::details(value),
             facts,
+            actions: context::actions(record.next_action.as_deref(), value),
             ready_to_merge: Some(ready_to_merge),
             whose_move,
             github_updated_at: value

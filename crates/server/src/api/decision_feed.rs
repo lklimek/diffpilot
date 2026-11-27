@@ -19,13 +19,13 @@ use axum::{Json, Router};
 use contracts::api::error::ApiErrorCode;
 use contracts::api::review_loop::{
     Claim, ClaimRequest, EffectKind, EffectReportRequest, FeedDecision, FeedEvent, FeedQuery,
-    PushTarget, PutPushTargetRequest,
+    IssueAttempt, IssueAttemptRequest, PushTarget, PutPushTargetRequest,
 };
 use contracts::common::RepoRef;
 use contracts::ids::{DecisionId, EffectId};
 use contracts::routes::{
     CLAIM_DECISION, DECISION_FEED_EVENTS, GET_DECISION_FEED, GET_FEED_DECISION, PUT_PUSH_TARGET,
-    REPORT_EFFECT,
+    REPORT_EFFECT, RESERVE_ISSUE_ATTEMPT,
 };
 use contracts::time::Timestamp;
 use db::error::DbError;
@@ -135,6 +135,7 @@ pub fn routes() -> Router<AppState> {
         .route(DECISION_FEED_EVENTS.path, get(events))
         .route(CLAIM_DECISION.path, post(claim))
         .route(REPORT_EFFECT.path, post(report))
+        .route(RESERVE_ISSUE_ATTEMPT.path, post(reserve_issue_attempt))
         .route(PUT_PUSH_TARGET.path, put(put_push).delete(delete_push))
 }
 
@@ -236,6 +237,22 @@ async fn report(
         .await
         .map_err(failure)?;
     Ok(StatusCode::CREATED)
+}
+
+/// RF4b: grants one attempt while this token holds the effect lease.
+async fn reserve_issue_attempt(
+    State(state): State<AppState>,
+    TokenOnly(principal): TokenOnly,
+    path: Result<Path<EffectId>, PathRejection>,
+    body: Result<Json<IssueAttemptRequest>, JsonRejection>,
+) -> ApiResult<Json<IssueAttempt>> {
+    let Path(effect) = path.map_err(failure)?;
+    let Json(request) = body.map_err(failure)?;
+    Ok(Json(
+        feed::reserve_issue_attempt(&state, &principal, effect, request)
+            .await
+            .map_err(failure)?,
+    ))
 }
 
 /// RF5 `PUT`: sets the calling token's push target.

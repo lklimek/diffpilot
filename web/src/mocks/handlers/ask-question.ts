@@ -36,6 +36,7 @@ export function answerLater(anchor: AskAnchor, text: string, parent?: QuestionId
       ...question,
       state: "answered",
       answer: { answer: ANSWER, evidence: [] },
+      answered_at: new Date().toISOString(),
     };
     save(answered);
     publishQuestion(answered as AskQuestion);

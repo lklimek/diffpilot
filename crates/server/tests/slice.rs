@@ -2313,14 +2313,12 @@ async fn restart_with_failing_preparation_cancels_live_jobs() {
     let progress = ProgressHub::default();
     let queue: Arc<QueueExecutor> =
         Arc::new(QueueExecutor::new(h.state.db.clone(), progress.clone()));
-    let state = AppState {
-        progress,
-        ..AppState::new(
-            config(h._dir.path(), &h.github, None),
-            h.state.db.clone(),
-            queue.clone(),
-        )
-    };
+    let mut state = AppState::new(
+        config(h._dir.path(), &h.github, None),
+        h.state.db.clone(),
+        queue.clone(),
+    );
+    state.progress = progress;
     let pending = queue
         .submit(JobRequest {
             spec: {
@@ -3520,7 +3518,7 @@ async fn configuration_failure_survives_storage_and_has_no_retry_message() {
     assert_eq!(body["state"]["reason"], "configuration");
     assert_eq!(
         body["state"]["message"],
-        "The server is misconfigured: a required agent skill is missing. Ask the administrator."
+        "The server configuration prevented the job from running. Ask the administrator."
     );
 }
 

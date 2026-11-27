@@ -118,7 +118,7 @@ async fn private_ask_without_analysis_is_owned_idempotent_and_durable_without_qu
     db.questions().set_job(question, queued.id).await.unwrap();
     assert!(
         db.questions()
-            .list_for_pull_request(1, "u2", Timestamp::now())
+            .list_for_pull_request(1, None, "u2", Timestamp::now())
             .await
             .unwrap()
             .is_empty()

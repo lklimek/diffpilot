@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GithubThreadDetail",
+  "description": "A submitted GitHub conversation and its exact review card, when it has one.",
+  "type": "object",
+  "properties": {
+    "title": {
+      "description": "GitHub pull request title.",
+      "type": "string"
+    },
+    "path": {
+      "description": "Repository-relative path.",
+      "type": "string"
+    },
+    "item_no": {
+      "description": "Number of the review card for this exact GitHub thread, when known.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0
+    },
+    "complete": {
+      "description": "Whether GitHub returned every page.",
+      "type": "boolean"
+    },
+    "comments": {
+      "description": "The first comment followed by the submitted replies.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/GithubThreadComment"
+      }
+    }
+  },
+  "required": [
+    "title",
+    "path",
+    "complete",
+    "comments"
+  ],
+  "$defs": {
+    "GithubThreadComment": {
+      "description": "One submitted GitHub review comment.",
+      "type": "object",
+      "properties": {
+        "author": {
+          "description": "GitHub login, or `ghost` when the account was deleted.",
+          "type": "string"
+        },
+        "body": {
+          "description": "The original body, with whitespace and markup.",
+          "type": "string"
+        },
+        "created_at": {
+          "description": "The time the comment was created.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "url": {
+          "description": "Link to the comment on GitHub.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "author",
+        "body",
+        "created_at"
+      ]
+    }
+  }
+}

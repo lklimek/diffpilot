@@ -80,16 +80,24 @@ const reviewId = (item: CommentItem) =>
   item.kind === "review_body" ? `PRR_${item.stable_key.split(":")[0]}` : null;
 
 /**
- * effects.rs `EffectItem::on_review`: a PR-level comment answering a review starts with a line naming the review, a
- * person by an @-mention, a bot without one.
+ * Source heading and quote of a PR-level reply, as planned by the server.
  */
 function onReview(item: CommentItem, text: string): string {
-  if (item.kind !== "review_body" || !item.url) return text;
+  if (item.kind === "thread" || !item.url) return text;
   const line =
-    item.author_kind === "human"
-      ? `@${item.author}, re [your review](${item.url}):`
-      : `Re [${item.author}'s review](${item.url}):`;
-  return `${line}\n${text}`;
+    item.kind !== "review_body"
+      ? `Re [the source comment](${item.url}):`
+      : item.author_kind === "human"
+        ? `@${item.author}, re [your review](${item.url}):`
+        : `Re [${item.author}'s review](${item.url}):`;
+  const quote = (item.point?.quote ?? item.title)
+    .split("\n")
+    .find((line) => line.trim())
+    ?.trim();
+  const chars = [...(quote ?? "")];
+  const excerpt = chars.length > 200 ? chars.slice(0, 200).join("") + "…" : quote;
+  const prefix = `${line}\n${excerpt ? `> ${excerpt}\n` : ""}`;
+  return text.startsWith(prefix) ? text : prefix + text;
 }
 
 const tooLong = (text: string | null | undefined) => !!text && [...text].length > MAX_TEXT_CHARS;
@@ -168,10 +176,14 @@ export function plan(item: CommentItem, request: DecideRequest, scope: PlanScope
   } else if (override?.type === "necessity_gate" && request.kind !== "fix_here") return ERROR.overrideInvalid;
   const target = request.target;
   if (target === null) {
-    if (["handled_in_pr", "upstream_issue", "todo"].includes(request.kind)) return ERROR.targetRequired;
+    if (["handled_in_pr", "follow_up_issue", "upstream_issue", "todo"].includes(request.kind))
+      return ERROR.targetRequired;
   } else if (target.type === "existing_pr" && request.kind === "handled_in_pr") {
     if (target.number === 0 || target.number === scope.number) return ERROR.targetInvalid;
   } else if (target.type === "follow_up_pr" && request.kind === "follow_up_pr") {
+    if (tooLong(target.title)) return ERROR.tooLong;
+  } else if (target.type === "follow_up_issue" && request.kind === "follow_up_issue") {
+    if (!nonEmpty(target.title)) return ERROR.targetRequired;
     if (tooLong(target.title)) return ERROR.tooLong;
   } else if (target.type === "upstream_issue" && request.kind === "upstream_issue") {
     if (target.url !== null && !/^https?:\/\/[^\s/]+/i.test(target.url)) return ERROR.targetInvalid;
@@ -188,7 +200,7 @@ export function plan(item: CommentItem, request: DecideRequest, scope: PlanScope
   if (alwaysResolves && threadId(item) && !request.resolve_ticked) return ERROR.resolveLocked;
   const resolve = request.resolve_ticked;
   const edited = nonEmpty(request.reply_text);
-  const reply = (fallback: string) => edited ?? onReview(item, fallback);
+  const reply = (fallback: string) => onReview(item, edited ?? fallback);
   const out = new Builder();
   let replyText: string | null;
   switch (request.kind) {
@@ -224,6 +236,19 @@ export function plan(item: CommentItem, request: DecideRequest, scope: PlanScope
       const create = out.push("follow_up_pr", null, { title, item_nos: [item.no] });
       replyText = reply(FOLLOW_UP_REPLY);
       out.replyAndResolve(item, replyText, create, resolve);
+      break;
+    }
+    case "follow_up_issue": {
+      const title = target?.type === "follow_up_issue" ? target.title.trim() : "";
+      const issue = out.push("upstream_issue", null, {
+        title,
+        text: item.url
+          ? `Follow-up from [the original review comment](${item.url}).\n\n> ${item.title}`
+          : null,
+        item_nos: [item.no],
+      });
+      replyText = reply("Per maintainer decision, this is tracked in a follow-up issue.");
+      out.replyAndResolve(item, replyText, issue, resolve);
       break;
     }
     case "upstream_issue": {

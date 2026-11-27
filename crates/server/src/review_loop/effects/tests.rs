@@ -337,6 +337,40 @@ fn follow_up_pr_needs_no_link() {
 }
 
 #[test]
+fn follow_up_issue_creates_one_issue_before_reply_and_optional_resolve() {
+    let item = EffectItem {
+        quote: Some("Bound the retry loop.".into()),
+        ..thread(AuthorKind::Human)
+    };
+    for resolve_ticked in [true, false] {
+        let result = planned(
+            &item,
+            &DecideRequest {
+                target: Some(DecisionTarget::FollowUpIssue {
+                    title: "  Retry limit  ".into(),
+                }),
+                resolve_ticked,
+                ..request(DecisionKind::FollowUpIssue)
+            },
+        );
+        let issue = &result.effects[0];
+        assert_eq!(issue.kind, EffectKind::UpstreamIssue);
+        assert_eq!(issue.params.title.as_deref(), Some("Retry limit"));
+        assert!(issue.params.url.is_none());
+        let body = issue.params.text.as_deref().expect("issue body");
+        assert!(body.contains(item.url.as_deref().expect("source URL")));
+        assert!(body.contains("Bound the retry loop."));
+        assert_eq!(result.effects[1].kind, EffectKind::Reply);
+        assert_eq!(result.effects[1].after, Some(issue.seq));
+        assert_eq!(result.effects.len(), if resolve_ticked { 3 } else { 2 });
+        if resolve_ticked {
+            assert_eq!(result.effects[2].kind, EffectKind::Resolve);
+            assert_eq!(result.effects[2].after, Some(result.effects[1].seq));
+        }
+    }
+}
+
+#[test]
 fn targets_reasons_and_kinds_are_checked() {
     let item = thread(AuthorKind::Bot);
     let check = |request: DecideRequest| plan(&item, &request, &scope());
@@ -545,10 +579,9 @@ fn a_pr_level_comment_on_a_bots_review_names_it_without_a_mention() {
     assert!(!text.contains('@'), "{text}");
 }
 
-/// Plan §2.3: the line names the review only on a PR-level comment answering one; an edited reply text (prefilled
-/// with the planned one) is posted as written.
+/// A PR-level comment identifies the source when it answers a comment or an edited response.
 #[test]
-fn only_a_pr_level_comment_answering_a_review_names_it() {
+fn pr_level_comments_name_the_source_even_when_edited() {
     let fix = request(DecisionKind::FixHere);
     let thread_reply = planned_text(&thread(AuthorKind::Human), &fix);
     assert_eq!(
@@ -557,14 +590,15 @@ fn only_a_pr_level_comment_answering_a_review_names_it() {
     );
     let comment = EffectItem {
         kind: CommentItemKind::PrComment,
+        quote: Some("Bound the retry loop.".into()),
         url: Some("https://github.com/acme/node-client/pull/482#issuecomment-5000000103".into()),
         review_id: None,
         ..body_item()
     };
     assert_eq!(
         planned_text(&comment, &fix),
-        "Per maintainer decision, this is fixed in this pull request.",
-        "a PR comment answers no review"
+        "Re [the source comment](https://github.com/acme/node-client/pull/482#issuecomment-5000000103):\n\
+         > Bound the retry loop.\n\nPer maintainer decision, this is fixed in this pull request."
     );
     let edited = DecideRequest {
         reply_text: Some("Thanks, fixed in the retry loop.".into()),
@@ -572,7 +606,7 @@ fn only_a_pr_level_comment_answering_a_review_names_it() {
     };
     assert_eq!(
         planned_text(&body_item(), &edited),
-        "Thanks, fixed in the retry loop."
+        format!("@bob, re [your review]({H1_URL}):\nThanks, fixed in the retry loop.")
     );
 }
 

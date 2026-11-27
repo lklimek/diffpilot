@@ -226,6 +226,8 @@ mod tests {
             head_repository: None,
             number: Some(1),
             head_sha: None,
+            synchronize_at: None,
+            synchronize_before: None,
             action: None,
             installation_id: None,
             base_repository: None,

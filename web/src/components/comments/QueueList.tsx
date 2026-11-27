@@ -229,7 +229,9 @@ export function QueueList({
   const [localStatus, setLocalStatus] = useState<QueueStatus>("needs_you");
   const status = controlledStatus ?? localStatus;
   const all = [...items.values()];
-  const questions = inListOrder(needsYouQueue(queue, items));
+  const ordered = inListOrder(needsYouQueue(queue, items));
+  const questions = ordered.filter((entry) => !entry.skipped);
+  const skipped = ordered.filter((entry) => entry.skipped);
   const needs = new Set(questions.flatMap((entry) => entry.item_nos));
   const gates = counts.needs_you_gates;
   const subsets = {
@@ -410,6 +412,14 @@ export function QueueList({
             Decide the rest ({restCount})
           </button>
         </Tooltip>
+      )}
+      {status === "needs_you" && skipped.length > 0 && (
+        <details aria-label="Skipped" className="mt-3 border-t border-border pt-2">
+          <summary className="min-h-6 cursor-pointer content-center px-2 text-sm text-muted">
+            Skipped ({skipped.reduce((total, entry) => total + entry.item_nos.length, 0)})
+          </summary>
+          <ol className="m-0 list-none p-0">{skipped.map(row)}</ol>
+        </details>
       )}
       {status === "decided" && (
         <div className="flex flex-wrap gap-2 text-xs">

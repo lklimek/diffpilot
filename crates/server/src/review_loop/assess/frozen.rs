@@ -146,7 +146,9 @@ impl Frozen {
                     Some(DecisionTarget::ExistingPr { number }) => (Some(*number), None, None),
                     Some(DecisionTarget::FollowUpPr { title }) => (None, None, title.clone()),
                     Some(DecisionTarget::UpstreamIssue { url }) => (None, url.clone(), None),
-                    Some(DecisionTarget::Todo { title }) => (None, None, Some(title.clone())),
+                    Some(
+                        DecisionTarget::FollowUpIssue { title } | DecisionTarget::Todo { title },
+                    ) => (None, None, Some(title.clone())),
                     None => (None, None, None),
                 };
                 let proposal = contracts::agent::comment_report::ProposedDecision {

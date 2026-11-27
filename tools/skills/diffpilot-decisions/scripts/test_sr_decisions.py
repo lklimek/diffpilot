@@ -7,6 +7,7 @@ import json
 import os
 import socket
 import stat
+import subprocess
 import threading
 import time
 import uuid
@@ -959,6 +960,175 @@ def serve_claimed(fake, did: str, fd: dict, claim=None) -> None:
     fake.on("POST", claim_path(did), claim or claim_server(held))
 
 
+def issue_attempt_server(fake):
+    lock = threading.Lock()
+    attempt = None
+
+    def reserve(req):
+        nonlocal attempt
+        body = req["body"]
+        with lock:
+            granted = body.get("retry_of") == attempt
+            if granted:
+                attempt = str(uuid.uuid4())
+            return 200, {}, {"attempt_id": attempt, "reserved": granted}
+
+    fake.on("POST", f"{FEED}/effects/{E1}/issue-attempt", reserve)
+
+
+def test_create_issue_fences_two_hosts_with_one_token(env, fake, capsys, monkeypatch):
+    fd = feed_decision(effects=[effect(E1, 1, "upstream_issue", title="Bound retries")])
+    fd["decision"]["kind"] = "follow_up_issue"
+    serve_claimed(fake, DEC, fd)
+    issue_attempt_server(fake)
+    monkeypatch.setattr(sr_decisions, "_inside_work_tree", lambda _: None)
+    title = env["tmp"] / "title"
+    title.write_text("Bound retries", encoding="utf-8")
+    primer = threading.Barrier(2)
+    worker = threading.local()
+    writes, results = [], []
+
+    def gh(argv):
+        if argv[1:3] == ["issue", "create"]:
+            writes.append(argv)
+            return subprocess.CompletedProcess(argv, 0, "https://github.com/acme/widget/issues/97", "")
+        if not getattr(worker, "looked", False):
+            worker.looked = True
+            primer.wait(timeout=5)
+        return subprocess.CompletedProcess(argv, 0, "[[]]", "")
+
+    def execute(directory):
+        worker.state = directory
+        results.append(sr_decisions.main(["create-issue", DEC, E1, "--repo", "acme/widget", "--title-file", str(title)]))
+
+    monkeypatch.setattr(sr_decisions, "_gh", gh)
+    monkeypatch.setattr(sr_decisions, "state_dir", lambda: worker.state)
+    hosts = [env["tmp"] / name for name in ("host-one", "host-two")]
+    for host in hosts:
+        host.mkdir()
+    threads = [threading.Thread(target=execute, args=(host,)) for host in hosts]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+    assert len(writes) == 1
+    assert sorted(results) == [0, sr_decisions.EXIT_SERVER]
+    assert "not confirmed" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("lost_response", [False, True, "timeout"])
+def test_create_issue_recovers_the_same_issue_without_repeating_the_write(env, fake, capsys, monkeypatch, lost_response):
+    fd = feed_decision(effects=[effect(E1, 1, "upstream_issue", title="Bound retries")])
+    fd["decision"]["kind"] = "follow_up_issue"
+    serve_claimed(fake, DEC, fd)
+    issue_attempt_server(fake)
+    monkeypatch.setattr(sr_decisions, "_inside_work_tree", lambda _: None)
+    title = env["tmp"] / "title"
+    title.write_text("Bound retries", encoding="utf-8")
+    body = env["tmp"] / "body"
+    body.write_text("Preserve `RetryBudget`.", encoding="utf-8")
+    url = "https://github.com/acme/widget/issues/97"
+    repo_issues = []
+    writes = []
+
+    def gh(argv):
+        if argv[1:3] == ["issue", "create"]:
+            assert argv[:6] == ["gh", "issue", "create", "--repo", "github.com/acme/widget", "--title=Bound retries"]
+            posted = Path(argv[-1]).read_text(encoding="utf-8")
+            writes.append(posted)
+            repo_issues.append({"body": posted, "html_url": url})
+            if lost_response == "timeout":
+                raise sr_decisions.SrError("gh timed out", sr_decisions.EXIT_SERVER)
+            return subprocess.CompletedProcess(argv, int(lost_response), "" if lost_response else url, "")
+        assert argv[:6] == ["gh", "api", "--hostname", "github.com", "--paginate", "--slurp"]
+        assert argv[6].startswith("repos/acme/widget/issues?")
+        assert "since=2026-11-23T08%3A55%3A00Z" in argv[6]
+        return subprocess.CompletedProcess(argv, 0, json.dumps([repo_issues]), "")
+
+    monkeypatch.setattr(sr_decisions, "_gh", gh)
+    args = ("create-issue", DEC, E1, "--repo", "acme/widget", "--title-file", str(title), "--body-file", str(body))
+    for _ in range(2):
+        code, out, errout = run(capsys, *args)
+        assert code == 0, errout
+        assert out.strip() == url
+    assert len(writes) == 1
+    assert "https://github.com/acme/widget/pull/482#discussion_r1" in writes[0]
+    assert f"<!-- diffpilot-follow-up:{E1} -->" in writes[0]
+    assert writes[0].rstrip().endswith(sr_decisions.DEFAULT_FOOTER)
+
+
+def test_create_issue_retries_only_the_confirmed_missing_attempt(env, fake, capsys, monkeypatch):
+    fd = feed_decision(effects=[effect(E1, 1, "upstream_issue", title="Bound retries")])
+    fd["decision"]["kind"] = "follow_up_issue"
+    serve_claimed(fake, DEC, fd)
+    issue_attempt_server(fake)
+    monkeypatch.setattr(sr_decisions, "_inside_work_tree", lambda _: None)
+    title = env["tmp"] / "title"
+    title.write_text("Bound retries", encoding="utf-8")
+    url = "https://github.com/acme/widget/issues/97"
+    writes = []
+
+    def gh(argv):
+        if argv[1:3] != ["issue", "create"]:
+            return subprocess.CompletedProcess(argv, 0, "[[]]", "")
+        writes.append(argv)
+        if len(writes) == 1:
+            return subprocess.CompletedProcess(argv, 1, "", "the write failed")
+        return subprocess.CompletedProcess(argv, 0, url, "")
+
+    monkeypatch.setattr(sr_decisions, "_gh", gh)
+    args = ("create-issue", DEC, E1, "--repo", "acme/widget", "--title-file", str(title))
+    code, _, errout = run(capsys, *args)
+    assert code == sr_decisions.EXIT_SERVER
+    previous = next(word for word in errout.split() if sr_decisions.UUID_RE.fullmatch(word))
+    for retry in ((), ("--retry-confirmed-missing", str(uuid.uuid4()))):
+        code, _, errout = run(capsys, *args, *retry)
+        assert code == sr_decisions.EXIT_SERVER
+        assert previous in errout
+        assert len(writes) == 1
+    code, out, errout = run(capsys, *args, "--retry-confirmed-missing", previous)
+    assert code == 0, errout
+    assert out.strip() == url
+    assert len(writes) == 2
+
+
+@pytest.mark.parametrize("bad_input", ["missing title", "invalid title", "invalid body"])
+def test_create_issue_rejects_local_input_before_claiming(env, fake, capsys, monkeypatch, bad_input):
+    monkeypatch.setattr(sr_decisions, "_gh", lambda _: pytest.fail("invalid input must not reach GitHub"))
+    fd = feed_decision(effects=[effect(E1, 1, "upstream_issue", title="Bound retries")])
+    fd["decision"]["kind"] = "follow_up_issue"
+    serve_claimed(fake, DEC, fd)
+    title = env["tmp"] / "title"
+    body = env["tmp"] / "body"
+    if bad_input != "missing title":
+        title.write_text("Line one\nLine two" if bad_input == "invalid title" else "Valid title", encoding="utf-8")
+    body.write_bytes(b"\xff" if bad_input == "invalid body" else b"Valid body")
+    code, _, errout = run(
+        capsys, "create-issue", DEC, E1, "--repo", "acme/widget", "--title-file", str(title), "--body-file", str(body)
+    )
+    assert code == sr_decisions.EXIT_CONFIG, errout
+    assert all(request["method"] != "POST" for request in fake.requests)
+
+
+def test_create_issue_fails_closed_on_malformed_listing(env, fake, capsys, monkeypatch):
+    fd = feed_decision(effects=[effect(E1, 1, "upstream_issue", title="Bound retries")])
+    fd["decision"]["kind"] = "follow_up_issue"
+    serve_claimed(fake, DEC, fd)
+    monkeypatch.setattr(sr_decisions, "_inside_work_tree", lambda _: None)
+    title = env["tmp"] / "title"
+    title.write_text("Bound retries", encoding="utf-8")
+
+    def gh(argv):
+        assert argv[1] == "api", argv
+        return subprocess.CompletedProcess(argv, 0, "not JSON", "")
+
+    monkeypatch.setattr(sr_decisions, "_gh", gh)
+    code, _, errout = run(capsys, "create-issue", DEC, E1, "--repo", "acme/widget", "--title-file", str(title))
+    assert code == sr_decisions.EXIT_SERVER
+    assert "GitHub returned an unexpected issue list" in errout
+    assert all(not request["path"].endswith("issue-attempt") for request in fake.requests)
+
+
 def test_combine_claims_each_decision_and_writes_one_comment_for_one_review(env, fake, capsys):
     serve_claimed(fake, DEC, review_comment_decision(DEC, 5, E1, "Not changed."))
     serve_claimed(fake, DEC2, review_comment_decision(DEC2, 3, E2, "Fixed.", after_fix=SHA))
@@ -980,6 +1150,18 @@ def test_combine_names_the_review_once(env, fake, capsys):
     code, _, errout = run(capsys, "combine", DEC, DEC2, "--out", str(target))
     assert code == 0, errout
     assert target.read_text(encoding="utf-8") == signed(f"{line}\nC3: Fixed.\n\n{SHA}\n\nC5: Not changed.")
+
+
+def test_combine_preserves_source_blockquotes(env, fake, capsys):
+    line = "@bob, re [your review](https://github.com/acme/widget/pull/482):"
+    serve_claimed(fake, DEC, review_comment_decision(DEC, 5, E1, f"{line}\n> Original.\n\nNot changed."))
+    serve_claimed(fake, DEC2, review_comment_decision(DEC2, 3, E2, f"{line}\nFixed."))
+    target = env["tmp"] / "comment.md"
+    code, _, errout = run(capsys, "combine", DEC, DEC2, "--out", str(target))
+    assert code == 0, errout
+    assert target.read_text(encoding="utf-8") == signed(
+        f"{line}\nC3: Fixed.\n\nC5:\n> Original.\n\nNot changed."
+    )
 
 
 @pytest.mark.parametrize(

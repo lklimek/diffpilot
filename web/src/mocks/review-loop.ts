@@ -668,12 +668,20 @@ export function listItems(): CommentItem[] {
   }
 }
 
-/** Queue order (plan §2.4) with the reader's skipped entries last (RC14). */
+const isSkipped = (item: CommentItem) => store?.skips.get(item.no) === item.revision;
+
+/** The active queue and the reader's skipped questions. */
 function queue(list: CommentItem[]): QueueEntry[] {
-  const skipped = (e: QueueEntry) =>
-    e.item_nos.every((n) => store?.skips.get(n) === list.find((i) => i.no === n)?.revision);
-  const entries = ordered(list).map((e) => (skipped(e) ? { ...e, skipped: true } : e));
-  return [...entries.filter((e) => !e.skipped), ...entries.filter((e) => e.skipped)];
+  return [
+    ...ordered(list.filter((item) => !isSkipped(item))),
+    ...ordered(list.filter(isSkipped)).flatMap((entry) =>
+      entry.item_nos.map((no) => ({
+        item_nos: [no],
+        reason: entry.reason === "group" ? ("single" as const) : entry.reason,
+        skipped: true,
+      })),
+    ),
+  ];
 }
 
 /** Queue order (plan §2.4): PR-level, asked again, answered, gate, blocking, single, groups. */
@@ -711,10 +719,11 @@ const READ = () => ({
 function counts(list: CommentItem[]) {
   const effects = list.flatMap((i) => i.decisions.at(-1)?.effects ?? []);
   const items = commentsByNo(list)!;
-  const needs = needsYouQueue(queue(list), items).flatMap((entry) => entry.item_nos);
+  const active = queue(list).filter((entry) => !entry.skipped);
+  const needs = needsYouQueue(active, items).flatMap((entry) => entry.item_nos);
   return {
     unresolved_threads: list.filter((i) => i.kind === "thread" && i.github.resolved === false).length,
-    undecided: waitingIn(list).length,
+    undecided: active.reduce((total, entry) => total + entry.item_nos.length, 0),
     needs_you: needs.length,
     needs_you_gates: needs.filter((no) => items.get(no)!.gates.length > 0).length,
     not_a_review_point: list.filter((i) => i.not_a_review_point).length,
@@ -756,10 +765,10 @@ function assessmentProgress(list: CommentItem[]) {
 
 function badge(list: CommentItem[]): PrBadgeView {
   const c = counts(list);
-  if (c.undecided > 0)
+  if (c.needs_you > 0)
     return {
       badge: "questions_waiting",
-      facts: [`${c.undecided} undecided questions (GitHub read ${READ().read_at.slice(11, 16)} UTC)`],
+      facts: [`${c.needs_you} undecided questions (GitHub read ${READ().read_at.slice(11, 16)} UTC)`],
       missing: [],
     };
   if (c.waiting_for_agents > 0)
@@ -816,6 +825,7 @@ export function overview(): CommentsOverview {
     queue: queue(list),
     badge: badge(list),
     analysis: analysis()?.id ?? null,
+    ask_analysis: analysis()?.id,
     watch: watchOfPr() ?? undefined,
   };
 }
@@ -864,6 +874,7 @@ export function prPage(): PrPage {
         as_of: at("09:19"),
         summary: "Waiting on author",
         details: ["2 blockers"],
+        actions: ["Waiting on author", "Resolve the open review threads"],
         facts: [{ label: "Blockers", value: "2" }],
       },
       {
@@ -1279,7 +1290,11 @@ export const decideRestList = (): DecideRest =>
   decideRest(
     listItems().filter(
       (item) =>
-        !item.status_comment && !followsPrimary(item) && !item.imported_decision && !item.not_a_review_point,
+        !item.status_comment &&
+        !followsPrimary(item) &&
+        !item.imported_decision &&
+        !item.not_a_review_point &&
+        !isSkipped(item),
     ),
     scopeOf,
   );

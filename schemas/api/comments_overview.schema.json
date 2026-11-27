@@ -78,6 +78,17 @@
           "type": "null"
         }
       ]
+    },
+    "ask_analysis": {
+      "description": "Review-ready analysis of the current head used by Ask, absent if only standalone questions are available.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [
@@ -292,6 +303,21 @@
           "const": "blocked_failing"
         },
         {
+          "description": "A newer GitHub head is known and the shown Comments snapshot is from an older head.",
+          "type": "string",
+          "const": "github_outdated"
+        },
+        {
+          "description": "Review items need an assessment.",
+          "type": "string",
+          "const": "assessment_needed"
+        },
+        {
+          "description": "An assessment pass is queued or running.",
+          "type": "string",
+          "const": "assessing"
+        },
+        {
           "description": "B2.",
           "type": "string",
           "const": "questions_waiting"
@@ -363,7 +389,7 @@
           ]
         },
         "next_read_at": {
-          "description": "Next automatic read.",
+          "description": "Next timed GitHub read, when polling is the fallback.",
           "type": [
             "string",
             "null"
@@ -613,6 +639,11 @@
           "const": "follow_up_pr"
         },
         {
+          "description": "Create a follow-up issue in the pull request's repository.",
+          "type": "string",
+          "const": "follow_up_issue"
+        },
+        {
           "description": "D6: upstream issue (link or create).",
           "type": "string",
           "const": "upstream_issue"
@@ -746,7 +777,7 @@
           "$ref": "#/$defs/QueueReason"
         },
         "skipped": {
-          "description": "The reader skipped it (\"Skip for now\") at its current revision; skipped entries come last. Absent when not.",
+          "description": "The reader skipped it at its current revision and it belongs in Skipped. Absent when active.",
           "type": "boolean"
         }
       },

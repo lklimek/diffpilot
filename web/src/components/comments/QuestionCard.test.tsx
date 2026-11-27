@@ -152,7 +152,7 @@ describe("QuestionCard (plan §3.2)", () => {
     expect(screen.getByText(/C14 · 2 of 9 · thepastaclaw · bot · inline thread/)).toBeVisible();
     const options = within(screen.getByRole("radiogroup", { name: "Decision on C14" })).getAllByRole("radio");
     expect(options[0]).toHaveAccessibleName("Fix here (Recommended)");
-    expect(options[7]).toHaveAccessibleName(/^Accept despite the gate/);
+    expect(options[8]).toHaveAccessibleName(/^Accept despite the gate/);
     expect(options[0]).toBeChecked();
     expect(screen.getByRole("button", { name: "LLM assessment" })).toHaveAttribute("aria-expanded", "false");
     expect(screen.getByText("The LLM says")).not.toBeVisible();

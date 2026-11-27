@@ -208,9 +208,11 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
   it again or its result arrives); only final answers enter later context packs. Logging: the provider's failure
   text appears only in the server's warn log, scrubbed of known secrets; no log line carries a secret, a token or
   the question text, and no response, event or stored question carries the provider's text. `GET …/questions`
-  lists only the signed-in user’s questions of the analysis, oldest first, in any state. SSE applies the same filter.
+  lists only the signed-in user's questions, oldest first, in any state. The review-ready analysis of the current
+  head and the PR's Comments list the same history: questions of that analysis and standalone comment questions.
+  An archived analysis lists its own questions. Analysis SSE only streams questions attached to that analysis.
   Each current HTTP/SSE response carries `asked_by` (GitHub login) and `mine` (always true for a current response). These fields
-  are optional only for older payloads. There is no question edit/delete/retry endpoint; another POST is a new
+  are optional only for older payloads. `answered_at` is set when the final answer is stored. There is no question edit/delete/retry endpoint; another POST is a new
   question owned by its sender. Plain text:
   HTML-like tags (`<` followed by a letter, `/` or `!`) are allowed only inside code spans and closed fenced
   blocks; a GitHub URL carries no user info and no explicit port.
@@ -416,12 +418,12 @@ text can be shown; generated, binary and files recorded above the code reader's 
 ```
 
 `AnalysisState.failed.reason` optionally carries an `ApiErrorCode`; the additive `configuration` code means
-administrator action is required. The same kind is carried in `JobFailureKind`. Missing required agent skills
-produce the fixed public sentence below, never the runner's diagnostic text. The UI offers no Retry for this
+administrator action is required. The same kind is carried in `JobFailureKind`. Configuration failures
+produce the fixed public sentence below. The UI offers no Retry for this
 reason. Existing failures without a reason retain their retry behavior.
 
 ```json
-{"state":"failed","flow":null,"reason":"configuration","message":"The server is misconfigured: a required agent skill is missing. Ask the administrator."}
+{"state":"failed","flow":null,"reason":"configuration","message":"The server configuration prevented the job from running. Ask the administrator."}
 ```
 
 The web renders CI source counts independently (including skipped and neutral), only says "all passing" when
@@ -864,6 +866,7 @@ Fixtures: `fixtures/review-loop/` (spike S13-1).
 | RC3 | POST | `…/comments/read` | session_csrf | – | 202 (429 `rate_limited` under 10 s) |
 | RC4 | GET | `…/comments/items` | read | `ItemsQuery` | `CommentItem[]`; `first_seen_head` is the head of diffpilot's first read, `written` (`Written { round?, commit?, at }`) where GitHub says the comment was written, from the latest read: for a comment of a round's own review that round with its head and end; for any other its review's commit (absent for a PR comment) and the review's submission or the comment's creation (absent when that read gives no time, or for a read stored before it was kept) |
 | RC5 | GET | `…/comments/items/{item}/context` | read | `ContextQuery` | `CodeContext` |
+| RC18 | GET | `…/comments/threads/{thread}` | session | GitHub review thread node ID | `GithubThreadDetail` with the original submitted comments and the exact mapped C-number when present |
 | RC6 | POST | `…/comments/items/{item}/assess` | session_csrf | – | 202; 409 `conflict` while a pass is live; 429 `AssessmentAdmissionFailure::AssessmentDailyLimit { resets_at }` at 80 admitted UTC daily passes; 409 `credential_missing` without a usable linked plan |
 | C20 | POST | `…/comments/assess` | session_csrf | – | 202; requests a pass for the PR's comments under the same admission rules as RC6 |
 | C11 | POST | `…/comments/visit` | session_csrf | – | 204; advances the visit cursor once on Comments entry |
@@ -892,10 +895,16 @@ Fixtures: `fixtures/review-loop/` (spike S13-1).
 | RF1b | GET | `/api/v1/decision-feed/decisions/{id}` | read | – | `FeedDecision` (the `fetch` link of `decision_available` and of push messages) |
 | RF2 | GET | `/api/v1/decision-feed/events` | read | `FeedQuery` | SSE `FeedEvent`; registers the subscription |
 | RF3 | POST | `/api/v1/decision-feed/decisions/{id}/claim` | token: review_loop_execute | `ClaimRequest` | 201 `Claim`; 409 `claimed`; 422 `capability_missing`; 409 `conflict` when nothing is left for an agent |
-| RF4 | POST | `/api/v1/decision-feed/effects/{id}/reports` | token: review_loop_execute | `EffectReportRequest` | 201 (no body); 409 `claimed` (another token's claim, or never claimed by this token), 409 `lease_expired` (this token's lease ended, also after the decision went back to the feed), 409 `conflict` (the effect already ended); 400 for `done` without `reference`, `failed` without `message` or `done` while the `after` effect is not done; a repeated idempotency key on the same effect is a no-op; a `failed` effect cancels the unclaimed effects waiting on it |
+| RF4 | POST | `/api/v1/decision-feed/effects/{id}/reports` | token: review_loop_execute | `EffectReportRequest` | 201 (no body); 409 `claimed` (another token's claim, or never claimed by this token), 409 `lease_expired` (this token's lease ended, also after the decision went back to the feed), 409 `conflict` (the effect already ended); 400 for `done` without `reference`, `failed` without `message` or `done` while the `after` effect is not done; a repeated idempotency key on the same effect is a no-op; a `failed` effect cancels the effects waiting on it, except that failed follow-up issue creation releases the claim and leaves its dependents waiting; `done` on issue creation needs a GitHub issue URL in the PR repository |
+| RF4b | POST | `/api/v1/decision-feed/effects/{id}/issue-attempt` | token: review_loop_execute | `IssueAttemptRequest` | 200 `IssueAttempt`; 404 for an unknown effect or an effect outside follow-up issue creation; 409 `claimed`, `lease_expired`, or `conflict` as in RF4; only a response with `reserved: true` permits one GitHub create |
 | RF5 | PUT / DELETE | `/api/v1/decision-feed/push-target` | token: review_loop_execute | `PutPushTargetRequest` / – | `PushTarget` / 204; the calling token's own target only; as RN2 for the URL, and 422 `secret_required` when a kept secret would follow a changed kind or URL origin, 409 `conflict` when the target changed meanwhile |
 
 ### Rules
+- **GitHub thread detail (RC18).** The server reads the exact node with the reader's GitHub token and checks its
+  pull request. Submitted comments retain their original bodies and appear in conversation order. The response
+  reports an incomplete read if GitHub still has replies after 10 pages. A stored review card is matched by
+  GitHub thread ID. Reading this detail does not refresh the stored Comments snapshot, record a visit or
+  start assessment.
 - **Assessment:** RC1, RC2, RC3 and RC4 can refresh the stored GitHub read. They never start LLM work. Browser
   clients call `startCommentAssessment` (C20) on entry to Comments and after a manual GitHub refresh that found new
   items. Items in the live pass input show `running`; other eligible items waiting for a subsequent pass show

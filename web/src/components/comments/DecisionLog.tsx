@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type {
   CommentItem,
   CommentLog,
@@ -57,13 +58,19 @@ const PR_LEVEL: ReadonlySet<DecisionKind> = new Set([
 const decisionItemId = (d: Pick<Decision, "item_no" | "kind">) =>
   `${PR_LEVEL.has(d.kind) ? "P" : "C"}${d.item_no}`;
 
+function effectWord(effect: Effect): string {
+  return effect.kind === "upstream_issue" && effect.params.title
+    ? "follow-up issue"
+    : EFFECT_WORD[effect.kind];
+}
+
 /**
  * An agent's reference (agents read untrusted PR comments, threat model T24): a GitHub URL becomes a link, a commit
  * id a link to that commit of the PR's repository; anything else stays text.
  */
 function Reference({ reference, effect, pr }: { reference: string; effect: Effect; pr: PrRef }) {
   if (isGithubUrl(reference))
-    return <OpenExternal href={reference} label={`Open the reported ${EFFECT_WORD[effect.kind]}`} />;
+    return <OpenExternal href={reference} label={`Open the reported ${effectWord(effect)}`} />;
   const commit = commitGithubUrl(pr, reference);
   if (commit)
     return (
@@ -80,7 +87,7 @@ function EffectLine({ effect, now, pr }: { effect: Effect; now: Date; pr: PrRef 
   const report = effect.reports.at(-1);
   return (
     <li>
-      {EFFECT_WORD[effect.kind] ?? effect.kind}: {STATE[effect.state] ?? effect.state}
+      {effectWord(effect)}: {STATE[effect.state] ?? effect.state}
       {effect.claim &&
         ` by ${effect.claim.token_name} (lease until ${clockText(effect.claim.lease_until, now)})`}
       {report && (
@@ -198,7 +205,19 @@ export function DecisionLog({
   undoError,
   onUndoMark,
 }: DecisionLogProps) {
-  const entries = [...log.decisions, ...(log.marks ?? [])].reverse();
+  const [source, setSource] = useState<"diffpilot" | "github" | "all">("diffpilot");
+  const imported = log.decisions.filter((decision) => decision.via === "imported_github");
+  const loggedImports = new Set(imported.filter((decision) => !decision.undone_at).map((d) => d.item_no));
+  const observations = githubDecisions.filter(
+    (item) => !item.imported_decision || !loggedImports.has(item.no),
+  );
+  const githubCount = imported.length + observations.length;
+  const decisions =
+    source === "github"
+      ? imported
+      : log.decisions.filter((decision) => source === "all" || decision.via !== "imported_github");
+  const entries = [...decisions, ...(source === "github" ? [] : (log.marks ?? []))].reverse();
+  const observed = source === "diffpilot" ? [] : observations;
   const timeOf = (entry: Decision | MarkLogEntry) => Date.parse("at" in entry ? entry.at : entry.decided_at);
   entries.sort((a, b) => timeOf(b) - timeOf(a));
   return (
@@ -219,11 +238,30 @@ export function DecisionLog({
       </CollapsibleSection>
       <CollapsibleSection title="Decisions" level={2} storageKey={`${storageKey}:decisions`}>
         {undoError && <StatusMessage kind="error">{undoError}</StatusMessage>}
-        {entries.length === 0 && githubDecisions.length === 0 ? (
-          <p className="text-muted">No decision recorded through diffpilot yet.</p>
+        <label className="mb-2 inline-flex flex-wrap items-center gap-2 text-xs">
+          Decision source
+          <select
+            className="min-h-6 rounded border border-border bg-surface px-1.5 text-text"
+            value={source}
+            onChange={(event) => {
+              const value = event.target.value;
+              if (value === "github" || value === "all" || value === "diffpilot") setSource(value);
+            }}
+          >
+            <option value="diffpilot">DiffPilot</option>
+            <option value="github">GitHub ({githubCount})</option>
+            <option value="all">All sources</option>
+          </select>
+        </label>
+        {entries.length === 0 && observed.length === 0 ? (
+          <p className="text-muted">
+            {source === "diffpilot"
+              ? "No decision recorded through diffpilot yet."
+              : "No decisions from the selected source."}
+          </p>
         ) : (
           <ol className="m-0 grid list-none gap-2 p-0 text-[13px]">
-            {githubDecisions.map((item) => (
+            {observed.map((item) => (
               <li key={item.id} className="rounded-lg border border-border bg-surface px-3 py-2">
                 <b>{itemId(item)}</b> · <GithubDecision item={item} />
               </li>
@@ -276,6 +314,15 @@ export function DecisionLog({
                     </>
                   )}
                   by {d.decided_by} · {VIA[d.via] ?? d.via} · resolve: {d.resolve_ticked ? "yes" : "no"}
+                  {d.imported && isGithubUrl(d.imported.evidence_url) && (
+                    <>
+                      {" "}
+                      <OpenExternal
+                        href={d.imported.evidence_url}
+                        label={`Evidence for ${decisionItemId(d)} on GitHub`}
+                      />
+                    </>
+                  )}
                   {d.recommendation && (
                     <>
                       {" "}

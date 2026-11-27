@@ -892,6 +892,10 @@ pub struct PluginNote {
     pub details: Vec<String>,
     /// Labelled values (PR Hygiene: stage, whose move, lateness).
     pub facts: Vec<Fact>,
+    /// Ordered actionable statements for the PR Hygiene disclosure in Comments.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<String>>", optional)]
+    pub actions: Vec<String>,
 }
 
 /// Size mark of a pull request: a fixed table of changed lines (additions + deletions), plan §C.2 K16.

@@ -19,8 +19,9 @@ RUN --mount=type=cache,id=diffpilot-npm,target=/root/.npm npm ci --prefix /src/n
         --output /out/notices/third-party-npm-web.txt \
     && test -s /out/notices/third-party-npm-web.txt
 COPY web/ ./
-# The type check of the build reads the dashboard fixtures the browser mocks import.
+# The type check reads the recorded dashboard and GitHub data imported by the browser mocks.
 COPY fixtures/dashboard/api /src/fixtures/dashboard/api
+COPY fixtures/pr-482/github/graphql/review-threads.json /src/fixtures/pr-482/github/graphql/review-threads.json
 # The type check also reads the API schemas the settings help test imports.
 COPY schemas/api /src/schemas/api
 # And the needs-you cases the server and web share (queue status test).

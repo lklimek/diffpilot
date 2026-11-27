@@ -1,7 +1,7 @@
 //! Ask: list the questions of an analysis and ask a question about one of its steps or about lines of one of its
 //! files (session, CSRF and tenant check; the work lives in `ask`). Answers arrive on the analysis's event stream.
-//! On a pull request's route: the reader's questions about its review-comment items, with or without an analysis
-//! (`review_loop::assess`); answers without an analysis are read by listing again.
+//! The current review also lists standalone comment questions. On the pull request's route, new questions are
+//! about its review-comment items (`review_loop::assess`); answers without an analysis are read by listing again.
 
 use std::borrow::Cow;
 
@@ -221,12 +221,25 @@ async fn list(
     let analysis = visible_analysis(&state, &session, id)
         .await
         .map_err(|ApiFailure(error)| failure(error))?;
-    let questions = state
+    let pr = state
         .db
-        .questions()
-        .list_for_user(analysis.id, &session.user_id, Timestamp::now())
+        .analyses()
+        .get(analysis.id)
+        .await
+        .map_err(|error| failure(AnalysisApiError::Db(error)))?
+        .pull_request_id;
+    let active = assess::head_analysis(&state, &session.user_id, pr)
         .await
         .map_err(|error| failure(AnalysisApiError::Db(error)))?;
+    let repo = state.db.questions();
+    let now = Timestamp::now();
+    let questions = if active == Some(analysis.id) {
+        repo.list_for_pull_request(pr, active, &session.user_id, now)
+            .await
+    } else {
+        repo.list_for_user(analysis.id, &session.user_id, now).await
+    }
+    .map_err(|error| failure(AnalysisApiError::Db(error)))?;
     Ok(Json(questions))
 }
 

@@ -56,6 +56,58 @@ describe("V0 PR page (US1, US19)", () => {
 });
 
 describe("V1 Questions (US3, US4, US11)", () => {
+  it("does not turn a malformed thread link into a Comments refresh", async () => {
+    const overviewRead = vi.fn();
+    server.use(
+      http.get("/api/v1/prs/acme/node-client/482/comments", () => {
+        overviewRead();
+        return HttpResponse.json(overview());
+      }),
+    );
+    renderRoute(`${PR}/comments?thread=..`);
+    expect(await screen.findByText("This GitHub thread was not found on this pull request.")).toBeVisible();
+    expect(overviewRead).not.toHaveBeenCalled();
+  });
+
+  it("opens an unmapped GitHub conversation without starting the review queue", async () => {
+    const visit = vi.fn();
+    const assess = vi.fn();
+    server.use(
+      http.post("/api/v1/prs/acme/node-client/482/comments/visit", () => {
+        visit();
+        return new HttpResponse(null, { status: 204 });
+      }),
+      http.post("/api/v1/prs/acme/node-client/482/comments/assess", () => {
+        assess();
+        return new HttpResponse(null, { status: 202 });
+      }),
+      http.get("/api/v1/prs/acme/node-client/482/comments/threads/PRRT_example", () =>
+        HttpResponse.json({
+          item_no: null,
+          title: "Retry RPC calls",
+          path: "src/rpc/client.rs",
+          complete: true,
+          comments: [
+            {
+              author: "bob",
+              body: "Original comment\n\nwith `retry()`",
+              url: null,
+              created_at: "2026-11-27T10:00:00Z",
+            },
+            { author: "alice", body: "Original reply", url: null, created_at: "2026-11-27T10:02:00Z" },
+          ],
+        }),
+      ),
+    );
+    renderRoute(`${PR}/comments?thread=PRRT_example`);
+    expect(await screen.findByText("Original reply")).toBeVisible();
+    expect(screen.getByText("GitHub", { exact: true })).toBeVisible();
+    expect(screen.getByText("retry()", { selector: "code" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Decide" })).toBeNull();
+    expect(visit).not.toHaveBeenCalled();
+    expect(assess).not.toHaveBeenCalled();
+  });
+
   it("records one Comments entry before reading the overview and keeps it across tabs", async () => {
     let finishVisit!: () => void;
     const pending = new Promise<void>((resolve) => {
@@ -460,18 +512,59 @@ describe("v1.4 review status", () => {
       expect(screen.queryByText("PR Hygiene")).toBeNull();
       await userEvent.click(trigger);
       const panel = within(screen.getByRole("dialog", { name: "Pull request status" }));
-      expect(await panel.findByRole("heading", { name: /^PR Hygiene/ })).toBeVisible();
+      if (path === PR) {
+        expect(await panel.findByRole("heading", { name: /^PR Hygiene/ })).toBeVisible();
+      } else {
+        expect(await panel.findByText("Waiting on author")).toBeVisible();
+      }
       expect(await panel.findByRole("heading", { name: /^thepastaclaw status/ })).toBeVisible();
       expect(panel.getByText(/CI: 2 passed, 1 pending/)).toBeVisible();
       expect(panel.getAllByText(/data of/)).toHaveLength(2);
       expect(panel.getByText(/Bot rounds: 4/)).toBeVisible();
       await userEvent.tab();
-      expect(panel.getAllByRole("link")[0]).toHaveFocus();
+      expect(
+        path === PR ? panel.getAllByRole("link")[0] : panel.getByText("Waiting on author").closest("summary"),
+      ).toHaveFocus();
       await userEvent.keyboard("{Escape}");
       expect(trigger).toHaveFocus();
       expect(trigger).toHaveAttribute("aria-expanded", "false");
     },
   );
+
+  it("shows one PR Hygiene action until its disclosure opens", async () => {
+    server.use(
+      http.get("/api/v1/prs/acme/node-client/482", () => {
+        const page = prPage();
+        return HttpResponse.json({
+          ...page,
+          plugin_notes: page.plugin_notes.map((note) =>
+            note.plugin === "pr-hygiene"
+              ? {
+                  ...note,
+                  actions: [
+                    "Resolve the open thread",
+                    "Find a maintainer",
+                    "Address requested review changes",
+                  ],
+                  details: ["Merge conflict: No", "Engine state: waiting"],
+                }
+              : note,
+          ),
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    renderRoute(`${PR}/comments`);
+    await user.click(await screen.findByRole("button", { name: "Questions waiting" }));
+    const panel = within(screen.getByRole("dialog", { name: "Pull request status" }));
+    const summary = await panel.findByText("Resolve the open thread");
+    expect(panel.getByText("Find a maintainer")).not.toBeVisible();
+    await user.click(summary);
+    expect(panel.getByText("Find a maintainer")).toBeVisible();
+    expect(panel.getByText("Address requested review changes")).toBeVisible();
+    expect(panel.queryByText("Merge conflict: No")).toBeNull();
+    expect(panel.getByRole("link", { name: "Source for PR Hygiene (new tab)" })).toBeVisible();
+  });
 
   it("decides linked duplicate items with their primary and undoes the same decision together", async () => {
     setScenario("comments-v14");

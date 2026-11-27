@@ -516,7 +516,7 @@
       "description": "Kind of a failed attempt.",
       "oneOf": [
         {
-          "description": "A required agent skill is unavailable; administrator action is needed.",
+          "description": "The job configuration is invalid; administrator action is needed.",
           "type": "string",
           "const": "configuration"
         },
@@ -1091,6 +1091,11 @@
           "const": "follow_up_pr"
         },
         {
+          "description": "Create a follow-up issue in the pull request's repository.",
+          "type": "string",
+          "const": "follow_up_issue"
+        },
+        {
           "description": "D6: upstream issue (link or create).",
           "type": "string",
           "const": "upstream_issue"
@@ -1163,6 +1168,24 @@
           },
           "required": [
             "type"
+          ]
+        },
+        {
+          "description": "The follow-up issue's title.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "follow_up_issue"
+            },
+            "title": {
+              "description": "Title.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "title"
           ]
         },
         {

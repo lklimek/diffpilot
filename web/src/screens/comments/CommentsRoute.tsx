@@ -16,7 +16,7 @@ import {
   useSearchParams,
 } from "react-router";
 import { ApiError, errorText } from "../../api/client";
-import type { CommentItem, PrRef, CommentsOverview } from "../../api/generated/types";
+import type { AnalysisId, CommentItem, PrRef, CommentsOverview } from "../../api/generated/types";
 import { useMe } from "../../api/queries";
 import {
   useCommentItems,
@@ -50,6 +50,7 @@ import { AnalysisPathLinks } from "../review/AnalysisPathLinks";
 import { PrAskChatProvider } from "../review/askChat";
 import { ACCOUNT_SETTINGS_PATH } from "../shell/paths";
 import { commentsPath, prOfParams, prPath } from "../pr/paths";
+import { GithubThreadRoute } from "./GithubThreadRoute";
 
 /** What every Comments page gets from the layout. */
 export interface CommentsContext {
@@ -68,17 +69,19 @@ export interface CommentsContext {
 /** The layout's data for a Comments page. */
 export const useComments = () => useOutletContext<CommentsContext>();
 
-/** The shared Ask chat over the reader's questions about the PR's comment items, with the live answer counts. */
+/** The shared Ask chat with the live answer counts for comment items. */
 function WithAsk({
   pr,
+  analysisId,
   items,
   children,
 }: {
   pr: PrRef;
+  analysisId: AnalysisId | null | undefined;
   items: readonly CommentItem[] | undefined;
   children: (count: (id: string) => number) => ReactNode;
 }) {
-  const questions = usePrQuestions(pr);
+  const questions = usePrQuestions(pr, analysisId);
   const numbers = useMemo(() => new Map((items ?? []).map((item) => [item.id, item.no])), [items]);
   const count = useCallback(
     (id: string) =>
@@ -88,7 +91,7 @@ function WithAsk({
     [questions.data],
   );
   return (
-    <PrAskChatProvider key={commentsPath(pr)} pr={pr} numbers={numbers}>
+    <PrAskChatProvider key={commentsPath(pr)} pr={pr} analysisId={analysisId} numbers={numbers}>
       {children(count)}
     </PrAskChatProvider>
   );
@@ -104,6 +107,9 @@ const PAGE_OF: [string, CommentsPage][] = [
 /** Layout of V1–V5: top bar with the view menu, the PR status, the Comments pages and the shared Ask chat. */
 export function CommentsRoute() {
   const pr = prOfParams(useParams());
+  const [search] = useSearchParams();
+  const thread = search.get("thread");
+  if (thread !== null) return <GithubThreadRoute key={thread} pr={pr} id={thread} />;
   return <CommentsVisit key={commentsPath(pr)} pr={pr} />;
 }
 
@@ -309,6 +315,7 @@ function CommentsVisit({ pr }: { pr: PrRef }) {
               rounds={o.rounds.length}
               notes={page.data?.plugin_notes}
               ci={page.data?.ci}
+              variant="comments"
               read={o.read}
               now={now}
               itemId={display}
@@ -420,7 +427,7 @@ function CommentsVisit({ pr }: { pr: PrRef }) {
           />
         )}
         <AnalysisPathLinks analysisId={analysis} head={o?.head ?? null}>
-          <WithAsk pr={pr} items={items.data}>
+          <WithAsk pr={pr} analysisId={o ? (o.ask_analysis ?? null) : undefined} items={items.data}>
             {body}
           </WithAsk>
         </AnalysisPathLinks>

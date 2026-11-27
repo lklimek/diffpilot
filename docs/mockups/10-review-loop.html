@@ -74,7 +74,10 @@ nav.app a[aria-current]{background:var(--accent-bg);font-weight:600}
 /* PR state badges (F2): colour + icon + text */
 .st{display:inline-flex;gap:5px;align-items:center;border:1px solid;border-radius:10px;padding:0 8px;font-size:12px;font-weight:600;white-space:nowrap;cursor:default}
 .st.b1{border-color:var(--high-bd);background:var(--high-bg);color:var(--high)}
+.st.assessment{border-color:var(--med-bd);background:var(--med-bg);color:var(--med)}
 .st.b2{border-color:var(--med-bd);background:var(--med-bg);color:var(--med)}
+[data-screen=comments] .st.b2{border-color:var(--low-bd);background:var(--low-bg);color:var(--low)}
+.hygiene-action{min-width:0;max-width:300px}.hygiene-action summary{cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.hygiene-action[open] summary{white-space:normal}
 .st.b3{border-color:var(--bot);background:var(--bot-bg);color:var(--bot)}
 .st.b4{border-color:var(--low-bd);background:var(--low-bg);color:var(--low)}
 .st.b5{border-color:var(--ok);background:var(--ok-bg);color:var(--ok)}
@@ -325,10 +328,18 @@ ol.effects{margin:4px 0 0;padding-left:22px}ol.effects li{margin:3px 0}
   <strong>PR #482</strong>
   <span class="st b2" tabindex="0" data-tip="9 undecided questions (GitHub read 10:41)"><span aria-hidden="true">?</span>Questions waiting</span>
   <span><span class="k">Bot rounds</span> <span class="round">4</span></span>
-  <span title="Statement of the PR Hygiene plug-in (external), read 10:39"><span class="tag ext">PR Hygiene</span> Waiting on author &mdash; 2 blockers</span>
+  <details class="hygiene-action"><summary><span class="tag ext">PR Hygiene</span> Resolve the open review thread</summary>
+   <ul><li>Ask a maintainer for review</li><li>Address requested review changes</li></ul>
+   <a href="https://pr-hygiene.services.dash.org/">PR Hygiene source</a>
+  </details>
   <span title="thepastaclaw review-system status (external); its data can trail by about 20 minutes"><span class="tag ext">thepastaclaw status</span> reviewing (verify, 3/5) since 10:12 &middot; data of 10:21</span>
   <span class="sp"></span><span class="chip auto" title="Watched PR">Watching &middot; assessed automatically 10:52</span>
   <button class="btn sm" type="button" title="Read the threads, reviews and comments from GitHub again">Read GitHub again</button></div>
+ <details class="small"><summary>Comments status when GitHub or assessment is pending</summary>
+  <p><span class="st b1"><span aria-hidden="true">↻</span>GitHub data outdated</span> A push was received and this view still shows the previous head.</p>
+  <p><span class="st assessment"><span aria-hidden="true">◌</span>Assessment needed</span> Review items are waiting for an assessment.</p>
+  <p><span class="st assessment"><span aria-hidden="true">◌</span>Assessment in progress</span> A pass is queued or running.</p>
+ </details>
  <div class="tabs" role="tablist" aria-label="Comments pages">
   <button role="tab" type="button" data-tab="q" aria-selected="true">Questions <span class="count">9</span></button>
   <button role="tab" type="button" data-tab="table" aria-selected="false">Table</button>

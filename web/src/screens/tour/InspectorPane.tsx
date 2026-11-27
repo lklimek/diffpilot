@@ -31,6 +31,7 @@ import {
   type UnresolvedPosts,
 } from "../../components/comment/CommentComposer";
 import { commentPlacement, isChangedLine } from "../../components/comment/placement";
+import type { GithubThreadActions } from "../../components/comments/GithubThreadPreview";
 import { FeedbackButtons } from "../../components/feedback/FeedbackButtons";
 import { githubLineUrl } from "../../components/github/links";
 import {
@@ -80,6 +81,7 @@ interface InspectorPaneProps {
   /** "Ask about this line" from a code line of the step. */
   onAskLine?: (target: CommentTarget) => void;
   onAskRemark?: (annotation: Annotation) => void;
+  threadActions?: GithubThreadActions;
   /** "Use as review comment" on a flag of the step; absent while commenting is unavailable. */
   onFlagAsComment?: (flag: Annotation) => void;
   /** Draft text for the comment composer ("Use as review comment"); `onCommentPrefilled` once it is in. */
@@ -218,6 +220,7 @@ export function InspectorPane(props: InspectorPaneProps) {
       sections={props.sections}
       onFlagAsComment={props.onFlagAsComment}
       onAskRemark={props.onAskRemark}
+      threadActions={props.threadActions}
       questions={here}
       tour={tour}
       block={block}

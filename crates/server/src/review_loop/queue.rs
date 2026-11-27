@@ -146,6 +146,7 @@ pub(super) fn needs_you(entries: &[QueueEntry], items: &HashMap<u32, StatusItem>
     let mut gates = 0u32;
     for item in entries
         .iter()
+        .filter(|entry| !entry.skipped)
         .flat_map(|entry| &entry.item_nos)
         .filter_map(|no| items.get(no))
     {
@@ -277,7 +278,9 @@ pub fn proposed(
         .filter(|reason| !reason.is_empty());
     let incomplete = match recommendation.kind {
         K::Reject => reason.is_none(),
-        K::HandledInPr | K::UpstreamIssue | K::Todo => recommendation.target.is_none(),
+        K::HandledInPr | K::FollowUpIssue | K::UpstreamIssue | K::Todo => {
+            recommendation.target.is_none()
+        }
         K::MergeWithFollowUps | K::AnotherRound | K::DismissStaleReviews | K::KeepReviews => true,
         K::Resolve | K::FixHere | K::FollowUpPr => false,
     };
@@ -309,7 +312,10 @@ pub fn decide_rest(
     let mut left_out = Vec::new();
     let mut waiting = waiting(items);
     waiting.sort_by_key(|item| item.no);
-    for item in waiting.into_iter().filter(|item| item.question.is_none()) {
+    for item in waiting
+        .into_iter()
+        .filter(|item| item.question.is_none() && !item.skipped)
+    {
         let outcome = if item.gated {
             Err(LeftOutReason::Gate)
         } else if item.state == ItemState::Reopened {

@@ -17,15 +17,16 @@ use contracts::api::error::ApiErrorCode;
 use contracts::api::review_loop::{
     CarryOverPage, CarryOverQuery, CodeContext, CommentItem, CommentLog, CommentsOverview,
     ContextQuery, DecideRequest, DecideRest, Decision, DecisionBatchRequest, DecisionBatchRow,
-    DecisionVia, EffectsPreview, EffectsPreviewRequest, GateMarkRequest, ItemActionRequest,
-    ItemsQuery, PrPage, ReadFailure,
+    DecisionVia, EffectsPreview, EffectsPreviewRequest, GateMarkRequest, GithubThreadDetail,
+    ItemActionRequest, ItemsQuery, PrPage, ReadFailure,
 };
 use contracts::common::{PrRef, RepoRef};
 use contracts::routes::{
     ASSESS_COMMENT, DECIDE_COMMENT, DECIDE_COMMENT_BATCH, GET_COMMENT_CONTEXT, GET_COMMENT_LOG,
-    GET_COMMENTS, GET_DECIDE_REST, GET_PR_PAGE, LIST_CARRY_OVERS, LIST_COMMENT_ITEMS,
-    MARK_COMMENT_GATE, PREVIEW_COMMENT_EFFECTS, READ_COMMENTS, REOPEN_COMMENT_ITEM,
-    SKIP_COMMENT_ITEM, START_COMMENT_ASSESSMENT, UNDO_COMMENT_DECISION, VISIT_COMMENTS,
+    GET_COMMENTS, GET_DECIDE_REST, GET_GITHUB_THREAD, GET_PR_PAGE, LIST_CARRY_OVERS,
+    LIST_COMMENT_ITEMS, MARK_COMMENT_GATE, PREVIEW_COMMENT_EFFECTS, READ_COMMENTS,
+    REOPEN_COMMENT_ITEM, SKIP_COMMENT_ITEM, START_COMMENT_ASSESSMENT, UNDO_COMMENT_DECISION,
+    VISIT_COMMENTS,
 };
 use contracts::time::Timestamp;
 
@@ -212,6 +213,7 @@ pub fn routes() -> Router<AppState> {
         .route(VISIT_COMMENTS.path, post(visit))
         .route(LIST_COMMENT_ITEMS.path, get(items))
         .route(GET_COMMENT_CONTEXT.path, get(context))
+        .route(GET_GITHUB_THREAD.path, get(github_thread))
         .route(ASSESS_COMMENT.path, post(assess_again))
         .route(DECIDE_COMMENT.path, post(decide))
         .route(DECIDE_COMMENT_BATCH.path, post(decide_batch))
@@ -295,6 +297,9 @@ async fn overview(
 ) -> ApiResult<Json<CommentsOverview>> {
     mark_present(&state, &session);
     let handle = handle_of(&state, &session, path).await?;
+    if state.comments_readers.touch(&session, handle.id) {
+        review_loop::refresh_invalidated(&state, &session, &handle).await?;
+    }
     Ok(Json(views::overview(&state, &session, handle).await?))
 }
 
@@ -304,6 +309,8 @@ async fn visit(
     path: PrPath,
 ) -> ApiResult<StatusCode> {
     let handle = handle_of(&state, &session, path).await?;
+    state.comments_readers.touch(&session, handle.id);
+    review_loop::refresh_invalidated(&state, &session, &handle).await?;
     state
         .db
         .review_loop()
@@ -354,6 +361,19 @@ async fn context(
     let (handle, no) = item_of(&state, &session, path).await?;
     Ok(Json(
         views::context(&state, &session, handle, no, &query).await?,
+    ))
+}
+
+async fn github_thread(
+    State(state): State<AppState>,
+    session: Session,
+    path: ItemPath,
+) -> ApiResult<Json<GithubThreadDetail>> {
+    let Path((owner, name, number, id)) = path?;
+    let pr = pr_ref(owner, name, number);
+    let handle = review_loop::find(&state, &session.tenant_id, &pr).await?;
+    Ok(Json(
+        review_loop::github_thread(&state, &session, handle, &id).await?,
     ))
 }
 
@@ -577,7 +597,9 @@ async fn decide_rest(
     let Path((owner, name, number)) = path?;
     let handle =
         review_loop::find(&state, &session.tenant_id, &pr_ref(owner, name, number)).await?;
-    Ok(Json(views::decide_rest(&state, handle).await?))
+    Ok(Json(
+        views::decide_rest(&state, &session.user_id, handle).await?,
+    ))
 }
 
 async fn log(

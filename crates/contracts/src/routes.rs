@@ -611,6 +611,13 @@ pub const GET_COMMENT_CONTEXT: Route = route(
     "/api/v1/prs/{owner}/{name}/{number}/comments/items/{item}/context",
     READ,
 );
+/// Reads a submitted GitHub review thread and resolves its exact review card, if any.
+pub const GET_GITHUB_THREAD: Route = route(
+    "getGithubThread",
+    Get,
+    "/api/v1/prs/{owner}/{name}/{number}/comments/threads/{thread}",
+    Session,
+);
 /// RC6: assesses an item again (202).
 pub const ASSESS_COMMENT: Route = route(
     "assessComment",
@@ -693,14 +700,14 @@ pub const LIST_MARKED_ITEMS: Route = route(
 pub const LIST_CARRY_OVERS: Route =
     route("listCarryOvers", Get, "/api/v1/comments/carry-overs", READ);
 /// RC7: asks about a review-comment item (`AnchoredAskRequest` with a `comment_item` anchor; 202 `AskQuestion`):
-/// answered in the Ask session of a finished analysis of the head, else by a `verify_comments` question pass.
+/// answered in a private Verify working thread, with or without a review-ready analysis.
 pub const ASK_PR_QUESTION: Route = route(
     "askPrQuestion",
     Post,
     "/api/v1/prs/{owner}/{name}/{number}/questions",
     SessionCsrf,
 );
-/// RC7: the reader's own questions about the PR's review-comment items, oldest first (`AskQuestion[]`).
+/// RC7: the reader's standalone comment questions and the current review's questions, oldest first (`AskQuestion[]`).
 pub const LIST_PR_QUESTIONS: Route = route(
     "listPrQuestions",
     Get,
@@ -781,6 +788,13 @@ pub const REPORT_EFFECT: Route = route(
     "reportEffect",
     Post,
     "/api/v1/decision-feed/effects/{id}/reports",
+    EXECUTE,
+);
+/// RF4b: reserves or observes the creation attempt of a claimed follow-up issue.
+pub const RESERVE_ISSUE_ATTEMPT: Route = route(
+    "reserveIssueAttempt",
+    Post,
+    "/api/v1/decision-feed/effects/{id}/issue-attempt",
     EXECUTE,
 );
 /// RF5: registers the calling token's push target.
@@ -881,6 +895,7 @@ pub const ROUTES: &[Route] = &[
     VISIT_COMMENTS,
     LIST_COMMENT_ITEMS,
     GET_COMMENT_CONTEXT,
+    GET_GITHUB_THREAD,
     ASSESS_COMMENT,
     DECIDE_COMMENT,
     DECIDE_COMMENT_BATCH,
@@ -908,6 +923,7 @@ pub const ROUTES: &[Route] = &[
     DECISION_FEED_EVENTS,
     CLAIM_DECISION,
     REPORT_EFFECT,
+    RESERVE_ISSUE_ATTEMPT,
     PUT_PUSH_TARGET,
     DELETE_PUSH_TARGET,
     RUNNER_CLAIM,

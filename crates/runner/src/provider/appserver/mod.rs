@@ -143,6 +143,20 @@ fn container(spec: &JobSpec) -> Result<ContainerId, ProviderError> {
                 payer: spec.payer.clone(),
             }
         }
+        (JobTarget::PullRequestAsk(target), JobKind::Ask)
+            if spec.session.is_none()
+                && spec.access.memcan.is_none()
+                && spec
+                    .working_session
+                    .as_ref()
+                    .and_then(|session| session.kind)
+                    == Some(ThreadKind::Verify) =>
+        {
+            ContainerId::Pr {
+                pull_request_id: target.pull_request_id,
+                payer: spec.payer.clone(),
+            }
+        }
         _ => {
             return Err(fault(
                 JobFailureKind::Configuration,

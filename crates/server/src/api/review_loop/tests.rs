@@ -31,6 +31,7 @@ use crate::state::AppState;
 use crate::test_support::session_cookie;
 
 mod assessment;
+mod freshness;
 mod marks;
 mod pr_history;
 mod propagation;
@@ -887,7 +888,20 @@ async fn undo_reopen_and_skip() {
     assert_eq!(status, StatusCode::OK, "{reopened}");
     assert_eq!(reopened["state"], "reopened");
 
+    w.assess(L6, recommend(DecisionKind::FixHere, "correctness"), vec![])
+        .await;
+    let overview_url = format!("{PR}/comments");
+    let before = w.get(&overview_url).await;
     let skipped = w.item(L6).await;
+    let rest_url = format!("{PR}/comments/decide-rest");
+    let in_rest = |value: &Value| {
+        value["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["row"]["item_no"] == skipped["no"])
+    };
+    assert!(in_rest(&w.get(&rest_url).await));
     let (status, _) = w
         .post(
             &format!("{PR}/comments/items/C{}/skip", skipped["no"]),
@@ -895,7 +909,18 @@ async fn undo_reopen_and_skip() {
         )
         .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    let queue = w.get(&format!("{PR}/comments")).await["queue"].clone();
+    let after = w.get(&overview_url).await;
+    assert_eq!(
+        after["counts"]["needs_you"].as_u64().unwrap() + 1,
+        before["counts"]["needs_you"].as_u64().unwrap()
+    );
+    assert_eq!(
+        w.get(PR).await["comments"]["counts"]["needs_you"],
+        after["counts"]["needs_you"]
+    );
+    assert!(!in_rest(&w.get(&rest_url).await));
+    assert_eq!(skipped["decisions"], w.item(L6).await["decisions"]);
+    let queue = &after["queue"];
     let last = queue
         .as_array()
         .and_then(|q| q.last())
@@ -960,6 +985,99 @@ async fn read_again_queues_no_llm_work() {
     let review_loop = w.state.db.review_loop();
     let passes = review_loop.live_passes().await.expect("passes");
     assert!(passes.is_empty(), "refresh queued {passes:?}");
+}
+
+#[tokio::test]
+async fn github_thread_reads_use_exact_pr_and_item_identity_without_refreshing_comments() {
+    use wiremock::matchers::{body_partial_json, header};
+
+    let w = world().await;
+    let mapped = w.item("821d7cdc93fec6e1").await;
+    let pr = w.pr_id().await;
+    w.age_read().await;
+    let rl = w.state.db.review_loop();
+    let previous_read = rl.pr_state(pr).await.unwrap().unwrap().read_at;
+    let previous_items = rl.items(pr).await.unwrap().len();
+    for (id, number, after, next, comments) in [
+        (
+            "PRRT_fixture482_l1",
+            482,
+            None,
+            None,
+            vec![("root", "SUBMITTED")],
+        ),
+        (
+            "PRRT_unmapped",
+            482,
+            None,
+            Some("reply-page"),
+            vec![("same title", "SUBMITTED")],
+        ),
+        (
+            "PRRT_unmapped",
+            482,
+            Some("reply-page"),
+            None,
+            vec![
+                ("original reply", "SUBMITTED"),
+                ("pending draft", "PENDING"),
+            ],
+        ),
+        (
+            "PRRT_foreign",
+            483,
+            None,
+            None,
+            vec![("other PR secret", "SUBMITTED")],
+        ),
+    ] {
+        let nodes: Vec<_> = comments.iter().map(|(body, state)| {
+            json!({"body": body, "state": state, "author": {"login": "bob"}, "url": "https://github.com/acme/node-client/pull/482", "createdAt": "2026-11-27T10:00:00Z"})
+        }).collect();
+        Mock::given(method("POST"))
+            .and(path("/api/graphql"))
+            .and(header("authorization", "Bearer ghu_review_loop_u1"))
+            .and(body_partial_json(json!({"variables": {"id": id, "after": after}})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": {"node": {
+                "__typename":"PullRequestReviewThread", "path":"src/rpc/client.rs", "pullRequest": {"number": number, "title": "Retry RPC calls",
+                    "repository": {"nameWithOwner": "Acme/Node-Client", "isPrivate": false}},
+                "comments": {"nodes": nodes, "pageInfo": {"hasNextPage": next.is_some(), "endCursor": next}}
+            }}})))
+            .with_priority(1)
+            .expect(1)
+            .mount(&w.server)
+            .await;
+    }
+    let detail_path = format!("{PR}/comments/threads");
+    let anonymous = w
+        .app
+        .clone()
+        .oneshot(
+            Request::get(format!("{detail_path}/PRRT_unmapped"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+    let stored = w.get(&format!("{detail_path}/PRRT_fixture482_l1")).await;
+    assert_eq!(stored["item_no"], mapped["no"]);
+    let open = w.get(&format!("{detail_path}/PRRT_unmapped")).await;
+    assert!(open["item_no"].is_null(), "{open}");
+    assert_eq!(open["complete"], true);
+    assert_eq!(open["comments"].as_array().unwrap().len(), 2);
+    assert_eq!(open["comments"][1]["body"], "original reply");
+    let (status, foreign) = w
+        .call("GET", &format!("{detail_path}/PRRT_foreign"), None)
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{foreign}");
+    assert!(!foreign.to_string().contains("other PR secret"));
+    assert_eq!(rl.items(pr).await.unwrap().len(), previous_items);
+    assert_eq!(
+        rl.pr_state(pr).await.unwrap().unwrap().read_at,
+        previous_read
+    );
+    assert!(rl.live_passes().await.unwrap().is_empty());
 }
 
 /// T22: decisions, gate marks, re-reads and item actions refuse access tokens.

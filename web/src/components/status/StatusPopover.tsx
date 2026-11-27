@@ -16,6 +16,7 @@ interface StatusPopoverProps {
   now: Date;
   itemId: string;
   ci?: CiStatus | null;
+  variant?: "pr" | "comments";
   busy: boolean;
   onRead: () => void;
 }
@@ -29,12 +30,17 @@ export function StatusPopover({
   now,
   itemId,
   ci,
+  variant = "pr",
   busy,
   onRead,
 }: StatusPopoverProps) {
   const id = useId();
   const { root, anchor, panel, open, setOpen, dismiss } = useAnchoredPanel<HTMLElement>({ gap: 8 });
   const state = badgeLook(badge);
+  const color =
+    variant === "comments" && badge.badge === "questions_waiting"
+      ? "border-low-bd bg-low-bg text-low"
+      : state.look;
   const ciBreakdown = ci && [ci.check_runs, ci.statuses].filter((source) => source !== undefined);
   const ciWords = ciBreakdown?.length
     ? (["passed", "failed", "pending", "skipped", "neutral"] as const)
@@ -53,10 +59,11 @@ export function StatusPopover({
           aria-expanded={open}
           aria-controls={open ? id : undefined}
           data-state-badge={badge.badge ?? "none"}
-          className={`inline-flex min-h-6 cursor-pointer items-center gap-1.5 rounded-full border px-2 text-xs font-semibold ${state.look}`}
+          className={`inline-flex min-h-6 cursor-pointer items-center gap-1.5 rounded-full border px-2 text-xs font-semibold ${color}`}
           onClick={() => setOpen(!open)}
         >
-          <span aria-hidden>{state.icon}</span> {state.label} <span aria-hidden>▾</span>
+          <span aria-hidden>{state.icon}</span> <span aria-live="polite">{state.label}</span>{" "}
+          <span aria-hidden>▾</span>
         </button>
       </Tooltip>
       {open && (
@@ -80,6 +87,49 @@ export function StatusPopover({
           </div>
           {notes.map((note) => {
             const url = httpUrl(note.url);
+            const evidence =
+              url &&
+              (isGithubUrl(url) ? (
+                <OpenExternal href={url} label={`${note.source} data for ${itemId}`} />
+              ) : (
+                <a
+                  href={url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex min-h-6 items-center text-accent underline"
+                  aria-label={`Source for ${note.source} (new tab)`}
+                >
+                  Source
+                </a>
+              ));
+            if (variant === "comments" && note.plugin === "pr-hygiene") {
+              const [first, ...remaining] = note.actions ?? [];
+              if (!first) return null;
+              return (
+                <details key={note.plugin} className="group/hygiene min-w-0" data-plugin-note={note.plugin}>
+                  <summary className="flex min-h-6 cursor-pointer list-none items-start gap-1">
+                    <span aria-hidden className="group-open/hygiene:rotate-90">
+                      ▸
+                    </span>
+                    <span className="shrink-0 font-semibold">{note.source}</span>
+                    <span aria-hidden>·</span>
+                    <span className="min-w-0 truncate group-open/hygiene:whitespace-normal group-open/hygiene:wrap-anywhere">
+                      {first}
+                    </span>
+                  </summary>
+                  {remaining.length > 0 && (
+                    <ul className="my-1 pl-5">
+                      {remaining.map((action) => (
+                        <li key={action}>{action}</li>
+                      ))}
+                    </ul>
+                  )}
+                  <p className="m-0 text-xs text-muted">
+                    External · data of {clockText(note.as_of, now)} {evidence}
+                  </p>
+                </details>
+              );
+            }
             return (
               <div key={note.plugin} data-plugin-note={note.plugin}>
                 <h2 className="m-0 text-sm font-semibold">
@@ -89,19 +139,7 @@ export function StatusPopover({
                   {note.summary ?? "No statement"}
                   {note.details.length > 0 && ` · ${note.details.join(" · ")}`}{" "}
                   <span className="text-xs text-muted">· data of {clockText(note.as_of, now)}</span>
-                  {url &&
-                    (isGithubUrl(url) ? (
-                      <OpenExternal href={url} label={`${note.source} data for ${itemId}`} />
-                    ) : (
-                      <a
-                        href={url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex min-h-6 items-center text-accent underline"
-                      >
-                        Source<span className="sr-only"> for {note.source} (new tab)</span>
-                      </a>
-                    ))}
+                  {evidence}
                 </p>
               </div>
             );

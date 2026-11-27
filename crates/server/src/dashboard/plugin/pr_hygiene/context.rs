@@ -1,6 +1,6 @@
 //! Plain, readable PR Hygiene context; optional fields of an unfamiliar shape are left out.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use contracts::api::dashboard::Fact;
 use contracts::time::Timestamp;
@@ -76,6 +76,22 @@ pub(super) fn timing(value: &Value, as_of: Timestamp) -> Vec<Fact> {
         ));
     }
     facts
+}
+
+pub(super) fn actions(next: Option<&str>, value: &Value) -> Vec<String> {
+    let flags = [
+        ("merge_conflict", "Resolve the merge conflict"),
+        ("changes_requested", "Address requested review changes"),
+    ];
+    let mut seen = HashSet::new();
+    next.into_iter()
+        .chain(entries(value, "blockers").filter_map(Value::as_str))
+        .chain(flags.into_iter().filter_map(|(key, action)| {
+            (value.get(key).and_then(Value::as_bool) == Some(true)).then_some(action)
+        }))
+        .filter(|action| !action.trim().is_empty() && seen.insert(*action))
+        .map(str::to_owned)
+        .collect()
 }
 
 pub(super) fn details(value: &Value) -> Vec<String> {
@@ -197,4 +213,40 @@ pub(super) fn history(changes: &[Value]) -> Vec<String> {
         points.push("Stage history: None recorded".to_owned());
     }
     points
+}
+
+#[cfg(test)]
+mod tests {
+    use super::actions;
+    use serde_json::json;
+
+    #[test]
+    fn actionable_points_keep_source_order_and_true_flags_without_duplicates() {
+        let status = json!({
+            "blockers": ["Fix the test", "", "  ", "Find a maintainer", "Find a maintainer"],
+            "merge_conflict": false,
+            "changes_requested": true,
+            "ci_failing": true
+        });
+        assert_eq!(
+            actions(Some("Fix the test"), &status),
+            [
+                "Fix the test",
+                "Find a maintainer",
+                "Address requested review changes"
+            ]
+        );
+        assert_eq!(actions(None, &status)[0], "Fix the test");
+        assert_eq!(
+            actions(None, &json!({"merge_conflict": true})),
+            ["Resolve the merge conflict"]
+        );
+        assert!(
+            actions(
+                Some(" "),
+                &json!({"merge_conflict": "true", "changes_requested": false})
+            )
+            .is_empty()
+        );
+    }
 }
