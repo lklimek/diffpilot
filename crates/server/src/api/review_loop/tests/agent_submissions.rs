@@ -29,6 +29,129 @@ fn submission(target: Value) -> Value {
 }
 
 #[tokio::test]
+async fn cached_agent_submission_requires_the_current_token_owners_public_pull() {
+    use wiremock::matchers::header;
+
+    let w = world().await;
+    w.items().await;
+    w.state
+        .db
+        .users()
+        .upsert_member(
+            DEFAULT_TENANT,
+            "u2",
+            &GithubProfile {
+                github_id: 2,
+                login: "bob".into(),
+                name: None,
+                avatar_url: None,
+            },
+            Timestamp::now(),
+        )
+        .await
+        .unwrap();
+    db::repo::tenants::testing::allow_login(&w.state.db, DEFAULT_TENANT, "bob", 2)
+        .await
+        .unwrap();
+    let (token, _) = crate::auth::access_tokens::stored_token(
+        &w.state.db,
+        "u2",
+        vec![TokenScope::Read, TokenScope::ReviewLoopSubmit],
+        Timestamp::now() + SignedDuration::from_hours(24),
+    )
+    .await;
+    let value = submission(json!({"kind":"standalone"}));
+    let (status, response) = submit(&w, &token, &value).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{response}");
+    assert_ne!(response["message"], "The access token is not valid.");
+
+    let lock = lock_user("u2").await;
+    store_sign_in_tokens(
+        &w.state,
+        &lock,
+        DEFAULT_TENANT,
+        &TokenGrant {
+            access_token: SecretString::from("ghu_review_loop_u2"),
+            expires_in: 8 * 3600,
+            refresh_token: SecretString::from("ghr_review_loop_u2"),
+            refresh_token_expires_in: 180 * 86_400,
+        },
+        Timestamp::now(),
+    )
+    .await
+    .unwrap();
+    drop(lock);
+    let mut private = recorded("pr.json");
+    private["data"]["repository"]["isPrivate"] = json!(true);
+    Mock::given(method("POST"))
+        .and(path("/api/graphql"))
+        .and(body_string_contains("reviewDecision"))
+        .and(header("authorization", "Bearer ghu_review_loop_u2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(private))
+        .with_priority(1)
+        .expect(1)
+        .mount(&w.server)
+        .await;
+    let (status, response) = submit(&w, &token, &value).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{response}");
+    assert_eq!(response["code"], "private_repository");
+    assert!(w.items().await.iter().all(|item| item["origin"] != "api"));
+}
+
+#[tokio::test]
+async fn a_review_body_annotation_is_visible_on_every_split_card() {
+    use wiremock::matchers::body_partial_json;
+    const REVIEW: &str = "PRR_fixture482_r5";
+    const URL: &str = "https://github.com/acme/node-client/pull/482#pullrequestreview-4000000107";
+    let w = world().await;
+    serve(&w.server, &[("reviews.json", &|answer| {
+        let reviews = answer["data"]["repository"]["pullRequest"]["reviews"]["nodes"].as_array_mut().unwrap();
+        let review = reviews.iter_mut().find(|review| review["id"] == REVIEW).unwrap();
+        review["body"] = json!(concat!(
+            "<!-- thepastaclaw-review v1 -->\n",
+            "<!-- thepastaclaw-review-phase v1 phase=final sha=52d2da140191a9d47becf6a446310be803c007fc policy=45e4063a411d5823 -->\n",
+            "### 2 finding(s) not shown inline\n\n",
+            "**🔴 Blocking: Bound the retry time**\n`src/rpc/client.rs:20-26`\n\nEach attempt waits.\n\n",
+            "**🟡 Suggestion: Report the final error**\n`src/rpc/client.rs:140-142`\n\nIt is useful to log this.\n",
+        ));
+    })]).await;
+    let original = w.items().await;
+    let split: Vec<_> = original.iter().filter(|item| item["url"] == URL).collect();
+    assert_eq!(split.len(), 2, "{split:?}");
+    let (writer, _) = feed::agent(&w, &[TokenScope::Read, TokenScope::ReviewLoopSubmit]).await;
+    let (status, receipt) = submit(
+        &w,
+        &writer,
+        &submission(json!({"kind":"github","comment":REVIEW})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{receipt}");
+    let after = w.items().await;
+    assert_eq!(after.len(), original.len());
+    for item in after.iter().filter(|item| item["url"] == URL) {
+        assert_eq!(
+            item["agent_annotations"][0]["id"], receipt["submission_id"],
+            "{item}"
+        );
+        assert_eq!(item["agent_annotations"][0]["body"], TEXT);
+    }
+    Mock::given(method("POST"))
+        .and(path("/api/graphql"))
+        .and(body_partial_json(json!({"variables": {"id": REVIEW}})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data":{"node":{
+            "__typename":"PullRequestReview","body":"Two findings","url":URL,
+            "submittedAt":"2026-11-27T10:00:00Z","state":"COMMENTED","author":{"login":"thepastaclaw"},
+            "pullRequest":{"number":482,"title":"Retry calls",
+                "repository":{"nameWithOwner":"acme/node-client","isPrivate":false}}
+        }}})))
+        .with_priority(1).mount(&w.server).await;
+    let detail = w
+        .get(&format!("{PR}/comments/threads/review%3A{REVIEW}"))
+        .await;
+    assert_eq!(detail["item_no"], split[0]["no"]);
+}
+
+#[tokio::test]
 async fn agent_comment_submission_is_scoped_idempotent_and_survives_refresh() {
     let w = world().await;
     let (reader, _) = feed::agent(&w, &[TokenScope::Read]).await;

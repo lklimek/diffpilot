@@ -304,10 +304,9 @@ pub async fn items(
         .agent_annotations(&session.tenant_id, loaded.handle.id)
         .await?
     {
-        if let Some(no) =
-            super::submissions::item_no(&loaded, &conversation, Some(&annotation.target_url))
+        for no in super::submissions::item_nos(&loaded, &conversation, Some(&annotation.target_url))
         {
-            annotations.entry(no).or_default().push(annotation);
+            annotations.entry(no).or_default().push(annotation.clone());
         }
     }
     let pass = state.db.review_loop().latest_pass(loaded.handle.id).await?;

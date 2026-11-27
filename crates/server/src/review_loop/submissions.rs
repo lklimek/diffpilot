@@ -25,9 +25,14 @@ use crate::state::AppState;
 
 const MAX_BODY_CHARS: usize = 6000;
 
-/// Resolves the same GitHub destination from a review read and from a deep link.
-pub(super) fn item_no(loaded: &Loaded, conversation: &str, url: Option<&str>) -> Option<u32> {
-    loaded.items.iter().find_map(|item| {
+/// All cards derived from the exact GitHub destination, in ascending item number order.
+pub(super) fn item_nos<'a>(
+    loaded: &'a Loaded,
+    conversation: &'a str,
+    url: Option<&'a str>,
+) -> impl Iterator<Item = u32> + 'a {
+    let target_identity = url.and_then(comment_identity);
+    loaded.items.iter().filter_map(move |item| {
         if item.gone_at.is_some() || item.from_api {
             return None;
         }
@@ -44,9 +49,9 @@ pub(super) fn item_no(loaded: &Loaded, conversation: &str, url: Option<&str>) ->
                         .zip(item.url.as_deref())
                         .is_some_and(|(target, actual)| {
                             target == actual
-                                || comment_identity(target).is_some_and(|id| {
-                                    comment_identity(actual).as_ref() == Some(&id)
-                                })
+                                || target_identity
+                                    .as_ref()
+                                    .is_some_and(|id| comment_identity(actual).as_ref() == Some(id))
                         })
             }
             CommentItemKind::PrQuestion => false,
@@ -98,13 +103,6 @@ pub(crate) async fn submit(
         return Err(LoopError::Unreadable(failure));
     }
     let handle = opened.handle;
-    let head = rl
-        .pr_state(handle.id)
-        .await?
-        .and_then(|row| row.github_snapshot)
-        .and_then(|snapshot| snapshot["head"].as_str().map(str::to_owned))
-        .map(CommitSha)
-        .ok_or(LoopError::Unreadable(ReadFailure::Unavailable))?;
     let input = input_for(handle.id);
     if let Some(previous) = rl.agent_submission(&input).await? {
         return Ok((
@@ -112,6 +110,18 @@ pub(crate) async fn submit(
             false,
         ));
     }
+    let row = rl.pr_state(handle.id).await?;
+    let snapshot_head = row
+        .as_ref()
+        .and_then(|row| row.github_snapshot.as_ref())
+        .and_then(|snapshot| snapshot["head"].as_str().map(str::to_owned))
+        .map(CommitSha)
+        .ok_or_else(|| {
+            LoopError::Unreadable(
+                row.and_then(|row| row.read_failure.map(|(cause, _)| cause))
+                    .unwrap_or(ReadFailure::Unavailable),
+            )
+        })?;
     let (stored, created) = if let Some(selector) = selector {
         let target = github_target(state, agent, &handle, &selector).await?;
         rl.submit_agent_comment(
@@ -124,6 +134,11 @@ pub(crate) async fn submit(
         )
         .await?
     } else {
+        let head = if opened.outcome == ReadOutcome::Fresh {
+            check_current_access(state, agent, &handle).await?
+        } else {
+            snapshot_head
+        };
         let observed = ObservedItem {
             kind: CommentItemKind::PrComment,
             stable_key: String::new(),
@@ -156,6 +171,35 @@ pub(crate) async fn submit(
         receipt(state, handle.id, stored, &fingerprint).await?,
         created,
     ))
+}
+
+async fn check_current_access(
+    state: &AppState,
+    agent: &TokenPrincipal,
+    handle: &PrHandle,
+) -> Result<CommitSha, LoopError> {
+    // A fresh Comments snapshot can have been read with another member's credentials.
+    let token = user_access_token(state, &agent.user_id).await?;
+    let (facts, repository_id, private) =
+        match reads::facts(&state.config.github, &token, &handle.pr, None).await {
+            Ok(facts) => facts,
+            Err(error) => return Err(github_read_error(state, agent, &token, error).await),
+        };
+    if private {
+        return Err(LoopError::PrivateRepository);
+    }
+    let known = state
+        .db
+        .repos()
+        .bound_names(&agent.tenant_id, &[repository_id])
+        .await?;
+    if !known.iter().any(|(_, repo)| {
+        repo.owner.eq_ignore_ascii_case(&handle.pr.repo.owner)
+            && repo.name.eq_ignore_ascii_case(&handle.pr.repo.name)
+    }) {
+        return Err(LoopError::NotFound);
+    }
+    Ok(CommitSha(facts.head_ref_oid))
 }
 
 async fn receipt(
@@ -279,21 +323,7 @@ async fn github_target(
     // The locator is data only. GitHub's configured endpoint, OAuth reader, and PR connection establish scope.
     let read = match reads::read(&state.config.github, &token, &handle.pr, None).await {
         Ok(read) => read,
-        Err(ReadError::NotFound) => return Err(LoopError::NotFound),
-        Err(ReadError::Graphql(error))
-            if matches!(
-                error.kind(),
-                Some(GraphqlErrorType::NotFound | GraphqlErrorType::Forbidden)
-            ) =>
-        {
-            return Err(LoopError::NotFound);
-        }
-        Err(error) => {
-            if matches!(error, ReadError::Graphql(GraphqlError::Unauthorized)) {
-                user_token_rejected(state, &agent.user_id, &token).await;
-            }
-            return Err(LoopError::Unreadable(failure_of(&error)));
-        }
+        Err(error) => return Err(github_read_error(state, agent, &token, error).await),
     };
     if read.private {
         return Err(LoopError::PrivateRepository);
@@ -321,6 +351,30 @@ async fn github_target(
         return Target::new(format!("review:{}", review.id), &review.url);
     }
     deep_reply_target(state, agent, handle, selector, &read, &token).await
+}
+
+async fn github_read_error(
+    state: &AppState,
+    agent: &TokenPrincipal,
+    token: &SecretString,
+    error: ReadError,
+) -> LoopError {
+    match error {
+        ReadError::NotFound => return LoopError::NotFound,
+        ReadError::Graphql(ref error)
+            if matches!(
+                error.kind(),
+                Some(GraphqlErrorType::NotFound | GraphqlErrorType::Forbidden)
+            ) =>
+        {
+            return LoopError::NotFound;
+        }
+        ReadError::Graphql(GraphqlError::Unauthorized) => {
+            user_token_rejected(state, &agent.user_id, token).await;
+        }
+        _ => {}
+    }
+    LoopError::Unreadable(failure_of(&error))
 }
 
 async fn deep_reply_target(
@@ -395,21 +449,6 @@ async fn map_lookup<T>(
     match result {
         Ok(Some(value)) => Ok(value),
         Ok(None) => Err(LoopError::NotFound),
-        Err(error)
-            if matches!(
-                error.kind(),
-                Some(GraphqlErrorType::NotFound | GraphqlErrorType::Forbidden)
-            ) =>
-        {
-            Err(LoopError::NotFound)
-        }
-        Err(error) => {
-            if matches!(error, GraphqlError::Unauthorized) {
-                user_token_rejected(state, &agent.user_id, token).await;
-            }
-            Err(LoopError::Unreadable(failure_of(&ReadError::Graphql(
-                error,
-            ))))
-        }
+        Err(error) => Err(github_read_error(state, agent, token, ReadError::Graphql(error)).await),
     }
 }

@@ -217,14 +217,15 @@ pub async fn github_thread(
     let review_loop = state.db.review_loop();
     let view = review_loop.pr_view(pr_id).await?;
     if let Some(loaded) = Loaded::from_view(handle, view) {
-        detail.item_no = submissions::item_no(
+        detail.item_no = submissions::item_nos(
             &loaded,
             id,
             detail
                 .comments
                 .first()
                 .and_then(|comment| comment.url.as_deref()),
-        );
+        )
+        .next();
     }
     detail.agent_annotations = review_loop
         .agent_annotations(&session.tenant_id, pr_id)
