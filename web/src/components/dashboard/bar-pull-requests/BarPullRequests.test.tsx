@@ -57,6 +57,17 @@ describe("BarPullRequests", () => {
     expect(navigate).toHaveBeenCalledWith("/pr/acme/platform/1210");
   });
 
+  it("links a closed PR by identity when its title is unavailable", () => {
+    const item = pr("acme/docs#7", { outcome: "merged", href: "/pr/acme/docs/7" });
+    renderList({ unit: "day", opened: [], closed: [item] });
+    const group = within(screen.getByRole("group", { name: "Closed from earlier days (1)" }));
+    const link = group.getByRole("link", { name: "acme/docs#7" });
+    const external = group.getByRole("link", { name: "Open acme/docs#7 on GitHub (new tab)" });
+    expect(link).toHaveAttribute("href", item.href);
+    expect(external).toHaveAttribute("href", item.url);
+    expect(link.compareDocumentPosition(external) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("names the bar and lists opened and closed pull requests with their counts", () => {
     renderList();
     const region = screen.getByRole("region", { name: "Pull requests of Tue 17 Nov" });

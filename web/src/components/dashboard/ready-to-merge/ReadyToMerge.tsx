@@ -25,7 +25,7 @@ export function ReadyToMerge({
   items: ReadyToMergeItem[];
   pending: number | null;
   plugins?: PluginStatus[];
-  prHref?: (pr: PrRef) => string;
+  prHref?: (pr: PrRef) => string | undefined;
   onNavigate?: Navigate;
 }) {
   if (pending === null) {

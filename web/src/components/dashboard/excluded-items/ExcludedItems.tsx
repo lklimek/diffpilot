@@ -18,7 +18,7 @@ interface ExcludedItemsProps {
   exclusions: Exclusions | null | undefined;
   guideOrigin?: string;
   onNavigate?: Navigate;
-  prHref?: (pr: PrRef) => string;
+  prHref?: (pr: PrRef) => string | undefined;
   /** "Wake now" of a snoozed item (its key); without it no button. */
   onWake?: (key: string) => void;
   /** Keys of the snoozed items being woken. */
@@ -147,7 +147,7 @@ function Group({
   items: ExcludedItem[];
   guideOrigin?: string;
   onNavigate?: Navigate;
-  prHref?: (pr: PrRef) => string;
+  prHref?: (pr: PrRef) => string | undefined;
   onWake?: (key: string) => void;
   wakingKeys: string[];
 }) {

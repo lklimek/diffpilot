@@ -54,7 +54,7 @@ interface WorkListProps {
   snapshotAt?: string | null;
   /** In-app href of a pull request's review (plan §F.1); built by the screen. */
   reviewHref: (item: WorkItem) => string;
-  prHref?: (pr: PrRef) => string;
+  prHref?: (pr: PrRef) => string | undefined;
   /** In-app href of a pull request's Comments (owner 2026-11-23); built by the screen. */
   commentsHref?: (item: WorkItem) => string;
   onWatch?: (item: WorkItem, watching: boolean) => void;

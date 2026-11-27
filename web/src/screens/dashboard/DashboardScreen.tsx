@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router";
 import { useDashboardTabStatus } from "../../app/tabStatus";
 import { ApiError, errorText } from "../../api/client";
+import type { PrRef, RepoRef } from "../../api/generated/types";
 import { Banner } from "../../components/banner/Banner";
 import { RefreshControl } from "../../components/dashboard/refresh-control/RefreshControl";
 import { ScanProgress } from "../../components/dashboard/scan-progress/ScanProgress";
@@ -53,6 +54,8 @@ const snoozeErrorText = (error: unknown) =>
   error instanceof ApiError && error.status === 404
     ? "Could not snooze this item: it is no longer in your list. Refresh to see the current list."
     : `Could not snooze this item. Try again. ${errorText(error)}`;
+
+const repoKey = ({ owner, name }: RepoRef) => `${owner}/${name}`.toLowerCase();
 
 /** My work (plan §F, ADR-016): refresh state, headline and charts, the ranked list and the side panel. */
 export function DashboardScreen() {
@@ -112,6 +115,12 @@ export function DashboardScreen() {
 
   const points = charts && (unit === "day" ? charts.days : charts.weeks);
   const selectedIndex = bar?.unit === unit ? (points?.findIndex((p) => p.day === bar.day) ?? -1) : -1;
+  const prHref = useMemo(() => {
+    const privateRepos = new Set(
+      (page.allItems ?? []).flatMap((item) => (item.private && item.repo ? [repoKey(item.repo)] : [])),
+    );
+    return (pr: PrRef) => (privateRepos.has(repoKey(pr.repo)) ? undefined : prPath(pr));
+  }, [page.allItems]);
   const listed = useMemo(() => {
     if (!snapshot || !chartEvents || !bar) return null;
     const titles = new Map<string, string>();
@@ -123,9 +132,9 @@ export function DashboardScreen() {
       ...(summary?.mentions ?? []),
     ])
       if ((!("kind" in item) || item.kind === "pr") && item.repo && item.number !== null)
-        titles.set(`${item.repo.owner}/${item.repo.name}#${item.number}`.toLowerCase(), item.title);
-    return barPullRequests(chartEvents, bar.day, bar.unit, titles);
-  }, [snapshot, chartEvents, bar, page.allItems, summary?.mentions]);
+        titles.set(`${repoKey(item.repo)}#${item.number}`, item.title);
+    return barPullRequests(chartEvents, bar.day, bar.unit, titles, prHref);
+  }, [snapshot, chartEvents, bar, page.allItems, summary?.mentions, prHref]);
 
   const snapshotAt = snapshot?.scanned_at ?? null;
   const stale = view?.stale && snapshotAt ? clockText(snapshotAt, now) : null;
@@ -202,7 +211,7 @@ export function DashboardScreen() {
         onWithBotsChange={page.setWithBots}
         onHide={(id) => page.hideMention.mutate(id)}
         hidingIds={page.hideMention.pendingIds}
-        prHref={prPath}
+        prHref={prHref}
         onNavigate={go}
         expanded={page.mentionsExpanded}
         onExpandedChange={page.setMentionsExpanded}
@@ -292,7 +301,7 @@ export function DashboardScreen() {
           usageHref={LLM_USAGE_PATH}
           snapshotAt={snapshotAt}
           reviewHref={reviewHref}
-          prHref={prPath}
+          prHref={prHref}
           commentsHref={commentsHref}
           onWatch={(item, watching) =>
             item.repo &&
@@ -367,14 +376,14 @@ export function DashboardScreen() {
               items={snapshot.awaiting}
               now={now}
               slackNames={page.slackNames}
-              prHref={prPath}
+              prHref={prHref}
               onNavigate={go}
             />
             <ReadyToMerge
               items={snapshot.ready_to_merge}
               pending={snapshot.merge_state_pending}
               plugins={summary?.plugins}
-              prHref={prPath}
+              prHref={prHref}
               onNavigate={go}
             />
             <Yesterday

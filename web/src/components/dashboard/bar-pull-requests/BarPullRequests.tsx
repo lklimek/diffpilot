@@ -118,7 +118,13 @@ function Group({
         <ul className="m-0 mt-1 flex list-none flex-col gap-1 p-0">
           {items.map((pr) => (
             <li key={`${pr.id} ${pr.outcome ?? ""}`} className="flex min-h-6 min-w-0 items-baseline gap-2">
-              <span className="max-w-[45%] shrink-0 font-mono break-all">{pr.id}</span>
+              <WorkTitleLink
+                href={pr.title ? undefined : pr.href}
+                onNavigate={onNavigate}
+                className="max-w-[45%] shrink-0 font-mono break-all"
+              >
+                {pr.id}
+              </WorkTitleLink>
               {(pr.title || pr.url) && (
                 <span className="inline-flex min-w-0 items-baseline gap-1.5">
                   {pr.title && (

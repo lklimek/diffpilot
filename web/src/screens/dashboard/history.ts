@@ -1,7 +1,7 @@
 // History bucketing of the dashboard charts (plan §C.1, §F.3): the snapshot's dated pull-request and review events
 // counted by the browser's local working day and week. Pull requests only (OD16): closed = merged or closed
 // unmerged, opened = opened; reviews given are counted apart and never enter the net.
-import type { HistoryEvent, HistoryKind } from "../../api/generated/types";
+import type { HistoryEvent, HistoryKind, PrRef } from "../../api/generated/types";
 import type { BarPullRequest } from "../../components/dashboard/bar-pull-requests/BarPullRequests";
 import { parsePrRef, prPath } from "../pr/paths";
 
@@ -313,6 +313,7 @@ export function barPullRequests(
   day: string,
   unit: "day" | "week",
   titles: ReadonlyMap<string, string>,
+  prHref: (pr: PrRef) => string | undefined = prPath,
 ): { opened: BarPullRequest[]; closed: BarPullRequest[] } {
   const inBar = events
     .filter((e) => {
@@ -322,11 +323,12 @@ export function barPullRequests(
     .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
   const pr = (e: HistoryEvent): BarPullRequest => {
     const ref = parsePrRef(e.item_id);
+    const href = ref ? prHref(ref) : undefined;
     return {
       id: e.item_id,
       title: titles.get(e.item_id.toLowerCase()) ?? null,
       url: pullRequestUrl(e.item_id),
-      ...(ref ? { href: prPath(ref) } : {}),
+      ...(href ? { href } : {}),
     };
   };
   return {

@@ -44,7 +44,7 @@ export function WaitingOnOthers({
   items: AwaitingItem[];
   now: Date;
   slackNames?: SlackName[];
-  prHref?: (pr: PrRef) => string;
+  prHref?: (pr: PrRef) => string | undefined;
   onNavigate?: Navigate;
 }) {
   const sorted = [...items].sort((a, b) => a.waiting_since.localeCompare(b.waiting_since));

@@ -18,7 +18,7 @@ interface Props {
   onHide: (id: string) => void;
   hidingIds: string[];
   now: Date;
-  prHref?: (pr: PrRef) => string;
+  prHref?: (pr: PrRef) => string | undefined;
   onNavigate?: Navigate;
 }
 
