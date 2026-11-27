@@ -1,5 +1,9 @@
 import { AskRemarkButton } from "../ask/AskRemarkButton";
-import { GithubCommentText } from "../comments/GithubCommentText";
+import {
+  GithubThreadPreview,
+  OpenThreadInComments,
+  type GithubThreadActions,
+} from "../comments/GithubThreadPreview";
 import { CodeText } from "../section/CodeText";
 import type { ReactNode } from "react";
 import type {
@@ -311,7 +315,7 @@ const STATUS: Record<ThreadLlmStatus, string> = {
   already_addressed: "already addressed",
 };
 
-function Thread({ thread }: { thread: GithubThread }) {
+function Thread({ thread, actions }: { thread: GithubThread; actions?: GithubThreadActions }) {
   const lines =
     thread.line === null
       ? "file"
@@ -335,9 +339,7 @@ function Thread({ thread }: { thread: GithubThread }) {
         </code>{" "}
         <span className="text-muted">{facts.join(", ")}</span>
       </p>
-      <p className="whitespace-pre-wrap">
-        <GithubCommentText text={thread.excerpt} />
-      </p>
+      <GithubThreadPreview thread={thread} actions={actions} />
       {thread.llm_status && (
         <div>
           <ProvenanceTag source="llm" />{" "}
@@ -353,10 +355,11 @@ function Thread({ thread }: { thread: GithubThread }) {
           <CodeText text={thread.llm_reason ?? ""} />
         </div>
       )}
-      <p>
+      <p className="flex flex-wrap gap-x-3">
         <GithubLink url={thread.url} tip="Open the thread on GitHub (new tab)">
           Open the thread on GitHub
         </GithubLink>
+        {actions && <OpenThreadInComments id={thread.id} actions={actions} />}
       </p>
     </li>
   );
@@ -367,7 +370,8 @@ export function ThreadsSection({
   threads,
   status,
   sections,
-}: { threads: readonly GithubThread[]; status: ThreadsStatus } & Sections) {
+  actions,
+}: { threads: readonly GithubThread[]; status: ThreadsStatus; actions?: GithubThreadActions } & Sections) {
   const note = threadsNote(status);
   if (threads.length === 0 && !note) return null;
   return (
@@ -382,7 +386,7 @@ export function ThreadsSection({
       {threads.length > 0 && (
         <ul className="m-0 grid list-none gap-1.5 p-0">
           {threads.map((t) => (
-            <Thread key={t.id} thread={t} />
+            <Thread key={t.id} thread={t} actions={actions} />
           ))}
         </ul>
       )}

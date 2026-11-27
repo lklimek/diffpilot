@@ -82,6 +82,7 @@ export const routes = {
   visitComments: { method: "POST", path: "/api/v1/prs/{owner}/{name}/{number}/comments/visit", auth: "session_csrf" },
   listCommentItems: { method: "GET", path: "/api/v1/prs/{owner}/{name}/{number}/comments/items", auth: "read" },
   getCommentContext: { method: "GET", path: "/api/v1/prs/{owner}/{name}/{number}/comments/items/{item}/context", auth: "read" },
+  getGithubThread: { method: "GET", path: "/api/v1/prs/{owner}/{name}/{number}/comments/threads/{thread}", auth: "session" },
   assessComment: { method: "POST", path: "/api/v1/prs/{owner}/{name}/{number}/comments/items/{item}/assess", auth: "session_csrf" },
   decideComment: { method: "POST", path: "/api/v1/prs/{owner}/{name}/{number}/comments/items/{item}/decisions", auth: "session_csrf" },
   decideCommentBatch: { method: "POST", path: "/api/v1/prs/{owner}/{name}/{number}/comments/decision-batches", auth: "session_csrf" },

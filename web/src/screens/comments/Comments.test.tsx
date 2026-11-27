@@ -56,6 +56,58 @@ describe("V0 PR page (US1, US19)", () => {
 });
 
 describe("V1 Questions (US3, US4, US11)", () => {
+  it("does not turn a malformed thread link into a Comments refresh", async () => {
+    const overviewRead = vi.fn();
+    server.use(
+      http.get("/api/v1/prs/acme/node-client/482/comments", () => {
+        overviewRead();
+        return HttpResponse.json(overview());
+      }),
+    );
+    renderRoute(`${PR}/comments?thread=..`);
+    expect(await screen.findByText("This GitHub thread was not found on this pull request.")).toBeVisible();
+    expect(overviewRead).not.toHaveBeenCalled();
+  });
+
+  it("opens an unmapped GitHub conversation without starting the review queue", async () => {
+    const visit = vi.fn();
+    const assess = vi.fn();
+    server.use(
+      http.post("/api/v1/prs/acme/node-client/482/comments/visit", () => {
+        visit();
+        return new HttpResponse(null, { status: 204 });
+      }),
+      http.post("/api/v1/prs/acme/node-client/482/comments/assess", () => {
+        assess();
+        return new HttpResponse(null, { status: 202 });
+      }),
+      http.get("/api/v1/prs/acme/node-client/482/comments/threads/PRRT_example", () =>
+        HttpResponse.json({
+          item_no: null,
+          title: "Retry RPC calls",
+          path: "src/rpc/client.rs",
+          complete: true,
+          comments: [
+            {
+              author: "bob",
+              body: "Original comment\n\nwith `retry()`",
+              url: null,
+              created_at: "2026-11-27T10:00:00Z",
+            },
+            { author: "alice", body: "Original reply", url: null, created_at: "2026-11-27T10:02:00Z" },
+          ],
+        }),
+      ),
+    );
+    renderRoute(`${PR}/comments?thread=PRRT_example`);
+    expect(await screen.findByText("Original reply")).toBeVisible();
+    expect(screen.getByText("GitHub", { exact: true })).toBeVisible();
+    expect(screen.getByText("retry()", { selector: "code" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Decide" })).toBeNull();
+    expect(visit).not.toHaveBeenCalled();
+    expect(assess).not.toHaveBeenCalled();
+  });
+
   it("records one Comments entry before reading the overview and keeps it across tabs", async () => {
     let finishVisit!: () => void;
     const pending = new Promise<void>((resolve) => {

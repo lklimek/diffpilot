@@ -1,8 +1,10 @@
 //! Existing review threads of a pull request (GraphQL, user token) for the Tour, and the check that a link
 //! GitHub reports points to `https://github.com` before it reaches the browser.
 
+use contracts::api::review_loop::{GithubThreadComment, GithubThreadDetail};
 use contracts::api::tour::{GithubThread, ThreadsStatus};
 use contracts::common::{LineSide, PrRef};
+use contracts::time::Timestamp;
 use secrecy::SecretString;
 use serde::Deserialize;
 use url::Url;
@@ -20,6 +22,11 @@ pub const REVIEW_THREADS: &str = "query($o:String!,$n:String!,$pr:Int!,$after:St
 pullRequest(number:$pr){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} \
 nodes{id path line startLine diffSide subjectType isResolved isOutdated \
 comments(first:1){totalCount nodes{state body url author{login}}}}}}}}";
+
+/// Reads one review thread by node ID, including the owning PR on every page.
+const THREAD_DETAIL: &str = "query($id:ID!,$after:String){node(id:$id){__typename ... on PullRequestReviewThread{\
+path pullRequest{number title repository{nameWithOwner isPrivate}} comments(first:100,after:$after){\
+pageInfo{hasNextPage endCursor} nodes{state body url createdAt author{login}}}}}}";
 
 /// `raw` if it is an `https://github.com/…` URL (no other host, port or credentials); the UI renders it as a
 /// link, so nothing else may pass.
@@ -90,6 +97,124 @@ struct CommentNode {
 #[derive(Deserialize)]
 struct Author {
     login: String,
+}
+
+#[derive(Deserialize)]
+struct DetailData {
+    node: Option<DetailNode>,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "__typename", rename_all_fields = "camelCase")]
+enum DetailNode {
+    PullRequestReviewThread {
+        path: String,
+        pull_request: DetailPr,
+        comments: Page<DetailComment>,
+    },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Deserialize)]
+struct DetailPr {
+    number: u32,
+    title: String,
+    repository: DetailRepo,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DetailRepo {
+    name_with_owner: String,
+    is_private: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DetailComment {
+    state: String,
+    body: String,
+    url: String,
+    created_at: Timestamp,
+    author: Option<Author>,
+}
+
+/// One submitted conversation from the given PR, read with the viewer's GitHub token.
+pub async fn detail(
+    config: &GithubConfig,
+    token: &SecretString,
+    pr: &PrRef,
+    id: &str,
+) -> Result<Option<GithubThreadDetail>, GraphqlError> {
+    let repo = format!("{}/{}", pr.repo.owner, pr.repo.name);
+    let mut after = None;
+    let mut result: Option<GithubThreadDetail> = None;
+    for _ in 0..MAX_PAGES {
+        let data: DetailData = graphql::execute(
+            config,
+            token,
+            THREAD_DETAIL,
+            serde_json::json!({"id": id, "after": after}),
+        )
+        .await?;
+        let Some(DetailNode::PullRequestReviewThread {
+            path,
+            pull_request,
+            comments,
+        }) = data.node
+        else {
+            return Ok(None);
+        };
+        if pull_request.number != pr.number
+            || pull_request.repository.is_private
+            || !pull_request
+                .repository
+                .name_with_owner
+                .eq_ignore_ascii_case(&repo)
+        {
+            return Ok(None);
+        }
+        if result.is_none()
+            && comments
+                .nodes
+                .first()
+                .is_none_or(|comment| comment.state == "PENDING")
+        {
+            return Ok(None);
+        }
+        let thread = result.get_or_insert_with(|| GithubThreadDetail {
+            title: pull_request.title,
+            path,
+            item_no: None,
+            complete: false,
+            comments: Vec::new(),
+        });
+        thread.comments.extend(
+            comments
+                .nodes
+                .into_iter()
+                .filter(|comment| comment.state != "PENDING")
+                .map(|comment| GithubThreadComment {
+                    author: comment
+                        .author
+                        .map_or_else(|| "ghost".to_owned(), |author| author.login),
+                    body: comment.body,
+                    created_at: comment.created_at,
+                    url: github_web_url(&comment.url),
+                }),
+        );
+        if !comments.page_info.has_next_page {
+            thread.complete = true;
+            break;
+        }
+        let next = comments.page_info.end_cursor;
+        if next.is_none() || next == after {
+            break;
+        }
+        after = next;
+    }
+    Ok(result)
 }
 
 /// GitHub's `diffSide` as a line side.

@@ -169,6 +169,60 @@ pub async fn find(state: &AppState, tenant_id: &str, pr: &PrRef) -> Result<PrHan
     Ok(PrHandle { pr: pr.clone(), id })
 }
 
+/// Reads one submitted thread and looks up its exact review card without refreshing Comments.
+pub async fn github_thread(
+    state: &AppState,
+    session: &Session,
+    handle: PrHandle,
+    id: &str,
+) -> Result<contracts::api::review_loop::GithubThreadDetail, LoopError> {
+    if id.is_empty() || id.len() > 256 || !id.bytes().all(|byte| byte.is_ascii_graphic()) {
+        return Err(LoopError::NotFound);
+    }
+    let token = user_access_token(state, &session.user_id).await?;
+    let mut detail =
+        match crate::github::threads::detail(&state.config.github, &token, &handle.pr, id).await {
+            Ok(Some(detail)) => detail,
+            Ok(None) => return Err(LoopError::NotFound),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    Some(GraphqlErrorType::NotFound | GraphqlErrorType::Forbidden)
+                ) =>
+            {
+                return Err(LoopError::NotFound);
+            }
+            Err(error) => {
+                if matches!(error, GraphqlError::Unauthorized) {
+                    user_token_rejected(state, &session.user_id, &token).await;
+                }
+                return Err(LoopError::Unreadable(failure_of(&ReadError::Graphql(
+                    error,
+                ))));
+            }
+        };
+    let view = state.db.review_loop().pr_view(handle.id).await?;
+    if let Some(snapshot) = view
+        .row
+        .and_then(|row| row.github_snapshot)
+        .and_then(|data| serde_json::from_value::<Snapshot>(data).ok())
+    {
+        detail.item_no = view
+            .items
+            .iter()
+            .find(|item| {
+                item.kind == CommentItemKind::Thread
+                    && item.gone_at.is_none()
+                    && snapshot
+                        .thread_ids
+                        .get(&item.stable_key)
+                        .is_some_and(|thread| thread == id)
+            })
+            .map(|item| item.no);
+    }
+    Ok(detail)
+}
+
 /// When the PR's last read was attempted.
 async fn last_attempt(state: &AppState, id: i64) -> Result<Option<Timestamp>, DbError> {
     Ok(state.db.review_loop().pr_state(id).await?.and_then(|row| {

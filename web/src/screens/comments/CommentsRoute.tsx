@@ -50,6 +50,7 @@ import { AnalysisPathLinks } from "../review/AnalysisPathLinks";
 import { PrAskChatProvider } from "../review/askChat";
 import { ACCOUNT_SETTINGS_PATH } from "../shell/paths";
 import { commentsPath, prOfParams, prPath } from "../pr/paths";
+import { GithubThreadRoute } from "./GithubThreadRoute";
 
 /** What every Comments page gets from the layout. */
 export interface CommentsContext {
@@ -106,6 +107,9 @@ const PAGE_OF: [string, CommentsPage][] = [
 /** Layout of V1–V5: top bar with the view menu, the PR status, the Comments pages and the shared Ask chat. */
 export function CommentsRoute() {
   const pr = prOfParams(useParams());
+  const [search] = useSearchParams();
+  const thread = search.get("thread");
+  if (thread !== null) return <GithubThreadRoute key={thread} pr={pr} id={thread} />;
   return <CommentsVisit key={commentsPath(pr)} pr={pr} />;
 }
 

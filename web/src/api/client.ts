@@ -33,6 +33,7 @@ import type {
   EffectsPreview,
   EffectsPreviewRequest,
   GateMarkRequest,
+  GithubThreadDetail,
   ItemActionRequest,
   ItemsQuery,
   NotificationChannel,
@@ -499,6 +500,12 @@ export function createApiClient(baseUrl = "") {
     setDashboardTimeZone: (body: SetTimeZoneRequest) => call<void>("setDashboardTimeZone", { body }),
     getPrPage: (pr: PrRef) => call<PrPage>("getPrPage", { params: prParams(pr) }),
     getComments: (pr: PrRef) => call<CommentsOverview>("getComments", { params: prParams(pr) }),
+    getGithubThread: async (pr: PrRef, thread: string) => {
+      // Dot segments are normalised by the browser to a different, stateful Comments endpoint.
+      if (!thread || thread === "." || thread === "..")
+        throw new ApiError(404, "not_found", "This GitHub thread was not found on this pull request.");
+      return call<GithubThreadDetail>("getGithubThread", { params: { ...prParams(pr), thread } });
+    },
     visitComments: (pr: PrRef) => optional<void>("visitComments", { params: prParams(pr) }),
     startCommentAssessment: (pr: PrRef, signal?: AbortSignal) =>
       optional<void>("startCommentAssessment", { params: prParams(pr), signal }),

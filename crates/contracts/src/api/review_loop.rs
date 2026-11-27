@@ -1285,6 +1285,34 @@ pub struct QueueEntry {
     pub skipped: bool,
 }
 
+/// A submitted GitHub conversation and its exact review card, when it has one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct GithubThreadDetail {
+    /// GitHub pull request title.
+    pub title: String,
+    /// Repository-relative path.
+    pub path: String,
+    /// Number of the review card for this exact GitHub thread, when known.
+    pub item_no: Option<u32>,
+    /// Whether GitHub returned every page.
+    pub complete: bool,
+    /// The first comment followed by the submitted replies.
+    pub comments: Vec<GithubThreadComment>,
+}
+
+/// One submitted GitHub review comment.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct GithubThreadComment {
+    /// GitHub login, or `ghost` when the account was deleted.
+    pub author: String,
+    /// The original body, with whitespace and markup.
+    pub body: String,
+    /// The time the comment was created.
+    pub created_at: Timestamp,
+    /// Link to the comment on GitHub.
+    pub url: Option<String>,
+}
+
 /// Response of RC2.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct CommentsOverview {

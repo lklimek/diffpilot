@@ -51,6 +51,50 @@ async function openStep(flow: string, step: string) {
 }
 
 describe("Tour screen (brief §4.3)", () => {
+  it("expands a clipped Inspector comment and opens its exact Comments card", async () => {
+    const tour = structuredClone(seedFor("default", "tour") as Tour);
+    const thread = tour.threads.find((thread) => thread.line === 99)!;
+    thread.excerpt = `First part ${"x".repeat(189)}…`;
+    const request = vi.fn();
+    server.use(
+      http.get("/api/v1/analyses/:id/tour", () => HttpResponse.json(tour)),
+      http.get("/api/v1/prs/acme/node-client/482/comments/threads/:thread", ({ params }) => {
+        request(params.thread);
+        return HttpResponse.json({
+          item_no: 14,
+          title: "Retry RPC calls",
+          path: thread.path,
+          complete: true,
+          comments: [
+            {
+              author: thread.author,
+              body: "Original comment\n\nwith `retry()`",
+              url: thread.url,
+              created_at: "2026-11-27T10:00:00Z",
+            },
+          ],
+        });
+      }),
+    );
+    const router = await open();
+    await openStep("1", "5");
+    const disclosure = within(inspector()).getByRole("button", { name: /GitHub threads at this location/ });
+    if (disclosure.getAttribute("aria-expanded") === "false") await user().click(disclosure);
+    expect(request).not.toHaveBeenCalled();
+    const preview = within(inspector()).getByRole("button", { name: /First part/ });
+    await user().click(preview);
+    expect(await within(inspector()).findByText("retry()", { selector: "code" })).toBeVisible();
+    expect(request).toHaveBeenLastCalledWith(thread.id);
+    expect(within(inspector()).getByRole("link", { name: /^Open the thread on GitHub/ })).toHaveAttribute(
+      "href",
+      thread.url,
+    );
+    await user().click(within(inspector()).getByRole("link", { name: "Open in Comments" }));
+    expect(await screen.findByRole("heading", { name: /C14 · Retry may resend/ })).toBeVisible();
+    expect(router.state.location.search).toBe("?item=C14");
+    expect(request).toHaveBeenLastCalledWith(thread.id);
+  });
+
   it("each step shows a collapsible Why this flow strip; collapsed it keeps one line and is remembered", async () => {
     await open();
     await openStep("1", "5");

@@ -12,6 +12,7 @@ import type {
   Tour,
 } from "../../api/generated/types";
 import { DifferingLinesBadge, ProvenanceBadge } from "../badge/Badge";
+import type { GithubThreadActions } from "../comments/GithubThreadPreview";
 import { useFlashTarget } from "../flash/useFlashTarget";
 import { GroupLabel, KindLabel, RiskLabel } from "../badge/LlmLabel";
 import { FlowWorkLabel } from "../flow-intro/status";
@@ -72,6 +73,7 @@ export interface InspectorProps {
   /** "Use as review comment" on a flag of the step; no button without it. */
   onFlagAsComment?: (flag: Annotation) => void;
   onAskRemark?: (annotation: Annotation) => void;
+  threadActions?: GithubThreadActions;
   /** What to show instead of the block's own panel (the Files view's file, hunk or selected lines). */
   panel?: InspectorPanel;
   /** A way back above the heading ("← Back to hunk"), e.g. from a step narrowed in the Files view. */
@@ -129,7 +131,7 @@ function stepPanel(
   annotation: Annotation | undefined,
   diff: ReactNode,
   sections: SectionControl,
-  actions: Pick<InspectorProps, "onEvidence" | "onFlagAsComment" | "onAskRemark">,
+  actions: Pick<InspectorProps, "onEvidence" | "onFlagAsComment" | "onAskRemark" | "threadActions">,
 ): Panel {
   const stepTitle = `Step ${step.number} · ${step.llm.title}`;
   const github = stepGithubLink(tour.analysis.pr, step.facts);
@@ -169,6 +171,7 @@ export interface StepDetailsProps {
   onEvidence?: (evidence: Evidence) => void;
   onFlagAsComment?: (flag: Annotation) => void;
   onAskRemark?: (annotation: Annotation) => void;
+  threadActions?: GithubThreadActions;
   /** The Files view: no Called by / Goes next, no diff, no threads (its panel shows those of the lines). */
   files?: boolean;
 }
@@ -183,6 +186,7 @@ export function StepDetails({
   onEvidence,
   onFlagAsComment,
   onAskRemark,
+  threadActions,
   files = false,
 }: StepDetailsProps) {
   const anns = annotation ? [annotation] : step.llm.annotations;
@@ -264,6 +268,7 @@ export function StepDetails({
           threads={annotation ? stepThreads.filter((t) => overlaps(t, step, annotation)) : stepThreads}
           status={tour.pr_context.facts.threads_status}
           sections={sections}
+          actions={threadActions}
         />
       )}
     </>
@@ -282,6 +287,7 @@ function panelFor(props: InspectorProps, sections: SectionControl): Panel {
         onEvidence: props.onEvidence,
         onFlagAsComment: props.onFlagAsComment,
         onAskRemark: props.onAskRemark,
+        threadActions: props.threadActions,
       });
     }
     case "flow_intro": {

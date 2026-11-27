@@ -1,4 +1,5 @@
 import { scenario } from "../scenarios";
+import recordedThreads from "../../../../fixtures/pr-482/github/graphql/review-threads.json";
 import { HttpResponse, type HttpResponseResolver, type PathParams } from "msw";
 import type {
   AnchoredAskRequest,
@@ -93,6 +94,27 @@ export const reviewLoopHandlers = [
   route(
     "getComments",
     forPr(() => HttpResponse.json(overview())),
+  ),
+  route(
+    "getGithubThread",
+    forPr(({ params }) => {
+      const nodes = recordedThreads.response.data.repository.pullRequest.reviewThreads.nodes;
+      const thread = nodes.find((node) => node.id === params.thread);
+      if (!thread)
+        return apiError(404, "not_found", "This GitHub thread was not found on this pull request.");
+      return HttpResponse.json({
+        title: prPage().title,
+        path: thread.path,
+        item_no: null,
+        complete: thread.comments.nodes.length === thread.comments.totalCount,
+        comments: thread.comments.nodes.map((comment) => ({
+          author: comment.author?.login ?? "ghost",
+          body: comment.body,
+          url: comment.url,
+          created_at: comment.createdAt,
+        })),
+      });
+    }),
   ),
   route(
     "visitComments",

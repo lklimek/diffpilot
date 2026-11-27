@@ -22,6 +22,10 @@ export const commentsPath = (pr: PrRef, page: CommentsPage = "questions") =>
 /** Questions with one item open (`?item=C14`). */
 export const itemPath = (pr: PrRef, no: number) => `${commentsPath(pr)}?item=C${no}`;
 
+/** The exact GitHub review thread, resolved within the PR's Comments view. */
+export const githubThreadPath = (pr: PrRef, id: string) =>
+  `${commentsPath(pr)}?${new URLSearchParams({ thread: id })}`;
+
 /** Carry-overs of all pull requests (V5). */
 export const ALL_CARRY_OVERS_PATH = "/comments/carry-overs";
 

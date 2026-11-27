@@ -34,9 +34,10 @@ use crate::api::review_loop::{
     AgentPushPayload, CarryOverPage, CarryOverQuery, ChannelTestResult, Claim, ClaimRequest,
     CodeContext, CommentItem, CommentLog, CommentsOverview, ContextQuery, DecideRequest,
     DecideRest, Decision, DecisionBatchRequest, DecisionFeed, EffectReportRequest, EffectsPreview,
-    EffectsPreviewRequest, FeedDecision, FeedEvent, FeedQuery, GateMarkRequest, ItemActionRequest,
-    ItemsQuery, MarkedItems, MarkedItemsQuery, NotificationSettings, PrPage, PushTarget,
-    PutChannelRequest, PutPushTargetRequest, UserStreamEvent, WatchList, WebhookPayload,
+    EffectsPreviewRequest, FeedDecision, FeedEvent, FeedQuery, GateMarkRequest, GithubThreadDetail,
+    ItemActionRequest, ItemsQuery, MarkedItems, MarkedItemsQuery, NotificationSettings, PrPage,
+    PushTarget, PutChannelRequest, PutPushTargetRequest, UserStreamEvent, WatchList,
+    WebhookPayload,
 };
 use crate::api::settings::{
     GithubWebhook, LlmJobSlots, RankingUsage, RepoSettings, RepositoryInstallations,
@@ -144,6 +145,7 @@ pub const API_SCHEMAS: &[ApiSchema] = &[
     api_schema::<Vec<CommentItem>>("comment_item_list", &[routes::LIST_COMMENT_ITEMS]),
     api_schema::<ContextQuery>("context_query", &[]),
     api_schema::<CodeContext>("code_context", &[routes::GET_COMMENT_CONTEXT]),
+    api_schema::<GithubThreadDetail>("github_thread_detail", &[routes::GET_GITHUB_THREAD]),
     api_schema::<CommentLog>("comment_log", &[routes::GET_COMMENT_LOG]),
     api_schema::<MarkedItems>("marked_items", &[routes::LIST_MARKED_ITEMS]),
     api_schema::<MarkedItemsQuery>("marked_items_query", &[]),
@@ -406,6 +408,7 @@ fn typescript_types() -> Result<String, GenerateError> {
     collector.visit::<CommentItem>();
     collector.visit::<ContextQuery>();
     collector.visit::<CodeContext>();
+    collector.visit::<GithubThreadDetail>();
     collector.visit::<DecideRequest>();
     collector.visit::<DecisionBatchRequest>();
     collector.visit::<ItemActionRequest>();

@@ -4164,6 +4164,52 @@ llm_status: ThreadLlmStatus | null,
 llm_reason: string | null, };
 
 /**
+ * One submitted GitHub review comment.
+ */
+export type GithubThreadComment = {
+/**
+ * GitHub login, or `ghost` when the account was deleted.
+ */
+author: string,
+/**
+ * The original body, with whitespace and markup.
+ */
+body: string,
+/**
+ * The time the comment was created.
+ */
+created_at: string,
+/**
+ * Link to the comment on GitHub.
+ */
+url: string | null, };
+
+/**
+ * A submitted GitHub conversation and its exact review card, when it has one.
+ */
+export type GithubThreadDetail = {
+/**
+ * GitHub pull request title.
+ */
+title: string,
+/**
+ * Repository-relative path.
+ */
+path: string,
+/**
+ * Number of the review card for this exact GitHub thread, when known.
+ */
+item_no: number | null,
+/**
+ * Whether GitHub returned every page.
+ */
+complete: boolean,
+/**
+ * The first comment followed by the submitted replies.
+ */
+comments: Array<GithubThreadComment>, };
+
+/**
  * GitHub App webhook configuration and delivery status.
  */
 export type GithubWebhook = {

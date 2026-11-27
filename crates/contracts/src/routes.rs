@@ -611,6 +611,13 @@ pub const GET_COMMENT_CONTEXT: Route = route(
     "/api/v1/prs/{owner}/{name}/{number}/comments/items/{item}/context",
     READ,
 );
+/// Reads a submitted GitHub review thread and resolves its exact review card, if any.
+pub const GET_GITHUB_THREAD: Route = route(
+    "getGithubThread",
+    Get,
+    "/api/v1/prs/{owner}/{name}/{number}/comments/threads/{thread}",
+    Session,
+);
 /// RC6: assesses an item again (202).
 pub const ASSESS_COMMENT: Route = route(
     "assessComment",
@@ -881,6 +888,7 @@ pub const ROUTES: &[Route] = &[
     VISIT_COMMENTS,
     LIST_COMMENT_ITEMS,
     GET_COMMENT_CONTEXT,
+    GET_GITHUB_THREAD,
     ASSESS_COMMENT,
     DECIDE_COMMENT,
     DECIDE_COMMENT_BATCH,

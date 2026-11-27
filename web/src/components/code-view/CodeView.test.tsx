@@ -287,6 +287,33 @@ describe("CodeView", () => {
     expect(screen.getByRole("button", { name: "Your pending comment at line 96" })).toBe(own[0]);
   });
 
+  it("lets the reader disclose the full GitHub comment in a pinned line marker", async () => {
+    const props = stepProps("f1.5");
+    const thread = {
+      ...props.threads.find((t) => t.line === 99)!,
+      excerpt: `First part ${"x".repeat(189)}…`,
+      body: "First part\n\nOriginal `retry()` at the end.",
+    };
+    const href = `/pr/acme/node-client/482/comments?thread=${thread.id}`;
+    render(
+      <CodeView
+        {...props}
+        threads={[thread]}
+        threadActions={{ loadBody: async () => ({ body: thread.body }), href: () => href, navigate: vi.fn() }}
+      />,
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /GitHub thread by bob at line 99/ }));
+    expect(screen.queryByText(/at the end/)).toBeNull();
+    const preview = screen.getByRole("button", { name: /First part/ });
+    preview.focus();
+    await user.keyboard("{Enter}");
+    expect(await screen.findByText("retry()", { selector: "code" })).toBeVisible();
+    expect(screen.getByText(/at the end/)).toBeVisible();
+    expect(screen.getByRole("link", { name: /^Open on GitHub/ })).toHaveAttribute("href", thread.url);
+    expect(screen.getByRole("link", { name: "Open in Comments" })).toHaveAttribute("href", href);
+  });
+
   it("ignores threads and comments of other files, sides or without a line", () => {
     const comment: PendingComment = {
       id: "c",

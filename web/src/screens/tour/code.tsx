@@ -24,6 +24,7 @@ import { highlight } from "../../app/highlight";
 import { ClassicDiff } from "../../components/code-view/ClassicDiff";
 import { CodeView } from "../../components/code-view/CodeView";
 import type { MarkerTarget } from "../../components/code-view/markers";
+import type { GithubThreadActions } from "../../components/comments/GithubThreadPreview";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { pathOn } from "../../components/files/model";
 import { githubLineUrls, type PrLinkBase } from "../../components/github/links";
@@ -96,6 +97,7 @@ export interface CodeContext {
   onAskRemark?: (annotation: Annotation) => void;
   /** "N.M" of a thread's step when it is not the step shown. */
   otherThreadStep?: (thread: GithubThread) => string | null;
+  threadActions?: GithubThreadActions;
 }
 
 interface LinesCodeProps extends Pick<
@@ -173,6 +175,7 @@ export function LinesCode({ ctx, lines, ...view }: LinesCodeProps) {
         onShowInInspector={ctx.onShowInInspector}
         onAskRemark={ctx.onAskRemark}
         otherThreadStep={ctx.otherThreadStep}
+        threadActions={ctx.threadActions}
       />
       {data.deleted
         .filter((block) => opened.includes(block.base_start))
