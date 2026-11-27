@@ -35,9 +35,11 @@ export function GithubThreadPreview({
   const [body, setBody] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const previewLayout = compact ? "line-clamp-4" : "block";
-  const preview = <CodeText text={commentText(thread.excerpt) || thread.excerpt} linkPaths={false} />;
-  if (!actions || !thread.excerpt.endsWith("…") || Array.from(thread.excerpt).length !== 201)
+  const clipped = thread.excerpt.endsWith("…") && Array.from(thread.excerpt).length === 201;
+  const previewLayout = compact && clipped ? "line-clamp-4" : "block";
+  const previewText = commentText(thread.excerpt);
+  const preview = <CodeText text={previewText || (clipped ? "Show the full comment" : "")} linkPaths={false} />;
+  if (!actions || !clipped)
     return <span className={`${previewLayout} whitespace-pre-wrap`}>{preview}</span>;
 
   const toggle = async () => {

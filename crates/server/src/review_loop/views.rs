@@ -12,7 +12,7 @@ use contracts::api::review_loop::{
     ContextQuery, DecideRest, DecideRestRow, DecisionBatchRow, DecisionVia, EffectState,
     EffectsPreview, FeedSubscriber, FlowStepRef, GithubRead, ImportedGithubDecision, ItemState,
     ItemsQuery, KindCount, NotAssessedReason, NoteElsewhere, NoteSource, PrBadge, PrBadgeView,
-    PrPage, QueueEntry, Round, WatchState,
+    PrPage, QueueEntry, ReadFailure, Round, WatchState,
 };
 use contracts::api::tour::{CiState, Tour};
 use contracts::common::{AnnotationType, LineRange, LineSide, PrRef};
@@ -338,7 +338,9 @@ async fn read_view(
         .snapshot
         .as_ref()
         .map_or((0, 0, 0), |snapshot| snapshot.counts);
+    let failure = loaded.row.read_failure.map(|(failure, _)| failure);
     let timed = !session.is_access_token()
+        && failure != Some(ReadFailure::SignInRequired)
         && (loaded.snapshot.is_none()
             || !freshness::covered(state, &session.tenant_id, &loaded.handle.pr.repo).await?);
     let last_attempt = loaded
@@ -351,7 +353,7 @@ async fn read_view(
         complete: loaded.snapshot.as_ref().is_some_and(|s| s.complete),
         reviews,
         comments,
-        failure: loaded.row.read_failure.map(|(failure, _)| failure),
+        failure,
         next_read_at: last_attempt.filter(|_| timed).map(|at| at + READ_INTERVAL),
     })
 }

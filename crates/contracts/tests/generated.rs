@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use contracts::generate::{
     API_SCHEMA_DIR, API_SCHEMAS, RUNTIME_SCHEMA_DIR, SCHEMA_DIR, TS_DIR, generated_files,
 };
-use contracts::routes::{GET_ME, Listener, ROUTES, RouteAuth};
+use contracts::routes::{GET_GITHUB_THREAD, GET_ME, Listener, ROUTES, RouteAuth};
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -91,13 +91,15 @@ fn routes_ts_lists_only_public_routes() {
     }
 }
 
-/// Every route a personal access token may read names its response schema in `schemas/api/` exactly once, and
-/// no schema names another route (plan v1.1 §E.5 E5-7, `docs/contracts/agent-api.md`).
+/// Every token-readable route and the browser's exact GitHub thread view have one response schema each.
 #[test]
 fn every_token_readable_route_has_a_response_schema() {
     let readable: BTreeSet<&str> = ROUTES
         .iter()
-        .filter(|route| matches!(route.auth, RouteAuth::SessionOrToken(_)) || **route == GET_ME)
+        .filter(|route| {
+            matches!(route.auth, RouteAuth::SessionOrToken(_))
+                || [GET_ME, GET_GITHUB_THREAD].contains(route)
+        })
         .map(|route| route.name)
         .collect();
     let mut described = Vec::new();

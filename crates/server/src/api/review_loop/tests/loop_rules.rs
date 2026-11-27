@@ -1007,10 +1007,15 @@ async fn pr_level_comments_name_the_review_they_answer() {
             .await;
         assert_eq!(status, StatusCode::OK, "{preview}");
         let previewed = &preview[0]["effects"][1]["params"]["text"];
+        let quote = item["point"]["quote"]
+            .as_str()
+            .or_else(|| item["title"].as_str())
+            .and_then(|text| text.lines().next())
+            .expect("source quote or title");
         assert_eq!(
             previewed,
             &json!(format!(
-                "{line}\nPer maintainer decision, this is fixed in this pull request."
+                "{line}\n> {quote}\nPer maintainer decision, this is fixed in this pull request."
             )),
             "{preview}"
         );

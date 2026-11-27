@@ -2779,7 +2779,9 @@ fn verify_comments_prompt_explains_translated_technical_terms() {
         let (instructions, _) = prompt
             .split_once(agent::verify_comments::DATA_BLOCK_OPEN)
             .expect("data block");
-        assert!(instructions.contains("`reply_drafts`, which are always in English"));
+        assert!(instructions.contains(
+            "`reply_drafts` and the GitHub pull request title in `recommendation.title` for `follow_up_pr`, which are always in English"
+        ));
         assert_eq!(
             instructions.contains(rule),
             language != LlmLanguage::En,

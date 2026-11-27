@@ -277,7 +277,7 @@ test("v1.4 assessment dismissal, status and Watch work on a dark phone", async (
   const prStatus = page.getByRole("button", { name: "Questions waiting" });
   await prStatus.press("Enter");
   const panel = page.getByRole("dialog", { name: "Pull request status" });
-  await expect(panel.getByRole("heading", { name: /PR Hygiene/ })).toBeVisible();
+  await expect(panel.locator("summary").filter({ hasText: /PR Hygiene/ })).toBeVisible();
   await expect(panel.getByRole("heading", { name: /thepastaclaw status/ })).toBeVisible();
   await expect(panel.getByText("CI: 2 passed, 1 pending")).toBeVisible();
   await expect(panel.getByText(/Bot rounds: 4/)).toBeVisible();
