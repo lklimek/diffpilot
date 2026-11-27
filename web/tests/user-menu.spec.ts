@@ -8,6 +8,11 @@ test("user menu shows LLM work, preserves job privacy and opens keyboard help", 
   await trigger.focus();
   await trigger.press("Enter");
   await expect(trigger).toHaveAttribute("aria-expanded", "true");
+  await expect(trigger).toContainText("◔");
+  const activity = banner.getByRole("button", { name: "LLM activity: 1/3" });
+  await expect(activity).toHaveAttribute("aria-expanded", "false");
+  await expect(banner.getByRole("region", { name: "LLM activity" })).toHaveCount(0);
+  await activity.press("Enter");
   await expect(banner.getByRole("list", { name: "Running now (1)" })).toContainText("Ranking");
   await expect(banner.getByRole("list", { name: "Queued (2)" })).toContainText("1 job of another user");
   await expect(banner.getByRole("link", { name: "acme/node-client#482" })).toBeVisible();
@@ -32,6 +37,7 @@ test("the disclosed job lists fit a phone in dark mode and can be expanded", asy
   await page.goto("/?scenario=llm-activity-many");
   const banner = page.getByRole("banner");
   await banner.getByRole("button", { name: "alice: account and LLM activity", exact: true }).click();
+  await banner.getByRole("button", { name: /^LLM activity/ }).click();
   const jobs = banner.getByRole("list", { name: "Queued (7)" });
   await expect(jobs.getByRole("listitem")).toHaveCount(5);
   await banner.getByRole("button", { name: "Show all (7)" }).click();
@@ -51,9 +57,11 @@ test("the trigger identifies a usage pause and a failed last call", async ({ pag
   await paused.hover();
   await expect(page.getByRole("tooltip").filter({ hasText: /LLM paused until/ })).toBeVisible();
   await paused.click();
+  await page.getByRole("button", { name: /^LLM activity/ }).click();
   await expect(page.getByText(/Paused at the usage limit until/)).toBeVisible();
 
   await page.goto("/?scenario=llm-activity-failed");
   await page.getByRole("button", { name: "alice — LLM not working" }).click();
+  await page.getByRole("button", { name: /^LLM activity/ }).click();
   await expect(page.getByText("Codex sign-in expired.")).toBeVisible();
 });

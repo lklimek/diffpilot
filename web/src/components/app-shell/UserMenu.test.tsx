@@ -92,6 +92,12 @@ it("shows own job details and folds the two lists independently without revealin
     />,
   );
   await user.click(screen.getByRole("button", { name: "alice: account and LLM activity" }));
+  expect(screen.getByRole("button", { name: /^alice/ })).toHaveAccessibleDescription(/LLM jobs are running/);
+  const disclosure = screen.getByRole("button", { name: "LLM activity: 7/14" });
+  expect(disclosure).toHaveAttribute("aria-expanded", "false");
+  expect(screen.queryByRole("list", { name: "Running now (7)" })).toBeNull();
+  await user.click(disclosure);
+  expect(disclosure).toHaveAttribute("aria-expanded", "true");
   const active = screen.getByRole("list", { name: "Running now (7)" });
   const waiting = screen.getByRole("list", { name: "Queued (7)" });
   expect(within(active).getAllByRole("listitem")).toHaveLength(5);
@@ -124,6 +130,7 @@ it("describes the typed usage and analysis wait reasons", async () => {
     />,
   );
   await userEvent.click(screen.getByRole("button", { name: /^alice/ }));
+  await userEvent.click(screen.getByRole("button", { name: "LLM activity: 0/2" }));
   expect(
     screen.getByText(`Waits for the usage limit to reset at ${clockText(pausedUntil, now)}`),
   ).toBeVisible();
@@ -143,6 +150,9 @@ it("opens as a disclosure with normal Tab order and Escape returning to the trig
   expect(trigger).toHaveAttribute("aria-controls", disclosed.id);
   expect(within(disclosed).getByText("Signed in as alice (GitHub)")).toBeVisible();
   expect(screen.queryByRole("menu")).toBeNull();
+  await user.tab();
+  expect(screen.getByRole("button", { name: "LLM activity: 0/0" })).toHaveFocus();
+  await user.keyboard("{Enter}");
   await user.tab();
   expect(screen.getByRole("link", { name: "Usage and limits" })).toHaveFocus();
   await user.tab();
@@ -169,6 +179,7 @@ it("shows an own subject as text if the server gives it an external URL", async 
     />,
   );
   await userEvent.click(screen.getByRole("button", { name: "alice: account and LLM activity" }));
+  await userEvent.click(screen.getByRole("button", { name: "LLM activity: 1/1" }));
   expect(screen.getByRole("list", { name: "Running now (1)" })).toHaveTextContent("My work");
   expect(screen.queryByRole("link", { name: "My work" })).toBeNull();
 });
@@ -191,6 +202,7 @@ it("keeps all five own jobs visible and summarizes other users separately in eac
     />,
   );
   await userEvent.click(screen.getByRole("button", { name: /^alice/ }));
+  await userEvent.click(screen.getByRole("button", { name: "LLM activity: 3/11" }));
   const runningRows = within(screen.getByRole("list", { name: "Running now (3)" })).getAllByRole("listitem");
   expect(runningRows).toHaveLength(2);
   const otherRunning = within(runningRows.at(-1)!);
@@ -240,6 +252,7 @@ it("uses neutral labels for future job kinds and wait reasons", async () => {
     />,
   );
   await userEvent.click(screen.getByRole("button", { name: /^alice/ }));
+  await userEvent.click(screen.getByRole("button", { name: "LLM activity: 0/1" }));
   const list = within(screen.getByRole("list", { name: "Queued (1)" }));
   expect(list.getByText(/^LLM job/)).toBeVisible();
   expect(list.getByText("Waiting")).toBeVisible();

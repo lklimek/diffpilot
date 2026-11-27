@@ -1,4 +1,4 @@
-import { useId } from "react";
+import { useId, useState, type ComponentProps } from "react";
 import type { LlmActivity } from "../../api/generated/types";
 import { navigateOnClick, type Navigate } from "../dashboard/common/navigate";
 import { clockText, dateTimeText } from "../format/time";
@@ -8,6 +8,30 @@ import { LlmActivityList } from "./LlmActivityList";
 
 const ACTION =
   "flex min-h-7 w-full cursor-pointer items-center justify-between gap-2 rounded px-2.5 py-1 text-left text-text no-underline hover:bg-accent-bg focus-visible:bg-accent-bg";
+
+function ActivityDisclosure(props: ComponentProps<typeof LlmActivityList>) {
+  const id = useId();
+  const [open, setOpen] = useState(false);
+  const { activity } = props;
+  const count = activity && `${activity.running.length}/${activity.running.length + activity.queued.length}`;
+  return (
+    <>
+      <button
+        type="button"
+        className={ACTION}
+        aria-expanded={open}
+        aria-controls={id}
+        onClick={() => setOpen(!open)}
+      >
+        <span>LLM activity{count && <span className="tabular-nums">: {count}</span>}</span>
+        <span aria-hidden>{open ? "▾" : "›"}</span>
+      </button>
+      <div id={id} hidden={!open}>
+        {open && <LlmActivityList {...props} />}
+      </div>
+    </>
+  );
+}
 
 export interface UserMenuProps {
   login: string;
@@ -43,12 +67,14 @@ export function UserMenu({
   const paused = pausedUntil && Date.parse(pausedUntil) > now.getTime() ? pausedUntil : null;
   const failed = lastCall?.status.state === "not_working";
   const attention = paused ? "paused" : failed ? "failed" : null;
+  const working = (activity?.running.length ?? 0) > 0;
   const panelName = `${login}: account and LLM activity`;
   const name = paused
     ? `${login} — LLM paused until ${clockText(paused, now)}`
     : failed
       ? `${login} — LLM not working`
       : panelName;
+  const tooltip = `${attention ? name : `Signed in as ${login} (GitHub)`}${working ? ". LLM jobs are running." : ""}`;
   const follow =
     onNavigate &&
     ((href: string) => {
@@ -58,7 +84,7 @@ export function UserMenu({
 
   return (
     <div ref={root} className="relative flex flex-none items-center" {...dismiss}>
-      <Tooltip tip={attention ? name : `Signed in as ${login} (GitHub)`}>
+      <Tooltip tip={tooltip}>
         <button
           ref={anchor}
           type="button"
@@ -78,6 +104,11 @@ export function UserMenu({
           <span aria-hidden className="user-menu-login hidden max-w-32 truncate sm:inline">
             {login}
           </span>
+          {working && (
+            <span aria-hidden className="grid size-3.5 shrink-0 place-items-center text-low">
+              ◔
+            </span>
+          )}
           {attention && (
             <span
               aria-hidden
@@ -106,7 +137,7 @@ export function UserMenu({
           className="fixed z-50 grid w-88 max-w-[calc(100vw-2rem)] gap-1 overflow-y-auto overscroll-contain rounded-lg border border-border bg-surface p-1 text-left text-[13px] whitespace-normal text-text shadow-tip [overflow-wrap:anywhere]"
         >
           <p className="px-2.5 py-1 text-xs text-muted">Signed in as {login} (GitHub)</p>
-          <LlmActivityList
+          <ActivityDisclosure
             activity={activity}
             lastCall={lastCall}
             pausedUntil={paused}

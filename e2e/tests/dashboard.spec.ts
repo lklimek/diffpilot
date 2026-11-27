@@ -80,6 +80,7 @@ test("My work: manual scan → provisional → ranked → refresh reuses judgeme
   });
   expect((await groupIds(page, "Not judged yet")).slice(0, 3)).toEqual(["PLAT-1203", "WUI-320", "NC-482"]);
   await account.click();
+  await page.getByRole("button", { name: /^LLM activity/ }).click();
   await expect(ranking).toBeVisible({ timeout: 30_000 });
   await expect(progress).toHaveCount(0);
   await checkScreen(page);

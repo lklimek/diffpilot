@@ -83,9 +83,9 @@ function Jobs({
   const shown = expanded ? own : own.slice(0, PREVIEW_COUNT);
   return (
     <div className="grid gap-1">
-      <h4 id={`${id}-heading`} className="text-xs font-semibold">
+      <h3 id={`${id}-heading`} className="text-xs font-semibold">
         {title} ({jobs.length})
-      </h4>
+      </h3>
       <ul id={id} aria-labelledby={`${id}-heading`} className="m-0 divide-y divide-border p-0">
         {shown.map((job) => {
           const subject = job.subject;
@@ -156,15 +156,11 @@ export function LlmActivityList({
   usageHref,
   onNavigate,
 }: LlmActivityListProps) {
-  const id = useId();
   const failed = lastCall?.status.state === "not_working";
   const count = activity ? activity.running.length + activity.queued.length : 0;
   return (
-    <section aria-labelledby={id} className="grid gap-2 border-y border-border px-2.5 py-2">
+    <section aria-label="LLM activity" className="grid gap-2 border-y border-border px-2.5 py-2">
       <div>
-        <h3 id={id} className="font-semibold">
-          LLM activity
-        </h3>
         {pausedUntil ? (
           <p className="text-med">Paused at the usage limit until {clockText(pausedUntil, now)}.</p>
         ) : failed ? (
