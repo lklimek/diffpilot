@@ -10,7 +10,7 @@ import {
 import { Tooltip } from "../../tooltip/Tooltip";
 import { netTone, signed } from "../common/format";
 
-/** One bar of the chart: pull requests closed and opened in a working day or a week (bucketed by the screen). */
+/** One bar of the chart: pull requests closed and opened in a calendar day or a week. */
 export interface NetPoint {
   /** Axis label (`26 Oct`). */
   label: string;

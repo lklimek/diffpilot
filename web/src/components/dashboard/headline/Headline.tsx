@@ -29,7 +29,7 @@ interface HeadlineProps {
   figures: HeadlineFigures;
   zoneLabel?: string;
   unsupportedZone?: string | null;
-  /** Last 20 working days, oldest first. */
+  /** Last 20 calendar days, oldest first. */
   days: NetPoint[];
   /** Last 12 weeks, oldest first. */
   weeks: NetPoint[];
@@ -158,9 +158,7 @@ export function Headline({
             blockHeight={height}
             header={
               <div className="flex flex-wrap items-center gap-2.5">
-                <h3 className="text-sm font-semibold">
-                  Net per {unit === "day" ? "working day" : "week"}, with cumulative total
-                </h3>
+                <h3 className="text-sm font-semibold">Net per {unit}, with cumulative total</h3>
                 <span className="flex-1" />
                 {projects.length > 0 && onProjectChange && (
                   <select
@@ -182,7 +180,7 @@ export function Headline({
                   value={unit}
                   onChange={onUnitChange}
                   options={[
-                    { value: "day", label: "Days", tip: "Last 20 working days" },
+                    { value: "day", label: "Days", tip: "Last 20 calendar days" },
                     { value: "week", label: "Weeks", tip: "Last 12 weeks" },
                   ]}
                 />

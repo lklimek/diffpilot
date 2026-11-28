@@ -6,12 +6,10 @@ import {
   chartProjects,
   dailySeries,
   headline,
-  localDay,
   pullRequestUrl,
   throughputWeeks,
   weeklyCounts,
   weeklySeries,
-  workingDay,
 } from "./history";
 
 // Local times only, so the assertions hold in every time zone the tests run in.
@@ -28,7 +26,6 @@ const EVENTS: HistoryEvent[] = [
   ev("pr_merged", 11, 17, "acme/a#3"),
   ev("review_given", 11, 17, "acme/b#9"),
   ev("pr_closed_unmerged", 11, 18, "acme/a#4"),
-  // Weekend: counted on the Friday before.
   ev("pr_opened", 11, 14, "acme/a#5"),
   ev("pr_merged", 11, 15, "acme/a#6"),
   // Last week, Mon 9 Nov.
@@ -36,14 +33,6 @@ const EVENTS: HistoryEvent[] = [
   // A kind this client does not know is ignored (tolerant reader).
   ev("issue_closed", 11, 17, "acme/a#8"),
 ];
-
-describe("workingDay", () => {
-  it("keeps a weekday and moves Saturday and Sunday to the Friday before", () => {
-    expect(localDay(workingDay(new Date(2026, 10, 18, 23, 59)))).toBe("2026-11-18");
-    expect(localDay(workingDay(new Date(2026, 10, 14, 1)))).toBe("2026-11-13");
-    expect(localDay(workingDay(new Date(2026, 10, 15, 23)))).toBe("2026-11-13");
-  });
-});
 
 describe("headline (pull requests only, closed − opened)", () => {
   it("counts calendar days, this week and month to date", () => {
@@ -94,10 +83,10 @@ describe("headline (pull requests only, closed − opened)", () => {
 });
 
 describe("dailySeries", () => {
-  it("lists the last twenty working days with net and running total; today is partial", () => {
+  it("lists the last twenty calendar days with net and running total; today is partial", () => {
     const days = dailySeries(EVENTS, NOW);
     expect(days).toHaveLength(20);
-    expect(days[0]!.day).toBe("2026-10-22");
+    expect(days[0]!.day).toBe("2026-10-30");
     expect(days.at(-1)).toEqual({
       day: "2026-11-18",
       closed: 1,
@@ -106,9 +95,10 @@ describe("dailySeries", () => {
       running: 1,
       partial: true,
     });
-    expect(days.find((d) => d.day === "2026-11-13")).toMatchObject({ closed: 1, opened: 1, net: 0 });
+    expect(days.find((d) => d.day === "2026-11-13")).toMatchObject({ closed: 0, opened: 0 });
+    expect(days.find((d) => d.day === "2026-11-14")).toMatchObject({ closed: 0, opened: 1 });
+    expect(days.find((d) => d.day === "2026-11-15")).toMatchObject({ closed: 1, opened: 0 });
     expect(days.find((d) => d.day === "2026-11-17")).toMatchObject({ closed: 2, net: 2, partial: false });
-    expect(days.some((d) => d.day === "2026-11-14" || d.day === "2026-11-15")).toBe(false);
     let running = 0;
     for (const d of days) {
       running += d.net;
@@ -117,9 +107,10 @@ describe("dailySeries", () => {
     }
   });
 
-  it("on a Saturday the Friday is the partial last day and holds the Saturday", () => {
-    const days = dailySeries([ev("pr_merged", 11, 21)], new Date(2026, 10, 21, 10));
-    expect(days.at(-1)).toMatchObject({ day: "2026-11-20", closed: 1, partial: true });
+  it.each([14, 15])("uses the weekend day Nov %i as today", (day) => {
+    const days = dailySeries(EVENTS, new Date(2026, 10, day, 13));
+    expect(days.at(-1)).toMatchObject({ day: `2026-11-${day}`, partial: true });
+    expect(days.at(-2)).toMatchObject({ day: `2026-11-${day - 1}`, partial: false });
   });
 });
 
@@ -193,7 +184,7 @@ describe("chart labels", () => {
 describe("barPullRequests (the pull requests behind one bar)", () => {
   const titles = new Map([["acme/a#2", "fix: retry"]]);
 
-  it("lists a working day's opened and closed pull requests in time order, the weekend on its Friday", () => {
+  it("lists a calendar day's opened and closed pull requests in time order", () => {
     const events = [
       ev("pr_merged", 11, 17, "acme/a#3", 15),
       ev("pr_merged", 11, 17, "acme/a#2", 9),
@@ -220,9 +211,19 @@ describe("barPullRequests (the pull requests behind one bar)", () => {
         },
       ],
     });
-    const friday = barPullRequests(EVENTS, "2026-11-13", "day", titles);
-    expect(friday.opened.map((pr) => pr.id)).toEqual(["acme/a#5"]);
-    expect(friday.closed.map((pr) => pr.id)).toEqual(["acme/a#6"]);
+  });
+
+  it("separates Friday, Saturday and Sunday in daily lists and includes the weekend in its Monday week", () => {
+    expect(barPullRequests(EVENTS, "2026-11-13", "day", titles)).toEqual({ opened: [], closed: [] });
+    const saturday = barPullRequests(EVENTS, "2026-11-14", "day", titles);
+    expect(saturday.opened.map((pr) => pr.id)).toEqual(["acme/a#5"]);
+    expect(saturday.closed).toEqual([]);
+    const sunday = barPullRequests(EVENTS, "2026-11-15", "day", titles);
+    expect(sunday.opened).toEqual([]);
+    expect(sunday.closed.map((pr) => pr.id)).toEqual(["acme/a#6"]);
+    const week = barPullRequests(EVENTS, "2026-11-09", "week", titles);
+    expect(week.opened.map((pr) => pr.id)).toEqual(["acme/a#7", "acme/a#5"]);
+    expect(week.closed.map((pr) => pr.id)).toEqual(["acme/a#6"]);
   });
 
   it("lists a week (Monday to Sunday) and marks a pull request closed without merge", () => {
@@ -307,17 +308,17 @@ describe("bucketing across the end of summer time (Europe/Warsaw, Sun 25 Oct 202
     expect(new Date("2026-10-24T12:00:00Z").getTimezoneOffset()).toBe(-120);
     expect(new Date("2026-10-26T12:00:00Z").getTimezoneOffset()).toBe(-60);
     const events = [
-      // Sun 25 Oct 23:30 CET: a weekend event, counted on Fri 23 Oct.
+      // Sun 25 Oct 23:30 CET, after the clocks went back.
       utc("pr_merged", "2026-10-25T22:30:00Z", "acme/a#1"),
       // Mon 26 Oct 00:30 CET (still Sunday in UTC): Monday, in the week of 26 Oct.
       utc("pr_opened", "2026-10-25T23:30:00Z", "acme/a#2"),
-      // Sun 25 Oct 02:30 CEST, before the clocks went back: Friday too.
+      // Sun 25 Oct 02:30 CEST, before the clocks went back.
       utc("pr_merged", "2026-10-25T00:30:00Z", "acme/a#3"),
     ];
     const now = new Date("2026-10-27T09:00:00Z");
     const days = dailySeries(events, now, 3);
     expect(days.map((d) => [d.day, d.closed, d.opened])).toEqual([
-      ["2026-10-23", 2, 0],
+      ["2026-10-25", 2, 0],
       ["2026-10-26", 0, 1],
       ["2026-10-27", 0, 0],
     ]);

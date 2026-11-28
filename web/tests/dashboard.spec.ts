@@ -647,6 +647,12 @@ test.describe("My work (msw)", () => {
       await page.setViewportSize({ width: 1600, height: 900 });
       await page.clock.setFixedTime(new Date("2026-11-22T11:30:00Z"));
       await open(page);
+      const sunday = await netChartBar(page, 19);
+      await sunday.chart.click(sunday.at);
+      await expect(page.getByRole("region", { name: "Pull requests of Sun 22 Nov (so far)" })).toBeVisible();
+      const saturday = await netChartBar(page, 18);
+      await saturday.chart.click(saturday.at);
+      await expect(page.getByRole("region", { name: "Pull requests of Sat 21 Nov" })).toBeVisible();
       await page.getByRole("button", { name: "Weeks" }).click();
       const { chart, at } = await netChartBar(page, 11);
       await chart.hover(at);
@@ -663,7 +669,7 @@ test.describe("My work (msw)", () => {
     });
   });
 
-  test("keeps openings on the same working day after the browser zone changes", async ({
+  test("keeps openings on the same calendar day after the browser zone changes", async ({
     browser,
     baseURL,
   }) => {
@@ -691,7 +697,7 @@ test.describe("My work (msw)", () => {
     page,
   }) => {
     await open(page);
-    // Mon 16 Nov: the third bar from the right of the 20 working days.
+    // Mon 16 Nov: the third bar from the right of the 20 calendar days.
     const { chart, at } = await netChartBar(page, 17);
     const list = page.getByRole("region", { name: "Pull requests of Mon 16 Nov" });
     await chart.hover(at);

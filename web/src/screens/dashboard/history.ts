@@ -1,5 +1,5 @@
 // History bucketing of the dashboard charts (plan §C.1, §F.3): the snapshot's dated pull-request and review events
-// counted by the dashboard's local working day and week. Pull requests only (OD16): closed = merged or closed
+// counted by the dashboard's calendar day and week. Pull requests only (OD16): closed = merged or closed
 // unmerged, opened = opened; reviews given are counted apart and never enter the net.
 import type { HistoryEvent, HistoryKind, PrRef } from "../../api/generated/types";
 import type { BarPullRequest } from "../../components/dashboard/bar-pull-requests/BarPullRequests";
@@ -44,7 +44,7 @@ export interface YesterdaySummary {
   mergedIds: string[];
 }
 
-/** Working days of the day chart. */
+/** Calendar days of the day chart. */
 export const CHART_DAYS = 20;
 /** Weeks of the week chart (the snapshot's history window, plan §C.1). */
 export const CHART_WEEKS = 12;
@@ -81,8 +81,8 @@ const OPENED: readonly HistoryKind[] = ["pr_opened"];
 
 type ChartEvent = HistoryEvent & { calendarDay?: string };
 
-const eventWorkingDay = (event: ChartEvent) =>
-  workingDay(event.calendarDay === undefined ? new Date(event.at) : parseDay(event.calendarDay));
+const eventDate = (event: ChartEvent) =>
+  event.calendarDay === undefined ? new Date(event.at) : parseDay(event.calendarDay);
 
 /** Local date of `d` as `YYYY-MM-DD`. */
 export const localDay = (d: Date): string =>
@@ -91,31 +91,15 @@ export const localDay = (d: Date): string =>
 const midnight = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
 const addDays = (d: Date, days: number) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + days);
 
-/** Local midnight of the working day `d` counts on: Saturday and Sunday count on the Friday before. */
-export function workingDay(d: Date): Date {
-  const day = d.getDay();
-  return addDays(midnight(d), day === 6 ? -1 : day === 0 ? -2 : 0);
-}
-
 /** Monday (local midnight) of the week of `d`. */
 const monday = (d: Date) => addDays(midnight(d), -((d.getDay() + 6) % 7));
 
-/** The working day before working day `d`. */
-const previousWorkingDay = (d: Date) => workingDay(addDays(d, -1));
-
-/** `count` working days ending with the one holding `now`, oldest first. */
-function workingDays(now: Date, count: number): Date[] {
-  const days = [workingDay(now)];
-  while (days.length < count) days.unshift(previousWorkingDay(days[0]!));
-  return days;
-}
-
-/** Counts of `kinds` per working day (`YYYY-MM-DD`). */
-function perWorkingDay(events: readonly ChartEvent[], kinds: readonly HistoryKind[]): Map<string, number> {
+/** Counts of `kinds` per calendar day (`YYYY-MM-DD`). */
+function perDay(events: readonly ChartEvent[], kinds: readonly HistoryKind[]): Map<string, number> {
   const counts = new Map<string, number>();
   for (const e of events) {
     if (!kinds.includes(e.kind)) continue;
-    const day = localDay(eventWorkingDay(e));
+    const day = e.calendarDay ?? localDay(new Date(e.at));
     counts.set(day, (counts.get(day) ?? 0) + 1);
   }
   return counts;
@@ -124,7 +108,7 @@ function perWorkingDay(events: readonly ChartEvent[], kinds: readonly HistoryKin
 /** Counts of `kinds` from `from` (inclusive) to `to` (exclusive), local midnights. */
 function countBetween(events: readonly ChartEvent[], kinds: readonly HistoryKind[], from: Date, to: Date) {
   return events.filter((e) => {
-    const t = eventWorkingDay(e).getTime();
+    const t = eventDate(e).getTime();
     return kinds.includes(e.kind) && t >= from.getTime() && t < to.getTime();
   }).length;
 }
@@ -141,17 +125,16 @@ function withRunning(buckets: Omit<NetBucket, "running">[]): NetBucket[] {
   return buckets.map((b) => ({ ...b, running: (running += b.net) }));
 }
 
-/** The last `count` working days with closed, opened, net and running total; the one holding now is partial. */
+/** The last `count` calendar days with closed, opened, net and running total; today is partial. */
 export function dailySeries(events: readonly ChartEvent[], now: Date, count = CHART_DAYS): NetBucket[] {
-  const closed = perWorkingDay(events, CLOSED);
-  const opened = perWorkingDay(events, OPENED);
-  const today = localDay(workingDay(now));
+  const closed = perDay(events, CLOSED);
+  const opened = perDay(events, OPENED);
   return withRunning(
-    workingDays(now, count).map((d) => {
-      const day = localDay(d);
+    Array.from({ length: count }, (_, i) => {
+      const day = localDay(addDays(now, i - count + 1));
       const c = closed.get(day) ?? 0;
       const o = opened.get(day) ?? 0;
-      return { day, closed: c, opened: o, net: c - o, partial: day === today };
+      return { day, closed: c, opened: o, net: c - o, partial: i === count - 1 };
     }),
   );
 }
@@ -198,7 +181,7 @@ function dayFormatter(timeZone?: string | null) {
   }
 }
 
-/** Calendar-day figures for the headline and side panel; chart buckets keep their working-day rules. */
+/** Calendar-day figures for the headline and side panel. */
 export function headline(events: readonly HistoryEvent[], now: Date, timeZone?: string | null) {
   const { day, unsupportedZone, zoneLabel } = dashboardCalendar(timeZone);
   const today = day(now);
@@ -340,7 +323,7 @@ export function barPullRequests(
 ): { opened: BarPullRequest[]; closed: BarPullRequest[] } {
   const inBar = events
     .filter((e) => {
-      const bucket = eventWorkingDay(e);
+      const bucket = eventDate(e);
       return localDay(unit === "day" ? bucket : monday(bucket)) === day;
     })
     .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));

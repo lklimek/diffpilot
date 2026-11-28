@@ -94,14 +94,11 @@ export function DashboardScreen() {
   }, [signedIn, setHelp]);
 
   const zone = summary?.schedule.time_zone;
-  const { day, unsupportedZone } = useMemo(() => dashboardCalendar(zone), [zone]);
-  const chartDate = zone && unsupportedZone === null ? day : undefined;
+  const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const { day: chartDate } = useMemo(() => dashboardCalendar(zone ?? browserZone), [zone, browserZone]);
   const historyEvents = snapshot?.history;
   const history = useMemo(
-    () =>
-      chartDate
-        ? historyEvents?.map((event) => ({ ...event, calendarDay: localDay(chartDate(new Date(event.at))) }))
-        : historyEvents,
+    () => historyEvents?.map((event) => ({ ...event, calendarDay: localDay(chartDate(new Date(event.at))) })),
     [historyEvents, chartDate],
   );
   const projects = useMemo(() => chartProjects(history ?? []), [history]);
@@ -116,7 +113,7 @@ export function DashboardScreen() {
   const charts = useMemo(() => {
     if (!history || !chartEvents) return null;
     const figures = headline(chartEvents, now, zone);
-    const chartDay = chartDate?.(now) ?? now;
+    const chartDay = chartDate(now);
     return {
       figures,
       yesterday: chartEvents === history ? figures : headline(history, now, zone),
