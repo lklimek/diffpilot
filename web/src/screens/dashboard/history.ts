@@ -1,5 +1,5 @@
 // History bucketing of the dashboard charts (plan §C.1, §F.3): the snapshot's dated pull-request and review events
-// counted by the browser's local working day and week. Pull requests only (OD16): closed = merged or closed
+// counted by the dashboard's local working day and week. Pull requests only (OD16): closed = merged or closed
 // unmerged, opened = opened; reviews given are counted apart and never enter the net.
 import type { HistoryEvent, HistoryKind, PrRef } from "../../api/generated/types";
 import type { BarPullRequest } from "../../components/dashboard/bar-pull-requests/BarPullRequests";
@@ -51,8 +51,16 @@ export const CHART_WEEKS = 12;
 /** Weeks of the throughput mini charts. */
 export const THROUGHPUT_WEEKS = 8;
 
-const DAY = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short" });
-const WEEKDAY_DAY = new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", month: "short" });
+const DAY = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", timeZone: "UTC" });
+const WEEKDAY_DAY = new Intl.DateTimeFormat("en-GB", {
+  weekday: "short",
+  day: "numeric",
+  month: "short",
+  timeZone: "UTC",
+});
+
+const formatDay = (formatter: Intl.DateTimeFormat, d: Date) =>
+  formatter.format(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
 
 /** Local midnight of a `YYYY-MM-DD` date. */
 function parseDay(day: string): Date {
@@ -62,14 +70,19 @@ function parseDay(day: string): Date {
 
 /** `9–13 Nov`, or `30 Nov – 4 Dec` across months. */
 function rangeLabel(from: Date, to: Date): string {
-  if (from.getTime() === to.getTime()) return WEEKDAY_DAY.format(to);
+  if (from.getTime() === to.getTime()) return formatDay(WEEKDAY_DAY, to);
   return from.getMonth() === to.getMonth()
-    ? `${from.getDate()}–${DAY.format(to)}`
-    : `${DAY.format(from)} – ${DAY.format(to)}`;
+    ? `${from.getDate()}–${formatDay(DAY, to)}`
+    : `${formatDay(DAY, from)} – ${formatDay(DAY, to)}`;
 }
 
 const CLOSED: readonly HistoryKind[] = ["pr_merged", "pr_closed_unmerged"];
 const OPENED: readonly HistoryKind[] = ["pr_opened"];
+
+type ChartEvent = HistoryEvent & { calendarDay?: string };
+
+const eventWorkingDay = (event: ChartEvent) =>
+  workingDay(event.calendarDay === undefined ? new Date(event.at) : parseDay(event.calendarDay));
 
 /** Local date of `d` as `YYYY-MM-DD`. */
 export const localDay = (d: Date): string =>
@@ -98,25 +111,25 @@ function workingDays(now: Date, count: number): Date[] {
 }
 
 /** Counts of `kinds` per working day (`YYYY-MM-DD`). */
-function perWorkingDay(events: readonly HistoryEvent[], kinds: readonly HistoryKind[]): Map<string, number> {
+function perWorkingDay(events: readonly ChartEvent[], kinds: readonly HistoryKind[]): Map<string, number> {
   const counts = new Map<string, number>();
   for (const e of events) {
     if (!kinds.includes(e.kind)) continue;
-    const day = localDay(workingDay(new Date(e.at)));
+    const day = localDay(eventWorkingDay(e));
     counts.set(day, (counts.get(day) ?? 0) + 1);
   }
   return counts;
 }
 
 /** Counts of `kinds` from `from` (inclusive) to `to` (exclusive), local midnights. */
-function countBetween(events: readonly HistoryEvent[], kinds: readonly HistoryKind[], from: Date, to: Date) {
+function countBetween(events: readonly ChartEvent[], kinds: readonly HistoryKind[], from: Date, to: Date) {
   return events.filter((e) => {
-    const t = workingDay(new Date(e.at)).getTime();
+    const t = eventWorkingDay(e).getTime();
     return kinds.includes(e.kind) && t >= from.getTime() && t < to.getTime();
   }).length;
 }
 
-const netBetween = (events: readonly HistoryEvent[], from: Date, to: Date): NetCount => {
+const netBetween = (events: readonly ChartEvent[], from: Date, to: Date): NetCount => {
   const closed = countBetween(events, CLOSED, from, to);
   const opened = countBetween(events, OPENED, from, to);
   return { closed, opened, net: closed - opened };
@@ -129,7 +142,7 @@ function withRunning(buckets: Omit<NetBucket, "running">[]): NetBucket[] {
 }
 
 /** The last `count` working days with closed, opened, net and running total; the one holding now is partial. */
-export function dailySeries(events: readonly HistoryEvent[], now: Date, count = CHART_DAYS): NetBucket[] {
+export function dailySeries(events: readonly ChartEvent[], now: Date, count = CHART_DAYS): NetBucket[] {
   const closed = perWorkingDay(events, CLOSED);
   const opened = perWorkingDay(events, OPENED);
   const today = localDay(workingDay(now));
@@ -144,7 +157,7 @@ export function dailySeries(events: readonly HistoryEvent[], now: Date, count = 
 }
 
 /** The last `count` weeks (Monday to Sunday) with closed, opened, net and running total; this week is partial. */
-export function weeklySeries(events: readonly HistoryEvent[], now: Date, count = CHART_WEEKS): NetBucket[] {
+export function weeklySeries(events: readonly ChartEvent[], now: Date, count = CHART_WEEKS): NetBucket[] {
   const thisWeek = monday(now);
   return withRunning(
     Array.from({ length: count }, (_, i) => {
@@ -156,7 +169,7 @@ export function weeklySeries(events: readonly HistoryEvent[], now: Date, count =
 
 /** Events of `kinds` per week for the last `count` weeks; this week is partial. */
 export function weeklyCounts(
-  events: readonly HistoryEvent[],
+  events: readonly ChartEvent[],
   kinds: readonly HistoryKind[],
   now: Date,
   count = THROUGHPUT_WEEKS,
@@ -187,21 +200,14 @@ function dayFormatter(timeZone?: string | null) {
 
 /** Calendar-day figures for the headline and side panel; chart buckets keep their working-day rules. */
 export function headline(events: readonly HistoryEvent[], now: Date, timeZone?: string | null) {
-  const { calendar, unsupportedZone } = dayFormatter(timeZone);
-  const usingBrowserZone = !timeZone || unsupportedZone !== null;
-  const inZone = (date: Date) => {
-    const parts = calendar.formatToParts(date);
-    const part = (name: Intl.DateTimeFormatPartTypes) =>
-      Number(parts.find(({ type }) => type === name)?.value);
-    return new Date(part("year"), part("month") - 1, part("day")).getTime();
-  };
-  const today = new Date(inZone(now));
+  const { day, unsupportedZone, zoneLabel } = dashboardCalendar(timeZone);
+  const today = day(now);
   const yesterday = addDays(today, -1);
   const weekStart = monday(today);
   const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
   const dated = events.flatMap((event) => {
     const at = Date.parse(event.at);
-    return Number.isFinite(at) && at <= now.getTime() ? [{ ...event, day: inZone(new Date(at)) }] : [];
+    return Number.isFinite(at) && at <= now.getTime() ? [{ ...event, day: day(new Date(at)).getTime() }] : [];
   });
   const inPeriod = (from: Date, to: Date) =>
     dated.filter(({ day }) => day >= from.getTime() && day <= to.getTime());
@@ -225,14 +231,31 @@ export function headline(events: readonly HistoryEvent[], now: Date, timeZone?: 
   };
   return {
     today: period(today, today),
-    yesterday: { ...previousNet, label: WEEKDAY_DAY.format(yesterday) },
+    yesterday: { ...previousNet, label: formatDay(WEEKDAY_DAY, yesterday) },
     week: period(weekStart, today),
     month: period(monthStart, today),
     yesterdayDetails,
     unsupportedZone,
-    zoneLabel: usingBrowserZone
-      ? `your browser’s time zone (${calendar.resolvedOptions().timeZone})`
-      : timeZone,
+    zoneLabel,
+  };
+}
+
+/** Projects an instant's dashboard date onto local midnight for calendar arithmetic and labels. */
+export function dashboardCalendar(timeZone?: string | null) {
+  const { calendar, unsupportedZone } = dayFormatter(timeZone);
+  return {
+    day(date: Date) {
+      if (!Number.isFinite(date.getTime())) return date;
+      const parts = calendar.formatToParts(date);
+      const part = (name: Intl.DateTimeFormatPartTypes) =>
+        Number(parts.find(({ type }) => type === name)?.value);
+      return new Date(part("year"), part("month") - 1, part("day"));
+    },
+    unsupportedZone,
+    zoneLabel:
+      !timeZone || unsupportedZone !== null
+        ? `your browser’s time zone (${calendar.resolvedOptions().timeZone})`
+        : timeZone,
   };
 }
 
@@ -246,8 +269,8 @@ export function chartPoints(buckets: readonly NetBucket[], unit: "day" | "week")
     const last = i === buckets.length - 1;
     return {
       ...b,
-      label: DAY.format(start),
-      full: unit === "day" ? WEEKDAY_DAY.format(start) : `Week of ${DAY.format(start)}`,
+      label: formatDay(DAY, start),
+      full: unit === "day" ? formatDay(WEEKDAY_DAY, start) : `Week of ${formatDay(DAY, start)}`,
       tick: last || (unit === "day" ? start.getDay() === 1 : i % 2 === 1),
     };
   });
@@ -263,14 +286,14 @@ export interface ThroughputPoint {
 
 /** Merged pull requests and reviews given per week, the last `count` weeks; this week is partial. */
 export function throughputWeeks(
-  events: readonly HistoryEvent[],
+  events: readonly ChartEvent[],
   now: Date,
   count = THROUGHPUT_WEEKS,
 ): ThroughputPoint[] {
   const merged = weeklyCounts(events, ["pr_merged"], now, count);
   const reviews = weeklyCounts(events, ["review_given"], now, count);
   return merged.map((week, i) => ({
-    label: DAY.format(parseDay(week.day)),
+    label: formatDay(DAY, parseDay(week.day)),
     merged: week.count,
     reviews: reviews[i]!.count,
     partial: week.partial,
@@ -309,7 +332,7 @@ export const historyProject = (event: HistoryEvent): string | undefined => {
  * them; `titles` maps `owner/name#number` to the titles the snapshot knows. In event order.
  */
 export function barPullRequests(
-  events: readonly HistoryEvent[],
+  events: readonly ChartEvent[],
   day: string,
   unit: "day" | "week",
   titles: ReadonlyMap<string, string>,
@@ -317,7 +340,7 @@ export function barPullRequests(
 ): { opened: BarPullRequest[]; closed: BarPullRequest[] } {
   const inBar = events
     .filter((e) => {
-      const bucket = workingDay(new Date(e.at));
+      const bucket = eventWorkingDay(e);
       return localDay(unit === "day" ? bucket : monday(bucket)) === day;
     })
     .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));

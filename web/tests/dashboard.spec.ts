@@ -1,6 +1,6 @@
 import { type Page } from "@playwright/test";
 import { pauseClock, settle } from "./clock-support";
-import { expect, test } from "./fixtures";
+import { expect, PINNED_NOW, test } from "./fixtures";
 import { expectAccessible, expectKeyboardTooltips, netChartBar } from "./screens-support";
 import { ANALYSIS_ID } from "./support";
 
@@ -627,6 +627,64 @@ test.describe("My work (msw)", () => {
       .toBe(8);
     const first = (await page.locator("li[data-item]").first().boundingBox())!;
     expect(first.y).toBeLessThan(900);
+  });
+
+  test.describe("with a browser zone different from the dashboard zone", () => {
+    test.use({ timezoneId: "Pacific/Auckland" });
+
+    test("lists a PR under its opening day in the dashboard zone", async ({ page }) => {
+      await open(page);
+      // #1123 opened on Monday at 12:00 in Warsaw and Tuesday at 00:00 in Auckland.
+      const { chart, at } = await netChartBar(page, 17);
+      await chart.hover(at);
+      await expect(page.locator("[data-chart-tip]")).toContainText("closed 3 · opened 2");
+      await chart.click(at);
+      const monday = page.getByRole("region", { name: "Pull requests of Mon 16 Nov" });
+      await expect(monday.getByRole("group", { name: /^Opened only/ })).toContainText("acme/consensus#1123");
+    });
+
+    test("keeps the dashboard week open when the browser is already on Monday", async ({ page }) => {
+      await page.setViewportSize({ width: 1600, height: 900 });
+      await page.clock.setFixedTime(new Date("2026-11-22T11:30:00Z"));
+      await open(page);
+      await page.getByRole("button", { name: "Weeks" }).click();
+      const { chart, at } = await netChartBar(page, 11);
+      await chart.hover(at);
+      const tip = page.locator("[data-chart-tip]");
+      await expect(tip).toContainText("Week of 16 Nov (so far)");
+      await expect(tip).toContainText("closed 4 · opened 3");
+      await chart.click(at);
+      const week = page.getByRole("region", { name: "Pull requests of Week of 16 Nov (so far)" });
+      await expect(week.getByRole("group", { name: "Opened (3)" })).toContainText("acme/consensus#1123");
+      await page.getByText("Throughput, 8 weeks", { exact: true }).click();
+      await expect(
+        page.getByRole("img", { name: /^Your PRs merged:.*16 Nov 3 \(last so far\)$/ }),
+      ).toBeVisible();
+    });
+  });
+
+  test("keeps openings on the same working day after the browser zone changes", async ({
+    browser,
+    baseURL,
+  }) => {
+    const context = await browser.newContext({ baseURL, timezoneId: undefined });
+    try {
+      const page = await context.newPage();
+      const session = await context.newCDPSession(page);
+      await session.send("Emulation.setTimezoneOverride", { timezoneId: "Pacific/Auckland" });
+      await page.clock.install({ time: PINNED_NOW });
+      await open(page);
+      const { chart, at } = await netChartBar(page, 17);
+      await session.send("Emulation.setTimezoneOverride", { timezoneId: "America/Los_Angeles" });
+      await page.clock.runFor(10_000);
+      await chart.click(at);
+      const monday = page.getByRole("region", { name: "Pull requests of Mon 16 Nov" });
+      await expect(monday.getByRole("group", { name: "Opened only (2)" })).toContainText(
+        "acme/consensus#1123",
+      );
+    } finally {
+      await context.close();
+    }
   });
 
   test("a chart bar lists its pull requests under the chart; again, Hide or another period closes it", async ({

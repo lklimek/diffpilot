@@ -30,9 +30,11 @@ import {
   barPullRequests,
   chartPoints,
   chartProjects,
+  dashboardCalendar,
   dailySeries,
   headline,
   historyProject,
+  localDay,
   throughputWeeks,
   weeklySeries,
 } from "./history";
@@ -92,7 +94,16 @@ export function DashboardScreen() {
   }, [signedIn, setHelp]);
 
   const zone = summary?.schedule.time_zone;
-  const history = snapshot?.history;
+  const { day, unsupportedZone } = useMemo(() => dashboardCalendar(zone), [zone]);
+  const chartDate = zone && unsupportedZone === null ? day : undefined;
+  const historyEvents = snapshot?.history;
+  const history = useMemo(
+    () =>
+      chartDate
+        ? historyEvents?.map((event) => ({ ...event, calendarDay: localDay(chartDate(new Date(event.at))) }))
+        : historyEvents,
+    [historyEvents, chartDate],
+  );
   const projects = useMemo(() => chartProjects(history ?? []), [history]);
   const project = projects.find((name) => name.toLowerCase() === chartProject.toLowerCase()) ?? "";
   const chartEvents = useMemo(
@@ -105,14 +116,15 @@ export function DashboardScreen() {
   const charts = useMemo(() => {
     if (!history || !chartEvents) return null;
     const figures = headline(chartEvents, now, zone);
+    const chartDay = chartDate?.(now) ?? now;
     return {
       figures,
       yesterday: chartEvents === history ? figures : headline(history, now, zone),
-      days: chartPoints(dailySeries(chartEvents, now), "day"),
-      weeks: chartPoints(weeklySeries(chartEvents, now), "week"),
-      throughput: throughputWeeks(history, now),
+      days: chartPoints(dailySeries(chartEvents, chartDay), "day"),
+      weeks: chartPoints(weeklySeries(chartEvents, chartDay), "week"),
+      throughput: throughputWeeks(history, chartDay),
     };
-  }, [history, chartEvents, now, zone]);
+  }, [history, chartEvents, now, zone, chartDate]);
 
   const points = charts && (unit === "day" ? charts.days : charts.weeks);
   const selectedIndex = bar?.unit === unit ? (points?.findIndex((p) => p.day === bar.day) ?? -1) : -1;
