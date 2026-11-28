@@ -30,9 +30,11 @@ import {
   barPullRequests,
   chartPoints,
   chartProjects,
+  dashboardCalendar,
   dailySeries,
   headline,
   historyProject,
+  localDay,
   throughputWeeks,
   weeklySeries,
 } from "./history";
@@ -92,7 +94,13 @@ export function DashboardScreen() {
   }, [signedIn, setHelp]);
 
   const zone = summary?.schedule.time_zone;
-  const history = snapshot?.history;
+  const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const { day: chartDate } = useMemo(() => dashboardCalendar(zone ?? browserZone), [zone, browserZone]);
+  const historyEvents = snapshot?.history;
+  const history = useMemo(
+    () => historyEvents?.map((event) => ({ ...event, calendarDay: localDay(chartDate(new Date(event.at))) })),
+    [historyEvents, chartDate],
+  );
   const projects = useMemo(() => chartProjects(history ?? []), [history]);
   const project = projects.find((name) => name.toLowerCase() === chartProject.toLowerCase()) ?? "";
   const chartEvents = useMemo(
@@ -105,14 +113,15 @@ export function DashboardScreen() {
   const charts = useMemo(() => {
     if (!history || !chartEvents) return null;
     const figures = headline(chartEvents, now, zone);
+    const chartDay = chartDate(now);
     return {
       figures,
       yesterday: chartEvents === history ? figures : headline(history, now, zone),
-      days: chartPoints(dailySeries(chartEvents, now), "day"),
-      weeks: chartPoints(weeklySeries(chartEvents, now), "week"),
-      throughput: throughputWeeks(history, now),
+      days: chartPoints(dailySeries(chartEvents, chartDay), "day"),
+      weeks: chartPoints(weeklySeries(chartEvents, chartDay), "week"),
+      throughput: throughputWeeks(history, chartDay),
     };
-  }, [history, chartEvents, now, zone]);
+  }, [history, chartEvents, now, zone, chartDate]);
 
   const points = charts && (unit === "day" ? charts.days : charts.weeks);
   const selectedIndex = bar?.unit === unit ? (points?.findIndex((p) => p.day === bar.day) ?? -1) : -1;

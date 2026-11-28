@@ -52,17 +52,17 @@ export function BarPullRequests({
       ? [
           {
             label: "Opened and closed",
-            tip: "Pull requests you opened and closed in this working day",
+            tip: "Pull requests you opened and closed on this day",
             items: closed.filter((pr) => openedIds.has(pr.id.toLowerCase())),
           },
           {
             label: "Opened only",
-            tip: "Pull requests you opened in this working day that did not close in it",
+            tip: "Pull requests you opened on this day that did not close that day",
             items: opened.filter((pr) => !closedIds.has(pr.id.toLowerCase())),
           },
           {
             label: "Closed from earlier days",
-            tip: "Your pull requests opened earlier and merged or closed in this working day",
+            tip: "Your pull requests opened earlier and merged or closed on this day",
             items: closed.filter((pr) => !openedIds.has(pr.id.toLowerCase())),
           },
         ]
